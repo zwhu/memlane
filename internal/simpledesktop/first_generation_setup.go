@@ -216,15 +216,22 @@ func (a *App) retryGenerationValidation() {
 	if _, ok := a.accessClient(); !ok || !s.canRetryGenerationValidation() {
 		return
 	}
+	var cleared *generationUIOperation
 	if s.Validation.Status == "result_unknown" && s.ValidationOperation != "" {
 		for _, pending := range s.PendingOperations {
 			if pending.Kind == "validations" && pending.Operation == s.ValidationOperation && pending.Profile == s.Saved.ID {
+				copyPending := pending
 				if !a.finishGenerationOperation(pending.Operation) {
 					return
 				}
+				cleared = &copyPending
 				break
 			}
 		}
 	}
+	beforeOp := s.ValidationOperation
 	a.generationAction("validations")
+	if cleared != nil && !s.Busy && s.ValidationOperation == beforeOp {
+		_ = a.recordGenerationOperation(*cleared)
+	}
 }

@@ -371,3 +371,21 @@ func TestEnvironmentPolicyUpdateSelectsPersistentConfigTargetWhileDisconnected(t
 		t.Fatal("first installation attempted to update an existing daily config")
 	}
 }
+
+func TestSettingsEnvironmentRetainsPluginConfigApplyActionWhenWriteFailed(t *testing.T) {
+	a, item := environmentFixture()
+	a.Config.ConfigFile = "/synthetic/runtime.json"
+	a.Config.ProjectControl = &ProjectControlConfig{PluginDir: "/synthetic/old-plugin"}
+	item.Requirement.ID, item.Requirement.Name = "agent-plugin", "Agent 插件"
+	item.Observation = bootstrap.Observation{Status: bootstrap.Available, Path: "/synthetic/new-plugin"}
+	a.environment.Plan = bootstrap.Plan{Items: []bootstrap.Item{item}}
+	a.environment.PendingPluginApplyDir = "/synthetic/new-plugin"
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Themed(c, homeTheme).Fill().Children(func() {
+			ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+		})
+	}, 1200, 820)
+	if tt.HasText("已就绪") || !tt.HasText("待写入配置") || !tt.HasText("写入插件配置") {
+		t.Fatalf("pending plugin config apply was hidden as ready: %v", tt.Texts())
+	}
+}

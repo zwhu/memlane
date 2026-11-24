@@ -179,3 +179,38 @@ func TestFirstGenerationSetupNeverDisplaysUntrustedDiagnosticStrings(t *testing.
 		t.Fatalf("unexpected validation display: %v", tt.Texts())
 	}
 }
+
+func TestFirstGenerationSetupPoll404TransitionsToRetryableUnknownState(t *testing.T) {
+	a, ref := firstGenerationFixture()
+	tokenPath := filepath.Join(t.TempDir(), "manager")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/generation/validations/") {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error":"generation_validation_not_found"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(a.integrations.Generation)
+	})
+	a.Client.HTTP = &http.Client{Transport: transport}
+	a.Config.ProjectControl = &ProjectControlConfig{URL: "http://127.0.0.1:18777", ManagementTokenFile: tokenPath}
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	a.integrations.ValidationOperation = "ui-missing-op"
+	a.integrations.Validation = GenerationValidation{Status: "queued"}
+	a.pollGenerationValidationWithTiming("ui-missing-op", time.Millisecond, 2*time.Second)
+	select {
+	case fn := <-updates:
+		fn()
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for 404 poll update")
+	}
+	if a.integrations.Validation.Status != "result_unknown" || a.integrations.Validation.ErrorCode != "validation_not_recorded" {
+		t.Fatalf("404 poll left validation stuck: %+v", a.integrations.Validation)
+	}
+	if !a.integrations.canRetryGenerationValidation() || *a.integrations.Saved != ref {
+		t.Fatal("404 poll did not expose retry while preserving saved candidate")
+	}
+}

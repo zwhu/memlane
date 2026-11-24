@@ -133,8 +133,9 @@ type App struct {
 	readingMigrateMu    sync.Mutex
 	readingMigrated     map[string]bool
 	readingMigrating    map[string]chan struct{}
-	configError         string
-	externalStoreNotice string
+	configError             string
+	externalStoreNotice     string
+	externalStorePollPaused bool
 	md                  markdown.Options
 	v4MD                map[v4MDKey]*markdown.Options
 }
@@ -1086,8 +1087,14 @@ func (a *App) View(c *ui.Context) {
 }
 func (a *App) viewContent(c *ui.Context) {
 	externalStopped := a.isExternalManagedStoreStopped()
-	if externalStopped && !a.monitor.Polling {
-		a.monitor.PollEnabled = false
+	if externalStopped {
+		if !a.monitor.Polling {
+			a.externalStorePollPaused = true
+			a.monitor.PollEnabled = false
+		}
+	} else if a.externalStorePollPaused {
+		a.externalStorePollPaused = false
+		a.monitor.PollEnabled = true
 	}
 	if !a.windowHidden {
 		c.After(2 * time.Second)

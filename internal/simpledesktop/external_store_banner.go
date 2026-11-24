@@ -16,14 +16,14 @@ func (a *App) isExternalManagedStoreStopped() bool {
 		return false
 	}
 	return a.monitor.ConsecutiveFailures > 0 || a.monitor.State == "degraded" || a.monitor.State == "exited" ||
-		(a.service != "" && a.service != "尚未检查") ||
-		(a.Config.ProjectControl != nil && !a.access.Loaded && a.access.DirectoryError != "")
+		(a.service != "" && a.service != "尚未检查")
 }
 
 func (a *App) recheckExternalStoreConnection() {
 	if !a.isExternalManagedStore() {
 		return
 	}
+	a.externalStorePollPaused = false
 	a.monitor.PollEnabled = true
 	a.externalStoreNotice = ""
 	a.health()

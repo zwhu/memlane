@@ -41,6 +41,100 @@ _PROBE_ERROR_CODES = frozenset({
     'extraction_quality_failed', 'unexpected_model_destination', 'completion_result_unconfirmed',
     'completion_truncated', 'fallback_configuration_rejected', 'probe_result_unconfirmed',
 })
+_STRUCTURED_MODES = frozenset({'unknown', 'json_schema', 'json_schema_non_strict', 'json_object'})
+_SCHEMA_ERROR_KINDS = frozenset({
+    'missing', 'extra_forbidden', 'string_type', 'list_type', 'int_type',
+    'int_parsing', 'model_type', 'json_invalid', 'none_required', 'validation_error',
+})
+_SCHEMA_RESPONSE_SHAPES = frozenset({'not_json', 'non_object_json', 'schema_definition', 'data_object', 'other_object'})
+
+
+def _sanitize_probe_result(decoded):
+    """Validate and copy every probe output field so untrusted subprocess text never persists."""
+    allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
+               'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls',
+               'schema_errors', 'schema_response_shapes', 'capability_calls', 'native_schema_evidence', 'quality_fields'}
+    if not isinstance(decoded, dict) or set(decoded) - allowed or decoded.get('status') not in ('passed', 'failed', 'result_unknown'):
+        raise _ProbeFailure('probe_output_invalid_schema')
+    clean = {'status': decoded['status']}
+    for field in ('plain_passed', 'schema_passed', 'quality_passed'):
+        if field in decoded:
+            if type(decoded[field]) is not bool:
+                raise _ProbeFailure('probe_output_invalid_schema')
+            clean[field] = decoded[field]
+    if 'structured_mode' in decoded:
+        mode = decoded['structured_mode']
+        if not isinstance(mode, str) or mode not in _STRUCTURED_MODES:
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['structured_mode'] = mode
+    if 'structured_mode_evidence' in decoded:
+        if decoded['structured_mode_evidence'] != 'official_adapter_request':
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['structured_mode_evidence'] = 'official_adapter_request'
+    if 'sample_version' in decoded:
+        version = decoded['sample_version']
+        if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', version):
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['sample_version'] = version
+    if 'boundary' in decoded:
+        boundary = decoded['boundary']
+        if not isinstance(boundary, str) or boundary not in {'official_adapter_synthetic_extraction', 'synthetic_http_stdio_fixture'}:
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['boundary'] = boundary
+    if 'error_code' in decoded:
+        code = decoded['error_code']
+        if not isinstance(code, str) or code not in _PROBE_ERROR_CODES:
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['error_code'] = code
+    for field in ('adapter_calls', 'capability_calls'):
+        if field in decoded:
+            count = decoded[field]
+            if type(count) is not int or not 0 <= count <= 100:
+                raise _ProbeFailure('probe_output_invalid_schema')
+            clean[field] = count
+    if 'schema_errors' in decoded:
+        raw_errors = decoded['schema_errors']
+        if not isinstance(raw_errors, list) or len(raw_errors) > 8:
+            raise _ProbeFailure('probe_output_invalid_schema')
+        sanitized_errors = []
+        for item in raw_errors:
+            if (not isinstance(item, dict) or set(item) != {'field', 'kind'}
+                    or not isinstance(item['field'], str) or not re.fullmatch(r'[a-z0-9_.]{1,64}', item['field'])
+                    or not isinstance(item['kind'], str) or item['kind'] not in _SCHEMA_ERROR_KINDS):
+                raise _ProbeFailure('probe_output_invalid_schema')
+            sanitized_errors.append({'field': item['field'], 'kind': item['kind']})
+        clean['schema_errors'] = sanitized_errors
+    if 'schema_response_shapes' in decoded:
+        shapes = decoded['schema_response_shapes']
+        if not isinstance(shapes, list) or len(shapes) > 8 or any(not isinstance(s, str) or s not in _SCHEMA_RESPONSE_SHAPES for s in shapes):
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['schema_response_shapes'] = list(shapes)
+    if 'quality_fields' in decoded:
+        qfields = decoded['quality_fields']
+        if (not isinstance(qfields, list) or len(qfields) > 8
+                or any(not isinstance(f, str) or not re.fullmatch(r'[a-z0-9_.]{1,64}', f) for f in qfields)):
+            raise _ProbeFailure('probe_output_invalid_schema')
+        clean['quality_fields'] = list(qfields)
+    if 'native_schema_evidence' in decoded:
+        evidence = decoded['native_schema_evidence']
+        if evidence is None:
+            clean['native_schema_evidence'] = None
+        else:
+            if (not isinstance(evidence, dict)
+                    or set(evidence) != {'contract', 'status', 'model', 'endpoint_sha256'}
+                    or evidence['contract'] != 'ollama-native-nonce-v1'
+                    or evidence['status'] != 'verified'
+                    or not isinstance(evidence['model'], str) or not 1 <= len(evidence['model']) <= 256
+                    or not isinstance(evidence['endpoint_sha256'], str)
+                    or not re.fullmatch(r'[0-9a-f]{64}', evidence['endpoint_sha256'])):
+                raise _ProbeFailure('probe_output_invalid_schema')
+            clean['native_schema_evidence'] = {
+                'contract': evidence['contract'],
+                'status': evidence['status'],
+                'model': evidence['model'],
+                'endpoint_sha256': evidence['endpoint_sha256'],
+            }
+    return clean
 
 
 
@@ -207,6 +301,7 @@ class GenerationValidation:
         self.store, self.runtime = store, runtime
         self.task, self.process, self.bridge = None, None, None
         self.operation_id = None
+        self.started_monotonic = None
         # A previous process's queued/running request is not retried on restart.
         changed = False
         for row in store.state['validations'].values():
@@ -277,8 +372,9 @@ class GenerationValidation:
                 pass
         row = self.store.state['validations'][target]
         if row['status'] in ('queued', 'running'):
+            elapsed = round((time.monotonic() - self.started_monotonic) * 1000, 1) if self.started_monotonic is not None else 0.0
             row.update(_classify_validation_exception(asyncio.CancelledError(), row.get('phase', row['status']), {}),
-                       elapsed_ms=round((time.monotonic() - self.started_monotonic) * 1000, 1))
+                       elapsed_ms=elapsed)
         return self.store.commit(operation_id, request, {'operation_id': target, 'status': row['status'],
                                                          'local_process_exited': self.process is None and self.bridge is None and receipt_groups_exited(row)})
 
@@ -328,6 +424,11 @@ class GenerationValidation:
                 self.process = await asyncio.shield(launch)
             except asyncio.CancelledError:
                 self.process = await launch
+                row['process_group'] = self.process.pid
+                try:
+                    self.store.save()
+                except Exception:
+                    pass
                 raise
             row['process_group'] = self.process.pid
             self.store.save()
@@ -366,16 +467,7 @@ class GenerationValidation:
                 decoded = json.loads(stdout)
             except (ValueError, RecursionError):
                 raise _ProbeFailure('probe_output_invalid_json') from None
-            allowed = {'status', 'plain_passed', 'schema_passed', 'quality_passed', 'structured_mode',
-                       'sample_version', 'boundary', 'error_code', 'structured_mode_evidence', 'adapter_calls',
-                       'schema_errors', 'schema_response_shapes', 'capability_calls', 'native_schema_evidence', 'quality_fields'}
-            if not isinstance(decoded, dict) or set(decoded) - allowed or decoded.get('status') not in ('passed', 'failed', 'result_unknown'):
-                raise _ProbeFailure('probe_output_invalid_schema')
-            if ('error_code' in decoded and (not isinstance(decoded['error_code'], str)
-                                             or decoded['error_code'] not in _PROBE_ERROR_CODES)
-                    or any(field in decoded and type(decoded[field]) is not bool
-                           for field in ('plain_passed', 'schema_passed', 'quality_passed'))):
-                raise _ProbeFailure('probe_output_invalid_schema')
+            decoded = _sanitize_probe_result(decoded)
             if profile.get('provider') == 'ollama':
                 from generation_ollama import evidence_matches
                 evidence = decoded.get('native_schema_evidence')
@@ -397,7 +489,7 @@ class GenerationValidation:
             failed_phase = current_phase
             try:
                 transition('cleanup')
-            except OSError:
+            except Exception:
                 # A failed progress write must still release owned resources.
                 pass
             cleanup = asyncio.create_task(self._cleanup(row, temporary, diagnostics))

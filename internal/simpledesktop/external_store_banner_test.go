@@ -51,10 +51,10 @@ func TestExternalStoreBannerRequiresObservedFailureAndUnreachableServices(t *tes
 		want   bool
 	}{
 		{"before probe", func(a *App) {}, false},
-		{"directory failure", func(a *App) {
+		{"directory auth error alone", func(a *App) {
 			a.Config.ProjectControl = &ProjectControlConfig{}
-			a.access.DirectoryError = "unreachable"
-		}, true},
+			a.access.DirectoryError = "管理接口鉴权失败（401）"
+		}, false},
 		{"exit", func(a *App) { a.monitor.State = "exited" }, true},
 		{"connected", func(a *App) { a.monitor.ConsecutiveFailures = 1; a.service = "已连接" }, false},
 		{"ready monitor", func(a *App) { a.monitor.ConsecutiveFailures = 1; a.monitor.State = "ready" }, false},
@@ -133,5 +133,24 @@ func TestExternalStoreRecheckOnlyReadsAndRestartsPolling(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "store-identity.json")); !os.IsNotExist(err) {
 		t.Fatalf("recheck created a store identity: %v", err)
+	}
+}
+
+func TestExternalStorePollingRestoresWhenServiceRecoversExternally(t *testing.T) {
+	a := New(Config{ConfigFile: "/synthetic/runtime.json", ServiceURL: "http://127.0.0.1:1"}, nil)
+	a.monitor.PollEnabled = true
+	a.monitor.ConsecutiveFailures = 2
+	tt := ui.NewTester(a.View, 1200, 820)
+	tt.Frame()
+	if a.monitor.PollEnabled || !a.externalStorePollPaused {
+		t.Fatal("expected polling to pause while external store is stopped")
+	}
+	// Simulate Settings' own "重新检查" succeeding directly via health().
+	a.service = "已连接"
+	a.monitor.State = "ready"
+	a.monitor.ConsecutiveFailures = 0
+	tt.Frame()
+	if !a.monitor.PollEnabled || a.externalStorePollPaused {
+		t.Fatal("polling remained paused after service recovered")
 	}
 }

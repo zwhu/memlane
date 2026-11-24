@@ -364,6 +364,24 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.state['next'], local)
         self.assertEqual(self.store.state['active']['id'], 'existing-codex')
 
+    async def test_untrusted_probe_output_strings_and_nested_fields_are_rejected(self):
+        for payload in (
+            {'status': 'failed', 'boundary': 'secret-boundary-leak', 'plain_passed': False, 'schema_passed': False, 'quality_passed': False},
+            {'status': 'failed', 'sample_version': 'secret with spaces', 'plain_passed': False, 'schema_passed': False, 'quality_passed': False},
+            {'status': 'failed', 'schema_errors': [{'field': 'secret=token', 'kind': 'missing'}]},
+            {'status': 'failed', 'quality_fields': ['SECRET_API_KEY']},
+            {'status': 'failed', 'structured_mode': 'arbitrary-mode'},
+        ):
+            op = f'unsafe-{len(self.store.state["validations"])}'
+            self.worker('import json,sys\njson.load(sys.stdin)\nprint(' + repr(json.dumps(payload)) + ')\n')
+            with patch('generation_validation.ROOT', self.root):
+                self.validator.start(self.profile, self.store.state['revision'], op)
+                await self.validator.task
+            receipt = self.validator.get(op)
+            self.assertEqual(receipt['status'], 'result_unknown')
+            self.assertEqual(receipt['diagnostic_code'], 'probe_output_invalid_schema')
+            self.assertNotIn('secret', json.dumps(receipt).lower())
+
 
 if __name__ == '__main__':
     unittest.main()

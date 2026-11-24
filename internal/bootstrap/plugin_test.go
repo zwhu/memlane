@@ -276,6 +276,54 @@ func TestApplyManagedPluginUpdateRefusesUnverifiedOrInsideStore(t *testing.T) {
 	}
 }
 
+func TestApplyManagedPluginUpdateIgnoresStaleOwnerConfigForForeignStore(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeA := filepath.Join(root, "store-a")
+	storeB := filepath.Join(root, "store-b")
+	newPlugin := filepath.Join(root, "components", "plugin-new", "plugin")
+	for _, dir := range []string{storeA, storeB, filepath.Join(newPlugin, "scripts")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := []byte("# verified\n")
+	sum := sha256.Sum256(script)
+	manifest, _ := json.Marshal(map[string]any{
+		"plugin_commit": "fixed",
+		"files":         map[string]string{"scripts/main.py": hex.EncodeToString(sum[:])},
+	})
+	if err := os.WriteFile(filepath.Join(newPlugin, "scripts/main.py"), script, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newPlugin, ".memlane-project-access.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	foreignCfg := filepath.Join(root, "foreign-runtime.json")
+	foreignOrig := []byte(`{"official_data":"` + storeB + `","project_control":{"plugin_dir":"/old-foreign"}}`)
+	if err := os.WriteFile(foreignCfg, foreignOrig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	activeCfg := filepath.Join(root, ".runtime-active-123.json")
+	activeOrig := []byte(`{"official_data":"` + storeA + `","project_control":{"plugin_dir":"/old-a"}}`)
+	if err := os.WriteFile(activeCfg, activeOrig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ownerRaw, _ := json.Marshal(map[string]any{"pid": 123, "config": foreignCfg})
+	if err := os.WriteFile(filepath.Join(storeA, ".memlane-dev-owner.json"), ownerRaw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyManagedPluginUpdate(activeCfg, storeA, newPlugin, manifest); err != nil {
+		t.Fatalf("ApplyManagedPluginUpdate failed: %v", err)
+	}
+	afterForeign, _ := os.ReadFile(foreignCfg)
+	if string(afterForeign) != string(foreignOrig) {
+		t.Fatalf("stale owner receipt caused plugin update to mutate foreign store config: %s", string(afterForeign))
+	}
+}
+
 func TestPluginClassifiesVerifiedPolicyUpdates(t *testing.T) {
 	const policy = "scripts/_memlane_policy.py"
 	const original = "scripts/main.py"
@@ -296,6 +344,14 @@ func TestPluginClassifiesVerifiedPolicyUpdates(t *testing.T) {
 		{name: "different lock", change: func(_, wanted map[string]any, _ string) error {
 			wanted["upstream_lock_sha256"] = "different"
 			return nil
+		}},
+		{name: "fabricated upstream file change with matching lock", change: func(_, wanted map[string]any, _ string) error {
+			wanted["files"].(map[string]string)[original] = digest("forged upstream script")
+			return nil
+		}},
+		{name: "missing upstream file in old receipt with matching lock", change: func(receipt, wanted map[string]any, root string) error {
+			delete(receipt["files"].(map[string]string), original)
+			return os.Remove(filepath.Join(root, original))
 		}},
 		{name: "missing old lock", change: func(receipt, _ map[string]any, _ string) error {
 			delete(receipt, "upstream_lock_sha256")

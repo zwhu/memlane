@@ -987,7 +987,13 @@ func (a *App) pollGenerationValidationWithTiming(operation string, interval, bud
 					a.integrations.Message = ""
 				}
 				if err != nil {
-					a.integrations.Error = "验证回执暂时不可用，请核对原验证"
+					var rejected *ControlResponseError
+					if errors.As(err, &rejected) && rejected.Status == 404 {
+						a.integrations.Validation = GenerationValidation{Status: "result_unknown", ErrorCode: "validation_not_recorded"}
+						a.integrations.Error = "未找到该次验证记录，可能尚未成功提交，可点击「重新验证」重新发起。"
+					} else {
+						a.integrations.Error = "验证回执暂时不可用，请核对原验证"
+					}
 				} else {
 					a.integrations.Validation = receipt
 					if receipt.Status == "passed" || receipt.Status == "failed" {

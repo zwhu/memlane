@@ -529,6 +529,7 @@ func generationValidationMessage(code string) string {
 		"validation_interrupted":               "验证已停止，结果未确认。",
 		"validation_owner_interrupted":         "验证期间服务中断，结果未确认。",
 		"validation_cleanup_unconfirmed":       "暂时无法确认验证进程已退出。",
+		"validation_not_recorded":              "服务端未找到该次验证记录，可能尚未成功提交，请重新验证。",
 		"pi_timeout":                           "Pi 模型请求超时。",
 		"pi_model_failed":                      "Pi 模型请求失败。",
 		"codex_timeout":                        "Codex 模型请求超时。",

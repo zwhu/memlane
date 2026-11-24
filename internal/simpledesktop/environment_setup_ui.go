@@ -25,6 +25,7 @@ type environmentSetupState struct {
 	Error, Message                                 string
 	Python, UV, Source, Archive, ModelCache        string
 	Plugin                                         string
+	PendingPluginApplyDir                          string
 	SelectionLoaded                                bool
 	DownloadSource                                 string
 	DownloadSourceIdx                              int
@@ -200,10 +201,12 @@ func (a *App) runEnvironment(approve bool) {
 			err = installer.Run(ctx, "first-install", plan)
 		}
 		var updatedPluginDir string
+		var failedPluginApplyDir string
 		if err == nil && pluginDestination != "" {
 			candidate := filepath.Join(pluginDestination, "plugin")
 			if _, applyErr := bootstrap.ApplyManagedPluginUpdate(configFile, officialData, candidate, environment.Plugin.Manifest); applyErr != nil {
 				err = applyErr
+				failedPluginApplyDir = candidate
 			} else {
 				updatedPluginDir = candidate
 				environment.Options.Plugin = candidate
@@ -224,12 +227,16 @@ func (a *App) runEnvironment(approve bool) {
 			s.Busy, s.Cancel = false, nil
 			if err != nil {
 				s.Error = bootstrap.RedactInstallerText(err.Error())
+				if failedPluginApplyDir != "" {
+					s.PendingPluginApplyDir = failedPluginApplyDir
+				}
 				if errors.Is(err, context.Canceled) {
 					s.Message = "已停止，已完成的准备会保留。"
 				}
 			} else {
 				s.Plan = detected
 				if updatedPluginDir != "" {
+					s.PendingPluginApplyDir = ""
 					s.Plugin = updatedPluginDir
 					if a.Config.ProjectControl != nil {
 						a.Config.ProjectControl.PluginDir = updatedPluginDir
@@ -430,6 +437,55 @@ func environmentIncompatibleHint(a *App, row bootstrap.Item) string {
 	return bootstrap.RedactInstallerText(row.Observation.Reason)
 }
 
+func (a *App) hasPendingPluginConfigApply() bool {
+	s := &a.environment
+	return !a.initialSetup && s.PendingPluginApplyDir != "" &&
+		a.Config.ProjectControl != nil && a.Config.ProjectControl.PluginDir != s.PendingPluginApplyDir
+}
+
+func (a *App) applyPendingPluginConfig() {
+	s := &a.environment
+	if s.Busy || s.Loading || s.Environment == nil || !a.hasPendingPluginConfigApply() || a.Config.ConfigFile == "" {
+		return
+	}
+	environment := s.Environment
+	candidate := s.PendingPluginApplyDir
+	configFile := a.Config.ConfigFile
+	officialData := a.Config.OfficialData
+	s.Busy, s.Error, s.Message = true, "", ""
+	s.Generation++
+	generation := s.Generation
+	go func() {
+		_, err := bootstrap.ApplyManagedPluginUpdate(configFile, officialData, candidate, environment.Plugin.Manifest)
+		var detected bootstrap.Plan
+		if err == nil {
+			environment.Options.Plugin = candidate
+			environment.Plugin.ExistingPath = candidate
+			if _, selErr := bootstrap.LoadSelections(environment.Options.Root, configFile); selErr == nil {
+				_ = bootstrap.SaveSelections(environment.Options, configFile)
+			}
+			detected, err = environment.Detect(context.Background())
+		}
+		a.Update(func() {
+			if s.Generation != generation {
+				return
+			}
+			s.Busy = false
+			if err != nil {
+				s.Error = bootstrap.RedactInstallerText(err.Error())
+				return
+			}
+			s.PendingPluginApplyDir = ""
+			s.Plugin = candidate
+			if a.Config.ProjectControl != nil {
+				a.Config.ProjectControl.PluginDir = candidate
+			}
+			s.Plan = detected
+			s.Message = "Agent 插件已更新并写入配置，重启日常服务后后台将加载新版插件。"
+		})
+	}()
+}
+
 func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	if initial {
 		a.initialEnvironment(c)
@@ -441,9 +497,10 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	if !s.Loaded && !s.Loading && a.Update != nil {
 		a.refreshEnvironment()
 	}
+	pendingPluginApply := a.hasPendingPluginConfigApply()
 	ui.Column(c.Key("settings-environment-section")).FillWidth().Gap(sp3).Children(func() {
 		v4Group(c, "运行环境", "", func() {
-			if s.Plan.Complete() && !s.Busy {
+			if s.Plan.Complete() && !s.Busy && !pendingPluginApply {
 				v4Badge(c, "已就绪", "ok")
 			}
 			if s.Loading && s.Loaded {
@@ -478,7 +535,13 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 				var extraHint string
 				var extraColor ui.Color
 				var detailReason string
-				if policyUpdate := isPluginPolicyUpdate(row, status); dailyUpdate || policyUpdate {
+				if pendingPluginApply && row.Requirement.ID == "agent-plugin" {
+					dotState = "warn"
+					valueLabel = "待写入配置"
+					valueColor = tok.Warning
+					extraHint = "新版 Agent 插件已准备并校验完成，但尚未写入当前日常配置；请点击下方「写入插件配置」重试。"
+					extraColor = tok.Text2
+				} else if policyUpdate := isPluginPolicyUpdate(row, status); dailyUpdate || policyUpdate {
 					dotState = "run"
 					valueLabel = "有更新"
 					if policyUpdate {
@@ -559,13 +622,15 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 			a.setupStageBanner(c, stageTitle, "请稍候，完成后将自动校验依赖状态。", stopFn)
 		} else {
 			needInstall := !s.Plan.Complete() && len(s.Plan.Items) > 0
-			if needInstall || s.Error != "" {
+			if needInstall || pendingPluginApply || s.Error != "" {
 				actionLabel := "安装缺少的依赖"
 				if isOnlyPluginUpdate(a, s.Plan, s.Journal, s.Busy) {
 					actionLabel = "更新 Agent 插件"
 				}
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
-					if needInstall {
+					if pendingPluginApply {
+						v4SmallPrimaryButton(c, "写入插件配置", a.applyPendingPluginConfig).Disabled(s.Loading)
+					} else if needInstall {
 						v4SmallPrimaryButton(c, actionLabel, func() { s.Review = true }).Disabled(s.Loading)
 						v4SmallButton(c, "复制安装命令", v4IconCopy, func() { a.copyManualInstallScript(c) }).Disabled(s.Loading)
 					}

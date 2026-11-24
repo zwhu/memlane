@@ -141,9 +141,29 @@ func VerifyPlugin(root string, expected []byte) error {
 	return failure
 }
 
+var pluginPolicyPatchAllowlist = map[string]bool{
+	"scripts/_memlane_policy.py":      true,
+	"scripts/_memlane_access.py":      true,
+	"scripts/config.py":               true,
+	"scripts/session-start.py":        true,
+	"scripts/_coding_memory.py":       true,
+	"scripts/_plugin_common.py":       true,
+	"scripts/_remember_http.py":       true,
+	"scripts/cognee-remember.sh":      true,
+	"scripts/store-user-prompt.py":    true,
+	"scripts/sync-session-to-graph.py": true,
+	"scripts/_env_file.py":            true,
+	"scripts/_recall_http.py":         true,
+	"scripts/cognee-search.sh":        true,
+	"scripts/_code_graph.py":          true,
+	"scripts/cognee-forget.sh":        true,
+	"scripts/cognee-index-repo.sh":    true,
+}
+
 func pluginPolicyReceiptChanged(receipt, wanted map[string]any, changed []string) bool {
+	oldFiles, _ := receipt["files"].(map[string]any)
 	files, _ := wanted["files"].(map[string]any)
-	if len(files) == 0 {
+	if len(files) == 0 || len(oldFiles) == 0 {
 		return false
 	}
 	for path, value := range files {
@@ -161,6 +181,11 @@ func pluginPolicyReceiptChanged(receipt, wanted map[string]any, changed []string
 		lock, ok := value.(string)
 		if !ok || lock == "" || !reflect.DeepEqual(receipt["upstream_lock_sha256"], lock) {
 			return false
+		}
+		for _, name := range changed {
+			if !pluginPolicyPatchAllowlist[name] {
+				return false
+			}
 		}
 	} else {
 		for _, name := range changed {
@@ -344,6 +369,28 @@ func rejectSymlinkAncestors(path string) error {
 	return nil
 }
 
+func runtimeConfigMatchesStore(path, officialData string) bool {
+	if officialData == "" {
+		return true
+	}
+	wantStore, err := prospectivePath(officialData)
+	if err != nil {
+		return false
+	}
+	raw, err := readPluginFile(path)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		OfficialData string `json:"official_data"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || doc.OfficialData == "" {
+		return false
+	}
+	gotStore, err := prospectivePath(doc.OfficialData)
+	return err == nil && gotStore == wantStore
+}
+
 func resolvePersistentRuntimeConfig(configFile, officialData string) (string, error) {
 	if configFile == "" {
 		return "", errors.New("未找到日常配置文件路径")
@@ -365,7 +412,9 @@ func resolvePersistentRuntimeConfig(configFile, officialData string) (string, er
 				if err := json.Unmarshal(raw, &owner); err == nil && owner.Config != "" && filepath.IsAbs(owner.Config) {
 					if err := rejectSymlinkAncestors(owner.Config); err == nil {
 						if st, err := os.Lstat(owner.Config); err == nil && st.Mode().IsRegular() && st.Mode()&os.ModeSymlink == 0 {
-							return owner.Config, nil
+							if runtimeConfigMatchesStore(owner.Config, officialData) {
+								return owner.Config, nil
+							}
 						}
 					}
 				}
@@ -375,7 +424,9 @@ func resolvePersistentRuntimeConfig(configFile, officialData string) (string, er
 	fallback := filepath.Join(filepath.Dir(configFile), "runtime.json")
 	if err := rejectSymlinkAncestors(fallback); err == nil {
 		if st, err := os.Lstat(fallback); err == nil && st.Mode().IsRegular() && st.Mode()&os.ModeSymlink == 0 {
-			return fallback, nil
+			if runtimeConfigMatchesStore(fallback, officialData) {
+				return fallback, nil
+			}
 		}
 	}
 	return configFile, nil
