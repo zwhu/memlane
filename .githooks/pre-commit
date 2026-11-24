@@ -4,6 +4,7 @@ set -eu
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
+sh "$REPO_ROOT/.githooks/_identity_guard.sh" current
 sh "$REPO_ROOT/.githooks/_chain_global.sh" pre-commit "$@"
 
 STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"

@@ -8,6 +8,8 @@ STDIN_TMP="$(mktemp "${TMPDIR:-/tmp}/memlane-pre-push-stdin.XXXXXX")"
 trap 'rm -f "$STDIN_TMP"' EXIT INT TERM
 cat > "$STDIN_TMP"
 
+sh "$REPO_ROOT/.githooks/_identity_guard.sh" push < "$STDIN_TMP"
+
 sh "$REPO_ROOT/.githooks/_chain_global.sh" pre-push "$@" < "$STDIN_TMP"
 
 PYTHON_BIN="$REPO_ROOT/.local/cognee-python/bin/python"
