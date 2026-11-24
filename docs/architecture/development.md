@@ -1,5 +1,36 @@
 # 本地开发
 
+## 启动与运维
+
+从仓库根目录，用 `runtime.json` 中 `python` 字段指定的受管 Python 3.12 运行 `scripts/dev.py`；下方示例使用日常配置对应的 `.local/cognee-python/bin/python`，省略 `--config` 时默认读取 `.local/daily/runtime.json`。
+
+启动预检由 `scripts/dev.py` 自己执行，先于服务子进程启动。裸 `python3` 可能选中 Python 3.9，读取 Codex 配置时会缺少 `tomllib`；直接用受管 Python 启动，预检与服务子进程使用同一个环境。
+
+```sh
+# 启动后台服务与桌面窗口
+.local/cognee-python/bin/python scripts/dev.py start --config /绝对路径/runtime.json
+
+# 仅启动后台服务（不拉起窗口）
+.local/cognee-python/bin/python scripts/dev.py start --no-ui --config /绝对路径/runtime.json
+
+# 状态 / 重开窗口 / 停止 / 异常恢复
+.local/cognee-python/bin/python scripts/dev.py {status|open|stop|recover} --config /绝对路径/runtime.json
+```
+
+| 动作 | 行为 |
+| --- | --- |
+| `start` | 获取日常数据单实例锁，依次启动 completion、官方 Cognee、`project_control_server` 与桌面端；已有实例运行时不重复启动。 |
+| `status` | 校验数据锁、启动器 PID、进程启动时间与配置路径并输出状态摘要。 |
+| `open` | 重开桌面窗口，不重启后台服务。 |
+| `stop` | 校验实例身份，停止所属进程组及子进程并释放日常数据锁。 |
+| `recover` | 异常退出后确认进程组与端口已释放，再安全归档遗留锁记录。 |
+
+运行边界：
+
+- 实际运行配置、token、服务环境变量与本机 Agent 配置保存在 Git 跟踪范围之外的 `.local/`（`0600` 权限），不要提交密钥、真实记忆库、聊天记录或本机 Agent 配置。
+- 受管开发任务经 `scripts/task.py` 执行，至少保留 `50 GiB` 可用磁盘空间（运行中低于 `55 GiB` 自动停止）。
+- 首次提交前执行 `sh scripts/install-hooks.sh`，启用仓库钩子与提交身份守卫。
+
 ## 静态检查
 
 ```sh

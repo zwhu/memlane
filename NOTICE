@@ -1,0 +1,11 @@
+Memlane
+Copyright 2026 The Memlane Authors
+
+This product is licensed under the Apache License, Version 2.0
+(see the LICENSE file).
+
+This product depends on and redistributes portions of third-party
+open-source software, including Cognee (https://github.com/topoteretes/cognee),
+licensed under the Apache License, Version 2.0. Upstream Cognee source code is
+used unmodified. A complete list of third-party components and their licenses
+is provided in THIRD_PARTY_LICENSES.md.
