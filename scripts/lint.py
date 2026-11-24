@@ -2417,8 +2417,13 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
     if rel_path not in SQLITE_CONNECT_ALLOWLIST:
         _check_sqlite_connect_ml020(tree, scope_nodes_map, scope_children_map, str_consts, report)
 
-    # ML022: catalog_index.py DDL must strictly obey the 5-table / allowed-column metadata whitelist.
-    if rel_path in ('engine/python/catalog_index.py', 'catalog_index.py'):
+    # ML022: catalog_index.py & catalog_sync_stages.py DDL must strictly obey the 5-table / allowed-column metadata whitelist.
+    if rel_path in (
+        'engine/python/catalog_index.py',
+        'catalog_index.py',
+        'engine/python/catalog_sync_stages.py',
+        'catalog_sync_stages.py',
+    ):
         _check_catalog_schema_ml021(all_nodes, parent_map, docstring_ids, str_consts, report)
 
     # ML020: v2_api.py list handlers must enforce _MAX_PAGE_LIMIT (<=50), _parse_limit, fit_items_to_json_budget & UTF-8 JSON exit.
@@ -2500,6 +2505,17 @@ def _check_scaling_guardrails(tree, path, ast_index, report):
                 report(handler_fn, 'ML020', ML020_MESSAGE)
 
         for lineno, code, msg in check_v2_utf8_response(tree, list_handlers, require_unconditional=True):
+            anchor = type('_LineAnchor', (), {'lineno': lineno})()
+            report(anchor, code, msg)
+
+    # ML020 (extracted domain modules): v2_api_*.py must never return bare ASCII-escaped web.json_response.
+    rel_path_obj = Path(rel_path)
+    if (
+        rel_path_obj.parent.as_posix() in ('engine/python', '.')
+        and rel_path_obj.name.startswith('v2_api_')
+        and rel_path_obj.name.endswith('.py')
+    ):
+        for lineno, code, msg in check_v2_utf8_response(tree, functions, require_unconditional=True):
             anchor = type('_LineAnchor', (), {'lineno': lineno})()
             report(anchor, code, msg)
 

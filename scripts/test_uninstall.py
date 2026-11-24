@@ -102,13 +102,18 @@ class UninstallScriptTests(unittest.TestCase):
             runtime = Path(directory) / 'Application Support' / 'Memlane'
             script = (runtime / 'managed-marketplaces' / ('trae_ide-' + 'a' * 24) /
                       ('b' * 20) / 'plugins/cognee/scripts/trae_ide_hook.py')
-            def group(path):
+            def group(path, event):
                 return {'hooks': [{'type': 'command', 'timeout': 25,
-                                   'command': shlex.join(['/usr/bin/python3', '-B', str(path), 'Stop'])}]}
-            unrelated = group(runtime.parent / 'trae_ide_hook.py')
-            data = {'version': 1, 'hooks': {'Stop': [unrelated, group(script)]}}
-            self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), ['Stop'])
-            self.assertEqual(data['hooks']['Stop'], [unrelated])
+                                   'command': shlex.join(['/usr/bin/python3', '-B', str(path), event])}]}
+            events = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd')
+            unrelated = {ev: group(runtime.parent / 'trae_ide_hook.py', ev) for ev in events}
+            data = {
+                'version': 1,
+                'hooks': {ev: [unrelated[ev], group(script, ev)] for ev in events},
+            }
+            self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), list(events))
+            for ev in events:
+                self.assertEqual(data['hooks'][ev], [unrelated[ev]])
             self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), [])
 
     def test_dry_run_makes_zero_mutations_and_json_is_valid(self):

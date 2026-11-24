@@ -417,7 +417,7 @@ def _remove_trae_ide_hooks(data, runtime_dir: Path) -> list[str]:
         raise ValueError('invalid TRAE IDE hooks')
     managed = runtime_dir / 'managed-marketplaces'
     removed = []
-    for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'):
+    for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'):
         groups = data['hooks'].get(event, [])
         for group in list(groups):
             if not isinstance(group, dict) or set(group) != {'hooks'}:

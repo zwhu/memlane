@@ -961,6 +961,18 @@ def attach(app):
         self.assertEqual(self.py_codes(good_utf8, 'engine/python/v2_api.py'), set())
         self.assertEqual(lint.check_v2_utf8_response(good_utf8, require_unconditional=True), [])
 
+        # Extracted engine/python/v2_api_*.py domain modules are checked directly by ML020 UTF-8 guardrail.
+        bad_domain_resp = """from aiohttp import web
+def handle(payload):
+    return web.json_response(payload)
+"""
+        self.assertIn('ML020', self.py_codes(bad_domain_resp, 'engine/python/v2_api_knowledge.py'))
+        good_domain_resp = """from local_body_reader import json_utf8_response
+def handle(payload, raw_bytes):
+    return json_utf8_response(payload, raw_bytes=raw_bytes)
+"""
+        self.assertEqual(self.py_codes(good_domain_resp, 'engine/python/v2_api_knowledge.py'), set())
+
     def test_ml021_sqlite_connect_allowlist_aliases_importlib_and_immutable_ban(self):
         # Direct calls & basename spoofing rejected outside exact allowlisted relative paths.
         bad_cases = [
@@ -1131,6 +1143,14 @@ con.execute("ALTER TABLE catalog_docs ADD COLUMN effective_date_source TEXT NOT 
             mutated = real_catalog.replace(anchor, anchor + '\n            ' + injected, 1)
             with self.subTest(injected=injected):
                 self.assertIn('ML022', self.py_codes(mutated, 'engine/python/catalog_index.py'))
+
+        # Extracted catalog_sync_stages.py is also directly covered by ML022.
+        real_stages = (lint.ROOT / 'engine/python/catalog_sync_stages.py').read_text(encoding='utf-8')
+        self.assertEqual(self.py_codes(real_stages, 'engine/python/catalog_sync_stages.py'), set())
+        bad_stage_ddl = "SQL = 'CREATE TABLE IF NOT EXISTS catalog_docs (dataset_id TEXT, body TEXT)'\n"
+        self.assertIn('ML022', self.py_codes(bad_stage_ddl, 'engine/python/catalog_sync_stages.py'))
+        bad_stage_alter = "con.execute('ALTER TABLE catalog_docs ADD COLUMN raw_text TEXT')\n"
+        self.assertIn('ML022', self.py_codes(bad_stage_alter, 'engine/python/catalog_sync_stages.py'))
 
 
 if __name__ == '__main__':
