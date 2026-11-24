@@ -61,7 +61,7 @@ func TestDependencyProbeReportsDeterministicFailures(t *testing.T) {
 	}{
 		{"missing package", `echo '{"mismatch":[{"name":"locked","expected":"1","actual":"missing"}]}'`, "locked需要1，已有missing"},
 		{"native import", `echo '{"native_error":"ImportError"}'`, "原生运行库加载失败：ImportError"},
-		{"nonzero exit", "printf '  shared library missing\\n  loader detail  " + strings.Repeat("x", 300) + "\\n' >&2; exit 42", "exit_code=42）：shared library missing loader detail"},
+		{"nonzero exit dyld", "printf 'dyld: Library not loaded: /Volumes/PrivateDisk/libssl.3.dylib\\n' >&2; exit 42", "exit_code=42）：动态库加载失败"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			python := fakeDependencyPython(t, tc.script)
@@ -69,20 +69,20 @@ func TestDependencyProbeReportsDeterministicFailures(t *testing.T) {
 			if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, tc.reason) {
 				t.Fatalf("unexpected probe result: %+v, %v", o, err)
 			}
-			if strings.ContainsAny(o.Reason, "\r\n") || len([]rune(o.Reason)) > 300 {
-				t.Fatalf("probe detail is not bounded and single-line: %q", o.Reason)
+			if strings.Contains(o.Reason, "/Volumes/PrivateDisk") || strings.ContainsAny(o.Reason, "\r\n") {
+				t.Fatalf("raw stderr path or newline leaked into reason: %q", o.Reason)
 			}
 		})
 	}
 }
 
 func TestDependencyProbeRedactsStderrBeforePersistingPlan(t *testing.T) {
-	python := fakeDependencyPython(t, "printf 'Authorization: Bearer secret-tok API_KEY=top-secret /Users/alice/private https://u:pw@host/p?k=secret\\n' >&2; exit 17")
+	python := fakeDependencyPython(t, "printf 'dyld: Library not loaded: /Volumes/SecretMount/private.dylib\\nAuthorization: Bearer secret-tok\\nAPI_KEY=top-secret\\n/Users/alice/private\\nhttps://u:pw@host/p?k=secret\\n' >&2; exit 17")
 	o, err := ProbeDependencies(context.Background(), python, []byte("locked==1"))
-	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=17") {
+	if err != nil || o.Status != Incompatible || o.transientTimeout || o.Reason != "运行库探测进程退出（exit_code=17）：动态库加载失败" {
 		t.Fatalf("unexpected probe result: %+v, %v", o, err)
 	}
-	for _, secret := range []string{"secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
+	for _, secret := range []string{"/Volumes/SecretMount", "private.dylib", "secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
 		if strings.Contains(o.Reason, secret) {
 			t.Fatalf("secret %q leaked in observation reason: %q", secret, o.Reason)
 		}
@@ -111,7 +111,7 @@ func TestDependencyProbeRedactsStderrBeforePersistingPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
+	for _, secret := range []string{"/Volumes/SecretMount", "private.dylib", "secret-tok", "top-secret", "/Users/alice", "u:pw", "k=secret"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("secret %q persisted to installation.json: %s", secret, string(raw))
 		}

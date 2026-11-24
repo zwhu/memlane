@@ -72,13 +72,8 @@ print(json.dumps(dict(mismatch=mismatch,native_error=native_error)))`
 			o.transientTimeout = true
 		case errors.As(err, &exit):
 			o.Reason = fmt.Sprintf("运行库探测进程退出（exit_code=%d）", exit.ExitCode())
-			if detail := strings.Join(strings.Fields(RedactInstallerText(string(exit.Stderr))), " "); detail != "" {
-				const maxDetailRunes = 256
-				runes := []rune(detail)
-				if len(runes) > maxDetailRunes {
-					detail = string(runes[:maxDetailRunes]) + "…"
-				}
-				o.Reason += "：" + detail
+			if category := classifyDependencyProbeStderr(exit.Stderr); category != "" {
+				o.Reason += "：" + category
 			}
 		}
 		return o, nil
@@ -106,4 +101,24 @@ print(json.dumps(dict(mismatch=mismatch,native_error=native_error)))`
 	h.Write(b)
 	o.Fingerprint = hex.EncodeToString(h.Sum(nil))
 	return o, nil
+}
+
+// classifyDependencyProbeStderr maps probe stderr to fixed diagnostic categories
+// so arbitrary paths or secrets from stderr are never persisted in Observations.
+func classifyDependencyProbeStderr(stderr []byte) string {
+	lower := strings.ToLower(string(stderr))
+	switch {
+	case strings.Contains(lower, "dyld") || strings.Contains(lower, "library not loaded") || strings.Contains(lower, "symbol not found") || strings.Contains(lower, "dlopen"):
+		return "动态库加载失败"
+	case strings.Contains(lower, "bad cpu type") || strings.Contains(lower, "incompatible architecture") || strings.Contains(lower, "mach-o"):
+		return "架构不兼容"
+	case strings.Contains(lower, "permission denied") || strings.Contains(lower, "operation not permitted") || strings.Contains(lower, "code signature"):
+		return "系统权限或签名限制"
+	case strings.Contains(lower, "modulenotfounderror") || strings.Contains(lower, "importerror"):
+		return "模块导入失败"
+	case strings.Contains(lower, "segmentation fault") || strings.Contains(lower, "abort trap") || strings.Contains(lower, "killed"):
+		return "进程异常中止"
+	default:
+		return ""
+	}
 }

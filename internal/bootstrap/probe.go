@@ -107,15 +107,15 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 	var timedOut atomic.Bool
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
-		if probeCtx.Err() != nil && ctx.Err() == nil {
-			timedOut.Store(true)
-		}
 		if command.Process == nil {
 			return os.ErrProcessDone
 		}
 		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
+		}
+		if err == nil && probeCtx.Err() != nil && ctx.Err() == nil {
+			timedOut.Store(true)
 		}
 		return err
 	}
@@ -160,9 +160,14 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 	var exit *exec.ExitError
 	if err != nil && errors.As(err, &exit) {
 		exit.Stderr = stderr.Bytes()
-		// Preserve deterministic non-zero exit codes even if probeCtx expired
-		// while draining pipes from a lingering descendant.
-		if exit.ExitCode() >= 0 && !timedOut.Load() {
+		// Preserve deterministic exits (any normal exit code or non-SIGKILL
+		// crash signal such as SIGABRT) even if probeCtx expired while draining
+		// pipes from a lingering descendant.
+		if ws, ok := exit.ProcessState.Sys().(syscall.WaitStatus); ok {
+			if ws.Exited() || (ws.Signaled() && ws.Signal() != syscall.SIGKILL) {
+				return nil, exit
+			}
+		} else if exit.ExitCode() >= 0 {
 			return nil, exit
 		}
 	}
