@@ -87,7 +87,7 @@ class NativeConnection:
         return result
 
     def cursor_installed(self, installation, record):
-        verify_artifact(installation)
+        verify_hook_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id}, str(self.profile))
         from cursor_connection import proposal
         raw = safe_file(self.target)
         hook = record.get('cursor_next_hook')
@@ -96,21 +96,14 @@ class NativeConnection:
         proposal(raw, hook, None)
 
     def trae_ide_installed(self, installation, record, *, hooks=None):
-        from trae_ide_connection import EVENTS, proposal
+        from trae_ide_connection import verify_hooks
         expected_hooks = record.get('trae_ide_next_hooks') if hooks is None else hooks
-        script = str(Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py')
-        try:
-            if not isinstance(expected_hooks, dict) or set(expected_hooks) != set(EVENTS):
-                raise ValueError()
-            for event, group in expected_hooks.items():
-                commands = group['hooks']
-                if (len(commands) != 1 or commands[0]['type'] != 'command'
-                        or shlex.split(commands[0]['command'])[1:] != ['-B', script, event]):
-                    raise ValueError()
-        except (KeyError, TypeError, ValueError, AttributeError):
-            raise PolicyError('trae_ide_hook_changed_requires_review', 409) from None
-        verify_artifact(installation)
-        proposal(safe_file(self.target), expected_hooks, None)
+        verify_hook_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id}, str(self.profile))
+        raw = safe_file(self.target)
+        digest = record.get('trae_ide_proposal_sha256')
+        if isinstance(digest, str) and sha(raw) != digest:
+            raise PolicyError('trae_ide_hook_changed_requires_review', 409)
+        verify_hooks(raw, expected_hooks, Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py')
 
     def _verify_active_installation(self, installation, record):
         if (not isinstance(installation, dict) or not isinstance(installation.get('plugin_dir'), (str, Path))
@@ -317,18 +310,27 @@ class NativeConnection:
             control_url = control.get('url') or self.config['project_control_url']
             gateway_url = loopback_origin(control_url) + '/cognee'
             # Rebinding a service must not move pending buffers to a new HOME.
-            installation = prepare(control.get('plugin_dir') or self.config.get('plugin_dir'), r.path.parent,
-                                   self.id, agent, gateway_url, control_url,
-                                   self.config.get('agent_host_home', agent.get('installation', {}).get('home') or str(Path.home())),
-                                   host_kind=self.kind, python=self.config['python'])
-            if self.kind in ('cursor', 'trae_ide'):
-                marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
-                marker_data = json.loads(marker.read_text())
-                marker_data['runtime_profile'] = str(self.profile)
-                if self.kind == 'trae_ide':
-                    marker_data.update(hook_origin=loopback_origin(control_url),
-                                       hook_token_file=agent['control_token_file'])
-                private_write(marker, json.dumps(marker_data).encode())
+            active_marker_path = None
+            if self.kind in ('cursor', 'trae_ide') and active_installation is not None:
+                active_marker_path = Path(active_installation['plugin_dir']) / '.memlane-installation.json'
+                active_marker_bytes = safe_file(active_marker_path)
+            try:
+                installation = prepare(control.get('plugin_dir') or self.config.get('plugin_dir'), r.path.parent,
+                                       self.id, agent, gateway_url, control_url,
+                                       self.config.get('agent_host_home', agent.get('installation', {}).get('home') or str(Path.home())),
+                                       host_kind=self.kind, python=self.config['python'])
+                if self.kind in ('cursor', 'trae_ide'):
+                    marker = Path(installation['plugin_dir']) / '.memlane-installation.json'
+                    marker_data = json.loads(safe_file(marker))
+                    marker_data['runtime_profile'] = str(self.profile)
+                    if self.kind == 'trae_ide':
+                        marker_data.update(hook_origin=loopback_origin(control_url),
+                                           hook_token_file=agent['control_token_file'])
+                    private_write(marker, json.dumps(marker_data).encode())
+            except BaseException:
+                if active_marker_path is not None:
+                    private_write(active_marker_path, active_marker_bytes)
+                raise
             if active_installation is not None:
                 record['prepared_installation'] = copy.deepcopy(installation)
             agent.update(kind=self.kind, host_profile=str(self.profile), host_profile_fingerprint=sha(str(self.profile).encode()),
@@ -350,6 +352,7 @@ class NativeConnection:
                 next_hooks = loader(installation, self.config['python'])
                 proposed = proposal(safe_file(self.target), record['trae_ide_hooks'], next_hooks)
                 record['trae_ide_next_hooks'] = next_hooks
+                record['trae_ide_proposal_sha256'] = sha(proposed)
                 record['proposed_sha256'] = sha((installation['manifest_sha256'] + sha(proposed)).encode())
             else:
                 record['proposed_sha256'] = installation['manifest_sha256']
@@ -458,11 +461,14 @@ class NativeConnection:
             status = record.get('status')
             has_active_snapshot = (record.get('activated') and isinstance(record.get('active_record'), dict)
                                    and isinstance(record.get('active_installation'), dict))
+            preview = record.get('preview')
+            baseline_sha = preview.get('baseline_sha256') if isinstance(preview, dict) else None
             if status == 'preparation_unknown' or (status == 'prepared' and has_active_snapshot):
                 baseline = safe_file(self.target)
-                baseline_sha = (record.get('preview') or {}).get('baseline_sha256')
-                if baseline_sha is not None and sha(baseline) != baseline_sha:
+                if not isinstance(baseline_sha, str) or not baseline_sha or sha(baseline) != baseline_sha:
                     raise PolicyError('host_configuration_changed', 409)
+                if status == 'preparation_unknown':
+                    self._verify_staged_artifacts()
                 agent = r.state['agents'].get(self.id)
                 active = (record['active_installation'], record['active_record']) if has_active_snapshot else None
                 if active is None:
@@ -474,51 +480,127 @@ class NativeConnection:
                         raise PolicyError('connection_artifact_changed', 409)
                     installation, restored_record = active
                     self._verify_active_installation(installation, restored_record)
-                    r.state['connections'][self.id] = copy.deepcopy(restored_record)
-                    agent['installation'] = copy.deepcopy(installation)
                 else:
-                    self._verify_staged_artifacts()
                     self.preview()
-                    del r.state['connections'][self.id]
-                    if agent is not None:
-                        agent.pop('installation', None)
-                r.state['revision'] += 1
-                result = {'revision': r.state['revision'], 'connection': self.view()}
-                if status == 'preparation_unknown':
-                    for operation in r.state.get('connection_operations', {}).values():
-                        if (operation.get('instance_id') == self.id and operation.get('action') == 'prepare'
-                                and operation.get('status') != 'complete'):
-                            operation.update(status='complete', outcome='rejected',
-                                             error_code=f'{self.kind}_preparation_did_not_install', result=result)
-                r.save()
-                return result['connection']
+                    installation = restored_record = None
+                error = 'preparation_cancelled' if status == 'prepared' else 'preparation_did_not_install'
+                return self._finish_review(agent, restored_record, installation, 'prepare', error)
             if status == 'activation_unknown':
-                installation = r.state['agents'][self.id]['installation']
-                if self.kind == 'pi':
-                    if sha(safe_file(self.target)) != record.get('proposed_sha256'):
+                agent = r.state['agents'][self.id]
+                installation = agent.get('installation')
+                try:
+                    pi_unwritten = self.kind == 'pi' and sha(safe_file(self.target)) != record.get('proposed_sha256')
+                    if pi_unwritten and not has_active_snapshot:
                         return self.view()
-                    verify_artifact(installation)
-                elif self.kind == 'claude_code':
-                    self.claude_installed(installation)
-                    settings = json.loads(safe_file(self.target))
-                    if not settings.get('enabledPlugins', {}).get('cognee@' + installation['marketplace_name']):
-                        raise PolicyError('claude_configuration_requires_review', 409)
-                elif self.kind == 'traex':
-                    self.traex_installed(installation)
-                elif self.kind == 'trae_ide':
-                    self.trae_ide_installed(installation, record)
-                    record['trae_ide_hooks'] = record['trae_ide_next_hooks']
-                else:
-                    self.cursor_installed(installation, record)
-                    record['cursor_hook'] = record['cursor_next_hook']
-                    record['cursor_active_installation'] = copy.deepcopy(installation)
-                record.update(status='configured_pending_new_session', activated=True)
+                    if pi_unwritten:
+                        raise PolicyError('existing_pi_extension_requires_review', 409)
+                    if not isinstance(installation, dict):
+                        raise PolicyError('connection_artifact_changed', 409)
+                    if self.kind == 'trae_ide':
+                        self.trae_ide_installed(installation, record)
+                    elif self.kind == 'cursor':
+                        self.cursor_installed(installation, record)
+                    else:
+                        bound = {**installation, 'host_kind': self.kind, 'instance_id': self.id}
+                        verify_artifact(bound)
+                        if self.kind == 'claude_code':
+                            self.claude_installed(bound)
+                        elif self.kind == 'traex':
+                            self.traex_installed(bound)
+                except PolicyError:
+                    if (not has_active_snapshot or not isinstance(baseline_sha, str) or not baseline_sha
+                            or sha(safe_file(self.target)) != baseline_sha):
+                        raise
+                    active_installation, active_record = record['active_installation'], record['active_record']
+                    self._verify_active_installation(active_installation, active_record)
+                    if self._candidate_host_install_started(installation, active_installation):
+                        raise
+                    return self._finish_review(agent, active_record, active_installation, 'activate',
+                                               'activation_did_not_install')
+
+                recovered = dict(record, status='configured_pending_new_session', activated=True,
+                                 activated_at=time.time(), environment_receipt_required=True)
+                if self.kind == 'trae_ide':
+                    recovered['trae_ide_hooks'] = record['trae_ide_next_hooks']
+                elif self.kind == 'cursor':
+                    recovered['cursor_hook'] = record['cursor_next_hook']
+                    recovered['cursor_active_installation'] = installation
                 for key in UPGRADE_FIELDS:
-                    record.pop(key, None)
-                r.state['revision'] += 1
-                r.save()
+                    recovered.pop(key, None)
+                recovered.pop('upgraded_at', None)
+                return self._finish_review(agent, recovered, installation, 'activate')
             # Review only the original cache and enabled binding, never install.
             return self.view()
+
+    def _candidate_host_install_started(self, installation, active_installation):
+        if self.kind not in ('traex', 'claude_code'):
+            return False
+        marketplace = installation.get('marketplace_name') if isinstance(installation, dict) else None
+        if not isinstance(marketplace, str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', marketplace):
+            return True
+        if marketplace == active_installation.get('marketplace_name'):
+            return False
+        # Native managers can publish cache or marketplace state before
+        # enabling the plugin in the main host configuration.
+        cache = self.profile / 'plugins/cache' / marketplace
+        if cache.exists() or cache.is_symlink():
+            return True
+        if self.kind == 'traex':
+            receipt = self.profile / '.tmp/marketplaces' / marketplace
+            return receipt.exists() or receipt.is_symlink()
+        plugins = self.profile / 'plugins'
+        try:
+            known = json.loads(safe_file(plugins / 'known_marketplaces.json') or b'{}')
+            installed = json.loads(safe_file(plugins / 'installed_plugins.json'))
+            if not isinstance(known, dict) or not isinstance(installed['plugins'], dict):
+                raise ValueError()
+            return marketplace in known or 'cognee@' + marketplace in installed['plugins']
+        except (ValueError, KeyError, TypeError):
+            raise PolicyError('claude_installation_requires_review', 409) from None
+
+    def _finish_review(self, agent, record, installation, action, error=None):
+        r = self.registry
+        connections = r.state['connections']
+        previous_record = connections[self.id]
+        previous_agent = agent.copy() if agent is not None else None
+        revision = r.state['revision']
+        pending = [(operation, operation.copy()) for operation in r.state.get('connection_operations', {}).values()
+                   if operation.get('instance_id') == self.id and operation.get('action') == action
+                   and operation.get('status') != 'complete']
+        try:
+            if record is None:
+                del connections[self.id]
+            else:
+                connections[self.id] = copy.deepcopy(record)
+            if agent is not None:
+                if installation is None:
+                    agent.pop('installation', None)
+                else:
+                    agent['installation'] = copy.deepcopy(installation)
+            r.state['revision'] = revision + 1
+            row = self.view()
+            if record is not None and row['status'] != record['status']:
+                raise PolicyError('host_configuration_changed', 409)
+            result = {'revision': r.state['revision'], 'connection': row}
+            for operation, _ in pending:
+                operation.update(status='complete', result=copy.deepcopy(result))
+                if error:
+                    operation.update(outcome='rejected', error_code=f'{self.kind}_{error}')
+                else:
+                    operation.pop('outcome', None)
+                    operation.pop('error_code', None)
+            r.save()
+        except BaseException:
+            connections[self.id] = previous_record
+            if agent is not None:
+                agent.clear()
+                agent.update(previous_agent)
+            r.state['revision'] = revision
+            for operation, previous in pending:
+                operation.clear()
+                operation.update(previous)
+            raise
+        return row
 
     def _legacy_active_preparation(self, record, installation, baseline):
         """Recover the active binding from fields written by older prepare journals."""
@@ -563,12 +645,20 @@ class NativeConnection:
                 plugin_dir = plugins / 'cognee'
                 if any(path.is_symlink() or not path.is_dir() for path in (generation, plugins, plugin_dir)):
                     raise ValueError()
-                verify_manifest_files(plugin_dir, safe_file(plugin_dir / '.memlane-project-access.json'))
+                raw = safe_file(plugin_dir / '.memlane-project-access.json')
+                manifest = json.loads(raw)
+                if not isinstance(manifest, dict) or manifest.get('host_kind', self.kind) != self.kind:
+                    raise ValueError()
+                verify_manifest_files(plugin_dir, raw)
                 marker_path = plugin_dir / '.memlane-installation.json'
                 marker = json.loads(safe_file(marker_path))
                 if (not isinstance(marker, dict) or marker_path.stat().st_mode & 0o077
                         or marker.get('instance_id') != self.id or marker.get('host_kind') != self.kind):
                     raise ValueError()
+                if self.kind in ('pi', 'traex', 'trae_ide', 'claude_code'):
+                    subdir = '.claude-plugin' if self.kind == 'claude_code' else '.agents/plugins'
+                    if not isinstance(json.loads(safe_file(generation / subdir / 'marketplace.json')), dict):
+                        raise ValueError()
         except (PolicyError, OSError, ValueError, KeyError, TypeError):
             raise PolicyError('connection_artifact_changed', 409) from None
 
@@ -592,8 +682,17 @@ def verify_artifact(installation):
                 or (installation.get('host_kind') and marker.get('host_kind') != installation['host_kind'])
                 or (installation.get('instance_id') and marker.get('instance_id') != installation['instance_id'])):
             raise PolicyError('connection_binding_changed', 409)
+        return marker
     except (OSError, ValueError, KeyError, TypeError):
         raise PolicyError('connection_artifact_changed', 409) from None
+
+
+def verify_hook_artifact(installation, profile):
+    marker = verify_artifact(installation)
+    if (not profile or marker.get('runtime_profile') != profile
+            or (installation['host_kind'] == 'trae_ide'
+                and not (marker.get('hook_origin') and marker.get('hook_token_file')))):
+        raise PolicyError('connection_binding_changed', 409)
 
 
 def verify_manifest_files(root, raw):
@@ -884,6 +983,11 @@ class Connections:
                     'action': action, 'instance_id': identifier, 'reviewed_sha': reviewed_sha}
                 r.state['revision'] += 1
                 r.save()
+                recovering_native = (
+                    action == 'review' and isinstance(adapter, NativeConnection) and kind != 'antigravity'
+                    and r.state.get('connections', {}).get(identifier, {}).get('status')
+                    in ('prepared', 'preparation_unknown', 'activation_unknown')
+                )
             try:
                 if action in ('allow_capture', 'defer_capture'):
                     row = next((r for r in self.view()['connections'] if r['instance_id'] == identifier), {})
@@ -938,7 +1042,8 @@ class Connections:
                     fingerprint = None
                 # Explicit review checks the existing installation before acknowledging
                 # a host upgrade. Require a fresh host receipt; never reinstall here.
-                if action == 'activate' or (action == 'review' and binary_changed and
+                # Native journal recovery has already restored or set its activation boundary.
+                if action == 'activate' or (action == 'review' and not recovering_native and binary_changed and
                         result.get('status') == 'configured_pending_new_session'):
                     if action == 'review':
                         verify_artifact(r.state['agents'][identifier]['installation'])
