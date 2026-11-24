@@ -147,7 +147,8 @@ func knowledgeCatalog(docs []Document) []Item {
 func (a *App) loadKnowledgeFeed(s *pane) {
 	a.syncReadingIdentity()
 	p, ok := a.current()
-	if !ok || a.Update == nil {
+	update := a.Update
+	if !ok || update == nil {
 		return
 	}
 	a.cancelTitles(s)
@@ -192,7 +193,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	go func() {
 		defer cancel()
 		failClosed := func(err error) {
-			a.Update(func() {
+			update(func() {
 				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 					return
 				}
@@ -237,7 +238,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 					}
 					baseTotal = sum
 				}
-				a.Update(func() {
+				update(func() {
 					if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 						return
 					}
@@ -316,7 +317,7 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			wg.Wait()
 			preCancel()
 		}
-		a.Update(func() {
+		update(func() {
 			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 				return
 			}

@@ -48,9 +48,7 @@ type overviewViewState struct {
 	scope                                      string
 	generation, activityGeneration             uint64
 	cancel, activityCancel, recallCancel       context.CancelFunc
-	cachedFirstUseKey                          string
-	cachedFirstUseDays                         int
-	cachedFirstUseErr                          error
+	overviewColdStartMotion                    bool
 	snapshotVersion                            uint64
 	cachedBucketsVersion                       uint64
 	cachedBucketsCount                         int
@@ -109,15 +107,66 @@ func overviewKnowledgeBounds(items []Item) (firstKey, lastKey string) {
 	return items[0].key(), items[len(items)-1].key()
 }
 
-func (a *App) overviewFirstUseDays(now time.Time) (int, error) {
-	v := &a.overviewState
-	key := a.Config.ClientStateFile + "|" + a.Config.ConfigFile + "|" + now.Format("2006-01-02")
-	if v.cachedFirstUseKey == key {
-		return v.cachedFirstUseDays, v.cachedFirstUseErr
+type overviewFirstUseKey struct {
+	clientState, config, day string
+}
+
+type overviewFirstUseState struct {
+	cachedFirstUseKey        overviewFirstUseKey
+	cachedFirstUseLoadingKey overviewFirstUseKey
+	cachedFirstUseDays       int
+	cachedFirstUseErr        error
+	seq                      uint64
+}
+
+func firstUseKey(cfg Config, now time.Time) overviewFirstUseKey {
+	return overviewFirstUseKey{cfg.ClientStateFile, cfg.ConfigFile, now.Format("2006-01-02")}
+}
+
+func (a *App) startOverviewFirstUseDaysLoad(now time.Time) {
+	v := &a.overviewFirstUse
+	cfg, update := a.Config, a.Update
+	key := firstUseKey(cfg, now)
+	if v.cachedFirstUseKey == key || v.cachedFirstUseLoadingKey == key {
+		return
 	}
-	days, err := firstUseDays(a.Config, now)
-	v.cachedFirstUseKey, v.cachedFirstUseDays, v.cachedFirstUseErr = key, days, err
-	return days, err
+	if key.config == "" && key.clientState == "" {
+		v.seq++
+		v.cachedFirstUseLoadingKey = overviewFirstUseKey{}
+		v.cachedFirstUseKey, v.cachedFirstUseDays = key, 0
+		v.cachedFirstUseErr = errors.New("尚未完成初始化")
+		return
+	}
+	if update == nil {
+		return
+	}
+	v.seq++
+	seq := v.seq
+	v.cachedFirstUseLoadingKey = key
+	go func() {
+		days, err := firstUseDays(cfg, now)
+		update(func() {
+			if v.seq != seq || v.cachedFirstUseLoadingKey != key {
+				return
+			}
+			v.cachedFirstUseLoadingKey = overviewFirstUseKey{}
+			if firstUseKey(a.Config, now) == key {
+				v.cachedFirstUseKey, v.cachedFirstUseDays, v.cachedFirstUseErr = key, days, err
+			}
+		})
+	}()
+}
+
+func (a *App) overviewFirstUseDays(now time.Time) (int, error, bool) {
+	v := &a.overviewFirstUse
+	key := firstUseKey(a.Config, now)
+	if v.cachedFirstUseKey != key && v.cachedFirstUseLoadingKey != key {
+		a.startOverviewFirstUseDaysLoad(now)
+	}
+	if v.cachedFirstUseKey == key {
+		return v.cachedFirstUseDays, v.cachedFirstUseErr, true
+	}
+	return 0, nil, false
 }
 
 func (a *App) overviewCachedBuckets(now time.Time) map[string]int {
@@ -211,6 +260,9 @@ func (a *App) withdrawOverviewScope() {
 }
 
 func (a *App) loadOverview() {
+	if a.Update == nil {
+		return
+	}
 	v := &a.overviewState
 	a.syncReadingIdentity()
 	a.cancelOverviewRecall()
@@ -288,6 +340,7 @@ func (a *App) loadOverview() {
 						a.overviewState.ActivityLoading = false
 						a.overviewState.ActivityError = message
 					}
+					a.onOverviewBootstrapSettled()
 				})
 			}
 			if err := control.requireReadingContract(ctx); err != nil {
@@ -328,10 +381,7 @@ func (a *App) loadOverview() {
 					a.overviewState.Error = ""
 					a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
 					if !wasLoaded {
-						a.motionRuns.overviewPage++
-						a.motionRuns.overviewKnowledge++
-						a.motionRuns.overviewActivity++
-						a.overviewState.heatmapGrowStart = time.Now()
+						a.startOverviewEntrance()
 					}
 					if actGen == a.overviewState.activityGeneration {
 						a.overviewState.ActivityLoading = false
@@ -354,6 +404,7 @@ func (a *App) loadOverview() {
 					if a.overviewState.Day != "" {
 						a.loadOverviewDayV2(a.overviewState.Day, false)
 					}
+					a.onOverviewBootstrapSettled()
 				})
 				return
 			}
@@ -450,6 +501,7 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
+			defer a.settleLegacyOverview()
 			a.overviewState.Loading = false
 			if err != nil {
 				if readingAuthDenied(err) {
@@ -486,13 +538,25 @@ func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
 			a.overviewState.Loaded = true
 			a.overviewState.Error = ""
 			if !wasLoaded {
-				a.motionRuns.overviewPage++
-				a.motionRuns.overviewKnowledge++
-				a.motionRuns.overviewActivity++
-				a.overviewState.heatmapGrowStart = time.Time{}
+				a.startOverviewEntrance()
 			}
 		})
 	}()
+}
+
+func (a *App) startOverviewEntrance() {
+	v := &a.overviewState
+	v.overviewColdStartMotion = a.motionRuns.overviewPage == 0
+	a.motionRuns.overviewPage++
+	a.motionRuns.overviewKnowledge++
+	a.motionRuns.overviewActivity++
+	v.heatmapGrowStart = time.Time{}
+}
+
+func (a *App) settleLegacyOverview() {
+	if !a.overviewState.Loading && !a.overviewState.ActivityLoading {
+		a.onOverviewBootstrapSettled()
+	}
 }
 
 func (a *App) loadOverviewActivity() {
@@ -566,6 +630,7 @@ func (a *App) startOverviewActivity() <-chan struct{} {
 			if generation != a.overviewState.activityGeneration || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
+			defer a.settleLegacyOverview()
 			a.overviewState.ActivityLoading = false
 			if history {
 				if err != nil {
@@ -632,13 +697,19 @@ func (a *App) overviewHome(c *ui.Context) {
 	v := &a.overviewState
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-	c.After(midnight.Sub(now))
+	if !a.windowInactive {
+		c.After(midnight.Sub(now))
+	}
 	ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {
 		pageKey := fmt.Sprintf("overview-page-%d", a.motionRuns.overviewPage)
 		page := ui.Column(c.Key(pageKey)).Grow(1).MinHeight(0).FillWidth().MaxWidth(1040).Padding(0, sp8).Font("system-ui").FontWeight(400)
-		a.v4PageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
+		if v.overviewColdStartMotion {
+			a.v4ColdStartPageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
+		} else {
+			a.v4PageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
+		}
 		page.Children(func() {
-			if _, err := a.overviewFirstUseDays(now); err != nil {
+			if _, err, ready := a.overviewFirstUseDays(now); ready && err != nil {
 				homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
 			}
 			if v.Error != "" {
@@ -945,7 +1016,7 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 		weeks++
 	}
 	usage := "—"
-	if n, err := a.overviewFirstUseDays(now); err == nil {
+	if n, err, ready := a.overviewFirstUseDays(now); ready && err == nil {
 		usage = fmt.Sprint(n)
 	}
 	knowledge, raw := "—", "—"
@@ -1074,7 +1145,12 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 					tapStart := v.heatmapTapStart
 					ringPrevDay := v.heatmapRingPrevDay
 					ringStart := v.heatmapRingStart
-					waveTotal := time.Duration(max(0, weeks-1)*7)*time.Millisecond + 420*time.Millisecond
+					coldStart := v.overviewColdStartMotion
+					weekDelay, waveDuration := 7*time.Millisecond, 420*time.Millisecond
+					if coldStart {
+						weekDelay, waveDuration = 3*time.Millisecond, 320*time.Millisecond
+					}
+					waveTotal := time.Duration(weeks-1)*weekDelay + waveDuration
 					canvas.Draw(func(p *ui.Painter, r ui.Rect) {
 						elapsed, waving := v4HeatmapWaveElapsed(c, p, growStart, waveTotal)
 						tapElapsed, tapping := v4HeatmapWaveElapsed(c, p, tapStart, 650*time.Millisecond)
@@ -1086,13 +1162,15 @@ func (a *App) overviewHeatmap(c *ui.Context, now time.Time) {
 							if cell.w != lastW {
 								lastW = cell.w
 								x = r.X + float32(cell.w*14)
-								// Wave Grow: left-to-right per-week 7ms cascade.
 								scale = 1
 								alpha = 1
 								if waving {
-									t := elapsed - float64(cell.w)*0.007
+									t := elapsed - float64(cell.w)*weekDelay.Seconds()
 									scale = v4BouncyScale(t)
-									if t <= 0 {
+									if coldStart {
+										alpha = float32(0.35 + 0.65*max(0, min(t/0.12, 1)))
+										scale = 0.72 + 0.28*scale
+									} else if t <= 0 {
 										alpha = 0
 									} else if t < 0.14 {
 										alpha = float32(t / 0.14)
@@ -1387,7 +1465,11 @@ func (a *App) overviewKnowledgeRow(c *ui.Context, now time.Time, i Item, idx int
 	if hovered {
 		row.Shadow(0, 2, 10, 0, tok.ShadowLift)
 	}
-	a.v4StaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
+	if a.overviewState.overviewColdStartMotion {
+		a.v4ColdStartStaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
+	} else {
+		a.v4StaggerEnter(c, row, "recent-"+i.key(), idx, a.motionRuns.overviewKnowledge, true)
+	}
 	// Hairline divider between rows starting after the agent icon.
 	// Hide both above and below a hovered lifted row (.row:hover + .row::before).
 	if idx > 0 && !hovered && !prevHovered {
@@ -1619,7 +1701,12 @@ func (a *App) overviewActivities(c *ui.Context, now time.Time) {
 				} else {
 					row = ui.Row(c).Key(evKey).Padding(sp2, sp2, sp3, sp2).Gap(sp3).Radius(radius).AlignItems(ui.Stretch)
 				}
-				a.v4StaggerEnter(c, row, "event-"+ev.Key, idx, a.motionRuns.overviewActivity, ev.Recall != nil && len(recallGroups) > 0)
+				interactive := ev.Recall != nil && len(recallGroups) > 0
+				if a.overviewState.overviewColdStartMotion {
+					a.v4ColdStartStaggerEnter(c, row, "event-"+ev.Key, idx, a.motionRuns.overviewActivity, interactive)
+				} else {
+					a.v4StaggerEnter(c, row, "event-"+ev.Key, idx, a.motionRuns.overviewActivity, interactive)
+				}
 				row.Children(func() {
 					ui.Column(c).Width(8).Shrink(0).Padding(6, 0, 0, 0).AlignItems(ui.Center).Children(func() {
 						ui.Box(c).Size(6, 6).Radius(3).Background(dotColor).Shrink(0)

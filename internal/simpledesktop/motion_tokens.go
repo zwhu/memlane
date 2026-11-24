@@ -83,10 +83,24 @@ func (a *App) v4PageEnter(c *ui.Context, el ui.Element, key string, run uint64) 
 	return a.poseEnter.apply(c, el, "page:"+key, run, ui.Pose{Y: 10, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
 }
 
+func (a *App) v4ColdStartPageEnter(c *ui.Context, el ui.Element, key string, run uint64) ui.Element {
+	return a.poseEnter.apply(c, el, "page:"+key, run, ui.Pose{Y: 6, Scale: 1, Fade: 0.15}, ui.Pose{Scale: 1}, 0, v4Smooth)
+}
+
 // v4StaggerEnter ("Stagger Cascade / 列表错开缓进") reproduces .stagger > *:
 // monotonic bottom-to-top glide (+8px -> 0, opacity 0 -> 1, 28ms per-row delay)
 // merged cleanly with Hover Lift (-1px) and Press Tap (0.99).
 func (a *App) v4StaggerEnter(c *ui.Context, el ui.Element, key string, index int, run uint64, interactive bool) ui.Element {
+	start := ui.Pose{Y: 8, Scale: 1, Fade: 1}
+	return a.staggerEnter(c, el, key, index, run, interactive, start, time.Duration(index*28+40)*time.Millisecond)
+}
+
+func (a *App) v4ColdStartStaggerEnter(c *ui.Context, el ui.Element, key string, index int, run uint64, interactive bool) ui.Element {
+	start := ui.Pose{Y: 5, Scale: 1, Fade: 0.15}
+	return a.staggerEnter(c, el, key, index, run, interactive, start, time.Duration(index*10)*time.Millisecond)
+}
+
+func (a *App) staggerEnter(c *ui.Context, el ui.Element, key string, index int, run uint64, interactive bool, start ui.Pose, delay time.Duration) ui.Element {
 	rest := ui.Pose{Scale: 1}
 	if interactive {
 		switch {
@@ -102,8 +116,7 @@ func (a *App) v4StaggerEnter(c *ui.Context, el ui.Element, key string, index int
 		}
 		return el
 	}
-	delay := time.Duration(index*28+40) * time.Millisecond
-	return a.poseEnter.apply(c, el, "row:"+key, run, ui.Pose{Y: 8, Scale: 1, Fade: 1}, rest, delay, v4Snappy)
+	return a.poseEnter.apply(c, el, "row:"+key, run, start, rest, delay, v4Snappy)
 }
 
 // v4DocEnter ("Doc Glide / 阅读区侧滑切换") reproduces .doc-enter:

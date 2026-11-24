@@ -186,6 +186,23 @@ func New(c Config, err error) *App {
 	}}
 	return a
 }
+
+var startupDeferredFallbackTimeout = 5 * time.Second
+
+type deferredStartupState struct {
+	armed, done bool
+	gen         uint64
+	timer       *time.Timer
+}
+
+func (s *deferredStartupState) stopTimer() {
+	s.gen++
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
+	}
+}
+
 func (a *App) Start() {
 	if a.initialSetup {
 		if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted {
@@ -207,25 +224,71 @@ func (a *App) Start() {
 		a.RefreshIntegrations()
 		return
 	}
-	a.monitor.PollEnabled = true
-	a.health()
+	s := &a.startupDeferred
+	s.stopTimer()
+	update := a.Update
+	s.armed, s.done = update != nil && a.page == "总览", false
+	if s.armed {
+		a.overviewFirstScreenReady = false
+		a.monitor.PollEnabled = false
+	}
 	a.loadRecent()
 	a.RefreshProjectDirectory()
-	a.triggerProvenanceBackfillOnce()
-	// Defer non-critical background host CLI probes and code-index state restore
-	// until after Overview cold-start bootstrap and entrance motion settle.
-	if a.Update != nil && a.page == "总览" {
-		time.AfterFunc(700*time.Millisecond, func() {
-			a.Update(func() {
-				a.restoreCodeState()
-				a.RefreshIntegrations()
-			})
+	a.startOverviewFirstUseDaysLoad(time.Now())
+	if !s.armed {
+		a.runDeferredStartupTasks()
+		return
+	}
+	gen := s.gen
+	s.timer = time.AfterFunc(startupDeferredFallbackTimeout, func() {
+		update(func() {
+			if gen == a.startupDeferred.gen {
+				a.runDeferredStartupTasks()
+			}
 		})
-	} else {
-		a.restoreCodeState()
-		a.RefreshIntegrations()
+	})
+}
+
+func (a *App) onOverviewBootstrapSettled() {
+	a.overviewFirstScreenReady = true
+	if a.startupDeferred.armed {
+		a.runDeferredStartupTasks()
 	}
 }
+
+func (a *App) runDeferredStartupTasks() {
+	a.finishDeferredStartup(false)
+}
+
+func (a *App) finishDeferredStartup(settingsRefreshed bool) {
+	s := &a.startupDeferred
+	if s.done {
+		return
+	}
+	s.stopTimer()
+	s.done = true
+	a.overviewFirstScreenReady = true
+	a.monitor.PollEnabled = true
+	a.triggerProvenanceBackfillOnce()
+	a.restoreCodeState()
+	if !settingsRefreshed {
+		a.RefreshIntegrations()
+		a.RefreshOpenAtLoginAsync()
+	}
+	if !a.windowInactive {
+		a.health()
+		a.PrewarmGraph()
+		if !settingsRefreshed {
+			a.refreshSidebarQueueIfDue(time.Now())
+		}
+	}
+}
+
+func (a *App) cancelAndResetPanes() {
+	a.startupDeferred.stopTimer()
+	a.readingController.cancelAndResetPanes()
+}
+
 func (a *App) FlushPendingState(timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
@@ -343,12 +406,14 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		a.motionRuns.overviewKnowledge++
 		a.motionRuns.overviewActivity++
 		a.overviewState.heatmapGrowStart = time.Time{}
+		a.overviewState.overviewColdStartMotion = false
 	}
 	if page == "知识" {
 		a.motionRuns.projectPage++
 	}
 	a.cancelRecentTitles()
 	a.epoch++
+	a.cancelGraphLoad()
 	a.graph.clear()
 	for _, p := range a.panes {
 		p.Knowledge.RecallFilter = nil
@@ -374,8 +439,15 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	}
 	if page == "设置" {
 		a.RefreshIntegrations()
+		a.RefreshOpenAtLoginAsync()
+		if a.startupDeferred.armed && !a.startupDeferred.done {
+			a.finishDeferredStartup(true)
+		}
 	}
 	a.project = index
+	if page == "图谱" {
+		a.EnsureGraphAttached()
+	}
 	if page == "总览" {
 		if !a.overviewState.Loaded || a.overviewState.scope != a.overviewScope() {
 			a.loadOverview()
@@ -387,7 +459,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 			if a.Update != nil {
 				time.AfterFunc(850*time.Millisecond, func() {
 					a.Update(func() {
-						if a.page == "总览" && a.epoch == navEpoch {
+						if !a.windowInactive && a.page == "总览" && a.epoch == navEpoch {
 							a.loadOverview()
 						}
 					})
@@ -923,12 +995,14 @@ func (a *App) View(c *ui.Context) {
 	})
 }
 func (a *App) viewContent(c *ui.Context) {
-	c.After(2 * time.Second)
-	a.syncReadingIdentity()
-	if time.Now().After(a.access.Next) {
-		a.RefreshProjectDirectory()
+	if !a.windowInactive {
+		c.After(2 * time.Second)
+		a.syncReadingIdentity()
+		if time.Now().After(a.access.Next) {
+			a.RefreshProjectDirectory()
+		}
 	}
-	if a.page == "总览" && a.Update != nil {
+	if !a.windowInactive && a.page == "总览" && a.Update != nil {
 		if a.Config.ProjectControl != nil && !a.access.Loaded {
 			if a.access.DirectoryError != "" {
 				a.overviewState.Loading, a.overviewState.ActivityLoading = false, false

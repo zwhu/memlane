@@ -58,14 +58,14 @@ type officialGraphBridge struct {
 }
 
 func (b *officialGraphBridge) Ready(ctx context.Context) error {
-	if h := b.host.Load(); h != nil {
+	if h := b.host.Load(); h != nil && h.pagePublished() {
 		return h.Ready(ctx)
 	}
 	return fmt.Errorf("graph host unavailable")
 }
 
 func (b *officialGraphBridge) Select(ctx context.Context, s graphSelectRequest) error {
-	if h := b.host.Load(); h != nil {
+	if h := b.host.Load(); h != nil && h.pagePublished() {
 		return h.Select(ctx, s)
 	}
 	return fmt.Errorf("graph host unavailable")
@@ -119,53 +119,76 @@ func validateGraphAssets(readFile func(string) ([]byte, error)) (map[string][]by
 	return assets, nil
 }
 
+func ensureGraphProtocolAndBridge() {
+	officialGraphBridgeOnce.Do(func() {
+		mygo.BindAs("OfficialGraph", &officialGraphDispatcher)
+		_ = mygo.Protocol.HandleFunc("memlanegraph", officialGraphDispatcher.serveProtocol)
+	})
+}
+
+func (b *officialGraphBridge) serveProtocol(w http.ResponseWriter, r *http.Request) {
+	if g := b.host.Load(); g != nil {
+		g.serveProtocol(w, r)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (g *GraphHost) pagePublished() bool {
+	// Closing pageReady publishes the page and binding transport to workers.
+	select {
+	case <-g.pageReady:
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *GraphHost) serveProtocol(w http.ResponseWriter, r *http.Request) {
+	if !g.pagePublished() {
+		http.NotFound(w, r)
+		return
+	}
+	name := r.URL.Path
+	if name == "/" {
+		name = "/index.html"
+	}
+	if g.page == nil || mygo.CallerPage(r.Context()) != g.page || r.Method != "GET" || r.URL.Host != "graph" || name != "/"+filepath.Base(name) || r.URL.RawQuery != "" {
+		http.NotFound(w, r)
+		return
+	}
+	b, ok := g.assets[filepath.Base(name)]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(b)
+}
+
 func registerGraphHostFromAssets(source map[string][]byte) *GraphHost {
+	ensureGraphProtocolAndBridge()
 	assets := make(map[string][]byte, len(source))
 	for k, v := range source {
 		assets[k] = v
 	}
 	g := &GraphHost{assets: assets, pageReady: make(chan struct{})}
 	officialGraphDispatcher.host.Store(g)
-	officialGraphBridgeOnce.Do(func() {
-		mygo.BindAs("OfficialGraph", &officialGraphDispatcher)
-	})
-	_ = mygo.Protocol.Handle("memlanegraph", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The page reference is published once before loading, then immutable.
-		// A closed channel publishes it to protocol workers without a state mutex.
-		select {
-		case <-g.pageReady:
-		default:
-			http.NotFound(w, r)
-			return
-		}
-		page := g.page
-		name := r.URL.Path
-		if name == "/" {
-			name = "/index.html"
-		}
-		if page == nil || mygo.CallerPage(r.Context()) != page || r.Method != "GET" || r.URL.Host != "graph" || name != "/"+filepath.Base(name) || r.URL.RawQuery != "" {
-			http.NotFound(w, r)
-			return
-		}
-		b, ok := g.assets[filepath.Base(name)]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name)))
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		_, _ = w.Write(b)
-	}))
 	return g
 }
 
-func RegisterGraph(directory string) (*GraphHost, error) {
+func validateGraphDirAssets(directory string) (map[string][]byte, error) {
 	if !filepath.IsAbs(directory) {
 		return nil, fmt.Errorf("官方图组件目录必须为绝对路径")
 	}
-	assets, err := validateGraphAssets(func(name string) ([]byte, error) {
+	return validateGraphAssets(func(name string) ([]byte, error) {
 		return os.ReadFile(filepath.Join(directory, name))
 	})
+}
+
+func RegisterGraph(directory string) (*GraphHost, error) {
+	assets, err := validateGraphDirAssets(directory)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +209,7 @@ func RegisterGraphFS(assetsFS fs.FS) (*GraphHost, error) {
 	return registerGraphHostFromAssets(assets), nil
 }
 
-func loadEmbeddedGraphHost() (*GraphHost, error) {
+func loadEmbeddedGraphAssets() (map[string][]byte, error) {
 	embeddedGraphOnce.Do(func() {
 		sub, err := fs.Sub(memlane.RuntimeAssets, "web/official-graph/dist")
 		if err != nil {
@@ -197,10 +220,15 @@ func loadEmbeddedGraphHost() (*GraphHost, error) {
 			return fs.ReadFile(sub, name)
 		})
 	})
-	if embeddedGraphErr != nil {
-		return nil, embeddedGraphErr
+	return embeddedGraphAssets, embeddedGraphErr
+}
+
+func loadEmbeddedGraphHost() (*GraphHost, error) {
+	assets, err := loadEmbeddedGraphAssets()
+	if err != nil {
+		return nil, err
 	}
-	return registerGraphHostFromAssets(embeddedGraphAssets), nil
+	return registerGraphHostFromAssets(assets), nil
 }
 func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) error {
 	v, e := win.NewWebView(mygo.WebViewOptions{URL: "about:blank", BackgroundColor: "#0E1526"})
@@ -219,15 +247,19 @@ func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) err
 			e.PreventDefault()
 		}
 	})
-	win.OnClosed(func() {
-		g.closed = true
-		g.pending = nil
-		if g.renderCancel != nil {
-			g.renderCancel()
-		}
-		v.Destroy()
-	})
 	return v.Page().LoadURL("memlanegraph://graph/index.html")
+}
+
+func (g *GraphHost) close() {
+	officialGraphDispatcher.host.CompareAndSwap(g, nil)
+	g.closed = true
+	g.pending = nil
+	if g.renderCancel != nil {
+		g.renderCancel()
+	}
+	if g.view != nil {
+		g.view.Destroy()
+	}
 }
 
 // Ready and Select are invoked on SDK binding workers. Only their immutable
@@ -327,25 +359,155 @@ func (g *GraphHost) applyParsed(p Project, dataset string, data graphData, ticke
 	g.frame = map[string]any{"epoch": g.epoch, "project": p.ID, "instance": "official", "dataset": dataset, "payload": raw}
 	return g.flush(context.Background())
 }
-func (a *App) AttachGraph(win *mygo.Window) error {
-	if a.graph == nil && a.graphError == "" {
-		host, err := loadEmbeddedGraphHost()
-		a.graph = host
-		if err != nil {
-			a.graphError = err.Error()
-		}
+
+// The verifier publishes its immutable result with done. A direct AttachGraph
+// can consume the result without waiting for the queued UI callback.
+type graphAssetCheck struct {
+	done   chan struct{}
+	assets map[string][]byte
+	err    error
+}
+
+func verifyGraphAssets(dir string) (map[string][]byte, error) {
+	if dir != "" {
+		return validateGraphDirAssets(dir)
 	}
-	if a.graph == nil {
+	return loadEmbeddedGraphAssets()
+}
+
+// BindGraphWindow records the native window before Show. WebView creation is
+// deferred until verification succeeds and the UI requests the graph host.
+func (a *App) BindGraphWindow(win *mygo.Window) {
+	if win == nil || a.graphWindow != nil {
+		return
+	}
+	a.graphWindow = win
+	a.graphWindowClosed = win.IsDestroyed()
+	if a.graphWindowClosed {
+		return
+	}
+	win.OnClosed(func() {
+		a.graphWindowClosed = true
+		a.cancelGraphLoad()
+		if a.graph != nil {
+			a.graph.close()
+		}
+	})
+}
+
+func (a *App) EnsureGraphAttached() {
+	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
+		(a.graphWindow == nil && a.graphAttachFn == nil) {
+		return
+	}
+	if a.graphAssetsChecked {
+		_ = a.attachVerifiedGraph()
+		return
+	}
+	if a.graphAssetsCheck != nil || a.Update == nil {
+		return
+	}
+	check := &graphAssetCheck{done: make(chan struct{})}
+	a.graphAssetsCheck = check
+	dir, update := a.graphAssetsDir, a.Update
+	go func() {
+		check.assets, check.err = verifyGraphAssets(dir)
+		close(check.done)
+		update(func() {
+			if !a.graphAssetsChecked {
+				a.applyGraphAssetCheck(check.assets, check.err)
+			}
+			_ = a.attachVerifiedGraph()
+		})
+	}()
+}
+
+func (a *App) PrewarmGraph() {
+	if !a.windowInactive {
+		a.EnsureGraphAttached()
+	}
+}
+
+func (a *App) applyGraphAssetCheck(assets map[string][]byte, err error) {
+	a.graphAssetsCheck = nil
+	a.graphAssets, a.graphAssetsErr, a.graphAssetsChecked = assets, err, true
+	if err != nil {
+		a.graphError = err.Error()
+		a.cancelGraphLoad()
+	}
+}
+
+func (a *App) AttachGraph(win *mygo.Window) error {
+	a.BindGraphWindow(win)
+	if a.graphWindowClosed {
 		return nil
 	}
-	a.graph.onRenderError = func(err error) {
+	if !a.graphAssetsChecked {
+		if check := a.graphAssetsCheck; check != nil {
+			<-check.done
+			a.applyGraphAssetCheck(check.assets, check.err)
+		} else {
+			a.applyGraphAssetCheck(verifyGraphAssets(a.graphAssetsDir))
+		}
+	}
+	return a.attachVerifiedGraph()
+}
+
+func (a *App) attachVerifiedGraph() error {
+	if a.graphAssetsErr != nil {
+		a.graphError = a.graphAssetsErr.Error()
+		return a.graphAssetsErr
+	}
+	if a.graphAttachErr != nil {
+		a.graphError = a.graphAttachErr.Error()
+		return a.graphAttachErr
+	}
+	if a.graphWindowClosed || a.graph != nil || (a.graphWindow == nil && a.graphAttachFn == nil) {
+		return nil
+	}
+	g := registerGraphHostFromAssets(a.graphAssets)
+	g.onRenderError = func(err error) {
 		if a.page == "图谱" {
 			a.graphError = err.Error()
 		}
 	}
-	return a.graph.attach(win, func(raw json.RawMessage) { a.graphSelection = string(raw) })
+	attach := a.graphAttachFn
+	if attach == nil {
+		attach = func(g *GraphHost) error {
+			return g.attach(a.graphWindow, func(raw json.RawMessage) { a.graphSelection = string(raw) })
+		}
+	}
+	if err := attach(g); err != nil {
+		g.close()
+		a.graphAttachErr = err
+		a.graphError = err.Error()
+		a.cancelGraphLoad()
+		return err
+	}
+	a.graph = g
+	if pending := a.pendingGraphLoad; pending != nil {
+		a.pendingGraphLoad = nil
+		a.graphLoading = false
+		if pending.epoch == a.epoch && pending.authEpoch == a.authEpoch && a.syncReadingIdentity() {
+			a.applyGraphLoad(*pending, nil)
+		}
+	}
+	return nil
 }
+
+type graphLoad struct {
+	epoch     uint64
+	authEpoch uint64
+	project   Project
+	dataset   string
+	data      graphData
+}
+
 func (a *App) loadGraph() {
+	a.EnsureGraphAttached()
+	if a.graphAssetsErr != nil || a.graphAttachErr != nil || a.graphWindowClosed || a.Update == nil {
+		return
+	}
 	p, ok := a.current()
 	if !ok {
 		a.graphError = "请先关联项目"
@@ -362,49 +524,62 @@ func (a *App) loadGraph() {
 		a.graphError = "尚未配置代码数据组"
 		return
 	}
+	a.cancelGraphLoad()
 	a.graphError = ""
 	a.graphLoading = true
-	var ticket uint64
+	var ticket *uint64
 	if a.graph != nil {
-		ticket = a.graph.epoch
+		epoch := a.graph.epoch
+		ticket = &epoch
 	}
-	epoch := a.epoch
-	client := a.Client
+	epoch, authEpoch, request := a.epoch, a.authEpoch, a.graphLoadRequest
+	client, update := a.Client, a.Update
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		raw, e := client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
+		raw, err := client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
 		var data graphData
-		if e == nil {
-			data, e = decodeGraph(raw)
+		if err == nil {
+			data, err = decodeGraph(raw)
 		}
-		a.Update(func() {
-			if epoch != a.epoch {
+		update(func() {
+			if epoch != a.epoch || authEpoch != a.authEpoch || request != a.graphLoadRequest || !a.syncReadingIdentity() {
 				return
 			}
 			a.graphLoading = false
-			if e != nil {
-				a.graphError = e.Error()
+			if err != nil {
+				a.graphError = err.Error()
+				return
+			}
+			result := graphLoad{epoch: epoch, authEpoch: authEpoch, project: p, dataset: dataset, data: data}
+			if a.graphAssetsCheck != nil {
+				a.pendingGraphLoad = &result
+				a.graphLoading = true
 				return
 			}
 			if a.graph == nil {
 				a.graphError = "官方图组件不可用"
 				return
 			}
-			if err := a.graph.applyParsed(p, dataset, data, &ticket); err != nil {
-				a.graphError = err.Error()
-				return
-			}
-			if a.graphSelection != "" {
-				var selected struct {
-					ID string `json:"id"`
-				}
-				_ = json.Unmarshal([]byte(a.graphSelection), &selected)
-				a.graphSelection = string(a.graph.nodes[selected.ID])
-			}
+			a.applyGraphLoad(result, ticket)
 		})
 	}()
 }
+
+func (a *App) applyGraphLoad(result graphLoad, ticket *uint64) {
+	if err := a.graph.applyParsed(result.project, result.dataset, result.data, ticket); err != nil {
+		a.graphError = err.Error()
+		return
+	}
+	if a.graphSelection != "" {
+		var selected struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal([]byte(a.graphSelection), &selected)
+		a.graphSelection = string(a.graph.nodes[selected.ID])
+	}
+}
+
 func (a *App) graphView(c *ui.Context) {
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		a.graphToolbar(c)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -41,28 +42,34 @@ func (c *searchController) hasSearchOriginFor(p *pane) bool {
 // graphController owns graph rendering host state, graph mode/selection,
 // tool-graph modal state, pending step hints, and code-graph indexing state.
 type graphController struct {
-	graph            *GraphHost
-	graphError       string
-	graphMode        string
-	graphSelection   string
-	graphLoading     bool
-	graphPending     graphPendingState
-	toolGraph        toolGraphUIState
-	codeStatus       string
-	codeBusy         bool
-	codeUnknown      bool
-	codeRemoteActive bool
+	graph              *GraphHost
+	graphWindow        *mygo.Window
+	graphWindowClosed  bool
+	graphAssetsDir     string
+	graphAssets        map[string][]byte
+	graphAssetsCheck   *graphAssetCheck
+	graphAssetsChecked bool
+	graphAssetsErr     error
+	graphAttachErr     error
+	graphAttachFn      func(*GraphHost) error
+	pendingGraphLoad   *graphLoad
+	graphLoadRequest   uint64
+	graphError         string
+	graphMode          string
+	graphSelection     string
+	graphLoading       bool
+	graphPending       graphPendingState
+	toolGraph          toolGraphUIState
+	codeStatus         string
+	codeBusy           bool
+	codeUnknown        bool
+	codeRemoteActive   bool
 }
 
 func (c *graphController) initGraph(assets string) {
 	c.graphMode = "实体关系"
-	if assets != "" {
-		host, err := RegisterGraph(assets)
-		c.graph = host
-		if err != nil {
-			c.graphError = err.Error()
-		}
-	}
+	c.graphAssetsDir = assets
+	ensureGraphProtocolAndBridge()
 }
 
 func (c *graphController) codeIndexBlocked() bool {
@@ -73,6 +80,12 @@ func (c *graphController) resetGraphView(mode string) {
 	c.graphMode = mode
 	c.graph.clear()
 	c.graphSelection, c.graphError = "", ""
+	c.cancelGraphLoad()
+}
+
+func (c *graphController) cancelGraphLoad() {
+	c.graphLoadRequest++
+	c.pendingGraphLoad = nil
 	c.graphLoading = false
 }
 
@@ -151,15 +164,18 @@ func (c *readingController) cancelAndResetPanes() {
 // overviewController owns overview home state, refresh cadence, overview return
 // floors, window activation state, and sidebar project visibility/modal state.
 type overviewController struct {
-	overviewState       overviewViewState
-	overviewRefreshAt   time.Time
-	fromOverview        bool
-	overviewSourceFloor map[*pane]int
-	windowInactive      bool
-	allProjectsOpen     bool
-	allProjectsScroll   ui.ScrollState
-	projectVisibility   projectVisibilityState
-	homeError           string
+	overviewState            overviewViewState
+	overviewFirstUse         overviewFirstUseState
+	overviewFirstScreenReady bool
+	startupDeferred          deferredStartupState
+	overviewRefreshAt        time.Time
+	fromOverview             bool
+	overviewSourceFloor      map[*pane]int
+	windowInactive           bool
+	allProjectsOpen          bool
+	allProjectsScroll        ui.ScrollState
+	projectVisibility        projectVisibilityState
+	homeError                string
 }
 
 func (c *overviewController) cancelOverviewRecall() {

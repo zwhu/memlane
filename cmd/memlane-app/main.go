@@ -166,6 +166,20 @@ func main() {
 			}
 		}
 
+		// Revalidate reading credentials and flush withdrawn UI state before revealing a retained window.
+		showMainWindow := func(action func()) {
+			win.Update(func() {
+				app.SetWindowActive(true)
+				if action != nil {
+					action()
+				}
+			})
+			win.Update(func() {
+				win.Show()
+				win.Focus()
+			})
+		}
+
 		if tray != nil {
 			syncTrayIcon()
 			tray.OnClick(func() {
@@ -173,15 +187,14 @@ func main() {
 				syncTrayIcon()
 				f := ensureFlyout()
 				if f == nil {
-					win.Show()
-					win.Focus()
+					showMainWindow(nil)
 					return
 				}
 				if f.IsVisible() {
 					f.Hide()
 					return
 				}
-				app.RefreshOpenAtLogin()
+				app.RefreshOpenAtLoginAsync()
 				// Re-anchor against the live clicked tray icon bounds (handles
 				// initial layout, icon shifts, and multi-monitor menu bars).
 				f.SetSize(trayFlyoutWidth, trayFlyoutHeight)
@@ -203,21 +216,13 @@ func main() {
 					fn()
 				}
 				syncTrayIcon()
+				if flyout != nil && !flyout.IsDestroyed() && flyout.IsVisible() {
+					flyout.Update(func() {})
+				}
 			})
-			if flyout != nil && !flyout.IsDestroyed() && flyout.IsVisible() {
-				flyout.Update(func() {})
-			}
 		}
-		app.ShowMainWindowFn = func() {
-			win.Update(func() {})
-			win.Show()
-			win.Focus()
-		}
-		app.OpenGlobalSearchFn = func() {
-			win.Update(app.OpenSearch)
-			win.Show()
-			win.Focus()
-		}
+		app.ShowMainWindowFn = func() { showMainWindow(nil) }
+		app.OpenGlobalSearchFn = func() { showMainWindow(app.OpenSearch) }
 		app.HideTrayFlyoutFn = func() {
 			if flyout != nil && !flyout.IsDestroyed() {
 				flyout.Hide()
@@ -256,14 +261,12 @@ func main() {
 		win.OnFocus(func() { win.Update(func() { app.SetWindowActive(true) }) })
 		win.OnBlur(func() { win.Update(func() { app.SetWindowActive(false) }) })
 		win.OnHide(func() { win.Update(func() { app.SetWindowActive(false) }) })
-		if err := app.AttachGraph(win); err != nil {
-			log.Printf("官方图组件不可用：%v", err)
-		}
+		app.BindGraphWindow(win)
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu},
 			{Label: "文件", Submenu: []*mygo.MenuItem{
-				{Label: "搜索记忆", Accelerator: "CmdOrCtrl+K", Click: func(*mygo.MenuItem, *mygo.Window) { win.Update(app.OpenSearch); win.Show(); win.Focus() }},
-				{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) { win.Show(); win.Focus() }},
+				{Label: "搜索记忆", Accelerator: "CmdOrCtrl+K", Click: func(*mygo.MenuItem, *mygo.Window) { app.OpenGlobalSearchFn() }},
+				{Label: "打开 Memlane", Click: func(*mygo.MenuItem, *mygo.Window) { app.ShowMainWindowFn() }},
 				{Label: "关闭窗口", Accelerator: "CmdOrCtrl+W", Click: func(*mygo.MenuItem, *mygo.Window) { win.Close() }},
 			}},
 			{Role: mygo.RoleEditMenu},
@@ -271,13 +274,13 @@ func main() {
 		}))
 		mygo.App.OnActivate(func(visible bool) {
 			if !visible {
-				win.Show()
-				win.Focus()
+				app.ShowMainWindowFn()
 			}
 		})
 
-		app.RefreshOpenAtLogin()
-		if !mygo.App.WasOpenedAtLogin() {
+		if mygo.App.WasOpenedAtLogin() {
+			app.SetWindowActive(false)
+		} else {
 			win.Show()
 		}
 		app.Start()

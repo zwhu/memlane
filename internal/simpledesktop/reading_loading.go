@@ -495,10 +495,11 @@ func (a *App) InvalidateReading(dataset string) {
 	}
 	a.projectUI.InfoOpen = false
 	a.clearUserProfileBody(dataset, "")
+	a.pendingGraphLoad = nil
 	if dataset == "" || a.graph == nil || a.graph.dataset == "" || a.graph.dataset == dataset {
 		a.graph.clear()
 		a.graphSelection = ""
-		a.graphLoading = false
+		a.cancelGraphLoad()
 	}
 	a.titles.Invalidate(dataset)
 	a.detailChunks.Invalidate(dataset)

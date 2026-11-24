@@ -16,6 +16,7 @@ type desktopPreferencesFile struct {
 }
 
 type desktopPreferencesState struct {
+	loginRefreshSeq uint64
 	KeepAliveOnQuit bool
 	OpenAtLogin     bool
 	LoginError      string
@@ -125,6 +126,7 @@ func (a *App) SetKeepAliveOnQuit(keepAlive bool) {
 
 // RefreshOpenAtLogin synchronizes the cached login-item state from the OS hook.
 func (a *App) RefreshOpenAtLogin() {
+	a.desktopPrefs.loginRefreshSeq++
 	if a.ReadOpenAtLoginFn == nil {
 		return
 	}
@@ -132,9 +134,31 @@ func (a *App) RefreshOpenAtLogin() {
 	a.desktopPrefs.LoginSynced = true
 }
 
+func (a *App) RefreshOpenAtLoginAsync() {
+	read, update := a.ReadOpenAtLoginFn, a.Update
+	if read == nil {
+		return
+	}
+	if update == nil {
+		a.RefreshOpenAtLogin()
+		return
+	}
+	a.desktopPrefs.loginRefreshSeq++
+	seq := a.desktopPrefs.loginRefreshSeq
+	go func() {
+		enabled := read()
+		update(func() {
+			if a.desktopPrefs.loginRefreshSeq == seq {
+				a.desktopPrefs.OpenAtLogin = enabled
+				a.desktopPrefs.LoginSynced = true
+			}
+		})
+	}()
+}
+
 // OpenAtLogin reports whether Memlane is registered to start silently at login.
 func (a *App) OpenAtLogin() bool {
-	if !a.desktopPrefs.LoginSynced && a.ReadOpenAtLoginFn != nil {
+	if a.Update == nil && !a.desktopPrefs.LoginSynced && a.ReadOpenAtLoginFn != nil {
 		a.RefreshOpenAtLogin()
 	}
 	return a.desktopPrefs.OpenAtLogin
@@ -145,6 +169,7 @@ func (a *App) OpenAtLogin() bool {
 // back without faking an enabled state and records an honest message in LoginError.
 func (a *App) ToggleOpenAtLogin(enable bool) {
 	prev := a.OpenAtLogin()
+	a.desktopPrefs.loginRefreshSeq++
 	if a.SetOpenAtLoginFn == nil {
 		a.desktopPrefs.OpenAtLogin = prev
 		if enable {

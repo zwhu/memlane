@@ -12,14 +12,29 @@ func (a *App) SetWindowActive(active bool) {
 	if !active {
 		return
 	}
-	a.RefreshProjectDirectory()
+	a.syncReadingIdentity()
+	now := time.Now()
+	if a.access.Next.IsZero() || !now.Before(a.access.Next) {
+		a.RefreshProjectDirectory()
+	}
 	if wasInactive && a.page == "总览" && !a.overviewState.Loading && !a.overviewState.ActivityLoading && !a.searchUI.Open {
 		// Avoid starting a second enumeration on rapid blur/focus cycles.
 		if a.overviewRefreshAt.IsZero() || time.Since(a.overviewRefreshAt.Add(-overviewRefreshInterval)) >= 3*time.Second {
 			a.loadOverview()
 		}
 	}
+	if wasInactive && a.startupDeferred.done {
+		a.PrewarmGraph()
+		a.refreshServiceMonitorIfDue(now)
+	}
 }
+
+func (a *App) coldStartOverviewPending() bool {
+	v := &a.overviewState
+	return !a.overviewFirstScreenReady && a.page == "总览" && !v.Loaded &&
+		(v.Loading || (a.startupDeferred.armed && !a.startupDeferred.done))
+}
+
 func (a *App) refreshOverviewIfDue(now time.Time) bool {
 	if a.page != "总览" || a.windowInactive || a.searchUI.Open || a.Update == nil {
 		return false

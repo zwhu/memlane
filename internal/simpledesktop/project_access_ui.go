@@ -36,7 +36,7 @@ func (a *App) accessClient() (ProjectControlClient, bool) {
 	if a.Config.ProjectControl == nil || strings.TrimSpace(a.Config.ProjectControl.URL) == "" {
 		return ProjectControlClient{}, false
 	}
-	return ProjectControlClient{Config: *a.Config.ProjectControl}, true
+	return ProjectControlClient{Config: *a.Config.ProjectControl, HTTP: a.Client.HTTP}, true
 }
 
 func (a *App) RefreshProjectDirectory() {
