@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,22 +25,28 @@ func TestLockedVersionsRequiresPinnedUnambiguousVersions(t *testing.T) {
 
 func fakeDependencyPython(t *testing.T, probeScript string) string {
 	t.Helper()
-	return fakePython(t, "if [ \"$#\" = 4 ]; then "+pythonVersionScript()+"; exit 0; fi\n"+probeScript)
+	executable := fakePython(t, "if [ \"$#\" = 4 ]; then "+pythonVersionScript()+"; exit 0; fi\n"+probeScript)
+	// Warm up the newly-written temp script once outside shortened probe timeouts
+	// so macOS cold script-exec latency does not trip ProbePython under parallel load.
+	if out, err := exec.Command(executable, "-I", "-B", "-c", "warmup").CombinedOutput(); err != nil {
+		t.Fatalf("warm up fake python: %v (%s)", err, string(out))
+	}
+	return executable
 }
 
 func TestDependencyProbeTimeoutModes(t *testing.T) {
-	// This test has to complete the initial version subprocess even on a cold host.
+	// This test has to complete the initial version subprocess even on a loaded host.
+	python := fakeDependencyPython(t, "sleep 15")
 	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	routineProbeTimeout, postInstallProbeTimeout = 1500*time.Millisecond, 2*time.Second
+	routineProbeTimeout, postInstallProbeTimeout = 3*time.Second, 4*time.Second
 	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
-	python := fakeDependencyPython(t, "sleep 10")
 	ctx := context.Background()
 	for _, tc := range []struct {
 		ctx    context.Context
 		reason string
 	}{
-		{ctx, "运行库探测超时（1.5 秒）"},
-		{withPostInstallProbe(ctx), "运行库探测超时（2 秒）"},
+		{ctx, "运行库探测超时（3 秒）"},
+		{withPostInstallProbe(ctx), "运行库探测超时（4 秒）"},
 	} {
 		o, err := ProbeDependencies(tc.ctx, python, []byte("locked==1"))
 		if err != nil || o.Status != Incompatible || !o.transientTimeout || o.Reason != tc.reason {

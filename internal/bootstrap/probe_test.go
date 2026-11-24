@@ -165,13 +165,14 @@ func TestPythonProbeDeterministicResults(t *testing.T) {
 }
 
 func TestIsolatedPythonPreservesDeterministicExitAndReapsDescendant(t *testing.T) {
-	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	routineProbeTimeout, postInstallProbeTimeout = 1500*time.Millisecond, 1500*time.Millisecond
-	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	// Parent exits deterministically with 42 while a grandchild keeps stdout open.
-	script := "sleep 10 &\necho $! > '" + pidFile + "'\nexit 42"
+	script := "sleep 15 &\necho $! > '" + pidFile + "'\nexit 42"
 	python := fakeDependencyPython(t, script)
+	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
+	// Keep timeout below isolatedPython's 2s WaitDelay so probeCtx expires while draining pipes.
+	routineProbeTimeout, postInstallProbeTimeout = 1800*time.Millisecond, 1800*time.Millisecond
+	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
 
 	o, err := ProbeDependencies(withPostInstallProbe(context.Background()), python, []byte("locked==1"))
 	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=42") {
@@ -197,13 +198,14 @@ func TestIsolatedPythonPreservesDeterministicExitAndReapsDescendant(t *testing.T
 }
 
 func TestIsolatedPythonPreservesCrashSignalWhenDescendantHoldsPipeUntilTimeout(t *testing.T) {
-	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	routineProbeTimeout, postInstallProbeTimeout = 1500*time.Millisecond, 1500*time.Millisecond
-	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	// Parent terminates with SIGABRT while a grandchild keeps stdout open past the probe timeout.
-	script := "sleep 10 &\necho $! > '" + pidFile + "'\nkill -ABRT $$"
+	script := "sleep 15 &\necho $! > '" + pidFile + "'\nkill -ABRT $$"
 	python := fakeDependencyPython(t, script)
+	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
+	// Keep timeout below isolatedPython's 2s WaitDelay so probeCtx expires while draining pipes.
+	routineProbeTimeout, postInstallProbeTimeout = 1800*time.Millisecond, 1800*time.Millisecond
+	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
 
 	o, err := ProbeDependencies(withPostInstallProbe(context.Background()), python, []byte("locked==1"))
 	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=-1") {
