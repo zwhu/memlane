@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -292,6 +293,62 @@ func TestInProgressNoticesRenderInProgressBucketLightAndDark(t *testing.T) {
 			queueAfter, _ := tt.Find("消息与采集状态")
 			if queueAfter.Y >= infoAfter.Y {
 				t.Fatalf("[%s] expected 消息与采集状态 to remain above 项目信息 after alerts clear; queue=%+v info=%+v", appearance, queueAfter, infoAfter)
+			}
+		})
+	}
+}
+
+func TestProjectQueueAcknowledgementReadCannotOverwriteNewerDecision(t *testing.T) {
+	for _, tc := range []string{"local acknowledgement", "recovered acknowledgement", "project menu write", "failed local mutation"} {
+		t.Run(tc, func(t *testing.T) {
+			a, q, p := acknowledgementFixture(t)
+			a.Config.ProjectControl = nil
+			a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusServiceUnavailable)
+			})}
+			updates := make(chan func(), 4)
+			a.Update = func(fn func()) { updates <- fn }
+			n := messageNotice{Key: "processing-failed"}
+			path, err := a.noticeAcknowledgementPath(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc == "recovered acknowledgement" {
+				a.acknowledgeNotice(q, p, n, false)
+			}
+			a.loadProjectQueue(q, p)
+			var complete func()
+			select {
+			case complete = <-updates:
+			case <-time.After(2 * time.Second):
+				t.Fatal("queue did not finish reading")
+			}
+			wantAck, wantError := true, false
+			switch tc {
+			case "local acknowledgement":
+				a.acknowledgeNotice(q, p, n, false)
+			case "recovered acknowledgement":
+				a.clearRecoveredNoticeAcknowledgements(q, p, []string{n.Key})
+				wantAck = false
+			case "project menu write":
+				// The menu writes via the shared path writer without changing the queue epoch.
+				rows, message, err := updateNoticeAcknowledgementsAtPath(path, func(rows map[string]noticeAcknowledgement) {
+					rows[noticeHash(n.Key)] = noticeAcknowledgement{Fingerprint: q.noticeFingerprint(n.Key), At: time.Now()}
+				})
+				if err != nil || message != "" {
+					t.Fatalf("menu write: %s %v", message, err)
+				}
+				q.NoticeAcknowledgements = rows
+			case "failed local mutation":
+				if err := os.Mkdir(path, 0700); err != nil {
+					t.Fatal(err)
+				}
+				a.acknowledgeNotice(q, p, n, false)
+				wantAck, wantError = false, true
+			}
+			complete()
+			if q.Loading || q.noticeAcknowledged(n.Key) != wantAck || (q.NoticeAcknowledgementError != "") != wantError {
+				t.Fatalf("queue callback replaced a newer decision: acks=%v error=%q loaded=%t", q.NoticeAcknowledgements, q.NoticeAcknowledgementError, q.Loaded)
 			}
 		})
 	}

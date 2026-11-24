@@ -65,6 +65,7 @@ func main() {
 		quitCoord := newQuitCoordinator(
 			app.KeepAliveOnQuit,
 			func(ctx context.Context) error {
+				app.StopTrayBackgroundPolling()
 				if flushErr := app.FlushPendingState(2 * time.Second); flushErr != nil {
 					log.Printf("退出前保存客户端状态未完成：%v", flushErr)
 				}
@@ -84,11 +85,6 @@ func main() {
 			quitCoord.HandleBeforeQuit(e.PreventDefault)
 		})
 
-		const (
-			trayFlyoutWidth  = 300
-			trayFlyoutHeight = 480
-		)
-
 		initialIcon, initialTemplate, initialTip := app.TrayIconState()
 		tray, trayErr := mygo.NewTray(mygo.TrayOptions{
 			ID:             "memlane-tray",
@@ -100,6 +96,7 @@ func main() {
 			log.Printf("菜单栏状态图标不可用：%v", trayErr)
 		}
 		mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
+			app.StopTrayBackgroundPolling()
 			if flushErr := app.FlushPendingState(2 * time.Second); flushErr != nil {
 				log.Printf("退出前保存客户端状态未完成：%v", flushErr)
 			}
@@ -109,6 +106,7 @@ func main() {
 		})
 
 		var flyout *mygo.Window
+		var flyoutHeight int
 		var lastIcon []byte
 		var lastTemplate bool
 		var lastTip string
@@ -125,12 +123,13 @@ func main() {
 			if flyout != nil && !flyout.IsDestroyed() {
 				return flyout
 			}
+			flyoutHeight = app.TrayFlyoutHeight()
 			f := mygo.NewFlyout(mygo.FlyoutOptions{
 				Tray:         tray,
 				Placement:    mygo.PlacementBottom,
 				Gap:          4,
-				Width:        trayFlyoutWidth,
-				Height:       trayFlyoutHeight,
+				Width:        simpledesktop.TrayFlyoutWidth,
+				Height:       flyoutHeight,
 				Focusable:    true,
 				Shadow:       true,
 				CornerRadius: 10,
@@ -195,9 +194,11 @@ func main() {
 					return
 				}
 				app.RefreshOpenAtLoginAsync()
+				app.RefreshForTrayClick()
 				// Re-anchor against the live clicked tray icon bounds (handles
 				// initial layout, icon shifts, and multi-monitor menu bars).
-				f.SetSize(trayFlyoutWidth, trayFlyoutHeight)
+				flyoutHeight = app.TrayFlyoutHeight()
+				f.SetSize(simpledesktop.TrayFlyoutWidth, flyoutHeight)
 				f.Update(func() {})
 				f.Show()
 			})
@@ -217,6 +218,10 @@ func main() {
 				}
 				syncTrayIcon()
 				if flyout != nil && !flyout.IsDestroyed() && flyout.IsVisible() {
+					if h := app.TrayFlyoutHeight(); h != flyoutHeight {
+						flyoutHeight = h
+						flyout.SetSize(simpledesktop.TrayFlyoutWidth, h)
+					}
 					flyout.Update(func() {})
 				}
 			})
@@ -273,17 +278,20 @@ func main() {
 			{Role: mygo.RoleWindowMenu},
 		}))
 		mygo.App.OnActivate(func(visible bool) {
-			if !visible {
+			if !visible || !win.IsVisible() {
 				app.ShowMainWindowFn()
 			}
 		})
 
-		if mygo.App.WasOpenedAtLogin() {
+		if shouldStartHiddenAtLogin(mygo.App.WasOpenedAtLogin(), wasOpenedAtLoginAtReady()) {
 			app.SetWindowHidden(true)
 		} else {
 			win.Show()
 		}
 		app.Start()
+		if tray != nil {
+			app.StartTrayBackgroundPolling()
+		}
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

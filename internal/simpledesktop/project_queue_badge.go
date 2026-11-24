@@ -22,7 +22,14 @@ type trayProjectProgress struct {
 // Reuse the settings queue reader with bounded concurrent projects. Enumeration
 // only reads status; it never saves materials or starts knowledge processing.
 func (a *App) refreshSidebarQueueIfDue(now time.Time) {
-	if a.Update == nil || !a.access.Loaded || a.access.Busy || a.windowInactive || a.windowHidden || a.coldStartOverviewPending() {
+	if a.windowInactive || a.windowHidden || a.coldStartOverviewPending() {
+		return
+	}
+	a.refreshSidebarQueueForTray(now)
+}
+
+func (a *App) refreshSidebarQueueForTray(now time.Time) {
+	if a.Update == nil || !a.access.Loaded || a.access.Busy {
 		return
 	}
 	projects := a.access.Directory.Projects

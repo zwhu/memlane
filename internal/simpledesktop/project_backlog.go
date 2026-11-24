@@ -333,6 +333,8 @@ func backlogReason(code string) string {
 	switch code {
 	case "capture_filter_changed":
 		return "部分工具记录不符合当前采集规则，原消息保留；系统会重新核对并继续采集其他符合规则的消息。"
+	case "rate_limited":
+		return "触发服务端请求频率限制，原消息已保留在本机。请稍后重试，系统会按原编号核对，避免重复采集。"
 	case "sender_busy":
 		return "正在等待当前发送结束，随后自动继续"
 	case "write_denied", "policy_unconfirmed", "backlog_write_denied":

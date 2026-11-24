@@ -162,7 +162,42 @@ func (a *App) openSettingsFromTray(section string) {
 	a.navigate("设置", 0)
 }
 
-// TrayFlyoutView renders the 300px custom V4 menu bar flyout.
+const (
+	TrayFlyoutWidth     = 300
+	TrayFlyoutMinHeight = 240
+	TrayFlyoutMaxHeight = 480
+
+	trayAlertRowHeight = 28
+	trayAlertGap       = 4
+)
+
+// TrayFlyoutHeight fits the flyout sections at the menu bar width.
+// The scroll body absorbs any overflow while the header and footer stay pinned.
+func (a *App) TrayFlyoutHeight() int {
+	const header, components, settings, footer, borderAndBuffer = 45, 113, 173, 45, 8
+	summary := a.trayCachedSummary()
+	alerts := 41
+	if count := len(summary.Alerts); count > 0 {
+		alerts = 34 + count*(trayAlertRowHeight+trayAlertGap)
+	}
+	if count := len(summary.Progress); count > 0 {
+		alerts += 21 + count*(trayAlertRowHeight+trayAlertGap)
+	}
+	height := header + components + alerts + settings + footer + borderAndBuffer
+	if a.KeepAliveOnQuit() {
+		height += 30
+	}
+	if message := a.desktopPrefs.LoginError; message != "" {
+		height += 6
+		for _, line := range strings.Split(message, "\n") {
+			// Estimate wrapped caption lines using full-width glyphs.
+			height += 16 * max(1, (len([]rune(line))+23)/24)
+		}
+	}
+	return max(TrayFlyoutMinHeight, min(TrayFlyoutMaxHeight, height))
+}
+
+// TrayFlyoutView renders the custom V4 menu bar flyout.
 func (a *App) TrayFlyoutView(c *ui.Context) {
 	applyAppearance(a.effectiveDark(c.Theme().Dark))
 	ui.Themed(c, homeTheme).Fill().FontWeight(400).Background(tok.BgElevated).Children(func() {
@@ -268,7 +303,7 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 	summary := a.trayCachedSummary()
 	alerts := summary.Alerts
 	progress := summary.Progress
-	ui.Column(c.Key("tray-alerts")).FillWidth().Padding(sp2, sp3).Gap(4).
+	ui.Column(c.Key("tray-alerts")).FillWidth().Padding(sp2, sp3).Gap(trayAlertGap).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		if len(alerts) == 0 {
 			ui.Row(c).FillWidth().MinHeight(24).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -288,7 +323,7 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 				}
 				row := ui.ButtonBase(c.Key("tray-alert-"+al.ProjectID)).Role(ui.RoleButton).
 					Label(fmt.Sprintf("打开项目提醒：%s", al.ProjectName)).
-					Cursor(ui.CursorPointer).FillWidth().MinHeight(28).Padding(4, 6).Gap(6).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 6).Gap(6).
 					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
 				row.Background(homeHoverColor(row, "tray-alert-bg", ui.Transparent, tok.Hover))
 				v4ButtonPress(row, 0.99)
@@ -318,7 +353,7 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 				prog := item
 				row := ui.ButtonBase(c.Key("tray-progress-"+prog.ProjectID)).Role(ui.RoleButton).
 					Label(fmt.Sprintf("查看项目进度：%s", prog.ProjectName)).
-					Cursor(ui.CursorPointer).FillWidth().MinHeight(28).Padding(4, 6).Gap(6).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 6).Gap(6).
 					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
 				row.Background(homeHoverColor(row, "tray-progress-bg", ui.Transparent, tok.Hover))
 				v4ButtonPress(row, 0.99)

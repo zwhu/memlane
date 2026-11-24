@@ -433,3 +433,34 @@ func TestServiceConnectionCardsAttributeGenerationLatencyLightAndDark(t *testing
 		})
 	}
 }
+
+func TestSidebarServicePopoverUsesMonitorDiskAndChannelStatus(t *testing.T) {
+	const gib = 1024 * 1024 * 1024
+	a := settingsFixture()
+	a.Config.CompletionURL = "http://127.0.0.1:61256"
+	a.monitor.PopoverOpen = true
+	a.monitor.Snapshot = &ServiceMonitorSnapshot{Disk: &DiskMonitorState{FreeBytes: 4 * gib}}
+	a.monitor.HasCompletionLatency = true
+	a.monitor.CompletionLatencyMs = 27
+	for _, tc := range []struct {
+		stop                                   int64
+		low                                    bool
+		completion, diskText, channelText, dot string
+	}{
+		{5 * gib, false, "端点已连接（自定义状态）", "可用空间正常（预警线 5 GiB）", "已连接 · 27 ms", "ok"},
+		{5 * gib, true, "请求超时", "低于 5 GiB 预警线", "待检查", "warn"},
+		{0, false, "请求超时", "可用空间正常（预警线 55 GiB）", "待检查", "warn"},
+		{0, true, "请求超时", "低于 55 GiB 预警线", "待检查", "warn"},
+		{gib + gib/2, true, "请求超时", "低于 1.5 GiB 预警线", "待检查", "warn"},
+	} {
+		a.monitor.Snapshot.Disk.StopFreeBytes, a.monitor.Snapshot.Disk.Low = tc.stop, tc.low
+		a.completion = tc.completion
+		tt := ui.NewTester(a.View, 1200, 820)
+		if !tt.HasText(tc.diskText) || !tt.HasText(tc.channelText) {
+			t.Fatalf("missing %q or %q in %v", tc.diskText, tc.channelText, tt.Texts())
+		}
+		if dot, _, color := a.trayChannelStatus(); dot != tc.dot || (dot == "warn" && color != tok.Warning) {
+			t.Fatalf("unexpected shared channel status: %s %v", dot, color)
+		}
+	}
+}

@@ -63,7 +63,7 @@ func (n messageNotice) isProgressNotice() bool {
 		return false
 	}
 	switch n.Tag {
-	case "待采集", "处理中", "等待接续", "已保留", "操作记录", "已暂停", "等待重试", "自动重试", "正在核对", "正在检查":
+	case "待采集", "处理中", "等待接续", "已保留", "操作记录", "缓存快照", "已暂停", "等待重试", "自动重试", "正在核对", "正在检查":
 		return true
 	default:
 		return false
@@ -141,9 +141,19 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		})
 	}
 	now := time.Now()
+	automaticBackoff := q.Backlog != nil && q.Backlog.Automatic && q.Backlog.Status == "paused" &&
+		(q.Backlog.Reason == "rate_limited" || q.Backlog.Reason == "capture_retry_pending")
 	for _, failure := range q.ProcessingNotices {
 		if !failure.resolved() {
-			add(processingMessageNotice(failure, now))
+			n := processingMessageNotice(failure, now)
+			if q.ProcessingReadError != "" {
+				n.Tag = "缓存快照"
+				n.Title += "（缓存快照）"
+				n.Detail = "上次读取时的提炼调用记录。"
+				n.Followup = "读取恢复后才能确认当前处理状态。"
+				n.Action = "details"
+			}
+			add(n)
 		}
 	}
 	for index, row := range q.Sessions {
@@ -225,6 +235,8 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Tag, n.Followup = "状态未确认", "当前项目权限同步尚未确认，自动重试已暂缓；核对生效后将按原编号继续重试。"
 			} else if (s.Blocked != nil && s.Blocked.Reason == "capture_request_rejected") || (q.Backlog != nil && q.Backlog.Reason == "capture_request_rejected") {
 				n.Tag, n.Followup = "采集异常", "服务拒绝了这次采集请求，原消息保留；系统已停止重试。"
+			} else if automaticBackoff {
+				n.Tag, n.Followup = "等待重试", "退避结束后，后台将按原编号核对并重试，避免重复采集。"
 			} else if q.Backlog != nil && (q.Backlog.Status == "paused" || q.Backlog.Status == "stopped" || q.Backlog.Status == "interrupted" || q.Backlog.Status == "stopping") {
 				n.Tag, n.Followup = "等待恢复", "采集任务已暂停；恢复后才会按原编号核对并重试。"
 			} else if q.BacklogError != "" {
@@ -279,6 +291,17 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Detail = "系统尚未确认权限是否已生效，后台采集暂缓。"
 				n.Followup = "这是权限状态核对问题，不表示你需要重新授权。"
 				n.Action = "refresh"
+			case "rate_limited":
+				n.Title, n.Tag = "消息采集触发限流，等待重试", "等待重试"
+				n.Detail = "服务端限制了请求频率，原消息已保留在本机。"
+				n.Followup = "退避结束后，系统将按原编号自动核对并重试，避免重复采集。"
+				if !j.Automatic {
+					n.Title, n.Tag = "消息采集因限流已暂停", "等待恢复"
+					n.Followup = "请稍候再恢复采集，系统会按原编号核对并重试，避免重复采集。"
+					if queueRecoverableCount(q) > 0 {
+						n.NeedsUser, n.Action = true, "resume"
+					}
+				}
 			case "capture_retry_pending":
 				n.Title, n.Tag = "消息采集等待重试", "自动重试"
 				n.Detail, n.Followup = "尚未收到采集结果，系统将按原编号自动核对并重试。", "原消息保留在本机，不会重复采集。"

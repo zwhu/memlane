@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"bytes"
+	"fmt"
 	"image/png"
 	"path/filepath"
 	"testing"
@@ -369,4 +370,67 @@ func TestTrayFlyoutControlAndChannelLatencies(t *testing.T) {
 	if tt.HasText("41494") {
 		t.Fatalf("tray flyout must not leak RecentProcessingMs onto gateway row: %v", tt.Texts())
 	}
+}
+
+func TestTrayFlyoutHeightFitsContentAndCapsScrollableBody(t *testing.T) {
+	check := func(t *testing.T, a *App, capped bool) int {
+		t.Helper()
+		height := a.TrayFlyoutHeight()
+		if height < TrayFlyoutMinHeight || height > TrayFlyoutMaxHeight || (height == TrayFlyoutMaxHeight) != capped {
+			t.Fatalf("height=%d, capped=%t", height, capped)
+		}
+		quit := "退出并停止服务"
+		if a.KeepAliveOnQuit() {
+			quit = "彻底停止并退出"
+		}
+		// Exercise actual layout in both appearances, including the pinned footer.
+		for _, dark := range []bool{false, true} {
+			tt := ui.NewTester(a.TrayFlyoutView, TrayFlyoutWidth, 1000)
+			tt.SetDark(dark)
+			fullFooter, _ := tt.Find(quit)
+			fullLast, _ := tt.Find("服务与组件详情")
+			tt.SetSize(TrayFlyoutWidth, height)
+			footer, ok := tt.Find(quit)
+			if !ok || footer.H <= 0 || footer.H != fullFooter.H || footer.Y+footer.H > float32(height) {
+				t.Fatalf("footer clipped at %d DIP (dark=%t): %+v", height, dark, footer)
+			}
+			if capped {
+				tt.Scroll(150, 150, 0, 2000)
+			}
+			last, ok := tt.Find("服务与组件详情")
+			if !ok || last.H <= 0 || last.H != fullLast.H || last.Y+last.H > footer.Y || last.Y < 44 {
+				t.Fatalf("last setting outside scroll body at %d DIP (dark=%t): last=%+v footer=%+v", height, dark, last, footer)
+			}
+			if fixed, _ := tt.Find(quit); fixed != footer {
+				t.Fatalf("footer moved when scrolling: before=%+v after=%+v", footer, fixed)
+			}
+		}
+		return height
+	}
+
+	a := settingsFixture()
+	a.desktopPrefs.Loaded, a.desktopPrefs.KeepAliveOnQuit = true, false
+	stoppingHeight := check(t, a, false)
+	a.desktopPrefs.KeepAliveOnQuit = true
+	if keepingHeight := check(t, a, false); keepingHeight <= stoppingHeight || keepingHeight >= TrayFlyoutMaxHeight {
+		t.Fatalf("second quit button did not grow the flyout: %d to %d", stoppingHeight, keepingHeight)
+	}
+	a.desktopPrefs.KeepAliveOnQuit = false
+	a.desktopPrefs.LoginError = "当前运行模式不支持系统登录项（仅 macOS .app 安装包支持），已保持关闭。"
+	if height := check(t, a, false); height <= stoppingHeight {
+		t.Fatal("login error did not reserve extra height")
+	}
+	a.desktopPrefs.LoginError = ""
+
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+	q.PendingDocumentsCount = 1
+	q.ProcessingReadError = "提炼状态读取失败"
+	check(t, a, true)
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("alert-%d", i)
+		a.access.Directory.Projects = append(a.access.Directory.Projects, AccessProject{ID: id, Name: id, Status: "unconfirmed"})
+	}
+	check(t, a, true)
 }

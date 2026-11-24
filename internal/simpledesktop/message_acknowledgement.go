@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-var noticeAckMu sync.Mutex
+var (
+	noticeAckMu       sync.Mutex
+	noticeAckWriteSeq = map[string]uint64{}
+)
 
 // Only presentation decisions are stored. Acknowledgement never changes a
 // message, permission, task or save outcome, and never adopts old archives.
@@ -84,18 +87,34 @@ func updateNoticeAcknowledgementsAtPath(path string, mutate func(map[string]noti
 	if err != nil {
 		return nil, "", err
 	}
+	noticeAckWriteSeq[path]++
 	return rows, "", nil
 }
 
 func (a *App) readNoticeAcknowledgements(p AccessProject) (map[string]noticeAcknowledgement, string) {
-	rows := map[string]noticeAcknowledgement{}
-	path, err := a.noticeAcknowledgementPath(p)
-	if err != nil { // Fixtures without a configured state path have no decisions.
-		return rows, ""
+	path, _ := a.noticeAcknowledgementPath(p)
+	rows, message, _ := readNoticeAcknowledgementsWithSeq(path)
+	return rows, message
+}
+
+func readNoticeAcknowledgementsWithSeq(path string) (map[string]noticeAcknowledgement, string, uint64) {
+	if path == "" { // Fixtures without a configured state path have no decisions.
+		return map[string]noticeAcknowledgement{}, "", 0
 	}
 	noticeAckMu.Lock()
 	defer noticeAckMu.Unlock()
-	return readNoticeAcknowledgementsAtPathLocked(path)
+	rows, message := readNoticeAcknowledgementsAtPathLocked(path)
+	return rows, message, noticeAckWriteSeq[path]
+}
+
+// The epoch preserves newer in-memory decisions and errors. The path sequence
+// also covers successful writes made by the project notification menu.
+func (q *projectQueueState) applyNoticeAcknowledgementRead(path string, epoch, seq uint64, rows map[string]noticeAcknowledgement, message string) {
+	noticeAckMu.Lock()
+	defer noticeAckMu.Unlock()
+	if q.noticeAckEpoch == epoch && noticeAckWriteSeq[path] == seq {
+		q.NoticeAcknowledgements, q.NoticeAcknowledgementError = rows, message
+	}
 }
 
 // Stable issue identity excludes polling times, task progress and display copy.
@@ -164,6 +183,7 @@ func (q *projectQueueState) noticeAcknowledged(key string) bool {
 }
 
 func (a *App) acknowledgeNotice(q *projectQueueState, p AccessProject, n messageNotice, restore bool) {
+	q.noticeAckEpoch++
 	path, err := a.noticeAcknowledgementPath(p)
 	if err != nil {
 		q.NoticeAcknowledgementError = "提醒处理未保存，原提醒仍保留"
@@ -203,6 +223,7 @@ func (a *App) clearRecoveredNoticeAcknowledgements(q *projectQueueState, p Acces
 	if !changed {
 		return
 	}
+	q.noticeAckEpoch++
 	path, err := a.noticeAcknowledgementPath(p)
 	if err != nil {
 		q.NoticeAcknowledgementError = "提醒处理记录未更新，原提醒仍保留"
@@ -250,48 +271,14 @@ func writeNoticeAcknowledgements(path string, b []byte) error {
 	return err
 }
 
-func (q *projectQueueState) unacknowledgedNotificationKeys(now time.Time) (map[string]bool, bool) {
+func (a *App) unacknowledgedNotificationKeys(q *projectQueueState, p AccessProject) (map[string]bool, bool) {
+	needs, info := a.messageNotices(q, p)
+	anomalies, _ := partitionInfoNotices(info)
 	alertKeys := map[string]bool{}
-	ackErr := q.NoticeAcknowledgementError != ""
-	for index, row := range q.Sessions {
-		if row.View == nil {
-			continue
-		}
-		key := noticeSessionKey(row, index)
-		s := row.View.Status
-		if q.heldPending(row).Rejected > 0 && !q.noticeAcknowledged(key+"/rejected") {
-			alertKeys[key+"/rejected"] = true
-		}
-		if s.Unknown-s.RetryableUnknown-q.heldPending(row).RejectedUnknown > 0 && !q.noticeAcknowledged(key+"/unknown") {
-			alertKeys[key+"/unknown"] = true
-		}
-		if s.RetryableUnknown > 0 && !q.noticeAcknowledged(key+"/retry") {
-			alertKeys[key+"/retry"] = true
-		}
-		if s.Pending > s.Unknown && s.Blocked != nil && !q.noticeAcknowledged(key+"/pending") {
-			alertKeys[key+"/pending"] = true
+	for _, n := range append(needs, anomalies...) {
+		if !q.noticeAcknowledged(n.Key) {
+			alertKeys[n.Key] = true
 		}
 	}
-	if j := q.Backlog; j != nil {
-		if j.ProcessingFailed > 0 && !q.noticeAcknowledged("processing-failed") {
-			alertKeys["processing-failed"] = true
-		}
-		if (j.Status == "paused" || j.Status == "interrupted" || j.Status == "stopped") && j.Reason != "user_stopped" && !q.noticeAcknowledged("backlog") {
-			alertKeys["backlog"] = true
-		}
-	}
-	keys := map[string]string{"knowledge-state": "knowledge", "backlog-read": "backlog-read", "activity-read": "activity", "documents": "documents"}
-	for key, f := range q.NotificationFailures {
-		if f.Count < 3 || now.Before(f.Last) || f.Last.Sub(f.Since) < 2*time.Minute {
-			continue
-		}
-		noticeKey := keys[key]
-		if strings.HasPrefix(key, "read/") {
-			noticeKey = strings.TrimPrefix(key, "read/") + "/read"
-		}
-		if noticeKey == "" || !q.noticeAcknowledged(noticeKey) {
-			alertKeys[noticeKey] = true
-		}
-	}
-	return alertKeys, ackErr
+	return alertKeys, q.NoticeAcknowledgementError != ""
 }

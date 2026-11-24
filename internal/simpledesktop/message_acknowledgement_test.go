@@ -185,7 +185,85 @@ func TestMessageActionsRemainVisibleAndAcknowledgementShowsReceipt(t *testing.T)
 	}
 }
 
-func (q *projectQueueState) unacknowledgedNotification(now time.Time) bool {
-	keys, ackErr := q.unacknowledgedNotificationKeys(now)
+func (q *projectQueueState) unacknowledgedNotification(_ time.Time) bool {
+	keys, ackErr := (&App{}).unacknowledgedNotificationKeys(q, AccessProject{})
 	return ackErr || len(keys) > 0
+}
+
+func TestAcknowledgementAlertTargetsUseDisplayedAnomalies(t *testing.T) {
+	for _, tc := range []struct {
+		name, key string
+		setup     func(*projectQueueState, *AccessProject)
+	}{
+		{"processing failure", "processing/op1", func(q *projectQueueState, _ *AccessProject) {
+			q.ProcessingNotices = []processingNotice{{Operation: "op1", Status: 500}}
+		}},
+		{"policy sync", "policy-sync", func(_ *projectQueueState, p *AccessProject) {
+			p.Status = "unconfirmed"
+		}},
+		{"review failure", "review-failed", func(q *projectQueueState, _ *AccessProject) {
+			q.Backlog = &backlogJob{ReviewFailed: 1}
+		}},
+		{"processing read", "processing-read", func(q *projectQueueState, _ *AccessProject) {
+			q.ProcessingReadError = "提炼状态读取失败"
+			q.ProcessingNotices = []processingNotice{{Operation: "op1", Status: 500}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := settingsFixture()
+			a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
+			p := &a.access.Directory.Projects[0]
+			q := a.projectQueueStateFor(*p)
+			q.Loaded = true
+			tc.setup(q, p)
+			keys, ackErr := a.unacknowledgedNotificationKeys(q, *p)
+			if len(keys) != 1 || !keys[tc.key] || ackErr {
+				t.Fatalf("unexpected alert keys: %v, error=%t", keys, ackErr)
+			}
+			a.openProjectQueueStatus(0)
+			ui.NewTester(a.View, 1200, 820)
+			if q.LocatedNoticeKey != tc.key {
+				t.Fatalf("tray navigation highlighted %q, want %q", q.LocatedNoticeKey, tc.key)
+			}
+			a.acknowledgeNotice(q, *p, messageNotice{Key: tc.key}, false)
+			keys, ackErr = a.unacknowledgedNotificationKeys(q, *p)
+			if len(keys) > 0 || ackErr {
+				t.Fatalf("acknowledged notice still targets: %v, error=%t", keys, ackErr)
+			}
+		})
+	}
+}
+
+func TestAcknowledgementAlertTargetsIgnoreOrdinaryRetryProgress(t *testing.T) {
+	a := settingsFixture()
+	a.access.Directory.Defaults.Access = "maintain"
+	p := a.access.Directory.Projects[0]
+	p.Overrides = nil
+	q := &projectQueueState{
+		AutomaticSave: true,
+		Sessions: []queuedSession{{
+			Agent: AccessAgent{ID: "agent"}, Binding: ProjectBinding{HostSessionKey: "session"},
+			View: &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1, RetryableUnknown: 1}},
+		}},
+	}
+	check := func(wantTag string) {
+		t.Helper()
+		needs, info := a.messageNotices(q, p)
+		anomalies, progress := partitionInfoNotices(info)
+		if len(progress) != 1 || progress[0].Tag != wantTag {
+			t.Fatalf("expected %s notice, got %+v", wantTag, progress)
+		}
+		if keys, ackErr := a.unacknowledgedNotificationKeys(q, p); len(keys) != 0 || ackErr {
+			t.Fatalf("retry progress alerted: %v, error=%t", keys, ackErr)
+		}
+		if key, ackErr := a.pickProjectQueueAlertTarget(q, p, needs, anomalies); key != "" || ackErr {
+			t.Fatalf("retry progress became a jump target: %q, error=%t", key, ackErr)
+		}
+	}
+	check("等待重试")
+	q.Checks = map[string]pendingCheckState{"agent/session": {Status: "checking"}}
+	check("正在核对")
+	q.Sessions = nil
+	q.Backlog = &backlogJob{Status: "paused", Reason: "capture_retry_pending", Automatic: true}
+	check("自动重试")
 }

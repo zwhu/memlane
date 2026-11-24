@@ -392,20 +392,18 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 				}
 
 				if hasChannel {
-					chDot, chText, chCol := "neutral", "待检查", tok.Text3
-					if a.completion == "端点已连接（登录状态以实际请求为准）" {
-						chDot, chText, chCol = "ok", "已连接", tok.Text2
-					}
+					chDot, chText, chCol := a.trayChannelStatus()
 					popRow(chDot, "Agent 模型代理", chText, sanitizedMonitorURL(a.Config.CompletionURL), chCol, !hasDisk)
 				}
 
 				if hasDisk {
 					diskDot, diskCol := "ok", tok.Text2
 					diskText := formatBytesGiB(m.Snapshot.Disk.FreeBytes)
-					diskMetrics := "可用空间正常（预警线 55 GiB）"
+					threshold := formatDiskThreshold(m.Snapshot.Disk.StopFreeBytes)
+					diskMetrics := fmt.Sprintf("可用空间正常（预警线 %s）", threshold)
 					if m.Snapshot.Disk.Low {
 						diskDot, diskCol = "fail", tok.Danger
-						diskMetrics = "低于 55 GiB 预警线"
+						diskMetrics = fmt.Sprintf("低于 %s 预警线", threshold)
 					}
 					popRow(diskDot, "磁盘空间", diskText, diskMetrics, diskCol, true)
 				}
@@ -431,6 +429,17 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 		})
 	})
 	a.syncServicePopoverHover(a.monitor.popoverBtnHover, panelHovered, false)
+}
+
+func formatDiskThreshold(stopFreeBytes int64) string {
+	const gib = 1024 * 1024 * 1024
+	if stopFreeBytes <= 0 {
+		return "55 GiB"
+	}
+	if stopFreeBytes%gib == 0 {
+		return fmt.Sprintf("%d GiB", stopFreeBytes/gib)
+	}
+	return formatBytesCompact(stopFreeBytes)
 }
 
 func (a *App) serviceConnectionTip() string {

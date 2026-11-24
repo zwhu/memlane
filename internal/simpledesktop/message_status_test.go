@@ -571,3 +571,73 @@ func TestRetryStatesAreProgressAndPolicyUnconfirmedSurfaces(t *testing.T) {
 		t.Fatalf("expected policy-sync notice and 核对权限 action in UI: %v", tt.Texts())
 	}
 }
+
+func TestRateLimitedCaptureNotice(t *testing.T) {
+	a := settingsFixture()
+	p := a.access.Directory.Projects[0]
+	a.access.Directory.Defaults.Access = "maintain"
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+	q.Backlog = &backlogJob{Status: "paused", Reason: "rate_limited", Automatic: true}
+	q.Sessions = []queuedSession{{View: &pendingBufferView{
+		Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1, RetryableUnknown: 1},
+	}}}
+
+	needs, info := a.messageNotices(q, p)
+	if len(needs) != 0 || len(info) != 2 {
+		t.Fatalf("unexpected automatic notices: needs=%+v info=%+v", needs, info)
+	}
+	for _, n := range info {
+		if n.Tag != "等待重试" || !n.isProgressNotice() || !n.isActiveProgressNotice() {
+			t.Fatalf("automatic rate limit is not active retry progress: %+v", n)
+		}
+	}
+	if info[1].Title != "消息采集触发限流，等待重试" || len(a.trayProjectAlerts()) != 0 || a.trayStatusLevel() != "ok" {
+		t.Fatalf("rate limit triggered a tray alert: %+v", info)
+	}
+	q.Backlog.Automatic = false
+	needs, _ = a.messageNotices(q, p)
+	if len(needs) != 1 || needs[0].Title != "消息采集因限流已暂停" || needs[0].Tag != "等待恢复" || needs[0].Action != "resume" {
+		t.Fatalf("manual rate limit did not offer recovery: %+v", needs)
+	}
+	q.Sessions = nil
+	needs, info = a.messageNotices(q, p)
+	if len(needs) != 0 || len(info) != 1 || info[0].Tag != "等待恢复" || info[0].Action != "" {
+		t.Fatalf("manual rate limit offered recovery without recoverable entries: %+v %+v", needs, info)
+	}
+}
+
+func TestProcessingReadErrorRetainsMutedSnapshotAndCountsOnlyReadFailure(t *testing.T) {
+	a := settingsFixture()
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+	q.ProcessingReadError = "提炼状态读取失败"
+	q.ProcessingNotices = []processingNotice{{Operation: "op1", Code: "codex_busy", Status: 503}}
+	needs, info := a.messageNotices(q, p)
+	anomalies, progress := partitionInfoNotices(info)
+	if len(needs) != 0 || len(anomalies) != 1 || anomalies[0].Key != "processing-read" || len(progress) != 1 {
+		t.Fatalf("unexpected read failure projection: %+v %+v", anomalies, progress)
+	}
+	snapshot := progress[0]
+	if snapshot.Tag != "缓存快照" || snapshot.dotTone() != "" || snapshot.badgeTone() != "" ||
+		snapshot.isActiveProgressNotice() || snapshot.Processing == nil || snapshot.Processing.Operation != "op1" {
+		t.Fatalf("cached processing notice lost snapshot or diagnostic state: %+v", snapshot)
+	}
+	if _, count := a.countProjectMessageAlerts(p); count != 1 || a.countProjectActiveProgress(p) != 0 {
+		t.Fatal("cached processing notice inflated sidebar counts")
+	}
+	if alerts := a.trayProjectAlerts(); len(alerts) != 1 || alerts[0].ErrorCount != 1 || len(a.trayProjectProgressItems()) != 0 {
+		t.Fatalf("cached processing notice inflated tray counts: %+v", alerts)
+	}
+	tt := ui.NewTester(func(c *ui.Context) { a.projectQueueSection(c, p) }, 850, 650)
+	if !tt.HasText("上次读取的缓存快照") || tt.HasText("进行中与待提炼") {
+		t.Fatalf("unexpected snapshot heading: %v", tt.Texts())
+	}
+	q.openDetailDialog(snapshot)
+	q.DetailDiagnosticsOpen = true
+	tt.Frame()
+	if q.DetailNoticeKey != "processing/op1" || !q.DetailDiagnosticsOpen || !tt.HasText("codex_busy") {
+		t.Fatalf("cached snapshot did not keep diagnostic detail: %v", tt.Texts())
+	}
+}

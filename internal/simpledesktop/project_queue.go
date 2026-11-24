@@ -50,6 +50,7 @@ type processingIssue struct {
 
 type projectQueueState struct {
 	BufferReviews                  []bufferReview
+	noticeAckEpoch                 uint64
 	NoticeAcknowledgements         map[string]noticeAcknowledgement
 	NoticeAcknowledgementError     string
 	NoticeHistoryOpen              bool
@@ -216,6 +217,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	q.Loading = true
 	q.Request++
 	request, authEpoch := q.Request, a.authEpoch
+	ackEpoch := q.noticeAckEpoch
 	q.Next = time.Now().Add(30 * time.Second)
 	if q.Backlog.active() {
 		q.Next = time.Now().Add(5 * time.Second)
@@ -392,11 +394,13 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		var localArchiveErr string
 		var localKnowledgeRead knowledgeReadState
 		var noticeAcks map[string]noticeAcknowledgement
-		var noticeAckErr string
+		var ackPath, noticeAckErr string
+		var noticeAckSeq uint64
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			noticeAcks, noticeAckErr = a.readNoticeAcknowledgements(p)
+			ackPath, _ = a.noticeAcknowledgementPath(p)
+			noticeAcks, noticeAckErr, noticeAckSeq = readNoticeAcknowledgementsWithSeq(ackPath)
 			if needLocalState {
 				localArchives, localArchiveErr = a.readPendingArchives(p)
 				if path, err := a.knowledgeReadPath(p); err == nil {
@@ -446,7 +450,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 				}
 				q.localStateLoaded = true
 			}
-			q.NoticeAcknowledgements, q.NoticeAcknowledgementError = noticeAcks, noticeAckErr
+			q.applyNoticeAcknowledgementRead(ackPath, ackEpoch, noticeAckSeq, noticeAcks, noticeAckErr)
 			if v2SummaryOK {
 				if summaryBacklogErr != "" {
 					q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"

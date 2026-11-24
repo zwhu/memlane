@@ -48,28 +48,16 @@ func queueRefreshAction(c *ui.Context, label string, fn func()) ui.Element {
 
 var messageAlertIcon = homeSVG(`<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/>`)
 
-func pickProjectQueueAlertTarget(q *projectQueueState, needs, info []messageNotice, now time.Time) (string, bool) {
-	alertKeys, ackErr := q.unacknowledgedNotificationKeys(now)
-	for _, n := range needs {
-		if n.Key != "" && alertKeys[n.Key] {
-			return n.Key, false
+func (a *App) pickProjectQueueAlertTarget(q *projectQueueState, p AccessProject, needs, anomalies []messageNotice) (string, bool) {
+	alertKeys, ackErr := a.unacknowledgedNotificationKeys(q, p)
+	for _, rows := range [][]messageNotice{needs, anomalies} {
+		for _, n := range rows {
+			if alertKeys[n.Key] {
+				return n.Key, false
+			}
 		}
 	}
-	for _, n := range info {
-		if n.Key != "" && alertKeys[n.Key] {
-			return n.Key, false
-		}
-	}
-	if ackErr {
-		return "", true
-	}
-	if len(needs) > 0 {
-		return needs[0].Key, false
-	}
-	if len(info) > 0 {
-		return info[0].Key, false
-	}
-	return "", false
+	return "", ackErr
 }
 
 func (q *projectQueueState) openDetailDialog(n messageNotice) {
@@ -121,6 +109,16 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
 	anomalies, progress := partitionInfoNotices(info)
+	var staleSnapshots []messageNotice
+	activeProgress := progress[:0]
+	for _, n := range progress {
+		if n.Tag == "缓存快照" {
+			staleSnapshots = append(staleSnapshots, n)
+		} else {
+			activeProgress = append(activeProgress, n)
+		}
+	}
+	progress = activeProgress
 	var resolvedProcessing []messageNotice
 	now := time.Now()
 	for _, failure := range q.ProcessingNotices {
@@ -146,7 +144,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	var targetKey string
 	var targetAckErr bool
 	if reveal {
-		targetKey, targetAckErr = pickProjectQueueAlertTarget(q, needs, anomalies, time.Now())
+		targetKey, targetAckErr = a.pickProjectQueueAlertTarget(q, p, needs, anomalies)
 		q.LocatedNoticeKey = targetKey
 	}
 
@@ -239,6 +237,9 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			if hasProgress {
 				a.projectProgressBucket(c, q, p, progress, hasDocs)
 			}
+			if len(staleSnapshots) > 0 {
+				a.messageNoticeBucket(c, q, p, "上次读取的缓存快照", "neutral", staleSnapshots, "", "", false)
+			}
 
 			if len(history) > 0 {
 				v4Row(c, v4RowOptions{
@@ -290,7 +291,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		})
 	})
 
-	detailNotices := append(append([]messageNotice(nil), anomalies...), progress...)
+	detailNotices := append(append(append([]messageNotice(nil), anomalies...), progress...), staleSnapshots...)
 	if activeNotice, ok := q.activeDetailNotice(needs, detailNotices, append(history, resolvedProcessing...)); ok {
 		a.renderMessageNoticeDialog(c, q, p, activeNotice)
 	}

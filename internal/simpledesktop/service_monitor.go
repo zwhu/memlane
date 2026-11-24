@@ -73,6 +73,7 @@ type ServiceMonitorSnapshot struct {
 }
 
 type serviceMonitorState struct {
+	trayPoll             *trayBackgroundPoller
 	State                string
 	ConsecutiveFailures  int
 	LastLatencyMs        float64
@@ -105,6 +106,10 @@ type serviceMonitorState struct {
 }
 
 func (a *App) refreshServiceMonitor() {
+	a.pollServiceMonitor(true)
+}
+
+func (a *App) pollServiceMonitor(allowLogs bool) {
 	if a.Update == nil || a.monitor.Polling {
 		return
 	}
@@ -149,7 +154,7 @@ func (a *App) refreshServiceMonitor() {
 		if hasControl {
 			var fetched ServiceMonitorSnapshot
 			path := "/v1/runtime/monitor"
-			if includeLogs || healthErr != nil {
+			if allowLogs && (includeLogs || healthErr != nil) {
 				path += "?include_logs=1"
 			}
 			ctrlStarted := time.Now()
