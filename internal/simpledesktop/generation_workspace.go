@@ -1,6 +1,10 @@
 package simpledesktop
 
-import "github.com/egoist/mygo/ui"
+import (
+	"time"
+
+	"github.com/egoist/mygo/ui"
+)
 
 type generationEditorDraft struct {
 	Profile                                                              GenerationProfile
@@ -8,6 +12,7 @@ type generationEditorDraft struct {
 	Saved                                                                *GenerationRef
 	SavedSignature, SaveOperation, ValidationOperation                   string
 	CredentialConfigured                                                 bool
+	ValidationStartedAt                                                  time.Time
 	Validation                                                           GenerationValidation
 	Error, Message                                                       string
 }
@@ -22,7 +27,13 @@ func (s *integrationState) rememberGenerationDraft() {
 	if s.GenerationModeSelection == nil {
 		s.GenerationModeSelection = map[string]string{}
 	}
-	s.GenerationDrafts[s.ProfileID] = generationEditorDraft{s.draftProfile(), s.Model, s.Endpoint, s.ProviderLabel, s.APIKey, s.Temperature, s.MaxOutputTokens, s.Saved, s.SavedSignature, s.SaveOperation, s.ValidationOperation, s.CredentialConfigured, s.Validation, s.Error, s.Message}
+	s.GenerationDrafts[s.ProfileID] = generationEditorDraft{
+		Profile: s.draftProfile(), Model: s.Model, Endpoint: s.Endpoint, ProviderLabel: s.ProviderLabel,
+		APIKey: s.APIKey, Temperature: s.Temperature, MaxOutputTokens: s.MaxOutputTokens,
+		Saved: s.Saved, SavedSignature: s.SavedSignature, SaveOperation: s.SaveOperation,
+		ValidationOperation: s.ValidationOperation, ValidationStartedAt: s.ValidationStartedAt,
+		CredentialConfigured: s.CredentialConfigured, Validation: s.Validation, Error: s.Error, Message: s.Message,
+	}
 	s.GenerationModeSelection[s.DraftMode] = s.ProfileID
 }
 func (a *App) selectGenerationProfile(id string, row GenerationRow) {
@@ -50,6 +61,7 @@ func (a *App) selectGenerationProfile(id string, row GenerationRow) {
 		s.CredentialConfigured = d.CredentialConfigured
 		s.Saved, s.SavedSignature, s.SaveOperation = d.Saved, d.SavedSignature, d.SaveOperation
 		s.ValidationOperation, s.Validation = d.ValidationOperation, d.Validation
+		s.ValidationStartedAt = d.ValidationStartedAt
 		s.Error, s.Message = d.Error, d.Message
 	}
 	s.GenerationDraftMode = s.DraftMode
@@ -175,8 +187,12 @@ func (a *App) generationCandidateStatus(c *ui.Context) {
 	}
 
 	ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-		v4SmallPrimaryButton(c, "切换", func() {
-			if s.Generation.HandoffAvailable {
+		label := "切换"
+		if a.initialSetup {
+			label = "设为待启用"
+		}
+		v4SmallPrimaryButton(c, label, func() {
+			if !a.initialSetup && s.Generation.HandoffAvailable {
 				a.openGenerationHandoff(s.Saved)
 			} else {
 				a.generationAction("next")

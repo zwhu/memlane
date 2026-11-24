@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -270,5 +273,111 @@ func TestApplyManagedPluginUpdateRefusesUnverifiedOrInsideStore(t *testing.T) {
 	after, _ := os.ReadFile(cfgPath)
 	if string(after) != string(orig) {
 		t.Fatalf("config modified despite refusal: %s", string(after))
+	}
+}
+
+func TestPluginClassifiesVerifiedPolicyUpdates(t *testing.T) {
+	const policy = "scripts/_memlane_policy.py"
+	const original = "scripts/main.py"
+	digest := func(contents string) string {
+		sum := sha256.Sum256([]byte(contents))
+		return hex.EncodeToString(sum[:])
+	}
+	for _, tc := range []struct {
+		name       string
+		change     func(receipt, wanted map[string]any, root string) error
+		policyOnly bool
+	}{
+		{name: "same upstream", policyOnly: true},
+		{name: "different commit", change: func(_, wanted map[string]any, _ string) error {
+			wanted["plugin_commit"] = "new-commit"
+			return nil
+		}},
+		{name: "different lock", change: func(_, wanted map[string]any, _ string) error {
+			wanted["upstream_lock_sha256"] = "different"
+			return nil
+		}},
+		{name: "missing old lock", change: func(receipt, _ map[string]any, _ string) error {
+			delete(receipt, "upstream_lock_sha256")
+			return nil
+		}},
+		{name: "minimal policy receipt", policyOnly: true, change: func(receipt, wanted map[string]any, _ string) error {
+			delete(receipt, "upstream_lock_sha256")
+			delete(wanted, "upstream_lock_sha256")
+			return nil
+		}},
+		{name: "minimal receipt with upstream file change", change: func(receipt, wanted map[string]any, _ string) error {
+			delete(receipt, "upstream_lock_sha256")
+			delete(wanted, "upstream_lock_sha256")
+			wanted["files"].(map[string]string)[original] = digest("updated official file")
+			return nil
+		}},
+		{name: "unrelated receipt metadata change", change: func(_, wanted map[string]any, _ string) error {
+			wanted["other"] = "unrelated"
+			return nil
+		}},
+		{name: "malformed policy metadata", change: func(receipt, _ map[string]any, _ string) error {
+			receipt["patch_sha256"] = []string{"malformed"}
+			return nil
+		}},
+		{name: "tampered policy", change: func(_, _ map[string]any, root string) error {
+			return os.WriteFile(filepath.Join(root, policy), []byte("tampered"), 0600)
+		}},
+		{name: "foreign file", change: func(_, _ map[string]any, root string) error {
+			return os.WriteFile(filepath.Join(root, "foreign"), []byte("foreign"), 0600)
+		}},
+		{name: "missing policy", change: func(_, _ map[string]any, root string) error {
+			return os.Remove(filepath.Join(root, policy))
+		}},
+		{name: "linked file", change: func(_, _ map[string]any, root string) error {
+			if err := os.Remove(filepath.Join(root, policy)); err != nil {
+				return err
+			}
+			return os.Symlink("main.py", filepath.Join(root, policy))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "scripts"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for name, contents := range map[string]string{policy: "original policy", original: "official file"} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			receipt := map[string]any{"plugin_commit": "fixed", "upstream_lock_sha256": "upstream", "extension_sha256": "old",
+				"files": map[string]string{policy: digest("original policy"), original: digest("official file")}}
+			wanted := map[string]any{"plugin_commit": "fixed", "upstream_lock_sha256": "upstream", "extension_sha256": "new",
+				"files": map[string]string{policy: digest("updated policy"), original: digest("official file")}}
+			if tc.change != nil {
+				if err := tc.change(receipt, wanted, root); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old, _ := json.Marshal(receipt)
+			if err := os.WriteFile(filepath.Join(root, ".memlane-project-access.json"), old, 0600); err != nil {
+				t.Fatal(err)
+			}
+			manifest, _ := json.Marshal(wanted)
+			var failure *PluginVerificationError
+			kind := PluginUpdateVersionOrContent
+			if tc.policyOnly {
+				kind = PluginUpdatePolicyOnly
+			}
+			if err := VerifyPlugin(root, manifest); !errors.As(err, &failure) || failure.Kind != kind || failure.PolicyUpdateOnly != tc.policyOnly {
+				t.Fatalf("verification classification = %#v (%v)", failure, err)
+			}
+			if tc.policyOnly && (failure.OfficialCommit != "fixed" || failure.ExpectedCommit != "fixed" ||
+				!reflect.DeepEqual(failure.ChangedFiles, []string{policy}) || !strings.Contains(failure.Error(), policy)) {
+				t.Fatalf("policy diagnostics incomplete: %+v", failure)
+			}
+			driver := PluginDriver{Version: "fixed", ExistingPath: root, Manifest: manifest}
+			requirement := Requirement{ID: "agent-plugin", Version: driver.Version, Destination: t.TempDir()}
+			obs, err := driver.Probe(context.Background(), requirement)
+			if err != nil || obs.Status != Incompatible || IsPluginPolicyUpdate(obs) != tc.policyOnly {
+				t.Fatalf("probe classification = %+v (%v)", obs, err)
+			}
+		})
 	}
 }

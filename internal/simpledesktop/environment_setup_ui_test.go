@@ -295,3 +295,79 @@ func TestSettingsEnvironmentUsesV4SkeletonWhileLoading(t *testing.T) {
 		t.Fatalf("settings environment still renders legacy plain text loading state: %v", tt.Texts())
 	}
 }
+
+func TestEnvironmentPolicyUpdateUsesUpdateActionAcrossSetupStates(t *testing.T) {
+	for _, tc := range []struct {
+		name, service string
+		initial       bool
+	}{
+		{name: "connected", service: "已连接"},
+		{name: "disconnected", service: "未连接"},
+		{name: "first install", initial: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, item := environmentFixture()
+			a.initialSetup, a.service = tc.initial, tc.service
+			a.Config.ConfigFile = "/synthetic/runtime.json"
+			a.Config.ProjectControl = &ProjectControlConfig{PluginDir: "/synthetic/old"}
+			item.Requirement.ID, item.Requirement.Name = "agent-plugin", "Agent 插件"
+			item.Observation = bootstrap.Observation{Status: bootstrap.Incompatible, Reason: bootstrap.PluginPolicyUpdateReasonPrefix}
+			a.environment.Plan.Items = []bootstrap.Item{item}
+			tt := ui.NewTester(func(c *ui.Context) {
+				ui.Themed(c, homeTheme).Fill().Children(func() {
+					ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, tc.initial) })
+				})
+			}, 1200, 820)
+			if !tt.HasText("策略有更新") || !tt.HasText(bootstrap.PluginPolicyUpdateReasonPrefix) ||
+				!tt.HasText("更新 Agent 插件") || tt.HasText("不兼容") || tt.HasText("安装缺少的依赖") {
+				t.Fatalf("wrong plugin update presentation: %v", tt.Texts())
+			}
+			clickProjectUI(t, tt, "更新 Agent 插件")
+			for _, label := range []string{"确认更新 Agent 插件", "确认更新", "暂不更新", "策略有更新"} {
+				if !tt.HasText(label) {
+					t.Fatalf("missing %q in review: %v", label, tt.Texts())
+				}
+			}
+		})
+	}
+}
+
+func TestSettingsEnvironmentShowsRedactedErrorsWithDetailsCollapsed(t *testing.T) {
+	a, _ := environmentFixture()
+	a.environment.Error = "下载失败 API_KEY=private-secret https://user:private-password@example.test/file"
+	tt := ui.NewTester(func(c *ui.Context) { a.environmentSetup(c, false) }, 1200, 820)
+	for _, expanded := range []bool{false, true} {
+		a.environment.Details = expanded
+		tt.Frame()
+		if !tt.HasText("准备未完成") || !tt.HasText("下载失败") ||
+			tt.HasText("private-secret") || tt.HasText("private-password") {
+			t.Fatalf("unsafe or hidden error summary: %v", tt.Texts())
+		}
+	}
+}
+
+func TestEnvironmentPolicyUpdateSelectsPersistentConfigTargetWhileDisconnected(t *testing.T) {
+	a, item := environmentFixture()
+	a.Config.ConfigFile = "/synthetic/runtime.json"
+	a.Config.ProjectControl = &ProjectControlConfig{PluginDir: "/synthetic/old"}
+	a.service = "未连接"
+	item.Requirement.ID = "agent-plugin"
+	item.Observation = bootstrap.Observation{Status: bootstrap.Incompatible, Reason: bootstrap.PluginPolicyUpdateReasonPrefix}
+	plan := bootstrap.Plan{Items: []bootstrap.Item{item}}
+	if destination := a.managedPluginUpdateDestination(plan); destination != item.Requirement.Destination {
+		t.Fatalf("disconnected policy upgrade did not select the verified component target: %q", destination)
+	}
+	plan.Items[0].Observation.Reason = "插件固定补丁回执不同"
+	if a.managedPluginUpdateDestination(plan) != "" {
+		t.Fatal("disconnected version mismatch should require environment preparation")
+	}
+	a.service = "已连接"
+	if a.managedPluginUpdateDestination(plan) != item.Requirement.Destination {
+		t.Fatal("connected daily plugin update lost the persistent config target")
+	}
+	plan.Items[0].Observation.Reason = bootstrap.PluginPolicyUpdateReasonPrefix
+	a.initialSetup = true
+	if a.managedPluginUpdateDestination(plan) != "" {
+		t.Fatal("first installation attempted to update an existing daily config")
+	}
+}

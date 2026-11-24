@@ -116,7 +116,7 @@ func (a *App) enableFirstRuntime() {
 	s := &a.environment
 	g := a.integrations.Generation
 	row, ok := g.row(g.Next)
-	if !ok || !g.validated(g.Next) || s.Busy || a.integrations.Busy || a.integrations.hasPendingGeneration() {
+	if !ok || a.firstGenerationEnableBlocker() != "" {
 		return
 	}
 	prepared := s.RuntimePreparation

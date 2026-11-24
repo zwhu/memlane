@@ -134,6 +134,7 @@ type App struct {
 	readingMigrated     map[string]bool
 	readingMigrating    map[string]chan struct{}
 	configError         string
+	externalStoreNotice string
 	md                  markdown.Options
 	v4MD                map[v4MDKey]*markdown.Options
 }
@@ -1084,10 +1085,14 @@ func (a *App) View(c *ui.Context) {
 	})
 }
 func (a *App) viewContent(c *ui.Context) {
+	externalStopped := a.isExternalManagedStoreStopped()
+	if externalStopped && !a.monitor.Polling {
+		a.monitor.PollEnabled = false
+	}
 	if !a.windowHidden {
 		c.After(2 * time.Second)
 		a.syncReadingIdentity()
-		if time.Now().After(a.access.Next) {
+		if !externalStopped && time.Now().After(a.access.Next) {
 			a.RefreshProjectDirectory()
 		}
 	}
@@ -1097,11 +1102,13 @@ func (a *App) viewContent(c *ui.Context) {
 				a.overviewState.Loading, a.overviewState.ActivityLoading = false, false
 				a.overviewState.Error = a.access.DirectoryError
 			}
-		} else if a.overviewState.scope != a.overviewScope() {
+		} else if !externalStopped && a.overviewState.scope != a.overviewScope() {
 			a.loadOverview()
 		}
 	}
-	a.refreshOverviewIfDue(time.Now())
+	if !externalStopped {
+		a.refreshOverviewIfDue(time.Now())
+	}
 	a.mainShell(c)
 }
 func (a *App) mainShell(c *ui.Context) {
@@ -1123,6 +1130,7 @@ func (a *App) mainShell(c *ui.Context) {
 				if a.page == "图谱" {
 					a.projectNavigation(c)
 				}
+				a.externalStoreStoppedBanner(c)
 				switch a.page {
 				case "用户画像":
 					a.userProfilesPage(c)

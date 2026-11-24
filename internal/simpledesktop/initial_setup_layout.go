@@ -226,6 +226,7 @@ func (a *App) initialSetupShell(c *ui.Context) {
 									ui.Text(c, "记忆服务尚未就绪").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3)
 								}
 							case 3:
+								a.firstGenerationStepGuide(c)
 								if s.RuntimeStarted {
 									a.generationConfiguration(c, false)
 								} else {
@@ -246,22 +247,27 @@ func (a *App) initialSetupShell(c *ui.Context) {
 				hint := "可随时返回上一步核对"
 				if step == 1 {
 					hint = "只安装你确认的组件"
+				} else if step == 3 {
+					hint = a.firstGenerationEnableHint()
 				}
-				ui.Text(c, hint).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
-				ui.Spacer(c)
+				ui.Text(c, hint).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).Grow(1).MinWidth(0).MaxLines(2)
 				if step == 1 {
 					v4OutlineButton(c, "上一步", nil, nil).Disabled(true)
 					if s.Plan.Complete() && s.Loaded {
 						v4PrimaryButton(c, "继续", a.continueEnvironment).Disabled(s.Busy || a.integrations.Busy)
 					} else if len(s.Plan.Items) > 0 {
-						v4PrimaryButton(c, "安装并继续", func() { s.Review = true }).Disabled(s.Busy || s.Loading)
+						label := "安装并继续"
+						if isOnlyPluginUpdate(a, s.Plan, s.Journal, s.Busy) {
+							label = "更新 Agent 插件"
+						}
+						v4PrimaryButton(c, label, func() { s.Review = true }).Disabled(s.Busy || s.Loading)
 					}
 				} else {
 					v4OutlineButton(c, "上一步", nil, func() { a.setInitialStep(step - 1) }).Disabled(s.Busy || a.integrations.Busy)
 					if step == 2 {
 						v4PrimaryButton(c, "继续", func() { a.setInitialStep(3) }).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted)
 					} else {
-						v4PrimaryButton(c, "启用并完成", a.enableFirstRuntime).Disabled(s.Busy || a.integrations.Busy || !s.RuntimeStarted || !a.integrations.Generation.validated(a.integrations.Generation.Next) || a.integrations.hasPendingGeneration())
+						v4PrimaryButton(c, "启用并完成", a.enableFirstRuntime).Disabled(a.firstGenerationEnableBlocker() != "")
 					}
 				}
 			})
@@ -320,7 +326,11 @@ func (a *App) initialEnvironment(c *ui.Context) {
 					if s.Plan.Complete() && s.Loaded {
 						v4SmallPrimaryButton(c, "继续", a.continueEnvironment)
 					} else if len(s.Plan.Items) > 0 {
-						v4SmallPrimaryButton(c, "安装缺少的依赖", func() { s.Review = true }).Disabled(s.Loading)
+						label := "安装缺少的依赖"
+						if isOnlyPluginUpdate(a, s.Plan, s.Journal, s.Busy) {
+							label = "更新 Agent 插件"
+						}
+						v4SmallPrimaryButton(c, label, func() { s.Review = true }).Disabled(s.Loading)
 					}
 				})
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
@@ -393,20 +403,29 @@ func (a *App) initialEnvironment(c *ui.Context) {
 					if row.Requirement.InstalledBytes > 0 {
 						desc = desc + " · " + environmentSize(row.Requirement.InstalledBytes)
 					}
+					dot, label, color := environmentDotState(status), environmentLabel(status), environmentStatusColor(status)
+					var description func()
+					if isPluginPolicyUpdate(row, status) {
+						dot, label, color = "run", "策略有更新", tok.Accent
+						description = func() {
+							ui.Text(c, environmentIncompatibleHint(a, row)).FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.5)
+						}
+					}
 					v4Row(c, v4RowOptions{
-						Key:      "environment-" + row.Requirement.ID,
-						Title:    dependencyDisplayName(row.Requirement),
-						Desc:     desc,
-						DescMono: true,
-						Tooltip:  row.Requirement.Version,
+						Key:       "environment-" + row.Requirement.ID,
+						Title:     dependencyDisplayName(row.Requirement),
+						Desc:      desc,
+						DescMono:  true,
+						DescExtra: description,
+						Tooltip:   row.Requirement.Version,
 						Leading: func() {
 							ui.Row(c).AlignItems(ui.Center).Gap(sp2).Children(func() {
-								v4StatusDot(c, environmentDotState(status))
+								v4StatusDot(c, dot)
 								dependencyMark(c, row.Requirement.ID)
 							})
 						},
-						Value:      environmentLabel(status),
-						ValueColor: environmentStatusColor(status),
+						Value:      label,
+						ValueColor: color,
 					})
 				}
 			})
@@ -424,16 +443,20 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 	if !s.Review {
 		return
 	}
-	dailyPluginOnly := isOnlyDailyPluginUpdate(a, s.Plan, s.Journal, s.Busy)
+	pluginOnly := isOnlyPluginUpdate(a, s.Plan, s.Journal, s.Busy)
 	modalTitle := "确认安装缺少的依赖"
 	modalIntro := "仅安装以下缺失组件，已有环境保持原样。"
 	modalHint := "已有环境和目录保持原样，不修改系统配置"
 	cancelText := "暂不安装"
 	confirmText := "确认安装"
-	if dailyPluginOnly {
+	if pluginOnly {
 		modalTitle = "确认更新 Agent 插件"
 		modalIntro = "将下载并校验新版 Agent 插件，然后把日常服务配置切换到新版目录（原插件目录会保留，不影响已有记忆数据）。"
 		modalHint = "已有记忆数据保持不变；配置更新后重启日常服务即可由后台加载新版插件"
+		if a.initialSetup || a.Config.ProjectControl == nil || a.Config.ProjectControl.PluginDir == "" || a.Config.ConfigFile == "" {
+			modalIntro = "将下载并校验更新后的 Agent 插件，原插件目录会保留。"
+			modalHint = "校验通过后可继续准备运行环境"
+		}
 		cancelText = "暂不更新"
 		confirmText = "确认更新"
 	}
@@ -449,7 +472,7 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 		OnCancel:        a.declineEnvironment,
 		OnConfirm:       func() { a.runEnvironment(true) },
 		ExtraFooter: func() {
-			if !dailyPluginOnly {
+			if !pluginOnly {
 				v4SmallButton(c, "复制全部安装命令", v4IconCopy, func() { a.copyManualInstallScript(c) })
 			}
 		},
@@ -465,8 +488,14 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 					ui.Column(c.Key("plan-"+r.ID)).FillWidth().Padding(sp3, 0).Gap(4).
 						BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 						ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
+							if isPluginPolicyUpdate(item, item.Observation.Status) {
+								v4StatusDot(c, "run")
+							}
 							dependencyMark(c, r.ID)
 							ui.Text(c, r.Name+" · "+r.Version).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
+							if isPluginPolicyUpdate(item, item.Observation.Status) {
+								ui.Text(c, "策略有更新").FontSize(fsCaption).TextColor(tok.Accent).SingleLine()
+							}
 							ui.Text(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes)).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 						})
 						ui.Text(c, r.Purpose).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
@@ -474,7 +503,7 @@ func (a *App) environmentReviewModal(c *ui.Context) {
 							if hint := environmentIncompatibleHint(a, item); hint != "" {
 								prefix := "原因："
 								col := tok.Warning
-								if isDailyPluginUpdateAvailable(a, item, item.Observation.Status) {
+								if isPluginPolicyUpdate(item, item.Observation.Status) || isDailyPluginUpdateAvailable(a, item, item.Observation.Status) {
 									prefix = "说明："
 									col = tok.Text2
 								}

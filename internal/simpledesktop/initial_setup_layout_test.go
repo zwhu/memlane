@@ -256,3 +256,19 @@ func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
 		t.Fatalf("review modal missing mirror source labels or copy buttons: %v", tt.Texts())
 	}
 }
+
+func TestInitialSetupPolicyUpdateFooterUsesPluginAction(t *testing.T) {
+	a := setupLayoutFixture()
+	a.environment.Plan.Items = []bootstrap.Item{{
+		Requirement: bootstrap.Requirement{ID: "agent-plugin", Name: "Agent 插件"},
+		Observation: bootstrap.Observation{Status: bootstrap.Incompatible, Reason: bootstrap.PluginPolicyUpdateReasonPrefix},
+	}}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("更新 Agent 插件") || tt.HasText("安装并继续") || tt.HasText("不兼容") {
+		t.Fatalf("unexpected Step 1 action: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "更新 Agent 插件")
+	if !tt.HasText("确认更新 Agent 插件") {
+		t.Fatal("Step 1 update did not open the review")
+	}
+}

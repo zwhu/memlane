@@ -444,7 +444,11 @@ func (a *App) generationEditorContent(c *ui.Context) {
 					validationLabel = "验证（调用模型）"
 				}
 				_, defaultAvailable := s.Generation.AgentBridges[s.BridgeKind]
-				v4PrimaryButton(c, "保存配置", a.saveGeneration).Disabled(locked || s.pendingGenerationProfile(s.ProfileID) || (s.DraftMode == "agent_bridge" && !defaultAvailable))
+				saveLabel := "保存配置"
+				if a.initialSetup {
+					saveLabel = "保存草稿"
+				}
+				v4PrimaryButton(c, saveLabel, a.saveGeneration).Disabled(locked || s.pendingGenerationProfile(s.ProfileID) || (s.DraftMode == "agent_bridge" && !defaultAvailable))
 				if s.SaveOperation != "" {
 					v4SmallButton(c, "核对保存结果", v4IconRefresh, a.reviewGenerationSave).Disabled(s.Busy)
 				}
@@ -471,13 +475,28 @@ func (a *App) generationEditorContent(c *ui.Context) {
 func (a *App) generationValidationStatus(c *ui.Context) {
 	s := &a.integrations
 	if s.ValidationOperation != "" {
-		label := map[string]string{"queued": "验证已登记", "running": "正在验证", "passed": "验证通过", "failed": "验证未通过", "result_unknown": "验证结果未确认"}[s.Validation.Status]
+		label := generationValidationStageLabel(s.Validation)
+		if generationValidationActive(s.Validation) {
+			c.After(time.Second)
+			elapsed := generationValidationElapsed(time.Now(), s.ValidationStartedAt, s.Validation)
+			label += fmt.Sprintf(" · 已等待 %d 秒", elapsed/time.Second)
+			if notice := generationValidationSlowNotice(elapsed, s.Validation); notice != "" {
+				homeText(c, notice, homeMeta).LineHeight(1.6)
+			}
+		}
 		if !s.cleanSaved() {
 			label = "已保存配置的原验证：" + label
 		}
 		homeText(c, label, homeMeta)
 		if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
 			homeText(c, message, homeMeta).LineHeight(1.6)
+		}
+		if diagnostic := generationValidationDiagnosticLine(s.Validation); diagnostic != "" {
+			homeText(c, diagnostic, homeMeta).LineHeight(1.6)
+		}
+		nextStep := generationValidationNextStep(s.Validation)
+		if nextStep != "" {
+			homeText(c, nextStep, homeMeta).LineHeight(1.6)
 		}
 		if s.Validation.ModeEvidence == "official_adapter_request" {
 			mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
@@ -487,7 +506,10 @@ func (a *App) generationValidationStatus(c *ui.Context) {
 		}
 		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
 			v4SmallButton(c, "核对原验证", v4IconRefresh, func() { a.pollGenerationValidation(s.ValidationOperation) }).Disabled(s.Busy)
-			if s.Validation.Status == "queued" || s.Validation.Status == "running" {
+			if nextStep != "" {
+				v4SmallButton(c, "重新验证", v4IconRefresh, a.retryGenerationValidation).Disabled(!s.canRetryGenerationValidation())
+			}
+			if generationValidationActive(s.Validation) {
 				v4DangerOutlineButton(c, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
 			}
 		})
@@ -499,6 +521,24 @@ func generationValidationMessage(code string) string {
 		return ""
 	}
 	if message, ok := map[string]string{
+		"dns_resolution_failed":                "无法解析模型服务地址。",
+		"provider_connection_unconfirmed":      "未能确认与模型服务的连接。",
+		"provider_unavailable":                 "模型服务暂时不可用。",
+		"probe_process_failed":                 "验证进程提前退出，结果未确认。",
+		"generation_bridge_changed_revalidate": "Agent 的模型或配置在验证期间发生变化，请重新验证。",
+		"validation_interrupted":               "验证已停止，结果未确认。",
+		"validation_owner_interrupted":         "验证期间服务中断，结果未确认。",
+		"validation_cleanup_unconfirmed":       "暂时无法确认验证进程已退出。",
+		"pi_timeout":                           "Pi 模型请求超时。",
+		"pi_model_failed":                      "Pi 模型请求失败。",
+		"codex_timeout":                        "Codex 模型请求超时。",
+		"codex_connection_failed":              "Codex 无法连接模型服务。",
+		"codex_model_failed":                   "Codex 模型请求失败。",
+		"antigravity_timeout":                  "Antigravity 模型请求超时。",
+		"antigravity_model_failed":             "Antigravity 模型请求失败。",
+		"traex_timeout":                        "TraeX 模型请求超时。",
+		"traex_connection_failed":              "TraeX 无法连接模型服务。",
+		"traex_model_failed":                   "TraeX 模型请求失败。",
 		"authentication_failed":                "API 密钥无效，请检查凭据。",
 		"permission_denied":                    "当前凭据没有访问此模型的权限。",
 		"payment_required":                     "供应商额度或余额不足。",

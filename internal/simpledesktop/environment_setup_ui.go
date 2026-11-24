@@ -177,18 +177,9 @@ func (a *App) runEnvironment(approve bool) {
 	generation := s.Generation
 	ctx, cancel := context.WithCancel(context.Background())
 	s.Cancel = cancel
-	upgradeDailyPlugin := !a.initialSetup && a.service == "已连接" && a.Config.ProjectControl != nil && a.Config.ProjectControl.PluginDir != "" && a.Config.ConfigFile != ""
+	pluginDestination := a.managedPluginUpdateDestination(plan)
 	configFile := a.Config.ConfigFile
 	officialData := a.Config.OfficialData
-	var pluginDestination string
-	if upgradeDailyPlugin {
-		for _, item := range plan.Items {
-			if item.Requirement.ID == "agent-plugin" && item.Observation.Status != bootstrap.Available {
-				pluginDestination = item.Requirement.Destination
-				break
-			}
-		}
-	}
 	go func() {
 		defer cancel()
 		installer := environment.Installer()
@@ -209,7 +200,7 @@ func (a *App) runEnvironment(approve bool) {
 			err = installer.Run(ctx, "first-install", plan)
 		}
 		var updatedPluginDir string
-		if err == nil && upgradeDailyPlugin && pluginDestination != "" {
+		if err == nil && pluginDestination != "" {
 			candidate := filepath.Join(pluginDestination, "plugin")
 			if _, applyErr := bootstrap.ApplyManagedPluginUpdate(configFile, officialData, candidate, environment.Plugin.Manifest); applyErr != nil {
 				err = applyErr
@@ -379,6 +370,23 @@ func environmentRowStatus(item bootstrap.Item, j bootstrap.Journal, busy bool) b
 	return item.Observation.Status
 }
 
+func (a *App) managedPluginUpdateDestination(plan bootstrap.Plan) string {
+	if a.initialSetup || a.Config.ProjectControl == nil || a.Config.ProjectControl.PluginDir == "" || a.Config.ConfigFile == "" {
+		return ""
+	}
+	for _, item := range plan.Items {
+		if item.Requirement.ID == "agent-plugin" && item.Observation.Status != bootstrap.Available &&
+			(a.service == "已连接" || isPluginPolicyUpdate(item, item.Observation.Status)) {
+			return item.Requirement.Destination
+		}
+	}
+	return ""
+}
+
+func isPluginPolicyUpdate(item bootstrap.Item, status bootstrap.Status) bool {
+	return item.Requirement.ID == "agent-plugin" && status == bootstrap.Incompatible && bootstrap.IsPluginPolicyUpdate(item.Observation)
+}
+
 func isDailyPluginUpdateAvailable(a *App, item bootstrap.Item, status bootstrap.Status) bool {
 	return a != nil && !a.initialSetup && a.service == "已连接" &&
 		item.Requirement.ID == "agent-plugin" &&
@@ -388,7 +396,7 @@ func isDailyPluginUpdateAvailable(a *App, item bootstrap.Item, status bootstrap.
 		a.Config.ProjectControl.PluginDir != ""
 }
 
-func isOnlyDailyPluginUpdate(a *App, plan bootstrap.Plan, j bootstrap.Journal, busy bool) bool {
+func isOnlyPluginUpdate(a *App, plan bootstrap.Plan, j bootstrap.Journal, busy bool) bool {
 	if len(plan.Items) == 0 || plan.Complete() {
 		return false
 	}
@@ -398,7 +406,7 @@ func isOnlyDailyPluginUpdate(a *App, plan bootstrap.Plan, j bootstrap.Journal, b
 		if status == bootstrap.Available {
 			continue
 		}
-		if !isDailyPluginUpdateAvailable(a, item, status) {
+		if !isDailyPluginUpdateAvailable(a, item, status) && !isPluginPolicyUpdate(item, status) {
 			return false
 		}
 		hasUpdate = true
@@ -409,6 +417,12 @@ func isOnlyDailyPluginUpdate(a *App, plan bootstrap.Plan, j bootstrap.Journal, b
 func environmentIncompatibleHint(a *App, row bootstrap.Item) string {
 	if row.Observation.Status != bootstrap.Incompatible {
 		return ""
+	}
+	if isPluginPolicyUpdate(row, row.Observation.Status) {
+		if isDailyPluginUpdateAvailable(a, row, row.Observation.Status) {
+			return bootstrap.PluginPolicyUpdateReasonPrefix + "，不影响当前服务使用。点击下方「更新 Agent 插件」确认后会自动切换配置，原插件目录会保留以便回退。"
+		}
+		return bootstrap.PluginPolicyUpdateReasonPrefix + "。点击下方「更新 Agent 插件」确认后即可更新，原插件目录会保留。"
 	}
 	if isDailyPluginUpdateAvailable(a, row, row.Observation.Status) {
 		return "当前服务正在使用旧版接入插件，不影响正常使用。点击下方「更新 Agent 插件」确认后，会下载新版并自动切换配置，原插件目录会保留以便回退。"
@@ -464,9 +478,12 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 				var extraHint string
 				var extraColor ui.Color
 				var detailReason string
-				if dailyUpdate {
+				if policyUpdate := isPluginPolicyUpdate(row, status); dailyUpdate || policyUpdate {
 					dotState = "run"
 					valueLabel = "有更新"
+					if policyUpdate {
+						valueLabel = "策略有更新"
+					}
 					valueColor = tok.Accent
 					extraHint = environmentIncompatibleHint(a, row)
 					extraColor = tok.Text2
@@ -518,8 +535,9 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 		if s.Error != "" {
 			ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp1).Radius(radius).Background(tok.Danger.Alpha(0.08)).Children(func() {
 				ui.Text(c, "准备未完成").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Danger)
-				if s.Details {
-					ui.Text(c, s.Error).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.6)
+				summary := ui.Text(c, bootstrap.RedactInstallerText(s.Error)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.6)
+				if !s.Details {
+					summary.MaxLines(2)
 				}
 			})
 		}
@@ -543,7 +561,7 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 			needInstall := !s.Plan.Complete() && len(s.Plan.Items) > 0
 			if needInstall || s.Error != "" {
 				actionLabel := "安装缺少的依赖"
-				if isOnlyDailyPluginUpdate(a, s.Plan, s.Journal, s.Busy) {
+				if isOnlyPluginUpdate(a, s.Plan, s.Journal, s.Busy) {
 					actionLabel = "更新 Agent 插件"
 				}
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {

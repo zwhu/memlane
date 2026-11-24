@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -26,7 +27,7 @@ type PluginDriver struct {
 }
 
 func readPluginFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +39,11 @@ func readPluginFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
 		return nil, errors.New("插件文件不是有界普通文件")
 	}
-	return io.ReadAll(io.LimitReader(f, (4<<20)+1))
+	data, err := io.ReadAll(io.LimitReader(f, (4<<20)+1))
+	if len(data) > 4<<20 {
+		return nil, errors.New("插件文件不是有界普通文件")
+	}
+	return data, err
 }
 
 func (d PluginDriver) matches(r Requirement) bool {
@@ -51,34 +56,148 @@ func (d PluginDriver) matches(r Requirement) bool {
 	return r.Source == d.Spec.URL || r.Source == DisplaySourceURL(r.ID, d.Spec.URL, d.Spec.SHA256, d.DownloadSource)
 }
 
+type PluginUpdateKind string
+
+const (
+	PluginUpdateNone               PluginUpdateKind = ""
+	PluginUpdatePolicyOnly         PluginUpdateKind = "policy_only"
+	PluginUpdateVersionOrContent   PluginUpdateKind = "version_or_content"
+	PluginPolicyUpdateReasonPrefix                  = "官方插件版本未变，仅 Memlane 策略补丁有更新"
+)
+
+type PluginVerificationError struct {
+	Kind             PluginUpdateKind
+	PolicyUpdateOnly bool
+	OfficialCommit   string
+	ExpectedCommit   string
+	ChangedFiles     []string
+	Detail           string
+}
+
+func (e *PluginVerificationError) Error() string {
+	return e.Detail
+}
+
+func IsPluginPolicyUpdate(obs Observation) bool {
+	return obs.Status == Incompatible && strings.HasPrefix(obs.Reason, PluginPolicyUpdateReasonPrefix)
+}
+
 func VerifyPlugin(root string, expected []byte) error {
 	var wanted, receipt map[string]any
-	if err := json.Unmarshal(expected, &wanted); err != nil {
-		return err
+	failure := &PluginVerificationError{Kind: PluginUpdateVersionOrContent}
+	if err := json.Unmarshal(expected, &wanted); err != nil || wanted == nil {
+		failure.Detail = "插件固定清单无效"
+		return failure
 	}
+	failure.ExpectedCommit, _ = wanted["plugin_commit"].(string)
 	info, err := os.Lstat(root)
 	if err != nil {
-		return err
+		failure.Detail = err.Error()
+		return failure
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("插件位置必须为已有目录")
+		failure.Detail = "插件位置必须为已有目录"
+		return failure
 	}
-	b, err := readPluginFile(filepath.Join(root, ".memlane-project-access.json"))
+	data, err := readPluginFile(filepath.Join(root, ".memlane-project-access.json"))
 	if err != nil {
-		return err
+		failure.Detail = err.Error()
+		return failure
 	}
-	if err := json.Unmarshal(b, &receipt); err != nil {
-		return err
+	if err := json.Unmarshal(data, &receipt); err != nil || receipt == nil {
+		failure.Detail = "插件固定补丁回执无效"
+		return failure
 	}
-	if !reflect.DeepEqual(receipt, wanted) {
-		return errors.New("插件固定补丁回执不同")
+	failure.OfficialCommit, _ = receipt["plugin_commit"].(string)
+	oldFiles, _ := receipt["files"].(map[string]any)
+	newFiles, _ := wanted["files"].(map[string]any)
+	for name, digest := range oldFiles {
+		if next, present := newFiles[name]; !present || !reflect.DeepEqual(digest, next) {
+			failure.ChangedFiles = append(failure.ChangedFiles, name)
+		}
 	}
-	files, ok := wanted["files"].(map[string]any)
-	if !ok || len(files) == 0 {
+	for name := range newFiles {
+		if _, present := oldFiles[name]; !present {
+			failure.ChangedFiles = append(failure.ChangedFiles, name)
+		}
+	}
+	sort.Strings(failure.ChangedFiles)
+	if err := verifyPluginTree(root, oldFiles); err != nil {
+		failure.Detail = err.Error()
+		return failure
+	}
+	if reflect.DeepEqual(receipt, wanted) {
+		return nil
+	}
+	failure.Detail = "插件固定补丁回执不同"
+	if failure.OfficialCommit != "" && failure.OfficialCommit == failure.ExpectedCommit &&
+		pluginPolicyReceiptChanged(receipt, wanted, failure.ChangedFiles) {
+		failure.Kind, failure.PolicyUpdateOnly = PluginUpdatePolicyOnly, true
+		failure.Detail = PluginPolicyUpdateReasonPrefix
+		if len(failure.ChangedFiles) == 1 {
+			failure.Detail += "（" + failure.ChangedFiles[0] + "）"
+		}
+	}
+	return failure
+}
+
+func pluginPolicyReceiptChanged(receipt, wanted map[string]any, changed []string) bool {
+	files, _ := wanted["files"].(map[string]any)
+	if len(files) == 0 {
+		return false
+	}
+	for path, value := range files {
+		digest, _ := value.(string)
+		decoded, err := hex.DecodeString(digest)
+		if !fs.ValidPath(path) || path == "." || path == ".memlane-project-access.json" ||
+			err != nil || len(decoded) != sha256.Size || digest != strings.ToLower(digest) {
+			return false
+		}
+	}
+	if !pluginPatchMetadataValid(receipt, wanted) {
+		return false
+	}
+	if value, present := wanted["upstream_lock_sha256"]; present {
+		lock, ok := value.(string)
+		if !ok || lock == "" || !reflect.DeepEqual(receipt["upstream_lock_sha256"], lock) {
+			return false
+		}
+	} else {
+		for _, name := range changed {
+			if name != "scripts/_memlane_policy.py" && name != "scripts/_memlane_access.py" {
+				return false
+			}
+		}
+	}
+	return len(changed) > 0 || !reflect.DeepEqual(receipt["patch_sha256"], wanted["patch_sha256"]) ||
+		!reflect.DeepEqual(receipt["extension_sha256"], wanted["extension_sha256"])
+}
+
+func pluginPatchMetadataValid(receipt, wanted map[string]any) bool {
+	for _, manifests := range [][2]map[string]any{{receipt, wanted}, {wanted, receipt}} {
+		for key, value := range manifests[0] {
+			switch key {
+			case "plugin_commit", "files", "upstream_lock_sha256":
+			case "patch_sha256", "extension_sha256":
+				if digest, ok := value.(string); !ok || digest == "" {
+					return false
+				}
+			default:
+				if other, present := manifests[1][key]; !present || !reflect.DeepEqual(value, other) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func verifyPluginTree(root string, files map[string]any) error {
+	if len(files) == 0 {
 		return errors.New("插件固定文件清单缺失")
 	}
 	seen := map[string]bool{}
-	err = filepath.WalkDir(root, func(target string, entry fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(target string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

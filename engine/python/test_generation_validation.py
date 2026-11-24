@@ -1,10 +1,13 @@
 import asyncio
+from contextlib import redirect_stderr
+import io
 import json
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -12,6 +15,7 @@ from generation_config import GenerationStore
 from generation_validation import GenerationValidation, group_exists
 from project_control import Registry
 from project_control_server import create_app
+from project_policy import PolicyError
 
 
 class ProcessGroupTests(unittest.TestCase):
@@ -26,13 +30,10 @@ class ProcessGroupTests(unittest.TestCase):
                 'process_groups.subprocess.check_output', side_effect=OSError):
             with self.assertRaises(OSError):
                 group_exists(123)
-from project_policy import PolicyError
 
 
 class ValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_stderr_metrics_survive_and_arbitrary_sdk_errors_are_dropped(self):
-        import io
-        from contextlib import redirect_stderr
         row = {'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
                'request_id': 'a' * 32, 'at': '2026-11-16T00:00:00+00:00', 'elapsed_ms': 12,
                'durations_ms': {'dispatch_to_headers': 11}, 'outcome': 'succeeded',
@@ -53,6 +54,112 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('probe', owner['durations_ms'])
         self.assertIn('cleanup', owner['durations_ms'])
         self.assertNotIn('synthetic-secret', output.getvalue())
+
+    async def test_worker_exit_uses_only_allowlisted_trace_diagnostics(self):
+        cases = (
+            ('generation_http', 'ConnectTimeout', None, 'provider_timeout', 'ConnectTimeout', None),
+            ('generation_http', 'ConnectError', None, 'provider_connection_unconfirmed', 'ConnectError', None),
+            ('generation_http', 'failed', 502, 'provider_unavailable', None, None),
+            ('pi_bridge', 'pi_timeout', None, 'provider_timeout', None, 'pi_timeout'),
+            ('pi_bridge', 'pi_model_failed', None, 'pi_model_failed', None, 'pi_model_failed'),
+            ('generation_http', 'secret_provider_response', None, 'probe_process_failed', None, None),
+        )
+        for index, (component, outcome, status, code, network, bridge_code) in enumerate(cases):
+            with self.subTest(component=component, outcome=outcome, status=status):
+                event = {'schema_version': 1, 'event': 'request_finished', 'component': component,
+                         'request_id': 'a' * 32, 'at': '2026-11-16T00:00:00+00:00', 'elapsed_ms': 12,
+                         'durations_ms': {}, 'outcome': outcome, 'status': status,
+                         'bridge_error_code': 'secret_provider_response'}
+                self.worker('import json,sys\njson.load(sys.stdin)\n'
+                            'print("test-secret https://user:passwd@example.test",file=sys.stderr)\n'
+                            'print(' + repr(json.dumps(event)) + ',file=sys.stderr)\nsys.exit(7)\n')
+                output = io.StringIO()
+                operation = f'exit-{index}'
+                with patch('generation_validation.ROOT', self.root), redirect_stderr(output):
+                    self.validator.start(self.profile, self.store.state['revision'], operation)
+                    await self.validator.task
+                receipt = self.validator.get(operation)
+                self.assertEqual(receipt['status'], 'result_unknown')
+                self.assertEqual(receipt['failed_phase'], 'probe')
+                self.assertEqual(receipt['diagnostic_stage'], 'probe')
+                self.assertEqual(receipt['error_code'], code)
+                self.assertEqual(receipt['diagnostic_code'], network or bridge_code or code)
+                self.assertEqual(receipt.get('network_error'), network)
+                self.assertEqual(receipt.get('http_status'), status)
+                self.assertEqual(receipt.get('bridge_error_code'), bridge_code)
+                self.assertEqual(receipt['process_exit_code'], 7)
+                self.assertGreater(receipt['elapsed_ms'], 0)
+                for secret in ('test-secret', 'passwd', 'secret_provider_response'):
+                    self.assertNotIn(secret, json.dumps(receipt) + output.getvalue())
+
+    async def test_bridge_start_preserves_dns_and_policy_classifications(self):
+        profile = self.store.put('pi', {'mode': 'agent_bridge', 'bridge_kind': 'pi', 'bridge_provider': 'deepseek', 'model': 'synthetic'},
+                                 self.store.state['revision'], 'save-pi')
+        runtime = {'kind': 'pi', 'home': self.root}
+        for name, exc, status, code, network in (
+                ('dns', socket.gaierror('test-secret'), 'result_unknown', 'dns_resolution_failed', 'gaierror'),
+                ('policy', PolicyError('pi_authentication_required'), 'failed', 'pi_authentication_required', None),
+                ('unsafe', PolicyError('https://user:test-secret@example.test'), 'result_unknown', 'probe_result_unconfirmed', None)):
+            with self.subTest(name=name):
+                output = io.StringIO()
+                with (patch('generation_bridge.check_bridge_runtime', return_value=runtime),
+                      patch('agent_bridge_runtime.read_agent_defaults', return_value={}),
+                      patch('generation_bridge.bridge_runtime_fingerprint', return_value='fingerprint'),
+                      patch('generation_bridge.ValidationBridge') as bridge,
+                      redirect_stderr(output)):
+                    bridge.return_value.start = AsyncMock(side_effect=exc)
+                    bridge.return_value.close = AsyncMock()
+                    self.validator.start(profile, self.store.state['revision'], name)
+                    queued = self.validator.get(name)
+                    self.assertEqual(queued['phase'], 'queued')
+                    self.assertEqual(queued['backend_kind'], 'pi')
+                    self.assertGreater(queued['started_at'], 0)
+                    await self.validator.task
+                receipt = self.validator.get(name)
+                self.assertEqual(receipt['status'], status)
+                self.assertEqual(receipt['error_code'], code)
+                self.assertEqual(receipt['diagnostic_code'], code)
+                self.assertEqual(receipt.get('network_error'), network)
+                self.assertEqual(receipt['failed_phase'], 'bridge_start')
+                self.assertNotIn('test-secret', json.dumps(receipt) + output.getvalue())
+                self.assertIsNone(self.validator.bridge)
+
+    async def test_malformed_stdout_reports_specific_probe_failure(self):
+        for index, (expression, expected) in enumerate((
+                ('"x" * 16385', 'probe_output_too_large'),
+                ('"secret line is not JSON"', 'probe_output_invalid_json'),
+                (repr('{"status":"private-status"}'), 'probe_output_invalid_schema'))):
+            worker = f'import sys\nsys.stdin.read()\nprint({expression}, flush=True)\n'
+            if expected == 'probe_output_too_large':
+                # Keep the worker alive so the manager must enforce the
+                # output limit and explicitly reap its owned group.
+                worker += 'import time\ntime.sleep(60)\n'
+            self.worker(worker)
+            operation = f'malformed-{index}'
+            with patch('generation_validation.ROOT', self.root):
+                self.validator.start(self.profile, self.store.state['revision'], operation)
+                await self.validator.task
+            receipt = self.validator.get(operation)
+            self.assertEqual(receipt['status'], 'result_unknown')
+            self.assertEqual(receipt['error_code'], 'probe_result_unconfirmed')
+            self.assertEqual(receipt['diagnostic_code'], expected)
+            self.assertEqual(receipt['failed_phase'], 'probe')
+            self.assertNotIn('secret line', json.dumps(receipt))
+
+    async def test_reported_result_keeps_its_status_and_error_code(self):
+        event = {'schema_version': 1, 'event': 'request_finished', 'component': 'generation_http',
+                 'request_id': 'a' * 32, 'at': '2026-11-16T00:00:00+00:00', 'elapsed_ms': 12,
+                 'durations_ms': {}, 'status': 403, 'outcome': 'failed'}
+        self.worker('import sys\nsys.stdin.read()\n'
+                    'print(' + repr(json.dumps(event)) + ',file=sys.stderr)\n'
+                    'print(' + repr('{"status":"failed","error_code":"provider_bad_request"}') + ')\n')
+        with patch('generation_validation.ROOT', self.root):
+            self.validator.start(self.profile, self.store.state['revision'], 'reported')
+            await self.validator.task
+        self.assertEqual(self.validator.get('reported')['status'], 'failed')
+        self.assertEqual(self.validator.get('reported')['error_code'], 'provider_bad_request')
+        self.assertEqual(self.validator.get('reported')['diagnostic_code'], 'permission_denied')
+        self.assertEqual(self.validator.get('reported')['http_status'], 403)
 
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -105,6 +212,37 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.validator.get('cancelled')['status'], 'result_unknown')
         self.assertNotIn('schema_passed', self.validator.get('cancelled'))
 
+    async def test_cancel_during_cleanup_confirms_process_exit(self):
+        complete = {'status': 'passed', 'plain_passed': True, 'schema_passed': True, 'quality_passed': True}
+        self.worker('import sys\nsys.stdin.read()\nprint(' + repr(json.dumps(complete)) + ')\n')
+        entered, release = asyncio.Event(), asyncio.Event()
+        stop = self.validator.stop_process
+
+        async def delayed_stop():
+            entered.set()
+            await release.wait()
+            await stop()
+
+        with (patch('generation_validation.ROOT', self.root),
+              patch.object(self.validator, 'stop_process', side_effect=delayed_stop)):
+            self.validator.start(self.profile, 1, 'cleanup')
+            await asyncio.wait_for(entered.wait(), 3)
+            try:
+                running = self.validator.get('cleanup')
+                self.assertEqual(running['status'], 'running')
+                self.assertEqual(running['phase'], 'cleanup')
+                cancel = asyncio.create_task(self.validator.cancel('cleanup', self.store.state['revision'], 'stop'))
+                await asyncio.sleep(0)
+                self.assertFalse(cancel.done())
+            finally:
+                release.set()
+            result = await cancel
+        self.assertTrue(result['local_process_exited'])
+        receipt = self.validator.get('cleanup')
+        self.assertEqual(receipt['error_code'], 'validation_interrupted')
+        self.assertEqual(receipt['failed_phase'], 'cleanup')
+        self.assertGreater(receipt['elapsed_ms'], 0)
+
     async def test_validation_deadline_is_unknown_and_owned_process_exits_without_replay(self):
         self.worker('import json,sys,time\njson.load(sys.stdin)\ntime.sleep(60)\n')
         with patch('generation_validation.ROOT', self.root), patch('generation_validation.PROBE_TIMEOUT_SECONDS', .1):
@@ -114,6 +252,11 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         row = self.validator.get('deadline')
         self.assertEqual(row['status'], 'result_unknown')
         self.assertEqual(row['error_code'], 'validation_timeout')
+        self.assertEqual(row['failed_phase'], 'probe')
+        self.assertEqual(row['diagnostic_stage'], 'probe')
+        self.assertEqual(row['diagnostic_code'], 'validation_timeout')
+        self.assertEqual(row['phase'], 'cleanup')
+        self.assertGreater(row['elapsed_ms'], 0)
         self.assertIsNone(self.validator.process)
         self.assertFalse(group_exists(row['process_group']))
         self.assertEqual(self.store.state['active']['id'], 'existing-codex')
@@ -197,7 +340,10 @@ class ValidationTests(unittest.IsolatedAsyncioTestCase):
         with patch('generation_validation.ROOT', self.root):
             self.validator.start(local, self.store.state['revision'], 'unbound')
             await self.validator.task
-        self.assertEqual(self.validator.get('unbound')['status'], 'result_unknown')
+        receipt = self.validator.get('unbound')
+        self.assertEqual(receipt['status'], 'result_unknown')
+        self.assertEqual(receipt['diagnostic_code'], 'ollama_native_schema_unverified')
+        self.assertEqual(receipt['failed_phase'], 'probe')
         self.assertIsNone(self.store.state['next'])
         self.assertIsNone(self.validator.process)
 

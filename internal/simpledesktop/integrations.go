@@ -89,6 +89,17 @@ type GenerationRow struct {
 	Profile  GenerationProfile `json:"profile"`
 }
 type GenerationValidation struct {
+	Phase              string              `json:"phase,omitempty"`
+	FailedPhase        string              `json:"failed_phase,omitempty"`
+	DiagnosticCode     string              `json:"diagnostic_code,omitempty"`
+	DiagnosticStage    string              `json:"diagnostic_stage,omitempty"`
+	NetworkError       string              `json:"network_error,omitempty"`
+	BridgeErrorCode    string              `json:"bridge_error_code,omitempty"`
+	HTTPStatus         int                 `json:"http_status,omitempty"`
+	ProcessExitCode    *int                `json:"process_exit_code,omitempty"`
+	ElapsedMs          float64             `json:"elapsed_ms,omitempty"`
+	DeadlineSeconds    int                 `json:"deadline_seconds,omitempty"`
+	StartedAt          float64             `json:"started_at,omitempty"`
 	AgentDefaults      *AgentModelDefaults `json:"agent_defaults,omitempty"`
 	Reference          *GenerationRef      `json:"reference,omitempty"`
 	Status             string              `json:"status"`
@@ -228,6 +239,7 @@ type integrationState struct {
 	SavedSignature                                                                                              string
 	SaveOperation, ValidationOperation                                                                          string
 	NextOperation                                                                                               string
+	ValidationStartedAt                                                                                         time.Time
 	Validation                                                                                                  GenerationValidation
 	ValidationCancel                                                                                            context.CancelFunc
 	KeyEpoch                                                                                                    uint64
@@ -690,6 +702,7 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 	s.SavedSignature = s.signature()
 	s.SaveOperation = ""
 	s.ValidationOperation, s.Validation = s.Generation.latestValidation(row.Digest)
+	s.ValidationStartedAt = time.Time{}
 }
 func (a *App) saveGeneration() {
 	client, ok := a.accessClient()
@@ -837,7 +850,8 @@ func (a *App) generationAction(action string) {
 	s.Error = ""
 	if action == "validations" {
 		s.ValidationOperation = op
-		s.Validation = GenerationValidation{Status: "queued"}
+		s.Validation = GenerationValidation{Status: "queued", Phase: "queued"}
+		s.ValidationStartedAt = time.Now()
 	}
 	if action == "next" {
 		s.NextOperation = op
