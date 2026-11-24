@@ -62,6 +62,9 @@ func (a *App) RefreshProjectDirectory() {
 			a.access.Loading = false
 			if err != nil {
 				a.access.DirectoryError = err.Error()
+				if isControlAuthDenied(err) || readingUnavailable(err) {
+					a.InvalidateReading("")
+				}
 				return
 			}
 			a.access.DirectoryError = ""

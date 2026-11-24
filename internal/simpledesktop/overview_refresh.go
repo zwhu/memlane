@@ -39,23 +39,18 @@ func (a *App) setWindowActive(active, wasHidden bool) {
 	if wasHidden || a.access.Next.IsZero() || !now.Before(a.access.Next) {
 		a.RefreshProjectDirectory()
 	}
-	startedFirstOverview := false
 	if wasHidden && a.page == "总览" && !a.overviewState.Loaded && a.access.Loaded && a.overviewState.scope != a.overviewScope() {
 		a.loadOverview()
-		startedFirstOverview = true
-	} else if (wasInactive || wasHidden) && a.page == "总览" && !a.overviewState.Loading && !a.overviewState.ActivityLoading && !a.searchUI.Open {
+		return
+	}
+	if (wasInactive || wasHidden) && a.page == "总览" && !a.overviewState.Loading && !a.overviewState.ActivityLoading && !a.searchUI.Open {
 		// Avoid starting a second enumeration on rapid blur/focus cycles.
 		if a.overviewRefreshAt.IsZero() || time.Since(a.overviewRefreshAt.Add(-overviewRefreshInterval)) >= 3*time.Second {
 			a.loadOverview()
 		}
 	}
-	if (wasInactive || wasHidden) && a.startupDeferred.done {
-		if startedFirstOverview {
-			a.verifyGraphAssetsAsync()
-			a.schedulePostFirstFrameStartup(true)
-		} else {
-			a.PrewarmGraph()
-		}
+	if (wasInactive || wasHidden) && a.startupDeferred.done && a.startupDeferred.visibleDone {
+		a.PrewarmGraph()
 		a.refreshServiceMonitorIfDue(now)
 	}
 }
@@ -63,7 +58,7 @@ func (a *App) setWindowActive(active, wasHidden bool) {
 func (a *App) coldStartOverviewPending() bool {
 	v := &a.overviewState
 	return !a.overviewFirstScreenReady && a.page == "总览" && !v.Loaded &&
-		(v.Loading || (a.startupDeferred.armed && !a.startupDeferred.done))
+		(v.Loading || (a.startupDeferred.armed && (!a.startupDeferred.done || !a.startupDeferred.visibleDone)))
 }
 
 func (a *App) refreshOverviewIfDue(now time.Time) bool {

@@ -218,12 +218,23 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				}
 				nextStartupUpdate(t, updates)()
 				drainReading(t, updates, func() bool { return a.integrations.Loaded && a.OpenAtLogin() })
-				if a.monitor.Request != 0 || a.graphAssetsCheck != nil || a.graph != nil {
-					t.Fatal("hidden startup started monitor or prewarm")
+				if a.monitor.Request != 0 || a.graphAssetsCheck != nil || a.graph != nil || a.overviewFirstScreenReady || a.monitor.PollEnabled {
+					t.Fatal("hidden startup started visible monitor, prewarm, or marked first screen ready")
 				}
+				// First reveal must run overview bootstrap BEFORE releasing monitor/sidebar/prewarm.
 				a.SetWindowHidden(false)
-				if !a.monitor.Polling || a.graphAssetsCheck == nil || attaches != 0 {
-					t.Fatal("first reveal must start monitor and async asset check without synchronous WebView attach")
+				select {
+				case <-bootstrapStarted:
+				case <-time.After(3 * time.Second):
+					t.Fatal("first reveal did not start overview bootstrap")
+				}
+				if a.monitor.Polling || a.monitor.Request != 0 || a.graphAssetsCheck != nil || attaches != 0 || !a.coldStartOverviewPending() {
+					t.Fatal("first reveal overlapped monitor/prewarm with initial overview bootstrap")
+				}
+				releaseBootstrap <- struct{}{}
+				drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.monitor.PollEnabled })
+				if attaches != 0 {
+					t.Fatal("first reveal attached WebView before post-first-frame delay")
 				}
 				drainReading(t, updates, func() bool { return attaches == 1 })
 				return

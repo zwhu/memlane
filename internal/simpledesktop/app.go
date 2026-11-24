@@ -194,6 +194,7 @@ var (
 
 type deferredStartupState struct {
 	armed, done    bool
+	visibleDone    bool
 	gen            uint64
 	timer          *time.Timer
 	postFrameGen   uint64
@@ -242,7 +243,7 @@ func (a *App) Start() {
 	s := &a.startupDeferred
 	s.stopAllTimers()
 	update := a.Update
-	s.armed, s.done, s.postFrameDone = update != nil && a.page == "总览", false, false
+	s.armed, s.done, s.visibleDone, s.postFrameDone = update != nil && a.page == "总览", false, false, false
 	if s.armed {
 		a.overviewFirstScreenReady = false
 		a.monitor.PollEnabled = false
@@ -267,7 +268,7 @@ func (a *App) Start() {
 func (a *App) resetDeferredStartupFallback() {
 	s := &a.startupDeferred
 	update := a.Update
-	if !s.armed || s.done || update == nil {
+	if !s.armed || (s.done && s.visibleDone) || update == nil {
 		return
 	}
 	s.stopTimer()
@@ -275,7 +276,11 @@ func (a *App) resetDeferredStartupFallback() {
 	s.timer = time.AfterFunc(startupDeferredFallbackTimeout, func() {
 		update(func() {
 			if gen == a.startupDeferred.gen {
-				a.runDeferredStartupTasks()
+				if !a.startupDeferred.done {
+					a.runDeferredStartupTasks()
+				} else if !a.startupDeferred.visibleDone {
+					a.releaseVisibleStartupTasks(false)
+				}
 			}
 		})
 	})
@@ -284,7 +289,11 @@ func (a *App) resetDeferredStartupFallback() {
 func (a *App) onOverviewBootstrapSettled() {
 	a.overviewFirstScreenReady = true
 	if a.startupDeferred.armed {
-		a.runDeferredStartupTasks()
+		if !a.startupDeferred.done {
+			a.runDeferredStartupTasks()
+		} else if !a.startupDeferred.visibleDone {
+			a.releaseVisibleStartupTasks(false)
+		}
 	}
 }
 
@@ -295,17 +304,34 @@ func (a *App) runDeferredStartupTasks() {
 func (a *App) finishDeferredStartup(settingsRefreshed bool) {
 	s := &a.startupDeferred
 	if s.done {
+		if !s.visibleDone && !a.windowHidden {
+			a.releaseVisibleStartupTasks(settingsRefreshed)
+		}
 		return
 	}
 	s.stopTimer()
 	s.done = true
-	a.overviewFirstScreenReady = true
-	a.monitor.PollEnabled = true
 	a.triggerProvenanceBackfillOnce()
 	a.restoreCodeState()
 	if !settingsRefreshed {
 		a.RefreshIntegrations()
 	}
+	if a.windowHidden {
+		a.schedulePostFirstFrameStartup(settingsRefreshed)
+		return
+	}
+	a.releaseVisibleStartupTasks(settingsRefreshed)
+}
+
+func (a *App) releaseVisibleStartupTasks(settingsRefreshed bool) {
+	s := &a.startupDeferred
+	if s.visibleDone {
+		return
+	}
+	s.stopTimer()
+	s.visibleDone = true
+	a.overviewFirstScreenReady = true
+	a.monitor.PollEnabled = true
 	if !a.windowInactive && !a.windowHidden {
 		a.health()
 		a.verifyGraphAssetsAsync()
@@ -503,7 +529,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	if page == "设置" {
 		a.RefreshIntegrations()
 		a.RefreshOpenAtLoginAsync()
-		if a.startupDeferred.armed && !a.startupDeferred.done {
+		if a.startupDeferred.armed && (!a.startupDeferred.done || !a.startupDeferred.visibleDone) {
 			a.finishDeferredStartup(true)
 		}
 	}
