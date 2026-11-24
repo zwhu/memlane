@@ -1,11 +1,14 @@
 """Unit tests for catalog_index minimal zero-body projection, 4-tuple sync, and EQP zero TEMP B-TREE."""
+import asyncio
 import json
 import os
 from pathlib import Path
 import sqlite3
 import stat
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 import uuid
 
 from catalog_index import CatalogIndex
@@ -87,6 +90,198 @@ class CatalogIndexTests(unittest.TestCase):
         )
         con.commit()
         con.close()
+
+    def test_read_sync_blocks_for_cold_start_scope_timezone_and_missing_source(self):
+        async def check():
+            timezone = ['UTC']
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data, tz_provider=lambda: timezone[0])
+            self.addCleanup(cat.close)
+            cat._FAST_DOC_COUNT_THRESHOLD = 0
+            doc = str(uuid.uuid4())
+            self._insert_doc(doc, self.ds_proj)
+            cat_sync = cat.sync_async
+            with patch.object(cat, 'sync_async', wraps=cat_sync) as strong:
+                await cat.sync_for_read_async([self.ds_proj])
+                self.assertEqual(cat._last_sync_doc_count, 1)
+                self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc])), 1)
+                strong.assert_awaited_once()
+
+                await cat.sync_for_read_async([self.ds_proj])
+                strong.assert_awaited_once()
+                await cat.sync_for_read_async([self.ds_proj, self.ds_common])
+                self.assertEqual(strong.await_count, 2)
+
+                timezone[0] = 'Asia/Shanghai'
+                await cat.sync_for_read_async([self.ds_proj, self.ds_common])
+                self.assertEqual(cat.meta()['local_tz_name'], timezone[0])
+                self.assertEqual(strong.await_count, 3)
+
+                self.cognee_db.unlink()
+                with self.assertRaises(PolicyError):
+                    await cat.sync_for_read_async([self.ds_proj, self.ds_common])
+                self.assertEqual(strong.await_count, 4)
+
+        asyncio.run(check())
+
+    def test_large_read_sync_coalesces_writes_during_background_sync(self):
+        async def check():
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+            self.addCleanup(cat.close)
+            cat._FAST_DOC_COUNT_THRESHOLD = 0
+            cat._FAST_SYNC_THRESHOLD_NS = 0
+            cat._BG_COALESCE_MIN_NS = cat._BG_COALESCE_MAX_NS = 60_000_000_000
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            datasets = [self.ds_proj]
+            initial_gen = cat.sync(datasets)
+            first = str(uuid.uuid4())
+            self._insert_doc(first, self.ds_proj)
+
+            pinned = threading.Event()
+            release = threading.Event()
+            sync_into = cat._sync_into_connection
+
+            def hold_first_sync(*args, **kwargs):
+                result = sync_into(*args, **kwargs)
+                if not pinned.is_set():
+                    pinned.set()
+                    if not release.wait(5):
+                        raise AssertionError('background writer was not released')
+                return result
+
+            with patch('catalog_index.threading.Timer') as timer, patch.object(
+                cat, '_sync_into_connection', side_effect=hold_first_sync,
+            ) as worker:
+                self.assertEqual(await cat.sync_for_read_async(datasets), initial_gen)
+                timer.assert_called_once()
+                timer.call_args.args[1]()
+                try:
+                    self.assertTrue(await asyncio.to_thread(pinned.wait, 5))
+                    inflight = cat._inflight_sync[1]
+                    second = str(uuid.uuid4())
+                    self._insert_doc(second, self.ds_proj)
+                    reads = await asyncio.wait_for(
+                        asyncio.gather(*(cat.sync_for_read_async(datasets) for _ in range(6))), timeout=1,
+                    )
+                    self.assertEqual(reads, [initial_gen] * 6)
+                    worker.assert_called_once()
+                    timer.assert_called_once()
+                finally:
+                    release.set()
+
+                await asyncio.wrap_future(inflight)
+                self.assertIsNone(cat._inflight_sync)
+                self.assertEqual(timer.call_count, 2)
+                self.assertTrue(cat.is_catchup_pending())
+                timer.call_args.args[1]()
+                await asyncio.to_thread(cat._writer_executor.submit(lambda: None).result, 5)
+                self.assertFalse(cat.is_catchup_pending())
+                self.assertEqual(worker.call_count, 2)
+                self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [first, second])), 2)
+
+        asyncio.run(check())
+
+    def test_timed_out_read_leaves_writer_running_and_fresh_sync_covers_later_write(self):
+        async def check():
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+            self.addCleanup(cat.close)
+            cat._READ_FRESH_WAIT_NS = 0
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            datasets = [self.ds_proj]
+            initial_gen = cat.sync(datasets)
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+
+            pinned = threading.Event()
+            release = threading.Event()
+            sync_into = cat._sync_into_connection
+
+            def hold_first_sync(*args, **kwargs):
+                result = sync_into(*args, **kwargs)
+                if not pinned.is_set():
+                    pinned.set()
+                    if not release.wait(5):
+                        raise AssertionError('background writer was not released')
+                return result
+
+            with patch.object(cat, '_sync_into_connection', side_effect=hold_first_sync) as worker:
+                try:
+                    self.assertEqual(await cat.sync_for_read_async(datasets), initial_gen)
+                    self.assertTrue(await asyncio.to_thread(pinned.wait, 5))
+                    doc_id = str(uuid.uuid4())
+                    self._insert_doc(doc_id, self.ds_proj)
+                    fresh = asyncio.create_task(cat.sync_async(datasets))
+                    await asyncio.sleep(0)
+                    self.assertFalse(fresh.done())
+                finally:
+                    release.set()
+
+                self.assertGreater(await asyncio.wait_for(fresh, timeout=5), initial_gen)
+                self.assertEqual(worker.call_count, 2)
+                self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc_id])), 1)
+                self.assertFalse(cat.is_catchup_pending())
+
+        asyncio.run(check())
+
+    def test_failed_background_catchup_is_retried_in_foreground(self):
+        async def check():
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+            self.addCleanup(cat.close)
+            cat._FAST_DOC_COUNT_THRESHOLD = 0
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            datasets = [self.ds_proj]
+            gen = cat.sync(datasets)
+            cat._BG_COALESCE_MIN_NS = cat._BG_COALESCE_MAX_NS = 0
+            doc_id = str(uuid.uuid4())
+            self._insert_doc(doc_id, self.ds_proj)
+            with patch.object(cat, '_sync_into_connection', side_effect=PolicyError('source_failed', 503)):
+                self.assertEqual(await cat.sync_for_read_async(datasets), gen)
+                await asyncio.to_thread(cat._writer_executor.submit(lambda: None).result, 5)
+                self.assertIsNone(cat._inflight_sync)
+                self.assertIsNone(cat._bg_timer)
+                self.assertTrue(cat.is_catchup_pending())
+                with self.assertRaisesRegex(PolicyError, 'source_failed'):
+                    await cat.sync_for_read_async(datasets)
+
+            self.assertGreater(await cat.sync_for_read_async(datasets), gen)
+            self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc_id])), 1)
+            self.assertFalse(cat.is_catchup_pending())
+
+        asyncio.run(check())
+
+    def test_foreground_sync_and_close_cancel_deferred_catchup(self):
+        async def check():
+            cat = CatalogIndex(self.cat_path, official_data=self.official_data)
+            self.addCleanup(cat.close)
+            cat._FAST_DOC_COUNT_THRESHOLD = 0
+            cat._FAST_SYNC_THRESHOLD_NS = 0
+            cat._BG_COALESCE_MIN_NS = cat._BG_COALESCE_MAX_NS = 60_000_000_000
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            datasets = [self.ds_proj]
+            gen = cat.sync(datasets)
+            for use_async in (False, True):
+                doc = str(uuid.uuid4())
+                self._insert_doc(doc, self.ds_proj)
+                self.assertEqual(await cat.sync_for_read_async(datasets), gen)
+                deferred = cat._bg_timer
+                self.assertIsNotNone(deferred)
+                gen = await cat.sync_async(datasets) if use_async else cat.sync(datasets)
+                self.assertTrue(deferred.finished.is_set())
+                self.assertFalse(cat.is_catchup_pending())
+                self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc])), 1)
+
+            self._insert_doc(str(uuid.uuid4()), self.ds_proj)
+            await cat.sync_for_read_async(datasets)
+            deferred = cat._bg_timer
+            self.assertIsNotNone(deferred)
+            cat.close()
+            deferred.join(timeout=5)
+            self.assertFalse(deferred.is_alive())
+            self.assertFalse(cat.is_catchup_pending())
+            with self.assertRaisesRegex(PolicyError, 'catalog_index_closed'):
+                await cat.sync_for_read_async(datasets)
+            with self.assertRaisesRegex(PolicyError, 'catalog_index_closed'):
+                await cat.sync_async(datasets)
+
+        asyncio.run(check())
 
     def test_zero_body_schema_wal_pragmas_and_golden_categories(self):
         d_state = str(uuid.uuid4())

@@ -1037,10 +1037,11 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                 last_body = None
                 for _ in range(n):
                     ts = time.perf_counter()
-                    resp = await client.get(url, headers=headers)
-                    raw = await resp.read()
+                    async with client.session.get(client.make_url(url), headers=headers) as resp:
+                        raw = await resp.read()
+                        status = resp.status
                     lats.append((time.perf_counter() - ts) * 1000.0)
-                    assert resp.status == 200, (url, resp.status, raw[:200])
+                    assert status == 200, (url, status, raw[:200])
                     if len(raw) > max_bytes:
                         max_bytes = len(raw)
                     last_body = json.loads(raw)
@@ -1075,9 +1076,9 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
             deep_raw_url = f'/v1/projects/{proj_id}/raw-records?limit=30'
             while raw_cursor and pages_walked < raw_deep_target:
                 deep_raw_url = f'/v1/projects/{proj_id}/raw-records?limit=30&cursor={raw_cursor}'
-                r_step = await client.get(deep_raw_url, headers=headers)
-                assert r_step.status == 200, (pages_walked, r_step.status)
-                d_step = await r_step.json()
+                async with client.session.get(client.make_url(deep_raw_url), headers=headers) as r_step:
+                    assert r_step.status == 200, (pages_walked, r_step.status)
+                    d_step = await r_step.json()
                 raw_cursor = d_step.get('next_cursor') or ''
                 pages_walked += 1
             b_raw_deep = await _bench_get(deep_raw_url, n=10)
@@ -1173,11 +1174,12 @@ async def run_benchmark(scale: str = '1k', concurrency_seconds: float = 2.0) -> 
                     step += 1
                     ts = time.perf_counter()
                     try:
-                        resp = await client.get(url, headers=headers)
-                        await resp.read()
+                        async with client.session.get(client.make_url(url), headers=headers) as resp:
+                            await resp.read()
+                            status = resp.status
                         reader_lats.append((time.perf_counter() - ts) * 1000.0)
-                        if resp.status != 200:
-                            reader_errors.append(f'{url}: status={resp.status}')
+                        if status != 200:
+                            reader_errors.append(f'{url}: status={status}')
                     except Exception as exc:
                         reader_errors.append(f'{url}: {exc!r}')
 

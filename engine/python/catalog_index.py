@@ -750,6 +750,12 @@ ON CONFLICT(dataset_id, doc_id) DO UPDATE SET
 class CatalogIndex:
     """Single-writer rebuildable metadata projection with concurrent read-only queries."""
 
+    _READ_FRESH_WAIT_NS = 12_000_000
+    _FAST_SYNC_THRESHOLD_NS = 10_000_000
+    _FAST_DOC_COUNT_THRESHOLD = 5_000
+    _BG_COALESCE_MIN_NS = 200_000_000
+    _BG_COALESCE_MAX_NS = 300_000_000
+
     def __init__(
         self,
         path,
@@ -779,6 +785,14 @@ class CatalogIndex:
         self._last_synced_pin_ts_ns = 0
         self._last_synced_ds_tuple = None
         self._inflight_sync = None
+        self._has_synced_in_process = False
+        self._last_synced_tz_name = ''
+        self._last_sync_doc_count = 0
+        self._last_incremental_sync_ns = -1
+        self._last_sync_done_ns = 0
+        self._bg_sync_failed = False
+        self._bg_timer: threading.Timer | None = None
+        self._pending_bg_sync: tuple[tuple[str, ...], object] | None = None
         self._recent_appends: dict[int, tuple[str, list[tuple[str, str, int, int]]]] = {}
         self._cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
         self._common_cat_counts_cache: dict[tuple[int, str], dict[str, int]] = {}
@@ -986,6 +1000,8 @@ class CatalogIndex:
     def close(self):
         with self._state_lock:
             self._closed = True
+            self._pending_bg_sync = None
+            self._cancel_bg_timer_locked()
         self._invalidate_readers()
         self._writer_executor.shutdown(wait=True)
         self._hash_executor.shutdown(wait=True)
@@ -1331,11 +1347,12 @@ class CatalogIndex:
         est_cnt: int = 0,
         allow_stale_signal: bool = False,
         verify_global_max_rid: int | None = None,
+        max_workers: int = 6,
     ) -> tuple[dict[int, bytes], int, int, int, str] | None:
         """Compute full-13-column cryptographic chunk digests for one dataset.
 
-        Uses 6 parallel read-only WAL connections pinned to the exact same SQLite
-        WAL read-mark as ``cog_con`` (verified via ``cog_snap_sig == acq_after``
+        Uses up to ``max_workers`` parallel read-only WAL connections pinned to the exact
+        same SQLite WAL read-mark as ``cog_con`` (verified via ``cog_snap_sig == acq_after``
         plus an O(log N) ``MAX(rowid)`` seek on ``wcons[0]`` in <0.1ms).
         """
         if max_rid <= 0 or (expected_cnt is not None and expected_cnt <= 0):
@@ -1360,9 +1377,9 @@ class CatalogIndex:
 
         chunk_sql, fallback_sql = self._build_chunk_sql(ds_vars, col_exprs)
 
-        # Parallel 6-worker RO scan for large datasets (>= 12 buckets) with <0.1ms WAL snapshot pin
-        if len(buckets) >= 12 and not self._closed:
-            n_workers = 6
+        # Parallel RO scan for large datasets (>= 12 buckets) with <0.1ms WAL snapshot pin
+        n_workers = min(max(1, int(max_workers)), 6, len(buckets))
+        if n_workers >= 2 and len(buckets) >= 12 and not self._closed:
             pinned_cons: list[sqlite3.Connection] = []
             try:
                 wcons = [self._get_hash_worker_ro(slot, cognee_db) for slot in range(n_workers)]
@@ -1446,7 +1463,7 @@ class CatalogIndex:
                         except sqlite3.Error:
                             pass
 
-        # Single pinned-snapshot fallback on cog_con (guaranteed consistent with cog_con's BEGIN DEFERRED)
+        # The writer's pinned snapshot keeps the digest consistent with its projection reads.
         prev_tf = cog_con.text_factory
         cog_con.text_factory = bytes
         try:
@@ -2071,6 +2088,7 @@ class CatalogIndex:
         *,
         force_full: bool = False,
         relations_resolver=None,
+        background: bool = False,
         preserved_doc_seqs: dict[tuple[str, str], int] | None = None,
         min_last_doc_seq: int = 0,
         min_generation: int = 0,
@@ -2209,9 +2227,8 @@ class CatalogIndex:
                 f"{col_exprs['mime_type']}"
             )
 
-            # Stage 1 (O(log N) global MIN/MAX rowid PK seeks) + 6-worker cryptographic chunk digest scan.
-            # If a concurrent WAL write landed between cog_con's snapshot and worker pinning,
-            # retry pinning cog_con cleanly (<0.2ms) instead of falling back to single-threaded scan.
+            # Background catch-up hashes on the pinned writer connection to leave CPU for readers.
+            # Foreground scans can use the hash pool and retry if its WAL read marks diverge.
             for _snap_attempt in range(3):
                 if is_cold_build:
                     changed_datasets = list(allowed)
@@ -2282,6 +2299,7 @@ class CatalogIndex:
                         est_cnt=prev_fp[0],
                         allow_stale_signal=(_snap_attempt < 2),
                         verify_global_max_rid=global_max_rid,
+                        max_workers=2 if background else 6,
                     )
                     if scan_res is None:
                         snap_stale = True
@@ -2551,6 +2569,7 @@ class CatalogIndex:
                     ds_vars = list(dict.fromkeys(v for v in (uuid_hex(ds), ds) if v))
                     bkt_digests, _, _, _, _ = self._scan_dataset_chunks(
                         cog_con, cognee_db, ds_vars, col_exprs, c_cnt, c_min_rid, c_max_rid, c_sum_rid,
+                        max_workers=2 if background else 6,
                     )
                     data_hash = _fold_chunk_digests(bkt_digests)
                     live_fingerprints[ds] = (c_cnt, c_max_rid, c_sum_rid, c_max_upd, data_hash)
@@ -2814,6 +2833,7 @@ class CatalogIndex:
                                     cold_com += 1
                         bkt_digests, _, _, _, _ = self._scan_dataset_chunks(
                             cog_con, cognee_db, ds_vars, col_exprs, c_cnt, c_min_rid, c_max_rid, c_sum_rid,
+                            max_workers=2 if background else 6,
                         )
                         data_hash = _fold_chunk_digests(bkt_digests)
                         live_fingerprints[ds] = (c_cnt, c_max_rid, c_sum_rid, c_max_upd, data_hash)
@@ -3340,6 +3360,7 @@ class CatalogIndex:
                         self._cat_counts_cache[(next_gen, ds_c)] = dict(cold_cats)
             self._last_synced_cog_sig = cog_snap_sig
             self._last_synced_pin_ts_ns_pending = sync_pin_ts_ns
+            self._last_sync_doc_count_pending = sum(int(fp[0]) for fp in live_fingerprints.values())
             return next_gen, (prov_ok and recall_ok)
         except (PolicyError, sqlite3.Error):
             if con.in_transaction:
@@ -3378,285 +3399,266 @@ class CatalogIndex:
                 except sqlite3.Error:
                     pass
 
-    def sync(self, managed_datasets: list[str], *, force: bool = False, relations_resolver=None) -> int:
-        """Synchronize catalog index on the single dedicated writer thread.
+    def _full_stat_sig(self, ds_tuple: tuple[str, ...], relations_resolver) -> tuple:
+        base = self._compute_stat_signature(ds_tuple)
+        if relations_resolver is None:
+            return base + (None,)
+        rel_sig_fn = getattr(relations_resolver, 'relation_sig', None)
+        if callable(rel_sig_fn):
+            try:
+                if getattr(relations_resolver, 'global_relation_sig', False):
+                    return base + (str(rel_sig_fn('') or ''),)
+                return base + (tuple(str(rel_sig_fn(ds) or '') for ds in ds_tuple),)
+            except Exception:
+                pass
+        return base + (time.monotonic_ns(),)
 
-        O(1) stat short-circuit returns immediately (<0.2ms) when none of the
-        underlying SQLite stores, timezone, or managed dataset set changed.
-        Concurrent callers coalesce onto an in-flight sync and re-check the stat
-        signature upon wakeup so read-after-write never observes a pre-write snapshot.
-        """
-        ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
-        rel_sig_fn = getattr(relations_resolver, 'relation_sig', None) if relations_resolver is not None else None
+    def _submit_sync_locked(
+        self, ds_tuple, sig_check, relations_resolver, *, force=False, background=False, low_priority=False, rebuild=False,
+    ):
+        run_token = object()
 
-        def _full_stat_sig():
-            base = self._compute_stat_signature(ds_tuple)
-            if relations_resolver is None:
-                return base + (None,)
-            if callable(rel_sig_fn):
-                try:
-                    if getattr(relations_resolver, 'global_relation_sig', False):
-                        return base + (str(rel_sig_fn('') or ''),)
-                    return base + (tuple(str(rel_sig_fn(ds) or '') for ds in ds_tuple),)
-                except Exception:
-                    return base + (time.monotonic_ns(),)
-            return base + (time.monotonic_ns(),)
-
-        entry_ts_ns = time.monotonic_ns()
-        entry_sig = _full_stat_sig() if not force else None
-        for attempt in range(2):
-            if not force:
-                sig = entry_sig
-                with self._state_lock:
-                    if not self._rebuilding and (
-                        self._last_stat_sig == sig
-                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                    ):
-                        return self._last_generation
-                    inflight = self._inflight_sync
-                    if inflight is not None and inflight[0] == ds_tuple:
-                        shared_future = inflight[1]
-                        shared_start_sig = inflight[2]
-                    else:
-                        shared_future = None
-                        shared_start_sig = None
-                if shared_future is not None:
-                    gen = shared_future.result()
-                    # Linearizable read-after-write guard:
-                    # If the in-flight sync pinned its snapshots at or after our entry_ts_ns (or
-                    # matched entry_sig), we observed every write committed before we arrived —
-                    # return immediately without chasing future writes arriving after entry_ts_ns!
-                    with self._state_lock:
-                        if not self._rebuilding and (
-                            self._last_stat_sig == sig
-                            or shared_start_sig == sig
-                            or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                        ):
-                            return self._last_generation
-                    if attempt == 0:
-                        continue
-                    return gen
-
-            def _run():
+        def _run():
+            t_start_ns = time.monotonic_ns()
+            try:
                 with self._write_lock:
-                    sig_before = _full_stat_sig()
-                    if not force:
-                        with self._state_lock:
-                            if not self._rebuilding and self._last_stat_sig == sig_before:
-                                return self._last_generation
+                    sig_before = self._full_stat_sig(ds_tuple, relations_resolver)
+                    with self._state_lock:
+                        if not force and not self._bg_sync_failed and self._last_stat_sig == sig_before:
+                            return self._last_generation
+                    was_incremental = False
                     try:
                         is_uninitialized = bool(
-                            ds_tuple
+                            not force and ds_tuple
                             and self._write_con.execute('SELECT 1 FROM dataset_sync_state LIMIT 1').fetchone() is None
                             and self._write_con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
                         )
-                        if force or is_uninitialized:
-                            gen, cacheable = self._atomic_rebuild_locked(
-                                list(ds_tuple),
-                                relations_resolver=relations_resolver,
+                        was_incremental = not force and not is_uninitialized
+                        if was_incremental:
+                            gen, cacheable = self._sync_into_connection(
+                                self._write_con, list(ds_tuple), relations_resolver=relations_resolver,
+                                background=low_priority,
                             )
                         else:
-                            gen, cacheable = self._sync_into_connection(
-                                self._write_con,
-                                list(ds_tuple),
-                                force_full=False,
-                                relations_resolver=relations_resolver,
+                            gen, cacheable = self._atomic_rebuild_locked(
+                                list(ds_tuple), relations_resolver=relations_resolver,
                             )
                     except sqlite3.DatabaseError:
+                        if rebuild:
+                            raise
+                        was_incremental = False
                         gen, cacheable = self._atomic_rebuild_locked(
-                            list(ds_tuple),
-                            relations_resolver=relations_resolver,
+                            list(ds_tuple), relations_resolver=relations_resolver,
                         )
+                    done_ns = time.monotonic_ns()
                     with self._state_lock:
-                        if cacheable:
-                            eff_cog = getattr(self, '_last_synced_cog_sig', None)
-                            self._last_stat_sig = (eff_cog,) + sig_before[1:] if eff_cog is not None else sig_before
-                            self._last_synced_pin_ts_ns = getattr(self, '_last_synced_pin_ts_ns_pending', 0)
-                            self._last_synced_ds_tuple = ds_tuple
-                        else:
-                            self._last_stat_sig = None
+                        eff_cog = getattr(self, '_last_synced_cog_sig', sig_before[0])
+                        self._last_stat_sig = (eff_cog,) + sig_before[1:] if cacheable else None
+                        self._last_synced_pin_ts_ns = getattr(self, '_last_synced_pin_ts_ns_pending', 0)
+                        self._last_synced_ds_tuple = ds_tuple
+                        self._last_synced_tz_name = sig_before[3]
+                        self._has_synced_in_process = True
+                        self._bg_sync_failed = False
                         self._last_generation = gen
+                        self._last_sync_done_ns = done_ns
+                        self._last_sync_doc_count = getattr(self, '_last_sync_doc_count_pending', self._last_sync_doc_count)
+                        if was_incremental:
+                            self._last_incremental_sync_ns = max(1, done_ns - t_start_ns)
                     return gen
-
-            with self._state_lock:
-                if not force:
-                    sig_check = entry_sig
-                    if not self._rebuilding and (
-                        self._last_stat_sig == sig_check
-                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                    ):
-                        return self._last_generation
-                    inflight = self._inflight_sync
-                    if inflight is not None and inflight[0] == ds_tuple:
-                        fut = inflight[1]
-                        shared_start_sig = inflight[2]
-                        owns_slot = False
-                    else:
-                        fut = self._writer_executor.submit(_run)
-                        self._inflight_sync = (ds_tuple, fut, sig_check)
-                        shared_start_sig = sig_check
-                        owns_slot = True
-                else:
-                    fut = self._writer_executor.submit(_run)
-                    self._inflight_sync = (ds_tuple, fut, None)
-                    shared_start_sig = None
-                    owns_slot = True
-
-            try:
-                gen = fut.result()
-            finally:
-                if owns_slot:
+            except Exception:
+                if background:
                     with self._state_lock:
-                        if self._inflight_sync is not None and self._inflight_sync[1] is fut:
-                            self._inflight_sync = None
+                        self._bg_sync_failed = True
+                raise
+            finally:
+                with self._state_lock:
+                    if self._inflight_sync is not None and self._inflight_sync[3] is run_token:
+                        self._inflight_sync = None
+                    if not self._closed and self._pending_bg_sync is not None:
+                        if self._bg_sync_failed:
+                            self._pending_bg_sync = None
+                        else:
+                            self._arm_bg_timer_locked()
 
-            if force or owns_slot:
-                return gen
-            with self._state_lock:
-                if not self._rebuilding and (
-                    self._last_stat_sig == sig_check
-                    or shared_start_sig == sig_check
-                    or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                ):
-                    return self._last_generation
-        return self._last_generation
+        fut = self._writer_executor.submit(_run)
+        self._inflight_sync = (ds_tuple, fut, sig_check, run_token)
+        if background:
+            fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+        return fut
+
+    def _select_foreground_sync(self, ds_tuple, entry_sig, entry_ts_ns, relations_resolver, *, force, join):
+        with self._state_lock:
+            if self._closed:
+                raise PolicyError('catalog_index_closed', 503)
+            if not force and not self._rebuilding and not self._bg_sync_failed and (
+                self._last_stat_sig == entry_sig
+                or (
+                    self._last_stat_sig is not None
+                    and self._last_synced_ds_tuple == ds_tuple
+                    and self._last_synced_tz_name == entry_sig[3]
+                    and self._last_stat_sig[5] == entry_sig[5]
+                    and self._last_synced_pin_ts_ns >= entry_ts_ns
+                )
+            ):
+                return self._last_generation, None, False
+            if join and self._inflight_sync is not None and self._inflight_sync[0] == ds_tuple:
+                return None, self._inflight_sync[1], True
+            self._cancel_bg_timer_locked()
+            self._pending_bg_sync = None
+            fut = self._submit_sync_locked(ds_tuple, entry_sig, relations_resolver, force=force)
+            return None, fut, False
+
+    def sync(self, managed_datasets: list[str], *, force: bool = False, relations_resolver=None) -> int:
+        """Synchronize on the writer, checking that a shared sync covered the caller's entry."""
+        ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
+        entry_ts_ns = time.monotonic_ns()
+        entry_sig = self._full_stat_sig(ds_tuple, relations_resolver) if not force else None
+        gen, fut, shared = self._select_foreground_sync(
+            ds_tuple, entry_sig, entry_ts_ns, relations_resolver, force=force, join=not force,
+        )
+        if shared:
+            fut.result()
+            gen, fut, _ = self._select_foreground_sync(
+                ds_tuple, entry_sig, entry_ts_ns, relations_resolver, force=False, join=False,
+            )
+        return gen if fut is None else fut.result()
+
+    @staticmethod
+    def _async_sync_future(fut):
+        # Keep the writer alive if an individual request is cancelled or times out.
+        afut = asyncio.wrap_future(fut)
+        afut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+        return asyncio.shield(afut)
 
     async def sync_async(self, managed_datasets: list[str], *, force: bool = False, relations_resolver=None) -> int:
-        """Asyncio-friendly wrapper around ``sync()`` that never blocks caller worker threads.
-
-        Returns immediately on stat short-circuit (<0.05ms) and uses ``asyncio.wrap_future``
-        to await the single-writer executor without consuming any ``v2_api`` DB-pool thread.
-        """
+        """Synchronize without occupying a request executor thread while waiting for the writer."""
         ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
-        rel_sig_fn = getattr(relations_resolver, 'relation_sig', None) if relations_resolver is not None else None
-
-        def _full_stat_sig():
-            base = self._compute_stat_signature(ds_tuple)
-            if relations_resolver is None:
-                return base + (None,)
-            if callable(rel_sig_fn):
-                try:
-                    if getattr(relations_resolver, 'global_relation_sig', False):
-                        return base + (str(rel_sig_fn('') or ''),)
-                    return base + (tuple(str(rel_sig_fn(ds) or '') for ds in ds_tuple),)
-                except Exception:
-                    return base + (time.monotonic_ns(),)
-            return base + (time.monotonic_ns(),)
-
         entry_ts_ns = time.monotonic_ns()
-        entry_sig = _full_stat_sig() if not force else None
-        for attempt in range(2):
-            if not force:
-                sig = entry_sig
-                with self._state_lock:
-                    if not self._rebuilding and (
-                        self._last_stat_sig == sig
-                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                    ):
-                        return self._last_generation
-                    inflight = self._inflight_sync
-                    if inflight is not None and inflight[0] == ds_tuple:
-                        shared_future = inflight[1]
-                        shared_start_sig = inflight[2]
-                    else:
-                        shared_future = None
-                        shared_start_sig = None
-                if shared_future is not None:
-                    gen = await asyncio.wrap_future(shared_future)
-                    with self._state_lock:
-                        if not self._rebuilding and (
-                            self._last_stat_sig == sig
-                            or shared_start_sig == sig
-                            or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                        ):
-                            return self._last_generation
-                    if attempt == 0:
-                        continue
-                    return gen
+        entry_sig = self._full_stat_sig(ds_tuple, relations_resolver) if not force else None
+        gen, fut, shared = self._select_foreground_sync(
+            ds_tuple, entry_sig, entry_ts_ns, relations_resolver, force=force, join=not force,
+        )
+        if shared:
+            await self._async_sync_future(fut)
+            gen, fut, _ = self._select_foreground_sync(
+                ds_tuple, entry_sig, entry_ts_ns, relations_resolver, force=False, join=False,
+            )
+        return gen if fut is None else await self._async_sync_future(fut)
 
-            def _run():
-                with self._write_lock:
-                    sig_before = _full_stat_sig()
-                    if not force:
-                        with self._state_lock:
-                            if not self._rebuilding and self._last_stat_sig == sig_before:
-                                return self._last_generation
-                    try:
-                        is_uninitialized = bool(
-                            ds_tuple
-                            and self._write_con.execute('SELECT 1 FROM dataset_sync_state LIMIT 1').fetchone() is None
-                            and self._write_con.execute('SELECT 1 FROM catalog_docs LIMIT 1').fetchone() is None
-                        )
-                        if force or is_uninitialized:
-                            gen, cacheable = self._atomic_rebuild_locked(
-                                list(ds_tuple),
-                                relations_resolver=relations_resolver,
-                            )
-                        else:
-                            gen, cacheable = self._sync_into_connection(
-                                self._write_con,
-                                list(ds_tuple),
-                                force_full=False,
-                                relations_resolver=relations_resolver,
-                            )
-                    except sqlite3.DatabaseError:
-                        gen, cacheable = self._atomic_rebuild_locked(
-                            list(ds_tuple),
-                            relations_resolver=relations_resolver,
-                        )
-                    with self._state_lock:
-                        if cacheable:
-                            eff_cog = getattr(self, '_last_synced_cog_sig', None)
-                            self._last_stat_sig = (eff_cog,) + sig_before[1:] if eff_cog is not None else sig_before
-                            self._last_synced_pin_ts_ns = getattr(self, '_last_synced_pin_ts_ns_pending', 0)
-                            self._last_synced_ds_tuple = ds_tuple
-                        else:
-                            self._last_stat_sig = None
-                        self._last_generation = gen
-                    return gen
+    def _cancel_bg_timer_locked(self):
+        if self._bg_timer is not None:
+            self._bg_timer.cancel()
+            self._bg_timer = None
 
-            with self._state_lock:
-                if not force:
-                    sig_check = entry_sig
-                    if not self._rebuilding and (
-                        self._last_stat_sig == sig_check
-                        or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                    ):
-                        return self._last_generation
-                    inflight = self._inflight_sync
-                    if inflight is not None and inflight[0] == ds_tuple:
-                        fut = inflight[1]
-                        shared_start_sig = inflight[2]
-                        owns_slot = False
-                    else:
-                        fut = self._writer_executor.submit(_run)
-                        self._inflight_sync = (ds_tuple, fut, sig_check)
-                        shared_start_sig = sig_check
-                        owns_slot = True
-                else:
-                    fut = self._writer_executor.submit(_run)
-                    self._inflight_sync = (ds_tuple, fut, None)
-                    shared_start_sig = None
-                    owns_slot = True
+    def _is_fast_sync_locked(self) -> bool:
+        if self._last_incremental_sync_ns >= 0:
+            return self._last_incremental_sync_ns <= self._FAST_SYNC_THRESHOLD_NS
+        return self._last_sync_doc_count <= self._FAST_DOC_COUNT_THRESHOLD
 
-            try:
-                gen = await asyncio.wrap_future(fut)
-            finally:
-                if owns_slot:
-                    with self._state_lock:
-                        if self._inflight_sync is not None and self._inflight_sync[1] is fut:
-                            self._inflight_sync = None
+    def _bg_coalesce_ns_locked(self) -> int:
+        if self._is_fast_sync_locked():
+            return 0
+        base = self._last_incremental_sync_ns if self._last_incremental_sync_ns > 0 else 35_000_000
+        return min(max(base * 4, self._BG_COALESCE_MIN_NS), self._BG_COALESCE_MAX_NS)
 
-            if force or owns_slot:
-                return gen
-            with self._state_lock:
-                if not self._rebuilding and (
-                    self._last_stat_sig == sig_check
-                    or shared_start_sig == sig_check
-                    or (self._last_synced_ds_tuple == ds_tuple and self._last_synced_pin_ts_ns >= entry_ts_ns)
-                ):
+    def _arm_bg_timer_locked(self):
+        if self._closed or self._bg_timer is not None or self._pending_bg_sync is None:
+            return
+        elapsed_ns = max(0, time.monotonic_ns() - self._last_sync_done_ns)
+        remaining_ns = max(5_000_000, self._bg_coalesce_ns_locked() - elapsed_ns)
+        timer = threading.Timer(remaining_ns / 1e9, lambda: self._on_bg_timer_fire(timer))
+        timer.daemon = True
+        self._bg_timer = timer
+        timer.start()
+
+    def _on_bg_timer_fire(self, timer):
+        with self._state_lock:
+            if self._bg_timer is not timer:
+                return
+            if self._closed or self._pending_bg_sync is None or self._inflight_sync is not None:
+                self._bg_timer = None
+                return
+            pending = self._pending_bg_sync
+        ds_tuple, relations_resolver = pending
+        cur_sig = self._full_stat_sig(ds_tuple, relations_resolver)
+        with self._state_lock:
+            if self._bg_timer is not timer:
+                return
+            self._bg_timer = None
+            if self._closed or self._bg_sync_failed:
+                self._pending_bg_sync = None
+                return
+            if self._inflight_sync is not None:
+                return
+            if self._pending_bg_sync != pending:
+                self._arm_bg_timer_locked()
+                return
+            self._pending_bg_sync = None
+            # A foreground scope or timezone change supersedes an older read's request.
+            if self._last_synced_ds_tuple != ds_tuple or self._last_synced_tz_name != cur_sig[3]:
+                return
+            if self._last_stat_sig == cur_sig:
+                return
+            self._submit_sync_locked(ds_tuple, cur_sig, relations_resolver, background=True, low_priority=True)
+
+    def _schedule_bg_catchup_locked(self, ds_tuple, entry_sig, relations_resolver, *, immediate: bool):
+        if self._closed:
+            return None
+        if self._inflight_sync is not None:
+            self._pending_bg_sync = (ds_tuple, relations_resolver)
+            return self._inflight_sync[1] if self._inflight_sync[0] == ds_tuple else None
+        if not immediate and time.monotonic_ns() - self._last_sync_done_ns < self._bg_coalesce_ns_locked():
+            self._pending_bg_sync = (ds_tuple, relations_resolver)
+            self._arm_bg_timer_locked()
+            return None
+        self._cancel_bg_timer_locked()
+        self._pending_bg_sync = None
+        return self._submit_sync_locked(
+            ds_tuple, entry_sig, relations_resolver, background=True, low_priority=not immediate,
+        )
+
+    async def sync_for_read_async(
+        self, managed_datasets: list[str], *, force: bool = False, relations_resolver=None,
+    ) -> int:
+        """Serve the committed snapshot while coalescing dirty reads onto the catalog writer."""
+        if force:
+            return await self.sync_async(managed_datasets, force=True, relations_resolver=relations_resolver)
+        ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
+        entry_sig = self._full_stat_sig(ds_tuple, relations_resolver)
+        with self._state_lock:
+            if self._closed:
+                raise PolicyError('catalog_index_closed', 503)
+            need_blocking = (
+                self._rebuilding
+                or not self._has_synced_in_process
+                or self._last_synced_ds_tuple != ds_tuple
+                or self._last_synced_tz_name != entry_sig[3]
+                or self._bg_sync_failed
+                or (bool(self.official_data) and entry_sig[0] == ((0, 0, 0), (0, 0, 0)))
+            )
+            if not need_blocking:
+                if self._last_stat_sig == entry_sig:
                     return self._last_generation
-        return self._last_generation
+                snap_gen = self._last_generation
+                fast = self._is_fast_sync_locked()
+                fut = self._schedule_bg_catchup_locked(ds_tuple, entry_sig, relations_resolver, immediate=fast)
+                if not fast:
+                    return snap_gen
+        if need_blocking:
+            return await self.sync_async(managed_datasets, relations_resolver=relations_resolver)
+        if fut is None:
+            return snap_gen
+        try:
+            return await asyncio.wait_for(self._async_sync_future(fut), timeout=self._READ_FRESH_WAIT_NS / 1e9)
+        except asyncio.TimeoutError:
+            return snap_gen
+
+    def is_catchup_pending(self) -> bool:
+        with self._state_lock:
+            return bool(
+                self._inflight_sync is not None or self._pending_bg_sync is not None
+                or self._bg_timer is not None or self._bg_sync_failed
+            )
 
     def sync_sessions(self, managed_datasets: list[str], *, relations_resolver=None, force: bool = False) -> int:
         """Synchronize ``catalog_sessions`` (and docs if changed) with the supplied relation resolver."""
@@ -3775,20 +3777,14 @@ class CatalogIndex:
                 self._rebuilding = False
 
     def rebuild_atomic(self, managed_datasets: list[str], *, relations_resolver=None) -> int:
-        ds_list = sorted({uuid_text(ds) for ds in managed_datasets if ds})
-        ds_tuple = tuple(ds_list)
-
-        def _run():
-            with self._write_lock:
-                # Sample sig_before BEFORE reading cognee_db so concurrent writes during rebuild are not missed!
-                sig_before = self._compute_stat_signature(ds_tuple) + (None,)
-                gen, cacheable = self._atomic_rebuild_locked(ds_list, relations_resolver=relations_resolver)
-                with self._state_lock:
-                    self._last_stat_sig = sig_before if (cacheable and relations_resolver is None) else None
-                    self._last_generation = gen
-                return gen
-
-        return self._writer_executor.submit(_run).result()
+        ds_tuple = tuple(sorted({uuid_text(ds) for ds in managed_datasets if ds}))
+        with self._state_lock:
+            if self._closed:
+                raise PolicyError('catalog_index_closed', 503)
+            self._cancel_bg_timer_locked()
+            self._pending_bg_sync = None
+            fut = self._submit_sync_locked(ds_tuple, None, relations_resolver, force=True, rebuild=True)
+        return fut.result()
 
     # ============ Read-only O(log N + K) query methods ============
 

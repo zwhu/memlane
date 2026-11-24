@@ -868,18 +868,30 @@ def attach_v2_api(
         raw = request.headers.get('X-Memlane-Reading-Identity', '')
         return raw if isinstance(raw, str) else ''
 
-    async def _ensure_synced():
+    async def _ensure_synced(*, fresh: bool = False):
         if not official_data:
             raise PolicyError('official_store_unavailable', 503)
         projects, common = _verified_groups(registry)
         managed_ds = [p['dataset_id'] for p in projects]
         if common is not None:
             managed_ds.append(common['dataset_id'])
-        if hasattr(cat, 'sync_async'):
+        if not fresh and hasattr(cat, 'sync_for_read_async'):
+            await cat.sync_for_read_async(managed_ds, relations_resolver=rel_resolver)
+        elif hasattr(cat, 'sync_async'):
             await cat.sync_async(managed_ds, relations_resolver=rel_resolver)
         else:
             await _run_db(cat.sync, managed_ds, relations_resolver=rel_resolver)
         return projects, common
+
+    async def _query_with_fresh_retry(dataset_id, missing_code, query, *args):
+        try:
+            return await _run_db(query, *args)
+        except PolicyError as exc:
+            if not missing_code or exc.code != missing_code or exc.status != 404:
+                raise
+        await _ensure_synced(fresh=True)
+        await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
+        return await _run_db(query, *args)
 
     # 1. GET /v1/datasets/{ds}/documents/{doc}/body
     async def document_body(request):
@@ -1325,15 +1337,6 @@ def attach_v2_api(
                     else {}
                 )
             )
-            formatted = [
-                _format_knowledge_item(
-                    d,
-                    project_id=project_id,
-                    is_unread=page_unread.get(d['doc_id'], False),
-                    official_data=official_data,
-                )
-                for d in page_rows
-            ]
             cursor_keys = [
                 (
                     [d['recall_desc_key'], d['day_desc_key'], d['doc_id']]
@@ -1349,10 +1352,47 @@ def attach_v2_api(
                 unread_state_rev,
                 res['total_filtered'],
                 res['category_counts'],
-                formatted,
+                page_rows,
+                page_unread,
                 cursor_keys,
                 bool(res['has_more']),
                 bool(res['has_prev']),
+            )
+
+        def _query_and_format():
+            (
+                gen_r,
+                cat_ver_r,
+                unread_count_r,
+                unread_state_rev_r,
+                total_filtered_r,
+                category_counts_r,
+                page_rows_r,
+                page_unread_r,
+                cursor_keys_r,
+                has_more_r,
+                has_prev_r,
+            ) = _query_catalog_snapshot(_query)
+            formatted_r = [
+                _format_knowledge_item(
+                    d,
+                    project_id=project_id,
+                    is_unread=page_unread_r.get(d['doc_id'], False),
+                    official_data=official_data,
+                )
+                for d in page_rows_r
+            ]
+            return (
+                gen_r,
+                cat_ver_r,
+                unread_count_r,
+                unread_state_rev_r,
+                total_filtered_r,
+                category_counts_r,
+                formatted_r,
+                cursor_keys_r,
+                has_more_r,
+                has_prev_r,
             )
 
         (
@@ -1366,7 +1406,9 @@ def attach_v2_api(
             cursor_keys,
             base_has_more,
             base_has_prev,
-        ) = await _run_db(_query_catalog_snapshot, _query)
+        ) = await _query_with_fresh_retry(
+            dataset_id, 'document_not_found' if anchor_doc_id else None, _query_and_format,
+        )
 
         def _make_payload(subset, lo, hi):
             eff_more = bool(base_has_more or hi < len(formatted))
@@ -1527,7 +1569,9 @@ def attach_v2_api(
             ckeys,
             base_has_more,
             base_has_prev,
-        ) = await _run_db(_query)
+        ) = await _query_with_fresh_retry(
+            dataset_id, 'document_not_found' if anchor_doc_id else None, _query,
+        )
 
         def _make_payload(subset, lo, hi):
             eff_more = bool(base_has_more or hi < len(formatted))
@@ -1896,7 +1940,9 @@ def attach_v2_api(
             )
             return gen, res
 
-        gen, res = await _run_db(_query)
+        gen, res = await _query_with_fresh_retry(
+            dataset_id, 'session_not_found', _query,
+        )
         order_keys = res['order_keys']
 
         def _make_payload(subset, _lo, hi):
@@ -1977,9 +2023,53 @@ def attach_v2_api(
                     return a_val, a_err, None, sync_err
 
                 try:
-                    return a_val, a_err, _query_catalog_snapshot(_query), None
+                    snap = _query_catalog_snapshot(_query)
                 except Exception as exc:
                     return a_val, a_err, None, exc
+                (
+                    cat_ver_l,
+                    pending_total_l,
+                    pending_docs_l,
+                    unread_count_l,
+                    unread_state_rev_l,
+                    top_docs_l,
+                    reading_err_l,
+                ) = snap
+                unread_preview_l = []
+                for d in top_docs_l:
+                    preview_snip = ''
+                    if (
+                        official_data
+                        and d.get('raw_data_location')
+                        and not _readable_name(d.get('doc_label'))
+                        and not _readable_name(d.get('doc_name'))
+                    ):
+                        preview_snip, _ = read_local_preview_snippet(
+                            d['raw_data_location'],
+                            official_data,
+                            max_runes=80,
+                            max_utf8_bytes=240,
+                        )
+                    unread_preview_l.append({
+                        'doc_id': d['doc_id'],
+                        'title': _knowledge_title(d, preview_snip),
+                        'effective_date': d['effective_date'],
+                        'created_at': d['created_at'],
+                    })
+                return (
+                    a_val,
+                    a_err,
+                    (
+                        cat_ver_l,
+                        pending_total_l,
+                        pending_docs_l,
+                        unread_count_l,
+                        unread_state_rev_l,
+                        unread_preview_l,
+                        reading_err_l,
+                    ),
+                    None,
+                )
 
             def _query(_gen):
                 sinfo = cat.dataset_sync_info(dataset_id) or {}
@@ -2001,7 +2091,7 @@ def attach_v2_api(
                 reading_err_l = None
                 unread_count_l = 0
                 unread_state_rev_l = 0
-                unread_preview_l = []
+                top_docs_l = []
                 try:
                     if identity:
                         unread_ids, unread_state_rev_l = read_store.compute_unread_snapshot(
@@ -2028,21 +2118,7 @@ def attach_v2_api(
                                     top_ids.extend(rem)
                                 top_docs = cat.fetch_docs_by_ids(dataset_id, top_ids)
                                 top_docs.sort(key=lambda d: (d['created_at_ns'] or '', d['doc_id']), reverse=True)
-                            for d in top_docs[:10]:
-                                preview_snip = ''
-                                if official_data and d.get('raw_data_location'):
-                                    preview_snip, _ = read_local_preview_snippet(
-                                        d['raw_data_location'],
-                                        official_data,
-                                        max_runes=80,
-                                        max_utf8_bytes=240,
-                                    )
-                                unread_preview_l.append({
-                                    'doc_id': d['doc_id'],
-                                    'title': _knowledge_title(d, preview_snip),
-                                    'effective_date': d['effective_date'],
-                                    'created_at': d['created_at'],
-                                })
+                            top_docs_l = top_docs[:10]
                 except Exception as exc:
                     reading_err_l = exc.code if isinstance(exc, PolicyError) else 'reading_state_unavailable'
 
@@ -2052,7 +2128,7 @@ def attach_v2_api(
                     pending_docs_l,
                     unread_count_l,
                     unread_state_rev_l,
-                    unread_preview_l,
+                    top_docs_l,
                     reading_err_l,
                 )
 
@@ -2220,7 +2296,7 @@ def attach_v2_api(
         synced = False
         if official_data:
             try:
-                await _ensure_synced()
+                await _ensure_synced(fresh=True)
                 synced = True
             except PolicyError:
                 synced = False
@@ -2297,7 +2373,7 @@ def attach_v2_api(
         synced = False
         if official_data:
             try:
-                await _ensure_synced()
+                await _ensure_synced(fresh=True)
                 synced = True
             except PolicyError:
                 synced = False
@@ -2332,7 +2408,7 @@ def attach_v2_api(
         synced = False
         if official_data:
             try:
-                await _ensure_synced()
+                await _ensure_synced(fresh=True)
                 synced = True
             except PolicyError:
                 synced = False
@@ -2360,7 +2436,7 @@ def attach_v2_api(
         synced = False
         if official_data:
             try:
-                await _ensure_synced()
+                await _ensure_synced(fresh=True)
                 synced = True
             except PolicyError:
                 synced = False
@@ -2459,7 +2535,7 @@ def attach_v2_api(
         if official_client is None:
             raise PolicyError('provenance_backfill_unavailable', 503)
 
-        projects, common = await _ensure_synced()
+        projects, common = await _ensure_synced(fresh=True)
         allowed_ds = [p['dataset_id'] for p in projects]
         if common is not None:
             allowed_ds.append(common['dataset_id'])

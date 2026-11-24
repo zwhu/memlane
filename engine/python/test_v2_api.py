@@ -288,6 +288,94 @@ class V2APITests(AioHTTPTestCase):
         self.registry.close()
         self.tmp.cleanup()
 
+    async def _warm_large_catalog(self):
+        cat = self.app['v2_api_handles'].catalog_index
+        # Exercise the large-catalog policy on this small fixture.
+        cat._FAST_DOC_COUNT_THRESHOLD = 0
+        cat._FAST_SYNC_THRESHOLD_NS = 0
+        cat._BG_COALESCE_MIN_NS = cat._BG_COALESCE_MAX_NS = 60_000_000_000
+        response = await self.client.get('/v1/overview/bootstrap', headers=self.manager_headers)
+        self.assertEqual(response.status, 200)
+        await response.read()
+        return cat
+
+    def _append_knowledge_doc(self, source_id):
+        doc_id = uuid.uuid4()
+        with sqlite3.connect(self.cognee_db) as db:
+            row = list(db.execute('SELECT * FROM data WHERE id = ?', (uuid.UUID(source_id).hex,)).fetchone())
+            row[0] = doc_id.hex
+            db.execute('INSERT INTO data VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)', row)
+        return str(doc_id)
+
+    async def test_stale_catalog_retries_new_knowledge_anchors_and_session_children(self):
+        cat = await self._warm_large_catalog()
+        for source_id, dataset_id, path in (
+            (self.k_docs[0], self.ds_proj, '/v1/projects/p1/knowledge'),
+            (self.common_docs[0], self.ds_common, '/v1/common/knowledge'),
+        ):
+            with self.subTest(path=path):
+                doc_id = self._append_knowledge_doc(source_id)
+                self.assertFalse(cat.fetch_docs_by_ids(dataset_id, [doc_id]))
+                response = await self.client.get(
+                    f'{path}?anchor_doc_id={doc_id}', headers=self.manager_headers,
+                )
+                self.assertEqual(response.status, 200)
+                self.assertIn(doc_id, {row['doc_id'] for row in (await response.json())['items']})
+                self.assertFalse(cat.is_catchup_pending())
+
+        with sqlite3.connect(self.cognee_db) as db:
+            db.execute(
+                '''INSERT INTO session_records
+                   SELECT 'sess-fresh', user_id, dataset_id, status, started_at, last_activity_at, agent_id
+                   FROM session_records WHERE session_id = 'sess-parent' ''',
+            )
+        response = await self.client.get(
+            '/v1/projects/p1/raw-records/sessions/sess-fresh/children', headers=self.manager_headers,
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())['items'], [])
+        self.assertFalse(cat.is_catchup_pending())
+
+    async def test_mark_read_and_mark_all_read_sync_through_coalesce_window(self):
+        cat = await self._warm_large_catalog()
+        body = {'reading_identity': self.identity, 'project_id': 'p1', 'dataset_id': self.ds_proj}
+        doc_id = self._append_knowledge_doc(self.k_docs[0])
+        response = await self.client.post(
+            '/v1/reading-state/mark-read', headers=self.manager_headers, json={**body, 'doc_ids': [doc_id]},
+        )
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertTrue(result['unread_count_known'])
+        self.assertEqual(result['unread_count'], 15)
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc_id])), 1)
+
+        doc_id = self._append_knowledge_doc(self.k_docs[1])
+        response = await self.client.post(
+            '/v1/reading-state/mark-all-read', headers=self.manager_headers, json=body,
+        )
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertTrue(result['unread_count_known'])
+        self.assertEqual(result['unread_count'], 0)
+        self.assertEqual(len(cat.fetch_docs_by_ids(self.ds_proj, [doc_id])), 1)
+
+    async def test_stale_catalog_does_not_serve_revoked_dataset(self):
+        cat = await self._warm_large_catalog()
+        new_id = self._append_knowledge_doc(self.k_docs[0])
+        path = '/v1/projects/p1/knowledge'
+        response = await self.client.get(path, headers=self.manager_headers)
+        self.assertEqual(response.status, 200)
+        self.assertNotIn(new_id, {row['doc_id'] for row in (await response.json())['items']})
+        self.assertTrue(cat.is_catchup_pending())
+
+        self.dummy_official.authorized.discard(self.ds_proj)
+        response = await self.client.get(
+            f'{path}?anchor_doc_id={self.k_docs[0]}', headers=self.manager_headers,
+        )
+        self.assertEqual(response.status, 403)
+        self.assertTrue(cat.fetch_docs_by_ids(self.ds_proj, [self.k_docs[0]]))
+        self.assertTrue(cat.is_catchup_pending())
+
     async def test_unified_reading_contract_and_legacy_lesson_date(self):
         caps = await self.client.get('/v1/capabilities', headers=self.manager_headers)
         self.assertEqual(caps.status, 200)
