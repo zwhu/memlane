@@ -38,7 +38,7 @@ func TestProjectQueueUsesOfficialPendingDocumentsAndPreservesSummaryErrors(t *te
 	}))
 	defer server.Close()
 	a := New(Config{ServiceURL: server.URL}, nil)
-	in := projectQueueFetchInput{client: a.Client, project: AccessProject{ID: "p", Dataset: "ds"}, control: readingControlConfig(t, server.URL), stateDir: t.TempDir()}
+	in := projectQueueFetchInput{client: a.Client, project: AccessProject{ID: "p", Dataset: "ds"}, control: readingControlConfig(t, server.URL)}
 	fetch := func() projectQueueSnapshot {
 		var snap projectQueueSnapshot
 		a.fetchProjectQueueSummary(context.Background(), in, &snap)

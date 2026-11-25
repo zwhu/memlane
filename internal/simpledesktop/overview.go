@@ -2,69 +2,36 @@ package simpledesktop
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
+
+	appoverview "github.com/zwhu/memlane/app/overview"
+	"github.com/zwhu/memlane/app/shell"
 )
 
-type overviewSnapshot struct {
-	Knowledge    []Item
-	Raw          int
-	MissingDates int
-	RawError     string
-}
-
-type firstUseState struct {
-	Version   int    `json:"schema_version"`
-	Completed string `json:"initialization_completed_at"`
-	Date      string `json:"first_used_date"`
-	Zone      string `json:"first_used_timezone"`
-}
+type overviewSnapshot = appoverview.SnapshotOf[Item]
+type firstUseState = appoverview.FirstUseReceipt
+type activityRow = appoverview.ActivityRow
+type overviewEvent = appoverview.Event
 
 func firstUseDays(c Config, now time.Time) (int, error) {
-	path := c.ClientStateFile
-	if path == "" {
-		path = filepath.Join(filepath.Dir(c.ConfigFile), "client-state.json")
-	}
-	if c.ConfigFile == "" && c.ClientStateFile == "" {
-		return 0, fmt.Errorf("尚未完成初始化")
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, fmt.Errorf("初始化记录不可用")
-	}
-	var state firstUseState
-	if json.Unmarshal(b, &state) != nil || state.Version != 1 || state.Zone == "" {
-		return 0, fmt.Errorf("初始化记录无效")
-	}
-	if _, err := time.Parse(time.RFC3339Nano, state.Completed); err != nil {
-		return 0, fmt.Errorf("初始化记录无效")
-	}
-	first, err := time.Parse("2006-01-02", state.Date)
-	if err != nil {
-		return 0, fmt.Errorf("初始化日期无效")
-	}
-	// UTC here is a calendar ordinal, not elapsed local hours across DST.
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	days := int(today.Sub(first)/(24*time.Hour)) + 1
-	if days < 1 {
-		days = 1
-	}
-	return days, nil
+	return appoverview.FirstUseDays(c.ClientStateFile, c.ConfigFile, now)
 }
 
-// Upstream writes datetime.now(timezone.utc); SQLite DTOs may omit its offset.
-func officialTime(value string) (time.Time, bool) {
-	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, value); err == nil {
-			return t, true
-		}
+var officialTime = appoverview.OfficialTime
+var activityName = appoverview.ActivityName
+var activityState = appoverview.ActivityState
+
+func overviewProjectRefs(projects []Project) []shell.ProjectRef {
+	result := make([]shell.ProjectRef, 0, len(projects))
+	for _, p := range projects {
+		result = append(result, projectRef(p))
 	}
-	return time.Time{}, false
+	return result
+}
+
+func aggregateActivity(rows []activityRow, projects []Project) []overviewEvent {
+	return appoverview.AggregateActivity(rows, overviewProjectRefs(projects))
 }
 
 func nodeSets(d Document) []string {
@@ -100,191 +67,6 @@ func overviewProjects(c Config) []Project {
 			result = append(result, p)
 		}
 	}
-	return result
-}
-
-type activityRow struct {
-	ErrorClass string `json:"error_class"`
-	Origin     string `json:"origin"`
-	ID         string `json:"id"`
-	Run        string `json:"pipeline_run_id"`
-	Parent     string `json:"parent_operation_id"`
-	Dataset    string `json:"dataset_id"`
-	Kind       string `json:"kind"`
-	Pipeline   string `json:"pipeline_name"`
-	Operation  string `json:"operation_name"`
-	Status     string `json:"status"`
-	Outcome    string `json:"outcome"`
-	Background bool   `json:"background"`
-	Created    string `json:"created_at"`
-	Started    string `json:"started_at"`
-	Ended      string `json:"ended_at"`
-}
-type overviewEvent struct {
-	Key, Title, State, Project string
-	At                         time.Time
-	Record                     activityRow
-	Failures                   []activityRow
-	Recall                     *RecallEvent
-}
-
-func activityName(name string) string {
-	switch name {
-	case "add_pipeline", "add", "remember":
-		return "采集材料"
-	case "cognify_pipeline", "cognify":
-		return "提炼记忆"
-	case "memify_pipeline", "memify", "improve":
-		return "提炼记忆"
-	case "search":
-		return "搜索记忆"
-	case "recall":
-		return "召回记忆"
-	case "forget", "delete", "prune":
-		return "清理内容"
-	case "code_graph_pipeline":
-		return "更新代码图谱"
-	default:
-		return "记忆活动"
-	}
-}
-func activityState(r activityRow) string {
-	if r.Outcome == "failed" || strings.Contains(r.Status, "ERRORED") {
-		return "失败"
-	}
-	if r.Status == "DATASET_PROCESSING_COMPLETED" {
-		return "已完成"
-	}
-	if r.Outcome == "noop" {
-		return "未执行"
-	}
-	_, hasEnd := officialTime(r.Ended)
-	if r.Outcome == "succeeded" && (!r.Background || hasEnd) {
-		return "已完成"
-	}
-	if r.Background {
-		return "已启动"
-	}
-	return "处理中"
-}
-func aggregateActivity(rows []activityRow, projects []Project) []overviewEvent {
-	names := map[string]string{}
-	for _, p := range projects {
-		names[p.Dataset] = p.Name
-	}
-	latest := map[string]activityRow{}
-	for _, r := range rows {
-		if r.ID == "" || (r.Dataset != "" && names[r.Dataset] == "") {
-			continue
-		}
-		key := r.Run
-		if key == "" {
-			key = r.ID
-		}
-		old, exists := latest[key]
-		at, ok := officialTime(r.Created)
-		prev, _ := officialTime(old.Created)
-		if ok && (!exists || at.After(prev) || (at.Equal(prev) && r.ID > old.ID)) {
-			latest[key] = r
-		}
-	}
-	// Precompute root key for every run in O(N) with memoization to avoid O(N^2) scans.
-	rootOf := make(map[string]string, len(latest))
-	var resolveRoot func(string) string
-	resolveRoot = func(key string) string {
-		if r, ok := rootOf[key]; ok {
-			return r
-		}
-		path := []string{}
-		seen := map[string]bool{}
-		cur := key
-		for !seen[cur] {
-			if cached, ok := rootOf[cur]; ok {
-				cur = cached
-				break
-			}
-			seen[cur] = true
-			path = append(path, cur)
-			r, ok := latest[cur]
-			if !ok || r.Parent == "" {
-				break
-			}
-			if _, ok := latest[r.Parent]; !ok {
-				break
-			}
-			cur = r.Parent
-		}
-		for _, k := range path {
-			rootOf[k] = cur
-		}
-		return cur
-	}
-	childFailed := map[string]bool{}
-	childMaxAt := map[string]time.Time{}
-	failuresByRoot := map[string][]activityRow{}
-	for key, r := range latest {
-		root := resolveRoot(key)
-		state := activityState(r)
-		if state == "失败" {
-			failuresByRoot[root] = append(failuresByRoot[root], r)
-		}
-		if key != root {
-			if state == "失败" {
-				childFailed[root] = true
-			}
-			if t, ok := officialTime(r.Created); ok && t.After(childMaxAt[root]) {
-				childMaxAt[root] = t
-			}
-		}
-	}
-	events := make(map[string]overviewEvent, len(latest))
-	for key, r := range latest {
-		root := rootOf[key]
-		// A parent operation represents its child runs once its row is available.
-		if key != root {
-			continue
-		}
-		name := r.Operation
-		if name == "" {
-			name = r.Pipeline
-		}
-		at, _ := officialTime(r.Created)
-		if t, ok := officialTime(r.Ended); ok {
-			at = t
-		} else if t, ok := officialTime(r.Started); ok {
-			at = t
-		}
-		state := activityState(r)
-		if r.Background && r.Outcome == "succeeded" {
-			// Visible child failures are conclusive; a page of completed children
-			// cannot prove that every background stage has finished.
-			if maxChild := childMaxAt[root]; maxChild.After(at) {
-				at = maxChild
-			}
-			if childFailed[root] {
-				state = "失败"
-			}
-		}
-		project := names[r.Dataset]
-		if project == "" {
-			project = "全局"
-		}
-		failures := failuresByRoot[root]
-		if len(failures) > 1 {
-			sort.Slice(failures, func(i, j int) bool { return failures[i].ID < failures[j].ID })
-		}
-		events[root] = overviewEvent{Key: root, Title: activityName(name), State: state, Project: project, At: at, Record: r, Failures: failures}
-	}
-	result := make([]overviewEvent, 0, len(events))
-	for _, e := range events {
-		result = append(result, e)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].At.Equal(result[j].At) {
-			return result[i].Key < result[j].Key
-		}
-		return result[i].At.After(result[j].At)
-	})
 	return result
 }
 

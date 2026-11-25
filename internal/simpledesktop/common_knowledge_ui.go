@@ -2,29 +2,15 @@ package simpledesktop
 
 import (
 	"context"
-	"crypto/sha256"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/reading"
 )
 
-type commonEditorState struct {
-	Generation                               uint64
-	Completed, SaveVerified, DeleteSubmitted bool
-	Processing                               string
-	DeleteTarget                             Project
-	Draft                                    CommonDraft
-	Existing                                 *Document
-	Open, Busy, Submitted                    bool
-	Message                                  string
-	Receipt                                  CommonWriteReceipt
-	Target                                   Project
-	Category                                 string
-	Delete                                   *Document
-	Baseline                                 [32]byte
-}
+type commonEditorState = reading.CommonEditorState[Document, Project, CommonWriteReceipt]
 
 func (a *App) withdrawCommonEditor(dataset string) {
 	e := &a.commonEdit
@@ -38,24 +24,8 @@ func (a *App) withdrawCommonEditor(dataset string) {
 }
 
 func commonDraftFor(i Item) CommonDraft {
-	draft := CommonDraft{Category: commonCategory(*i.Document)}
-	draft.Source, _ = i.Document.Metadata["source"].(string)
-	body := strings.TrimSpace(i.Body)
-	if first, rest, ok := strings.Cut(body, "\n"); ok && strings.HasPrefix(first, "# ") {
-		draft.Title = strings.TrimPrefix(first, "# ")
-		body = strings.TrimSpace(rest)
-	} else {
-		draft.Title = i.Title
-	}
-	if suffix := "\n\n## 来源\n\n" + draft.Source; draft.Source != "" && strings.HasSuffix(body, suffix) {
-		body = strings.TrimSuffix(body, suffix)
-	}
-	if at := strings.LastIndex(body, "\n\n## 适用条件\n\n"); at >= 0 {
-		draft.Applicability = body[at+len("\n\n## 适用条件\n\n"):]
-		body = body[:at]
-	}
-	draft.Body = body
-	return draft
+	source, _ := i.Document.Metadata["source"].(string)
+	return reading.ParseDocument(i.Title, i.Body, commonCategory(*i.Document), source)
 }
 
 func (a *App) commonCategoryFilter() string {
@@ -88,7 +58,13 @@ func (a *App) deleteCommonKnowledge(document Document) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		err := client.deleteCommon(ctx, p, document)
+		controller, managed, err := client.commonAPI()
+		if err == nil && managed {
+			err = controller.Delete(ctx, document.ID)
+		}
+		if !managed || legacyReadingRouteMissing(err) {
+			err = client.deleteCommon(ctx, p, document)
+		}
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
 				return
@@ -120,39 +96,24 @@ func (a *App) commonEditor(c *ui.Context) { a.commonKnowledgeEditor(c) }
 
 func (a *App) saveCommonKnowledge() {
 	e := &a.commonEdit
-	if e.Busy || e.Submitted {
+	if !e.StartSave() {
 		return
 	}
-	if _, err := e.Draft.markdown(); err != nil {
-		e.Message = err.Error()
-		return
-	}
-	e.Busy = true
-	e.Message = "正在提交，保存和提炼结果将分别核对…"
 	op := e.Generation
 	client, p, draft, existing, baseline := a.Client, e.Target, e.Draft, e.Existing, e.Baseline
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 		defer cancel()
-		if existing != nil {
-			current, err := client.read(ctx, Item{ID: existing.ID, Dataset: existing.Dataset, Kind: "知识", Document: existing})
-			if err != nil || sha256.Sum256([]byte(current.Body)) != baseline {
-				a.Update(func() {
-					if op != a.commonEdit.Generation {
-						return
-					}
+		receipt, err := saveCommonDraft(ctx, client, p, draft, existing, baseline)
+		if errors.Is(err, reading.ErrCommonChanged) {
+			a.Update(func() {
+				if op == a.commonEdit.Generation {
 					e.Busy = false
-					if readingUnavailable(err) {
-						a.withdrawCommonEditor(p.Dataset)
-						a.InvalidateReading(p.Dataset)
-						return
-					}
 					e.Message = "原记忆已变化或无法读取，请刷新后重新编辑；本次未提交修改。"
-				})
-				return
-			}
+				}
+			})
+			return
 		}
-		receipt, err := client.writeCommon(ctx, p, draft, existing)
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
 				return
@@ -176,6 +137,64 @@ func (a *App) saveCommonKnowledge() {
 	}()
 }
 
+func saveCommonDraft(ctx context.Context, client Client, p Project, draft CommonDraft, existing *Document, baseline [32]byte) (CommonWriteReceipt, error) {
+	controller, managed, err := client.commonAPI()
+	if err != nil {
+		return CommonWriteReceipt{}, err
+	}
+	if managed {
+		id := ""
+		if existing != nil {
+			id = existing.ID
+		}
+		out, err := controller.Save(ctx, id, draft, baseline)
+		if !legacyReadingRouteMissing(err) {
+			receipt := CommonWriteReceipt{Gateway: true, DatasetID: p.Dataset, DataID: out.DocumentID}
+			if err == nil && (!out.OK || out.DocumentID == "" || out.DatasetID != p.Dataset) {
+				err = fmt.Errorf("保存回执不完整，请核对原操作")
+			}
+			return receipt, err
+		}
+	}
+	if existing != nil {
+		current, err := client.read(ctx, Item{ID: existing.ID, Dataset: existing.Dataset, Kind: "知识", Document: existing})
+		if readingUnavailable(err) {
+			return CommonWriteReceipt{}, err
+		}
+		if err != nil || reading.BaselineSHA256(current.Body) != baseline {
+			return CommonWriteReceipt{}, reading.ErrCommonChanged
+		}
+	}
+	return client.writeCommon(ctx, p, draft, existing)
+}
+
+func confirmGatewayCommon(ctx context.Context, client Client, p Project, receipt CommonWriteReceipt, draft CommonDraft) (Document, string, error) {
+	controller, ok, err := client.commonAPI()
+	if err != nil {
+		return Document{}, "", err
+	}
+	if !ok || receipt.DataID == "" {
+		return Document{}, "正文保存待核对", nil
+	}
+	detail, err := controller.Get(ctx, receipt.DataID)
+	if err != nil {
+		return Document{}, "正文保存待核对", err
+	}
+	body, err := draft.FormatDocument()
+	if err != nil {
+		return Document{}, "", err
+	}
+	if detail.DatasetID != p.Dataset || detail.Content != body {
+		return Document{}, "正文保存待核对", reading.ErrCommonChanged
+	}
+	row := catalogRowFromAPI(detail.CatalogItem)
+	doc := row.toItem("").Document
+	if doc == nil || doc.ID != receipt.DataID {
+		return Document{}, "", fmt.Errorf("通用记忆回执不完整")
+	}
+	return *doc, reading.CommonSaveStatus(detail.PipelineStatus), nil
+}
+
 func (a *App) confirmCommonKnowledge() {
 	e := &a.commonEdit
 	if e.Busy || !e.Submitted {
@@ -188,18 +207,22 @@ func (a *App) confirmCommonKnowledge() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		document, message, err := client.confirmCommon(ctx, control, hasControl, p, receipt, draft)
+		var document Document
+		var message string
+		var err error
+		if receipt.Gateway {
+			document, message, err = confirmGatewayCommon(ctx, client, p, receipt, draft)
+		} else {
+			document, message, err = client.confirmCommon(ctx, control, hasControl, p, receipt, draft)
+		}
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
 				return
 			}
 			if document.ID != "" {
-				e.SaveVerified = true
 				e.Receipt.DataID = document.ID
 			}
-			e.Processing = commonProcessingStatus(message)
-			e.Busy = false
-			e.Message = message
+			e.ApplyVerification(document.ID != "", message)
 			if err != nil {
 				if readingUnavailable(err) {
 					a.withdrawCommonEditor(p.Dataset)

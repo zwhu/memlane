@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"context"
+	appoverview "github.com/zwhu/memlane/app/overview"
 	"time"
 
 	"fmt"
@@ -62,6 +63,7 @@ type readingController struct {
 	titles                *ReadingTitles
 	detailChunks          *detailChunkCache
 	readingIdentity       string
+	nextViewIdentityCheck time.Time
 	baseReadingIdentity   string
 	baseIdentityURL       string
 	baseIdentityTokenFile string
@@ -160,7 +162,7 @@ type overviewController struct {
 	overviewFirstUse         overviewFirstUseState
 	overviewFirstScreenReady bool
 	startupDeferred          deferredStartupState
-	overviewRefreshAt        time.Time
+	overview                 appoverview.ControllerOf[Item]
 	focusRefreshAt           time.Time
 	focusRefreshNow          func() time.Time
 	windowActivation         uint64
@@ -175,18 +177,14 @@ type overviewController struct {
 }
 
 func (c *overviewController) cancelOverviewRecall() {
-	if c.overviewState.recallCancel != nil {
-		c.overviewState.recallCancel()
-		c.overviewState.recallCancel = nil
+	if c.overviewState.RecallCancel != nil {
+		c.overviewState.RecallCancel()
+		c.overviewState.RecallCancel = nil
 	}
 }
 
 func (c *overviewController) leaveOverview(panes map[string]*pane) {
-	if c.overviewState.cancel != nil {
-		c.overviewState.cancel()
-	}
-	c.overviewState.generation++
-	c.overviewState.Loading = false
+	c.overview.CancelAll()
 	c.fromOverview = true
 	c.overviewSourceFloor = make(map[*pane]int, len(panes))
 	for _, p := range panes {

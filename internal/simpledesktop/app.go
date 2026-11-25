@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"github.com/zwhu/memlane/app/reading"
 	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
@@ -118,17 +119,14 @@ type App struct {
 	InspectInstallWorkerFn        func(context.Context, string) (bootstrap.InstallWorkerState, bool, error)
 
 	motionRuns struct {
-		overviewPage      uint64
-		overviewKnowledge uint64
-		overviewActivity  uint64
-		projectPage       uint64
-		projectList       uint64
-		rawPage           uint64
-		rawList           uint64
-		docScrollKey      string
-		docEnter          uint64
-		docBodyKey        string
-		docBodyFade       uint64
+		projectPage  uint64
+		projectList  uint64
+		rawPage      uint64
+		rawList      uint64
+		docScrollKey string
+		docEnter     uint64
+		docBodyKey   string
+		docBodyFade  uint64
 	}
 	poseEnter               poseEnterTracker
 	projectCreate           projectCreateState
@@ -144,10 +142,8 @@ type App struct {
 	service, completion     string
 	monitor                 serviceMonitorState
 	trayCache               trayFlyoutCache
-	knowledgeWriter         *knowledgeReadWriter
-	readingMigrateMu        sync.Mutex
-	readingMigrated         map[string]bool
-	readingMigrating        map[string]chan struct{}
+	knowledgeWriter         *reading.ReadWriter
+	unreadAuthEpoch         atomic.Uint64
 	configError             string
 	externalStoreNotice     string
 	externalStorePollPaused bool
@@ -202,6 +198,7 @@ func New(c Config, err error) *App {
 	if a.initialSetup && a.environment.InitialStep == 0 {
 		a.environment.InitialStep = 1
 	}
+	a.initOverview()
 	a.initSearch()
 	a.initGraph(c.GraphAssets)
 	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: lightPalette.Fill1, CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
@@ -505,6 +502,10 @@ func (a *App) current() (Project, bool) {
 }
 func (a *App) navigate(page string, index int) { a.navigateKind(page, index, "") }
 func (a *App) navigateKind(page string, index int, kind string) {
+	a.navigateWithUnreadFilter(page, index, kind, false)
+}
+
+func (a *App) navigateWithUnreadFilter(page string, index int, kind string, unreadOnly bool) {
 	a.cancelOverviewRecall()
 	a.commonPage.MenuOpen = false
 	a.projectUI.InfoOpen = false
@@ -519,11 +520,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	}
 	if page == "总览" {
 		a.enterOverview()
-		a.motionRuns.overviewPage++
-		a.motionRuns.overviewKnowledge++
-		a.motionRuns.overviewActivity++
-		a.overviewState.heatmapGrowStart = time.Time{}
-		a.overviewState.overviewColdStartMotion = false
+		a.overviewPageController().StartEntrance(false)
 	}
 	if page == "知识" {
 		a.motionRuns.projectPage++
@@ -566,12 +563,12 @@ func (a *App) navigateKind(page string, index int, kind string) {
 		a.EnsureGraphAttached()
 	}
 	if page == "总览" {
-		if !a.overviewState.Loaded || a.overviewState.scope != a.overviewScope() {
+		if !a.overviewState.Loaded || a.overviewState.ScopeKey != a.overviewScope() {
 			a.loadOverview()
-		} else if a.overviewRefreshAt.IsZero() || !time.Now().Before(a.overviewRefreshAt) {
+		} else if a.overview.RefreshAt.IsZero() || !time.Now().Before(a.overview.RefreshAt) {
 			// Defer stale background refresh until after the 780ms enter animation
 			// settles so returning from a project never hitches mid-transition.
-			a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
+			a.overview.RefreshAt = time.Now().Add(overviewRefreshInterval)
 			navEpoch := a.epoch
 			if a.Update != nil {
 				time.AfterFunc(850*time.Millisecond, func() {
@@ -601,6 +598,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	if page != "总览" && page != "设置" && page != "图谱" && page != "用户画像" && !(page == "知识" && a.kind == "管理") {
 		s := a.state()
 		if page == "知识" && a.kind == "知识" {
+			s.Knowledge.UnreadOnly = unreadOnly
 			if s.Loaded && len(s.Items) > 0 {
 				a.motionRuns.projectList++
 			} else {
@@ -703,12 +701,12 @@ func (a *App) load(s *pane) {
 		} else if page == "通用知识" {
 			if hasControl {
 				usedV2Common = true
-				v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, commonOpts)
+				v2Resp, v2Err := control.commonPage(ctx, p.Dataset, category, 30, commonOpts)
 				if v2Err != nil && isControlInvalidCursor(v2Err) && (commonOpts.Cursor != "" || commonOpts.AnchorDocID != "") {
 					// Explicitly reset expired cursor to page 1 under the same filter
 					// instead of silently falling back to legacy offset pagination.
 					v2CommonCursorReset = true
-					v2Resp, v2Err = control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{
+					v2Resp, v2Err = control.commonPage(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{
 						RecallAgentID: commonOpts.RecallAgentID, RecallEventID: commonOpts.RecallEventID,
 					})
 				}
@@ -734,7 +732,7 @@ func (a *App) load(s *pane) {
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
 			if hasControl {
 				usedV2Raw = true
-				resp, readErr := control.rawRecordsV2(ctx, p.ID, kind, 30, "")
+				resp, readErr := control.rawPage(ctx, p.ID, kind, "")
 				if readErr != nil {
 					err = readErr
 				} else {
@@ -772,6 +770,7 @@ func (a *App) load(s *pane) {
 			if refreshing && !rawCacheReady && !usedV2Common {
 				preserveResolvedReadingTitles(rows, s.Items)
 			}
+			a.withdrawChangedReadingBody(s, rows)
 			s.Items = rows
 			if page == "通用知识" {
 				s.CommonV2Mode = usedV2Common
@@ -822,26 +821,30 @@ func (a *App) load(s *pane) {
 				}
 				for _, i := range rows {
 					if i.key() == targetKey {
-						if refreshing && s.SubagentParent == nil {
-							a.selectItem(s, i)
+						if refreshing && s.SubagentParent == nil && (!s.Selected.BodyLoaded || s.Selected.Session != nil) {
+							a.selectReadingItem(s, i, false)
 						}
 						return
 					}
 				}
-				if q == "" {
+				if q == "" && (!refreshing || !s.Selected.BodyLoaded) {
 					s.Selected = nil
 					s.SubagentParent, s.SubagentParentPage = nil, nil
 					s.SessionSubagents = false
 					s.Error = "选中内容已不在当前官方页面，请重新选择"
 				}
 			} else if rawFeed && len(s.Items) > 0 && !s.Locating && usedV2Raw {
-				a.selectItem(s, s.Items[0])
+				a.selectReadingItem(s, s.Items[0], false)
 			}
 		})
 	}()
 }
 func (a *App) selectItem(s *pane, i Item) {
-	if a.page == "知识" && a.kind == "知识" {
+	a.selectReadingItem(s, i, true)
+}
+
+func (a *App) selectReadingItem(s *pane, i Item, human bool) {
+	if human && a.page == "知识" && a.kind == "知识" {
 		s.Knowledge.Detail = true
 	}
 	if s.Locating {
@@ -910,6 +913,9 @@ func (a *App) selectItem(s *pane, i Item) {
 			s.SessionSubagents = false
 			if subagentDefaultTools(result, sessionPage) {
 				s.SessionTools = true
+			}
+			if human {
+				a.markKnowledgeRead(result)
 			}
 			a.publishOverviewTitle(result)
 			for idx, row := range s.Items {
@@ -1055,10 +1061,11 @@ func (a *App) viewContent(c *ui.Context) {
 		a.externalStorePollPaused = false
 		a.monitor.PollEnabled = true
 	}
+	now := time.Now()
 	if !a.windowHidden {
 		c.After(2 * time.Second)
-		a.syncReadingIdentity()
-		if !externalStopped && time.Now().After(a.access.Next) {
+		a.pollViewReadingIdentity(c.Now())
+		if !externalStopped && now.After(a.access.Next) {
 			a.RefreshProjectDirectory()
 		}
 	}
@@ -1068,12 +1075,12 @@ func (a *App) viewContent(c *ui.Context) {
 				a.overviewState.Loading, a.overviewState.ActivityLoading = false, false
 				a.overviewState.Error = a.access.DirectoryError
 			}
-		} else if !externalStopped && a.overviewState.scope != a.overviewScope() {
-			a.loadOverview()
+		} else if !externalStopped && a.overviewState.ScopeKey != a.overviewScope() {
+			a.loadOverview(true)
 		}
 	}
 	if !externalStopped {
-		a.refreshOverviewIfDue(time.Now())
+		a.refreshOverviewIfDue(now)
 	}
 	a.mainShell(c)
 }

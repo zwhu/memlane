@@ -48,7 +48,7 @@ func TestAllProjectsSidebarClickRevealsRestorableHiddenCard(t *testing.T) {
 }
 
 func TestAllProjectsOpenKeepsCurrentProjectAndReadingPosition(t *testing.T) {
-	a, _, _, _ := notificationMenuFixture(t)
+	a, _, _ := notificationMenuFixture(t)
 	a.page, a.kind = "知识", "知识"
 	s := a.state()
 	s.Loaded, s.Knowledge.Initialized = true, true

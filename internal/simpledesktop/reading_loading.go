@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/app/reading"
+	"github.com/zwhu/memlane/app/shell"
 )
 
 func (a *App) startRecentTitles(rows []Item) {
@@ -25,9 +28,9 @@ func (a *App) startRecentTitles(rows []Item) {
 		return
 	}
 	var scope strings.Builder
-	fmt.Fprintf(&scope, "%d/%d/%d/%s", a.epoch, a.authEpoch, a.overviewState.generation, a.readingIdentity)
+	fmt.Fprintf(&scope, "%d/%d/%d/%s", a.epoch, a.authEpoch, a.overviewState.Generation, a.readingIdentity)
 	for _, i := range candidates {
-		fmt.Fprintf(&scope, "/%v", keyForReading(a.readingIdentity, i, fmt.Sprint(a.overviewState.generation)))
+		fmt.Fprintf(&scope, "/%v", keyForReading(a.readingIdentity, i, fmt.Sprint(a.overviewState.Generation)))
 	}
 	if a.recentScope == scope.String() {
 		return
@@ -42,7 +45,7 @@ func (a *App) startRecentTitles(rows []Item) {
 	a.recentRequest++
 	request, epoch, authEpoch := a.recentRequest, a.epoch, a.authEpoch
 	client := a.Client
-	generation := fmt.Sprint(a.overviewState.generation)
+	generation := fmt.Sprint(a.overviewState.Generation)
 	for _, row := range candidates {
 		i := row
 		revision := a.readingRevisions[i.key()]
@@ -86,7 +89,7 @@ func (a *App) retryRecentTitle(i Item) {
 	}
 	request, epoch, authEpoch, revision := a.recentRequest, a.epoch, a.authEpoch, a.readingRevisions[i.key()]
 	client := a.Client
-	generation := fmt.Sprint(a.overviewState.generation)
+	generation := fmt.Sprint(a.overviewState.Generation)
 	go func() {
 		result, err := a.titles.read(ctx, client, i, generation, true, false)
 		a.Update(func() {
@@ -127,9 +130,10 @@ func (a *App) handleReadingFailure(i Item, err error) {
 	}
 	a.withdrawCommonEditor(i.Dataset)
 	status, ok := httpStatusCode(err)
-	if (ok && status == 401) || strings.Contains(err.Error(), "identity changed") || strings.Contains(err.Error(), "credential unavailable") {
-		a.InvalidateReading("")
-	} else {
+	switch {
+	case (ok && status == 401) || strings.Contains(err.Error(), "identity changed") || strings.Contains(err.Error(), "credential unavailable"):
+		appShellAdapter{a}.InvalidateReading()
+	default:
 		a.unavailableReadingItem(i)
 	}
 }
@@ -298,12 +302,7 @@ func (a *App) clearUserProfileBody(dataset, id string) {
 		}
 	}
 	if match {
-		s.Body = ""
-		s.BodyKey = ""
-		s.cachedBody, s.cachedNormalized, s.cachedChunks = "", "", nil
-		s.ReadAt = time.Time{}
-		s.Reading = false
-		s.ReadGeneration++
+		s.ClearBody()
 	}
 }
 
@@ -443,90 +442,7 @@ func (a *App) retryReadingTitle(s *pane, i Item) {
 	}()
 }
 
-func (c *overviewController) cancelOverviewRequests() {
-	v := &c.overviewState
-	c.cancelOverviewRecall()
-	if v.cancel != nil {
-		v.cancel()
-		v.cancel = nil
-	}
-	if v.activityCancel != nil {
-		v.activityCancel()
-		v.activityCancel = nil
-	}
-	v.generation++
-	v.activityGeneration++
-	v.Loading = false
-	v.ActivityLoading = false
-}
-
-func overviewEventDatasets(ev overviewEvent) []string {
-	seen := map[string]bool{}
-	var datasets []string
-	add := func(ds string) {
-		if ds != "" && !seen[ds] {
-			seen[ds] = true
-			datasets = append(datasets, ds)
-		}
-	}
-	add(ev.Record.Dataset)
-	for _, f := range ev.Failures {
-		add(f.Dataset)
-	}
-	if ev.Recall != nil {
-		for _, hit := range ev.Recall.Hits {
-			add(hit.Dataset)
-		}
-	}
-	return datasets
-}
-
-func failureDetailMatchesDataset(detail *failureDetailModel, dataset string) (matched, known bool) {
-	if detail == nil {
-		return false, false
-	}
-	for _, ds := range detail.Datasets {
-		if ds == "" {
-			continue
-		}
-		known = true
-		if ds == dataset {
-			return true, true
-		}
-	}
-	for _, rec := range detail.TechRecords {
-		if rec.Dataset == "" {
-			continue
-		}
-		known = true
-		if rec.Dataset == dataset {
-			return true, true
-		}
-	}
-	return false, known
-}
-
-func overviewEventMatchesDataset(ev overviewEvent, dataset string) bool {
-	if dataset == "" {
-		return true
-	}
-	if ev.Record.Dataset == dataset {
-		return true
-	}
-	for _, f := range ev.Failures {
-		if f.Dataset == dataset {
-			return true
-		}
-	}
-	if ev.Recall != nil {
-		for _, hit := range ev.Recall.Hits {
-			if hit.Dataset == dataset {
-				return true
-			}
-		}
-	}
-	return false
-}
+func (a *App) cancelOverviewRequests() { a.overviewPageController().CancelAll() }
 
 type readingInvalidator interface {
 	invalidateReading(dataset string)
@@ -555,6 +471,7 @@ func (a *App) registerReadingInvalidator(name string, inv readingInvalidator) {
 
 func (a *App) ensureReadingInvalidators() []namedReadingInvalidator {
 	if a.readingInvalidators == nil {
+		a.overviewPageController()
 		a.readingInvalidators = []namedReadingInvalidator{
 			{"common-editor", readingInvalidatorFunc(a.withdrawCommonEditor)},
 			{"search", &a.searchController},
@@ -573,130 +490,14 @@ func (a *App) ensureReadingInvalidators() []namedReadingInvalidator {
 // It withdraws cached content and fences in-flight callbacks before any reset.
 func (a *App) InvalidateReading(dataset string) {
 	a.authEpoch++
+	a.unreadAuthEpoch.Store(a.authEpoch)
 	for _, entry := range a.ensureReadingInvalidators() {
 		entry.invalidator.invalidateReading(dataset)
 	}
 }
 
 func (c *overviewController) invalidateReading(dataset string) {
-	v := &c.overviewState
-	v.snapshotVersion++
-	// Fence overview, activity, & day in-flight requests so late callbacks cannot repopulate revoked data.
-	c.cancelOverviewRequests()
-	v.dayRequest++
-	if v.dayCancel != nil {
-		v.dayCancel()
-		v.dayCancel = nil
-	}
-	if v.recallCancel != nil {
-		v.recallCancel()
-		v.recallCancel = nil
-	}
-	v.Loading = false
-	v.ActivityLoading = false
-	v.DayLoading = false
-	v.cachedGroupedEvents = nil
-	if dataset == "" {
-		v.scope = ""
-		v.Loaded = false
-		v.RawLoaded = false
-		v.ExpandedEvent = ""
-		v.ExpandedReport = ""
-		v.ExpandedDetail = nil
-		v.CopiedEvent = ""
-		v.Error = ""
-		v.ActivityError = ""
-		v.HistoryError = ""
-		v.RecallError = ""
-		v.DayItems = nil
-		v.DayNextCursor = ""
-		v.DayHasMore = false
-		v.DayTotal = 0
-		v.V2DayBuckets = nil
-		v.V2TotalKnowledge = 0
-		v.Events = nil
-		v.History = nil
-		v.HistoryLoaded = false
-		v.ActivityLoaded = false
-		v.More = false
-	} else {
-		if len(v.DayItems) > 0 {
-			keptDay := make([]Item, 0, len(v.DayItems))
-			for _, i := range v.DayItems {
-				if i.Dataset != dataset {
-					keptDay = append(keptDay, i)
-				}
-			}
-			v.DayItems = keptDay
-			v.DayNextCursor = ""
-			v.DayHasMore = false
-		}
-		expandedFoundInEvents := false
-		expandedMatchesEvent := false
-		if len(v.Events) > 0 {
-			keptEvents := make([]overviewEvent, 0, len(v.Events))
-			for _, ev := range v.Events {
-				if ev.Key != "" && ev.Key == v.ExpandedEvent {
-					expandedFoundInEvents = true
-					if overviewEventMatchesDataset(ev, dataset) {
-						expandedMatchesEvent = true
-					}
-				}
-				if ev.Record.Dataset == dataset {
-					continue
-				}
-				if len(ev.Failures) > 0 {
-					keptFailures := make([]activityRow, 0, len(ev.Failures))
-					for _, f := range ev.Failures {
-						if f.Dataset != dataset {
-							keptFailures = append(keptFailures, f)
-						}
-					}
-					if len(keptFailures) == 0 {
-						continue
-					}
-					ev.Failures = keptFailures
-				}
-				if ev.Recall != nil {
-					keptHits := make([]RecallHit, 0, len(ev.Recall.Hits))
-					for _, h := range ev.Recall.Hits {
-						if h.Dataset != dataset {
-							keptHits = append(keptHits, h)
-						}
-					}
-					if len(keptHits) == 0 {
-						continue
-					}
-					rcCopy := *ev.Recall
-					rcCopy.Hits = keptHits
-					ev.Recall = &rcCopy
-				}
-				keptEvents = append(keptEvents, ev)
-			}
-			v.Events = keptEvents
-		}
-		detailMatched, detailKnown := failureDetailMatchesDataset(v.ExpandedDetail, dataset)
-		if expandedMatchesEvent || detailMatched || (!detailKnown && !expandedFoundInEvents && (v.ExpandedEvent != "" || v.ExpandedReport != "" || v.ExpandedDetail != nil)) {
-			v.ExpandedEvent = ""
-			v.ExpandedReport = ""
-			v.ExpandedDetail = nil
-			v.CopiedEvent = ""
-		}
-		if len(v.History) > 0 {
-			keptHistory := make([]overviewEvent, 0, len(v.History))
-			for _, ev := range v.History {
-				if ev.Record.Dataset != dataset {
-					keptHistory = append(keptHistory, ev)
-				}
-			}
-			v.History = keptHistory
-		}
-	}
-	for n, i := range v.Snapshot.Knowledge {
-		if dataset == "" || i.Dataset == dataset {
-			clearUnavailableItem(&v.Snapshot.Knowledge[n])
-		}
-	}
+	c.overview.Invalidate(dataset)
 }
 
 func invalidateReadingPane(s *pane, dataset string) {
@@ -846,11 +647,7 @@ func (a *App) invalidateProjectQueues(dataset string) {
 		if dataset == "" || strings.HasSuffix(k, "/"+dataset) {
 			q.Request++
 			q.Loading = false
-			q.UnreadKnowledge = nil
-			q.UnreadHasMore = false
-			q.ServerUnreadKnown = false
-			q.ServerUnreadCount = 0
-			q.ServerUnreadStateRev = 0
+			q.UnreadState = UnreadState{}
 			q.Activity = nil
 			q.Documents = nil
 			q.PendingDocumentsCount = 0
@@ -872,6 +669,32 @@ func (a *App) cachedBaseReadingIdentity() string {
 	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
 	return base
 }
+
+// Poll token changes on the existing view cadence without statting token files in View.
+func (a *App) pollViewReadingIdentity(now time.Time) {
+	if a.Update == nil || a.Client.Config.TokenFile == "" || now.Before(a.nextViewIdentityCheck) {
+		return
+	}
+	a.nextViewIdentityCheck = now.Add(2 * time.Second)
+	client, update := a.Client, a.Update
+	adapter := appShellAdapter{app: a}
+	fence, activation := shell.CaptureFence(adapter), a.windowActivation
+	go func() {
+		full, base, err := readingIdentityPair(client)
+		if err != nil {
+			full = "unavailable"
+		}
+		if full == fence.ReadingIdentity {
+			return
+		}
+		update(func() {
+			if !a.windowHidden && activation == a.windowActivation && fence.Valid(adapter) {
+				a.applyReadingIdentity(full, base, err)
+			}
+		})
+	}()
+}
+
 func (a *App) syncReadingIdentity() bool {
 	return a.applyReadingIdentity(readingIdentityPair(a.Client))
 }
@@ -927,5 +750,23 @@ func preserveResolvedReadingTitles(rows, previous []Item) {
 			rows[n].Title, rows[n].SessionSummary = before.Title, before.SessionSummary
 			rows[n].ReadingState = before.ReadingState
 		}
+	}
+}
+
+func (a *App) withdrawChangedReadingBody(s *pane, rows []Item) {
+	selected := s.Selected
+	if selected == nil || selected.Document == nil {
+		return
+	}
+	for _, row := range rows {
+		if row.Document == nil || row.key() != selected.key() {
+			continue
+		}
+		old, next := selected.Document, row.Document
+		if reading.BodyVersionChanged(old.ContentHash, next.ContentHash, old.Updated, next.Updated) {
+			a.unavailableReadingItem(*selected)
+			a.selectReadingItem(s, row, false)
+		}
+		return
 	}
 }

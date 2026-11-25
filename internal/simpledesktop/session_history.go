@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 type SessionHistoryPage struct {
@@ -630,7 +631,11 @@ func (a *App) loadMoreSubagents(s *pane, parent Item) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resp, err := control.sessionChildrenV2(ctx, p.ID, parent.ID, userID, 30, cursor)
+		resp, err := control.rawChildren(ctx, p.ID, p.Dataset, parent.ID, userID, cursor)
+		reloaded := cursor != "" && isControlInvalidCursor(err)
+		if reloaded {
+			resp, err = control.rawChildren(ctx, p.ID, p.Dataset, parent.ID, userID, "")
+		}
 		a.Update(func() {
 			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || !a.syncReadingIdentity() {
 				return
@@ -651,22 +656,21 @@ func (a *App) loadMoreSubagents(s *pane, parent Item) {
 					}
 					return
 				}
-				seen := make(map[string]bool, len(target.Subagents))
-				for _, child := range target.Subagents {
-					seen[child.key()] = true
+				if reloaded {
+					target.Subagents = nil
 				}
+				children := make([]Item, 0, len(resp.Items))
 				for _, entry := range resp.Items {
 					if entry.ID == "" {
 						continue
 					}
 					child := rawSessionEntryToItem(parent.Dataset, entry, true)
 					child.ParentTitle = parentTitle
-					if !seen[child.key()] {
-						target.Subagents = append(target.Subagents, child)
-						seen[child.key()] = true
-					}
+					children = append(children, child)
 				}
-				target.SubagentTotalCount = max(resp.TotalCount, len(target.Subagents))
+				target.Subagents = reading.AppendDistinct(target.Subagents, children, Item.key)
+				target.SubagentTotalCount = max(target.SubagentTotalCount, resp.TotalCount, len(target.Subagents))
+				target.Subagents, _ = reading.EnforceSlidingWindowDir(target.Subagents, true)
 				target.SubagentsHasMore = resp.HasMore
 				target.SubagentsNextCursor = resp.NextCursor
 			}

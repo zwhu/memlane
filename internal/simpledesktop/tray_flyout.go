@@ -142,13 +142,13 @@ func (a *App) trayTodayMemoryCount(now time.Time) int {
 	if v.V2Mode {
 		totalCount = v.V2TotalKnowledge
 	}
-	if tc.todayValid && tc.todayGen == v.generation && tc.todayLoaded == v.Loaded &&
+	if tc.todayValid && tc.todayGen == v.Generation && tc.todayLoaded == v.Loaded &&
 		tc.todayKnowledgeCount == totalCount && tc.todayDay == day {
 		return tc.todayCount
 	}
 	buckets := a.overviewCachedBuckets(now)
 	count := buckets[day]
-	tc.todayGen = v.generation
+	tc.todayGen = v.Generation
 	tc.todayLoaded = v.Loaded
 	tc.todayKnowledgeCount = totalCount
 	tc.todayDay = day

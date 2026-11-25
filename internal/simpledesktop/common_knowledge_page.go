@@ -2,7 +2,6 @@ package simpledesktop
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 type commonKnowledgePageState struct {
@@ -21,31 +21,12 @@ type commonKnowledgePageState struct {
 var commonPlus = homeSVG(`<path d="M12 5v14M5 12h14"/>`)
 var commonEditIcon = homeSVG(`<path d="m16 3 5 5-12 12H4v-5zM13 6l5 5"/>`)
 
-func commonCategoryLabel(category string) string {
-	if category == "preference" {
-		return "个人偏好"
-	}
-	if category == "experience" {
-		return "通用经验"
-	}
-	return "通用记忆"
-}
+var commonCategoryLabel = reading.CommonCategoryLabel
+
 func commonHasDraft(e commonEditorState) bool {
-	return !e.Completed && (e.Open || e.Submitted || e.Existing != nil || strings.TrimSpace(e.Draft.Title+e.Draft.Body+e.Draft.Applicability+e.Draft.Source) != "")
+	return e.HasDraft()
 }
-func commonProcessingStatus(message string) string {
-	switch {
-	case strings.Contains(message, "提炼已完成"):
-		return "已完成"
-	case strings.Contains(message, "提炼失败"):
-		return "失败 · 内容保留"
-	case strings.Contains(message, "提炼状态："):
-		_, v, _ := strings.Cut(message, "提炼状态：")
-		return v
-	default:
-		return "待核对"
-	}
-}
+
 func commonButton(c *ui.Context, label string, primary bool, fn func()) ui.Element {
 	if primary {
 		return ui.PrimaryButton(c, label).OnClick(fn)
@@ -80,14 +61,14 @@ func (a *App) beginCommonDraft(item *Item) {
 		d := *item.Document
 		next.Existing = &d
 		next.Draft = commonDraftFor(*item)
-		next.Baseline = sha256.Sum256([]byte(item.Body))
+		next.Baseline = reading.BaselineSHA256(item.Body)
 	}
 	a.commonEdit = next
 	a.commonPage = commonKnowledgePageState{Options: next.Draft.Source != "" || next.Draft.Applicability != ""}
 }
 func (a *App) discardCommonDraft() {
 	e := &a.commonEdit
-	if e.Busy || e.Submitted {
+	if !e.CanDiscard() {
 		return
 	}
 	category := e.Category
@@ -397,7 +378,7 @@ func commonReadingParts(i Item) (CommonDraft, bool) {
 		return CommonDraft{}, false
 	}
 	d := commonDraftFor(i)
-	raw, err := d.markdown()
+	raw, err := d.FormatDocument()
 	return d, err == nil && strings.TrimSuffix(raw, "\n") == strings.TrimSuffix(i.Body, "\n")
 }
 func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
@@ -518,20 +499,8 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	e := &a.commonEdit
 	if !e.DeleteSubmitted {
 		asking := true
-		v4Dialog(c, &asking, v4DialogOptions{
-			Key:             "common-delete-confirm-" + i.ID,
-			Title:           "删除这条通用记忆？",
-			Width:           v4DialogSmall,
-			Danger:          true,
-			CancelText:      "保留记忆",
-			ConfirmText:     "确认删除此条",
-			ConfirmDisabled: e.Busy,
-			OnCancel:        func() { e.Delete = nil },
-			OnConfirm:       func() { a.deleteCommonKnowledge(*i.Document) },
-			Body: func() {
-				ui.Text(c, "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
-			},
-		})
+		reading.ConfirmDelete(c, &tok.Tokens, &asking, i.ID, e.Busy,
+			func() { e.Delete = nil }, func() { a.deleteCommonKnowledge(*i.Document) })
 		return
 	}
 
@@ -556,9 +525,16 @@ func (a *App) confirmCommonDeletion() {
 		var present bool
 		var err error
 		if ok {
-			_, err = control.documentLookupV2(ctx, p.Dataset, d.ID)
+			var controller reading.CommonController
+			controller, err = commonControllerFor(control)
+			if err == nil {
+				_, err = controller.Get(ctx, d.ID)
+			}
+			if legacyReadingRouteMissing(err) {
+				_, err = control.documentLookupV2(ctx, p.Dataset, d.ID)
+			}
 			present = err == nil
-			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+			if reading.Status(err, 404) || isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
 				err = nil
 			}
 		} else {
@@ -694,24 +670,13 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 					v4OutlineButton(c, "完成", nil, func() { e.Completed = true; e.Open = false })
 				}
 			} else {
-				_, err := e.Draft.markdown()
+				_, err := e.Draft.FormatDocument()
 				ui.PrimaryButton(c, "保存").OnClick(a.saveCommonKnowledge).Disabled(e.Busy || err != nil)
 			}
 		})
 	})
-	v4Dialog(c, &a.commonPage.Discard, v4DialogOptions{
-		Key:         "common-discard-draft",
-		Title:       "放弃未保存的草稿？",
-		Width:       v4DialogSmall,
-		Danger:      true,
-		CancelText:  "继续编辑",
-		ConfirmText: "放弃并返回",
-		OnConfirm: func() {
-			a.commonPage.Discard = false
-			a.discardCommonDraft()
-		},
-		Body: func() {
-			ui.Text(c, "草稿尚未保存，放弃后将清除本次编辑。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
-		},
+	reading.ConfirmDiscard(c, &tok.Tokens, &a.commonPage.Discard, func() {
+		a.commonPage.Discard = false
+		a.discardCommonDraft()
 	})
 }

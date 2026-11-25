@@ -11,44 +11,27 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/app/reading"
 )
 
 // Common knowledge is a normal official document with explicit metadata. It
 // never impersonates a session learning and never copies a project document.
-type CommonDraft struct {
-	Title, Body, Applicability, Source, Category string
-}
+type CommonDraft = reading.CommonDraft
 
-func (d CommonDraft) markdown() (string, error) {
-	if d.Category != "preference" && d.Category != "experience" {
-		return "", fmt.Errorf("请选择个人偏好或通用经验")
-	}
-	if strings.TrimSpace(d.Title) == "" || strings.ContainsAny(d.Title, "\r\n") || len([]rune(d.Title)) > 120 || strings.TrimSpace(d.Body) == "" {
-		return "", fmt.Errorf("请填写单行标题和正文")
-	}
-	body := "# " + strings.TrimSpace(d.Title) + "\n\n" + strings.TrimSpace(d.Body)
-	if strings.TrimSpace(d.Applicability) != "" {
-		body += "\n\n## 适用条件\n\n" + strings.TrimSpace(d.Applicability)
-	}
-	if strings.TrimSpace(d.Source) != "" {
-		body += "\n\n## 来源\n\n" + strings.TrimSpace(d.Source)
-	}
-	if len(body) > 256*1024 {
-		return "", fmt.Errorf("通用记忆超过单条大小限制")
-	}
-	return body + "\n", nil
-}
+func commonCategory(d Document) string { return reading.CommonCategory(d.Metadata) }
 
-func commonCategory(d Document) string {
-	kind, _ := d.Metadata["memlane_kind"].(string)
-	category, _ := d.Metadata["category"].(string)
-	if kind == "common_knowledge" && (category == "preference" || category == "experience") {
-		return category
+func (c Client) commonAPI() (reading.CommonController, bool, error) {
+	control, ok := c.controlClient()
+	if !ok {
+		return reading.CommonController{}, false, nil
 	}
-	return ""
+	client, err := newAppAPIClient(control, "")
+	return reading.CommonController{Client: client}, true, err
 }
 
 type CommonWriteReceipt struct {
+	Gateway        bool   `json:"-"`
 	Status         string `json:"status"`
 	DatasetID      string `json:"dataset_id"`
 	DataID         string `json:"data_id"`
@@ -62,7 +45,7 @@ type CommonWriteReceipt struct {
 // Accepted/running is not a claim that the document is saved and processed.
 func (c Client) writeCommon(ctx context.Context, p Project, draft CommonDraft, existing *Document) (CommonWriteReceipt, error) {
 	var receipt CommonWriteReceipt
-	body, err := draft.markdown()
+	body, err := draft.FormatDocument()
 	if err != nil {
 		return receipt, err
 	}
@@ -170,7 +153,7 @@ func (c Client) confirmCommon(ctx context.Context, control ProjectControlClient,
 	if !hasControl {
 		return Document{}, "保存尚未核对", fmt.Errorf("控制面服务不可用，无法核对官方保存结果")
 	}
-	expected, err := draft.markdown()
+	expected, err := draft.FormatDocument()
 	if err != nil {
 		return Document{}, "", err
 	}

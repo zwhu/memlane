@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/zwhu/memlane/app/shell"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/shell"
 )
 
 func TestPolicyRevisionWithdrawsCommonBodyWithoutClaimingDenial(t *testing.T) {
@@ -434,8 +434,8 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("bootstrap request never started")
 		}
-		genBefore := a.overviewState.generation
-		actGenBefore := a.overviewState.activityGeneration
+		genBefore := a.overviewState.Generation
+		actGenBefore := a.overviewState.ActivityGeneration
 
 		a.InvalidateReading("ds1")
 
@@ -444,9 +444,9 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("InvalidateReading did not cancel in-flight bootstrap HTTP context")
 		}
-		if a.overviewState.generation <= genBefore || a.overviewState.activityGeneration <= actGenBefore {
+		if a.overviewState.Generation <= genBefore || a.overviewState.ActivityGeneration <= actGenBefore {
 			t.Fatalf("InvalidateReading did not bump overview generations: gen %d->%d act %d->%d",
-				genBefore, a.overviewState.generation, actGenBefore, a.overviewState.activityGeneration)
+				genBefore, a.overviewState.Generation, actGenBefore, a.overviewState.ActivityGeneration)
 		}
 		if a.overviewState.Loading || a.overviewState.ActivityLoading {
 			t.Fatal("InvalidateReading left overview loading flags true")
@@ -679,7 +679,7 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		}, nil)
 		a.access.Loaded = true
 		a.page = "总览"
-		a.overviewState.scope = a.overviewScope()
+		a.overviewState.ScopeKey = a.overviewScope()
 		a.overviewState.Loaded = true
 		a.overviewState.Snapshot.Knowledge = []Item{{ID: "old", Dataset: "ds1", Body: "secret", BodyLoaded: true}}
 		a.overviewState.Events = []overviewEvent{{Key: "ev-old", Record: activityRow{Dataset: "ds1"}}}
@@ -692,8 +692,8 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		if calls.Load() != 1 {
 			t.Fatal("bootstrap did not observe the HTTP 401")
 		}
-		if a.overviewState.scope != a.overviewScope() {
-			t.Fatalf("401 cleared overview scope: got %q want %q", a.overviewState.scope, a.overviewScope())
+		if a.overviewState.ScopeKey != a.overviewScope() {
+			t.Fatalf("401 cleared overview scope: got %q want %q", a.overviewState.ScopeKey, a.overviewScope())
 		}
 		if a.overviewState.Error == "" && a.overviewState.ActivityError == "" {
 			t.Fatal("401 did not preserve visible error state")
@@ -701,16 +701,16 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		if (len(a.overviewState.Snapshot.Knowledge) > 0 && a.overviewState.Snapshot.Knowledge[0].Body != "") || len(a.overviewState.Events) != 0 {
 			t.Fatal("401 failed to withdraw overview bodies/events")
 		}
-		genAfter401 := a.overviewState.generation
+		genAfter401 := a.overviewState.Generation
 
 		// Render multiple frames: scope matches so App.View must NOT re-trigger loadOverview().
 		tt := ui.NewTester(a.View, 1200, 820)
 		for i := 0; i < 4; i++ {
 			tt.Frame()
 		}
-		if a.overviewState.generation != genAfter401 || a.overviewState.Loading || a.overviewState.ActivityLoading {
+		if a.overviewState.Generation != genAfter401 || a.overviewState.Loading || a.overviewState.ActivityLoading {
 			t.Fatalf("401 triggered per-frame request storm: gen %d -> %d loading=%v/%v calls=%d",
-				genAfter401, a.overviewState.generation, a.overviewState.Loading, a.overviewState.ActivityLoading, calls.Load())
+				genAfter401, a.overviewState.Generation, a.overviewState.Loading, a.overviewState.ActivityLoading, calls.Load())
 		}
 	})
 
@@ -779,8 +779,8 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	a.panes["first"], a.panes["alias"], a.panes["second"] = p1, p1, p2
 	newQueue := func() *projectQueueState {
 		return &projectQueueState{
-			Loading: true, UnreadKnowledge: []Item{first}, UnreadHasMore: true,
-			ServerUnreadKnown: true, ServerUnreadCount: 4, ServerUnreadStateRev: 7,
+			Loading: true, UnreadState: UnreadState{UnreadPreview: []Item{first}, UnreadHasMore: true,
+				ServerUnreadKnown: true, ServerUnreadCount: 4, ServerUnreadStateRev: 7},
 			Activity:  []overviewEvent{{Key: "event"}},
 			Documents: []Item{first}, PendingDocumentsCount: 1,
 		}
@@ -809,16 +809,16 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	mixed := overviewEvent{Key: "mixed", Failures: []activityRow{ev1.Record, ev2.Record}, Recall: recall}
 	v := &a.overviewState
 	*v = overviewViewState{
-		scope: "scope", Loaded: true, RawLoaded: true, Loading: true, ActivityLoading: true, DayLoading: true,
+		ScopeKey: "scope", Loaded: true, RawLoaded: true, Loading: true, ActivityLoading: true, DayLoading: true,
 		DayItems: []Item{first, second}, DayNextCursor: "next", DayHasMore: true, DayTotal: 2,
 		Events: []overviewEvent{ev1, mixed, ev2}, History: []overviewEvent{ev1, ev2}, HistoryLoaded: true,
 		ExpandedEvent: "mixed", ExpandedReport: "report", ExpandedDetail: &failureDetailModel{},
-		cachedGroupedEvents: []overviewEvent{mixed}, Snapshot: overviewSnapshot{Knowledge: []Item{first, second}},
+		GroupedEvents: []overviewEvent{mixed}, Snapshot: overviewSnapshot{Knowledge: []Item{first, second}},
 	}
 	cancelCount := 0
 	cancel := func() { cancelCount++ }
 	a.recentCancel, p1.cancel, p1.readCancel, p1.titleCancel = cancel, cancel, cancel, cancel
-	v.cancel, v.activityCancel, v.dayCancel, v.recallCancel = cancel, cancel, cancel, cancel
+	v.BootstrapCancel, v.ActivityCancel, v.DayCancel, v.RecallCancel = cancel, cancel, cancel, cancel
 
 	var customCalls []string
 	a.registerReadingInvalidator("probe", readingInvalidatorFunc(func(string) { t.Fatal("replaced hook was called") }))
@@ -867,9 +867,9 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		p2.Items[0].Body != second.Body {
 		t.Fatal("scoped invalidation changed unrelated pane data, or left loading stuck")
 	}
-	if v.snapshotVersion != 1 || v.generation != 1 || v.activityGeneration != 1 || v.dayRequest != 1 ||
-		v.cancel != nil || v.activityCancel != nil || v.dayCancel != nil || v.recallCancel != nil ||
-		v.Loading || v.ActivityLoading || v.DayLoading || v.cachedGroupedEvents != nil ||
+	if v.SnapshotVersion != 1 || v.Generation != 1 || v.ActivityGeneration != 1 || v.DayRequest != 1 ||
+		v.BootstrapCancel != nil || v.ActivityCancel != nil || v.DayCancel != nil || v.RecallCancel != nil ||
+		v.Loading || v.ActivityLoading || v.DayLoading || v.GroupedEvents != nil ||
 		len(v.DayItems) != 1 || v.DayItems[0].ID != second.ID || v.DayNextCursor != "" || v.DayHasMore || v.DayTotal != 2 ||
 		v.ExpandedEvent != "" || v.ExpandedReport != "" || v.ExpandedDetail != nil ||
 		len(v.Events) != 2 || v.Events[0].Key != mixed.Key || len(v.Events[0].Failures) != 1 ||
@@ -882,7 +882,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	checkQueueReset := func(q *projectQueueState, version uint64) {
 		t.Helper()
 		if q.Loading || q.Request != version || q.StateVersion != version ||
-			q.UnreadKnowledge != nil || q.UnreadHasMore || q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.ServerUnreadStateRev != 0 ||
+			q.UnreadPreview != nil || q.UnreadHasMore || q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.ServerUnreadStateRev != 0 ||
 			q.Activity != nil || q.Documents != nil || q.PendingDocumentsCount != 0 {
 			t.Fatalf("queue did not reset at generation %d", version)
 		}
@@ -912,7 +912,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		len(p2.History) != 0 || len(p2.DetailLists) != 0 || len(p2.Knowledge.Measurements) != 0 {
 		t.Fatal("global invalidation did not reset all unique panes")
 	}
-	if v.snapshotVersion != 2 || v.generation != 2 || v.activityGeneration != 2 || v.dayRequest != 2 || v.scope != "" ||
+	if v.SnapshotVersion != 2 || v.Generation != 2 || v.ActivityGeneration != 2 || v.DayRequest != 2 || v.ScopeKey != "" ||
 		v.Loaded || v.RawLoaded || v.HistoryLoaded || v.DayItems != nil || v.DayTotal != 0 || v.Events != nil ||
 		v.History != nil || v.Snapshot.Knowledge[1].BodyLoaded {
 		t.Fatal("global invalidation retained overview data")

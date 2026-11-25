@@ -666,8 +666,8 @@ func TestBeta3SetupOnlyMonitorAndOverview(t *testing.T) {
 		t.Fatal("setup mode masked a real low disk warning")
 	}
 	a.Update = nil
-	a.overviewFirstUse.cachedFirstUseKey = firstUseKey(a.Config, time.Now())
-	a.overviewFirstUse.cachedFirstUseErr = errors.New("missing first-use receipt")
+	a.overviewFirstUse.CachedKey = firstUseKey(a.Config, time.Now())
+	a.overviewFirstUse.Err = errors.New("missing first-use receipt")
 	a.access.OpenProject = "demo"
 	a.settingsOrigin = &readingLocation{}
 	tt := ui.NewTester(a.View, 1200, 820)

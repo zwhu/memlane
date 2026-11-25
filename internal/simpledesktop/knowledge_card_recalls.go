@@ -137,11 +137,11 @@ func (a *App) loadOverviewRecallStats(generation uint64) {
 	if !ok || a.Update == nil {
 		return
 	}
-	if a.overviewState.recallCancel != nil {
-		a.overviewState.recallCancel()
+	if a.overviewState.RecallCancel != nil {
+		a.overviewState.RecallCancel()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	a.overviewState.recallCancel = cancel
+	a.overviewState.RecallCancel = cancel
 	epoch, identity := a.epoch, a.readingIdentity
 	groups := map[string][]Item{}
 	for _, row := range a.overviewState.Snapshot.Knowledge {
@@ -175,7 +175,7 @@ func (a *App) loadOverviewRecallStats(generation uint64) {
 					return
 				}
 				a.Update(func() {
-					if ctx.Err() != nil || generation != a.overviewState.generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+					if ctx.Err() != nil || generation != a.overviewState.Generation || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 						return
 					}
 					for n, row := range a.overviewState.Snapshot.Knowledge {

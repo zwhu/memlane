@@ -4,30 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/app/api"
+	"github.com/zwhu/memlane/app/reading"
 )
 
+type UnreadState = reading.UnreadScopeStateOf[Item]
+
 type projectQueueState struct {
-	InboxPending                   int
-	InboxFailed                    int
-	LastError                      string
-	InboxRetryBusy                 bool
-	InboxRetryError                string
-	inboxRevision                  uint64
-	KnowledgeRead                  knowledgeReadState
-	KnowledgeCatalogVersion        string
-	ServerUnreadKnown              bool
-	ServerUnreadCount              int
-	ServerUnreadStateRev           int64
-	ServerUnreadSnapshot           uint64
-	UnreadHasMore                  bool
-	PendingDocumentsCount          int
-	UnreadKnowledge                []Item
-	KnowledgeReadError             string
+	UnreadState
+	InboxPending    int
+	InboxFailed     int
+	LastError       string
+	InboxRetryBusy  bool
+	InboxRetryError string
+	inboxRevision   uint64
+
+	KnowledgeCatalogVersion string
+
+	PendingDocumentsCount int
+
 	StateVersion                   uint64
 	Scroll                         ui.ScrollState
 	Activity                       []overviewEvent
@@ -47,7 +45,6 @@ type projectQueueState struct {
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
-	localStateLoaded               bool
 }
 
 func (q *projectQueueState) projectAutoCapture(p AccessProject) bool {
@@ -87,24 +84,9 @@ func (a *App) projectQueueStateForAsync(p AccessProject) *projectQueueState {
 }
 
 func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
-	if a.access.Queues == nil {
-		a.access.Queues = map[string]*projectQueueState{}
-	}
-	identity := a.cachedBaseReadingIdentity()
-	key := identity + "/" + p.ID + "/" + p.Dataset
-	q := a.access.Queues[key]
-	if q == nil {
-		q = &projectQueueState{}
-		if path, err := a.knowledgeReadPath(p); err == nil {
-			if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
-				q.KnowledgeRead = s
-			}
-		}
-		q.localStateLoaded = true
-		a.access.Queues[key] = q
-	}
-	return q
+	return a.projectQueueStateForAsync(p)
 }
+
 func (a *App) projectQueue(p AccessProject) *projectQueueState {
 	q := a.projectQueueStateForAsync(p)
 	if !q.Loading && !a.access.Busy && (!q.Loaded || time.Now().After(q.Next)) && a.Update != nil {
@@ -114,20 +96,18 @@ func (a *App) projectQueue(p AccessProject) *projectQueueState {
 }
 
 type projectQueueFetchInput struct {
-	project          AccessProject
-	client           Client
-	control          *ProjectControlConfig
-	stateDir         string
-	migrationProject AccessProject
-	needLocalState   bool
-	setupOnly        bool
-	refreshInbox     bool
+	project      AccessProject
+	client       Client
+	control      *ProjectControlConfig
+	setupOnly    bool
+	refreshInbox bool
 }
 
 type projectQueueSnapshot struct {
 	setupOnly             bool
 	gateway               bool
 	readingState          *api.ReadingStateView
+	unreadPage            *v2ProjectKnowledgeResponse
 	inbox                 *api.ProjectView
 	authDenied            bool
 	v2Summary             v2MessageSummaryResponse
@@ -139,7 +119,6 @@ type projectQueueSnapshot struct {
 	documentErr           error
 	activity              []activityRow
 	activityErr           error
-	localKnowledgeRead    knowledgeReadState
 }
 
 type projectQueueApplyMeta struct {
@@ -161,24 +140,14 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		q.Next = time.Now().Add(5 * time.Second)
 	}
 	baseIdentity := a.cachedBaseReadingIdentity()
-	needLocalState := !q.localStateLoaded
 	var control *ProjectControlConfig
 	if ctrl, ok := a.accessClient(); ok {
 		cfg := ctrl.Config
 		control = &cfg
 	}
-	stateDir := a.readingStateDir()
-	// Queue loads only depend on migration for their own project.
-	migrationProject := p
-	for _, ap := range a.access.Directory.Projects {
-		if ap.ID == p.ID && ap.Dataset == p.Dataset {
-			migrationProject = ap
-			break
-		}
-	}
 	in := projectQueueFetchInput{
 		project: p, client: a.Client, control: control,
-		stateDir: stateDir, migrationProject: migrationProject, needLocalState: needLocalState, setupOnly: a.isSetupOnlyRuntime(), refreshInbox: q.inboxRevision > 0,
+		setupOnly: a.isSetupOnlyRuntime(), refreshInbox: q.inboxRevision > 0,
 	}
 	meta := projectQueueApplyMeta{request, authEpoch, baseIdentity, q.inboxRevision}
 	update := a.Update
@@ -193,22 +162,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 
 func (a *App) fetchProjectQueueSnapshot(ctx context.Context, in projectQueueFetchInput) projectQueueSnapshot {
 	snap := projectQueueSnapshot{setupOnly: in.setupOnly}
-	var workers sync.WaitGroup
-	workers.Go(func() {
-		a.fetchProjectQueueSummary(ctx, in, &snap)
-	})
-	workers.Go(func() {
-		p := in.project
-		if in.needLocalState {
-			if path, err := knowledgeReadPath(in.stateDir, in.client, p); err == nil {
-				if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
-					snap.localKnowledgeRead = s
-				}
-			}
-		}
-	})
-
-	workers.Wait()
+	a.fetchProjectQueueSummary(ctx, in, &snap)
 
 	snap.authDenied = readingAuthDenied(snap.documentErr) || readingAuthDenied(snap.activityErr) ||
 		isControlErrorCode(snap.documentErr, 503, "reading_contract_mismatch")
@@ -263,7 +217,6 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 	}
 	client, p := in.client, in.project
 	identity, _ := readingIdentity(Client{Config: client.Config})
-	migrationProjects := []AccessProject{in.migrationProject}
 	summaryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	manager := ProjectControlClient{Config: *in.control, HTTP: client.HTTP}
@@ -280,18 +233,21 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 		if gateway {
 			snap.gateway = true
 			snap.readingState, err = fetchGatewayQueueReadingState(summaryCtx, manager, identity, p)
+			if err == nil && snap.readingState.UnreadCount > 10 {
+				page, pageErr := manager.knowledgePage(summaryCtx, identity, api.KnowledgePageOptions{
+					ProjectID: p.ID, Sort: "date", UnreadOnly: true, Limit: 10,
+				})
+				if readingAuthDenied(pageErr) {
+					err = pageErr
+				} else if pageErr == nil && page.UnreadStateRev == snap.readingState.StateRev && page.UnreadCount == snap.readingState.UnreadCount {
+					snap.unreadPage = &page
+				}
+			}
 			if readingAuthDenied(err) {
 				snap.documentErr = err
 			} else if err != nil {
 				snap.v2ReadStateErr = err.Error()
 			}
-			return
-		}
-	}
-	if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, in.stateDir, migrationProjects); migErr != nil {
-		if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, in.stateDir, identity, migrationProjects) {
-			cancel()
-			snap.documentErr = migErr
 			return
 		}
 	}
@@ -319,11 +275,7 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 }
 
 func fetchGatewayQueueReadingState(ctx context.Context, manager ProjectControlClient, identity string, p AccessProject) (*api.ReadingStateView, error) {
-	client, err := newAppAPIClient(manager, identity)
-	if err != nil {
-		return nil, err
-	}
-	response, err := client.ReadingState(ctx, p.ID)
+	response, err := (projectUnreadAPI{manager, identity}).ReadingState(ctx, p.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +359,14 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 		} else if snap.readingState != nil {
 			rec.ServerUnreadCount = snap.readingState.UnreadCount
 			rec.ServerUnreadStateRev = snap.readingState.StateRev
-			rec.UnreadHasMore = rec.ServerUnreadCount > 0
+			if snap.unreadPage != nil {
+				for _, row := range snap.unreadPage.Items {
+					if row.DatasetID == p.Dataset && row.DocID != "" {
+						rec.UnreadKnowledge = append(rec.UnreadKnowledge, row.toItem(""))
+					}
+				}
+			}
+			rec.UnreadHasMore = rec.ServerUnreadCount > len(rec.UnreadKnowledge)
 		}
 		if snap.inbox != nil {
 			rec.KnowledgeCatalogVersion = snap.inbox.CatalogVersion
@@ -448,12 +407,6 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 			q.InboxRetryError = ""
 		}
 	}
-	if !q.localStateLoaded {
-		if !q.KnowledgeRead.Initialized && snap.localKnowledgeRead.Initialized {
-			q.KnowledgeRead = snap.localKnowledgeRead
-		}
-		q.localStateLoaded = true
-	}
 	if a.isSetupOnlyRuntime() {
 		q.BacklogError = ""
 	} else if snap.v2SummaryOK {
@@ -481,11 +434,21 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 			}
 		}
 		if snap.v2SummaryOK || snap.gateway {
-			q.KnowledgeReadError = rec.KnowledgeReadError
+			q.UnreadState.Error = rec.KnowledgeReadError
 			if rec.KnowledgeReadError == "" &&
 				applyServerUnreadSnapshot(q, rec.ServerUnreadCount, rec.ServerUnreadStateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset)) {
 				q.UnreadHasMore = rec.UnreadHasMore
-				q.UnreadKnowledge = rec.UnreadKnowledge
+				q.UnreadPreview = rec.UnreadKnowledge
+				if len(q.ReadIDs) > 0 {
+					// Pending local marks remain hidden from a racing server preview.
+					filtered := q.UnreadPreview[:0]
+					for _, item := range q.UnreadPreview {
+						if !q.ReadIDs[item.ID] {
+							filtered = append(filtered, item)
+						}
+					}
+					q.UnreadPreview = filtered
+				}
 			}
 			if rec.KnowledgeCatalogVersion != "" {
 				q.KnowledgeCatalogVersion = rec.KnowledgeCatalogVersion

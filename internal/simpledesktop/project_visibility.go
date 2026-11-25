@@ -3,10 +3,13 @@ package simpledesktop
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/app/shell"
 	"os"
 	"path/filepath"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
+	"github.com/zwhu/memlane/app/reading"
+	"github.com/zwhu/memlane/app/shell"
 )
 
 type projectVisibilityState struct {
@@ -170,44 +173,21 @@ func (a *App) projectNotificationMenu(c *ui.Context, item ui.Element, project Pr
 	})
 }
 
-func (a *App) applyMarkAllReadReceipt(q *projectQueueState, dataset string, resp v2ReadingStateMarkAllReadResponse, unreadSnapshot uint64, catalogVersion string) {
-	q.KnowledgeReadError = ""
-	if resp.StateRev < q.ServerUnreadStateRev || q.ServerUnreadSnapshot != unreadSnapshot || q.KnowledgeCatalogVersion != catalogVersion {
+func (a *App) applyMarkAllReadReceipt(q *projectQueueState, dataset string, resp api.MarkReadResponse, unreadSnapshot uint64, catalogVersion string) {
+	q.UnreadState.Error = ""
+	if resp.StateRev < q.ServerUnreadStateRev || q.KnowledgeCatalogVersion != catalogVersion ||
+		(resp.StateRev == q.ServerUnreadStateRev && q.ServerUnreadSnapshot != unreadSnapshot) {
 		return
 	}
-	q.ServerUnreadStateRev = resp.StateRev
-	if !resp.unreadCountKnown() {
+	if resp.UnreadCount < 0 || !applyServerUnreadSnapshot(q, resp.UnreadCount, resp.StateRev, false) {
 		return
 	}
-	q.ServerUnreadKnown = true
-	q.ServerUnreadCount = resp.UnreadCount
 	if resp.UnreadCount != 0 {
 		return
 	}
 	q.UnreadHasMore = false
-	q.UnreadKnowledge = nil
-	for id := range q.KnowledgeRead.Read {
-		q.KnowledgeRead.Read[id] = true
-	}
+	q.UnreadPreview = nil
 	a.clearDatasetServerUnread(dataset)
-}
-
-func (a *App) clearLocalUnread(path string, initialized bool) (knowledgeReadState, error) {
-	a.waitKnowledgeReadFlush()
-	w := a.ensureKnowledgeWriter()
-	w.fileMu.Lock()
-	defer w.fileMu.Unlock()
-	read, err := readKnowledgeState(path)
-	if err != nil || (!read.Initialized && initialized) {
-		return read, fmt.Errorf("已读状态无法读取")
-	}
-	if !read.Initialized {
-		return read, nil
-	}
-	for id := range read.Read {
-		read.Read[id] = true
-	}
-	return read, writeKnowledgeState(path, read)
 }
 
 func (a *App) clearProjectNotifications(q *projectQueueState, p AccessProject) error {
@@ -220,7 +200,10 @@ func (a *App) clearProjectNotificationsAsync(q *projectQueueState, p AccessProje
 		report = completion[0]
 	}
 	if a.Update != nil {
-		_ = a.markProjectUnreadCleared(q, p, a.Update, report)
+		err := a.markProjectUnreadCleared(q, p, a.Update, report)
+		if err != nil && report != nil {
+			report(err)
+		}
 	}
 }
 
@@ -228,60 +211,41 @@ func (a *App) markProjectUnreadCleared(q *projectQueueState, p AccessProject, di
 	if q == nil {
 		return nil
 	}
-	client, stateDir := a.Client, a.readingStateDir()
-	control, managed := a.accessClient()
-	fence := shell.CaptureFence(appShellAdapter{a})
-	snapshot, catalog, initialized := q.ServerUnreadSnapshot, q.KnowledgeCatalogVersion, q.KnowledgeRead.Initialized
-	writing := func() error {
-		path, pathErr := knowledgeReadPath(stateDir, client, p)
-		var read knowledgeReadState
-		var receipt v2ReadingStateMarkAllReadResponse
-		var err error
-		if managed {
-			var identity string
-			identity, err = readingIdentity(Client{Config: client.Config})
-			if err == nil && identity != "" {
-				receipt, err = a.enqueueKnowledgeMarkAllReadV2WithEpoch(path, stateDir, q, control, identity, p.ID, p.Dataset, fence.AuthEpoch, true)
-			} else {
-				err = fmt.Errorf("读取身份暂不可用")
-			}
-		} else if pathErr != nil {
-			err = pathErr
-		} else {
-			read, err = a.clearLocalUnread(path, initialized)
-		}
-		if err != nil {
-			err = fmt.Errorf("未读状态未保存：%w", err)
-		}
-		apply := func() {
-			if !fence.Valid(appShellAdapter{a}) {
-				return
-			}
-			q.StateVersion++
-			if report != nil {
-				report(err)
-			}
-			if err != nil {
-				return
-			}
-			if managed {
-				a.applyMarkAllReadReceipt(q, p.Dataset, receipt, snapshot, catalog)
-			} else if read.Initialized {
-				q.KnowledgeRead, q.KnowledgeReadError = read, ""
-				q.UnreadKnowledge = nil
-			}
-		}
-		if dispatch != nil {
-			dispatch(apply)
-		} else {
-			apply()
-		}
+	transport, req, err := a.projectUnreadTransport(p)
+	if err != nil {
 		return err
 	}
+	fence := shell.CaptureFence(appShellAdapter{a})
+	snapshot, catalog := q.ServerUnreadSnapshot, q.KnowledgeCatalogVersion
+	done := make(chan error, 1)
+	apply := func(resp api.MarkReadResponse, err error) {
+		if !fence.Valid(appShellAdapter{a}) {
+			return
+		}
+		if reading.Status(err, 401, 403) {
+			appShellAdapter{a}.InvalidateReading()
+		}
+		q.StateVersion++
+		if err == nil {
+			a.applyMarkAllReadReceipt(q, p.Dataset, resp, snapshot, catalog)
+		}
+		if report != nil {
+			report(err)
+		}
+	}
+	var receipt api.MarkReadResponse
+	a.ensureKnowledgeWriter().MarkAllRead(transport, req, func(resp api.MarkReadResponse, err error) {
+		if dispatch != nil {
+			dispatch(func() { apply(resp, err) })
+			return
+		}
+		receipt = resp
+		done <- err
+	})
 	if dispatch != nil {
-		a.ensureKnowledgeWriter()
-		go func() { _ = writing() }()
 		return nil
 	}
-	return writing()
+	err = <-done
+	apply(receipt, err)
+	return err
 }

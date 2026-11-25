@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 type projectReadingState struct {
@@ -408,7 +409,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			}
 		})
 
-		canCopy := i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != "")
+		_, canCopy := reading.CopyBody(i.Body, i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != ""), i.ReadingState == "unavailable")
 		appFooter(c, "项目阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
 			homeText(c, "Cognee 提供 · 只读", homeMeta)
 			ui.Spacer(c)
@@ -416,7 +417,10 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				homeText(c, a.projectUI.Copied+"已复制", homeMeta)
 			}
 			v4OutlineButton(c, "复制正文", v4IconCopy, func() {
-				c.WriteClipboard(sessionCopyBody(s, *i))
+				if s.Selected == nil || s.Selected.key() != i.key() || s.Selected.ReadingState == "unavailable" {
+					return
+				}
+				c.WriteClipboard(sessionCopyBody(s, *s.Selected))
 				a.copyFeedback("正文")
 			}).Disabled(!canCopy)
 		})
@@ -633,7 +637,7 @@ func (a *App) switchProjectKind(kind string) {
 				n.More = end < len(seed)
 				n.Loaded = true
 				if n.Selected == nil && len(n.Items) > 0 {
-					a.selectItem(n, n.Items[0])
+					a.selectReadingItem(n, n.Items[0], false)
 				}
 			}
 			if n.Loaded && len(n.Items) > 0 {

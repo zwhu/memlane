@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/zwhu/memlane/app/reading"
 )
 
 var knowledgeDatesMu sync.Mutex
@@ -68,10 +70,7 @@ func archiveLegacyKnowledgeDatesFile(path string, snapshot os.FileInfo) (bool, e
 	return true, nil
 }
 
-func sourceCalendarDate(value string) (string, bool) {
-	t, err := time.Parse("2006-01-02", value)
-	return t.Format("2006-01-02"), err == nil && len(value) == 10
-}
+var sourceCalendarDate = reading.SourceCalendarDate
 
 func isLowerHex64(s string) bool {
 	if len(s) != 64 {
@@ -329,30 +328,12 @@ func (a *App) triggerProvenanceBackfillOnce() {
 // model (Option B), knowledge resolves dates by: earliest remembered key ->
 // explicit first_source_date -> native session_date -> local createdAt fallback.
 func (d Document) knowledgeDay(location *time.Location) (string, bool) {
-	for _, value := range []string{d.FirstSourceDate, metadataString(d, "first_source_date"), metadataString(d, "session_date")} {
-		if day, ok := sourceCalendarDate(value); ok {
-			return day, true
-		}
-	}
-	if at, ok := officialTime(d.Created); ok {
-		return at.In(location).Format("2006-01-02"), true
-	}
-	return "", false
+	return reading.KnowledgeDay(location, d.Created, d.FirstSourceDate, metadataString(d, "first_source_date"), metadataString(d, "session_date"))
 }
 
 func metadataString(d Document, key string) string {
 	value, _ := d.Metadata[key].(string)
 	return value
-}
-
-func dateOrder(value string) time.Time {
-	if day, ok := sourceCalendarDate(value); ok {
-		// Calendar ordinal for sorting only; this is never shown as a timestamp.
-		at, _ := time.Parse("2006-01-02", day)
-		return at
-	}
-	at, _ := officialTime(value)
-	return at
 }
 
 // Keep only the earliest evidenced source day, keyed by project and stable

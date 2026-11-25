@@ -75,6 +75,8 @@ func TestRawRecordsColdStartAndSessionOpenPerformanceBudget(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.URL.Path == "/api/raw-records":
+			http.NotFound(w, r)
 		case r.URL.Path == "/v1/capabilities":
 			http.NotFound(w, r)
 		case r.URL.Path == "/v1/projects/p1/raw-records":

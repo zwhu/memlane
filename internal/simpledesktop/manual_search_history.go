@@ -87,11 +87,7 @@ func (a *App) rememberManualSearch() {
 	}
 	s.HistoryDirty = false
 	if a.overviewState.SearchHistory {
-		if a.overviewState.activityCancel != nil {
-			a.overviewState.activityCancel()
-		}
-		a.overviewState.activityGeneration++
-		a.overviewState.ActivityLoading = false
+		a.overviewPageController().CancelActivity()
 	}
 	a.overviewState.History, _ = a.Client.overviewSearchHistory(context.Background())
 	a.overviewState.HistoryLoaded, a.overviewState.HistoryError = true, ""

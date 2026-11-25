@@ -15,7 +15,7 @@ func TestOverviewRefreshAutomaticAndPreservesView(t *testing.T) {
 	updates := make(chan func(), 30)
 	a.Update = func(fn func()) { updates <- fn }
 	v := &a.overviewState
-	v.scope = a.overviewScope()
+	v.ScopeKey = a.overviewScope()
 	v.Loaded = true
 	v.RawLoaded = true
 	v.ActivityLoaded = true
@@ -27,7 +27,7 @@ func TestOverviewRefreshAutomaticAndPreservesView(t *testing.T) {
 	v.ExpandedEvent = "kept"
 	v.Snapshot.Raw = 17
 	now := time.Now()
-	a.overviewRefreshAt = now.Add(-time.Second)
+	a.overview.RefreshAt = now.Add(-time.Second)
 	a.windowInactive = true
 	if a.refreshOverviewIfDue(now) {
 		t.Fatal("background window polled")
@@ -48,7 +48,7 @@ func TestOverviewRefreshAutomaticAndPreservesView(t *testing.T) {
 	if a.refreshOverviewIfDue(time.Now()) {
 		t.Fatal("failure ignored poll interval")
 	}
-	a.overviewRefreshAt = now.Add(-overviewRefreshInterval)
+	a.overview.RefreshAt = now.Add(-overviewRefreshInterval)
 	a.SetWindowActive(false)
 	a.SetWindowActive(true)
 	drainReading(t, updates, func() bool { return v.Loading })

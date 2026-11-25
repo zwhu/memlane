@@ -146,11 +146,11 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		sbBox := sb.Bounds()
 		itemBox := activeItem.Bounds()
 		hasActive := itemBox.H > 0 && sbBox.H > 0 && selected != "设置"
-		targetY := a.overviewState.lastNavIndY
+		targetY := a.overviewState.LastNavIndY
 		fade := float32(1)
 		if hasActive {
 			targetY = itemBox.Y - sbBox.Y
-			a.overviewState.lastNavIndY = targetY
+			a.overviewState.LastNavIndY = targetY
 			if targetY+itemBox.H >= 0 && targetY <= sbBox.H {
 				fade = 0
 			}

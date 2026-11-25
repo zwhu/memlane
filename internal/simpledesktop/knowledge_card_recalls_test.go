@@ -119,7 +119,7 @@ func TestOverviewStatsBatchByDatasetAndCancelOnLeave(t *testing.T) {
 		a.page = "总览"
 		updates := make(chan func(), 10)
 		a.Update = func(fn func()) { updates <- fn }
-		a.overviewState.generation = 1
+		a.overviewState.Generation = 1
 		for i := 0; i < 80; i++ {
 			a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: fmt.Sprint(i), Dataset: "ds", Kind: "知识"})
 		}
@@ -142,8 +142,8 @@ func TestOverviewStatsBatchByDatasetAndCancelOnLeave(t *testing.T) {
 		if calls.Load() != 1 {
 			t.Fatal("overview expanded requests with row count", calls.Load())
 		}
-		if a.overviewState.recallCancel != nil {
-			a.overviewState.recallCancel()
+		if a.overviewState.RecallCancel != nil {
+			a.overviewState.RecallCancel()
 		}
 		server.Close()
 	}

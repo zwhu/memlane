@@ -11,7 +11,7 @@ import (
 )
 
 func TestProjectVisibilityPersistsWithoutChangingProjectsOrNotices(t *testing.T) {
-	a, q, _, _ := notificationMenuFixture(t)
+	a, q, _ := notificationMenuFixture(t)
 	p := a.Config.Projects[0]
 	before := append([]Project(nil), a.Config.Projects...)
 	unread := q.unreadCount()

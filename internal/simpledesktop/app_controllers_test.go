@@ -68,13 +68,13 @@ func TestAppControllerInitializationAndResets(t *testing.T) {
 
 	// Verify overviewController transitions and floor clamping.
 	var recallCancelled, overviewCancelled bool
-	a.overviewState.recallCancel = func() { recallCancelled = true }
-	a.overviewState.cancel = func() { overviewCancelled = true }
+	a.overviewState.RecallCancel = func() { recallCancelled = true }
+	a.overviewState.BootstrapCancel = func() { overviewCancelled = true }
 	a.overviewState.Loading = true
 	p2 := a.paneFor("知识/0/知识")
 	p2.History = []Item{{ID: "1"}, {ID: "2"}}
 	a.cancelOverviewRecall()
-	if !recallCancelled || a.overviewState.recallCancel != nil {
+	if !recallCancelled || a.overviewState.RecallCancel != nil {
 		t.Fatal("cancelOverviewRecall did not cancel and clear recallCancel")
 	}
 	a.leaveOverview(a.panes)

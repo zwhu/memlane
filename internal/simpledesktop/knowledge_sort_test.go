@@ -52,7 +52,7 @@ func TestRecallSortIncludesUndisplayedCatalogAndStableTimeTies(t *testing.T) {
 func TestRecallActivityFiltersExactReceiptsWithoutRunningRetrieval(t *testing.T) {
 	a, s := recallSortFixture()
 	a.page = "总览"
-	event := RecallEvent{ID: "event", AgentID: "codex", Hits: []RecallHit{{"dataset", "44"}, {"dataset", "40"}}}
+	event := RecallEvent{ID: "event", AgentID: "codex", Hits: []RecallHit{{Dataset: "dataset", Document: "44"}, {Dataset: "dataset", Document: "40"}}}
 	a.overviewState.ActivityLoaded = true
 	a.overviewState.Events = []overviewEvent{{Key: "recall-event", Title: "Codex 自动召回", Project: "项目", State: "已完成", Recall: &event}}
 	tt := ui.NewTester(func(c *ui.Context) {
@@ -78,7 +78,7 @@ func TestRecallActivityFiltersExactReceiptsWithoutRunningRetrieval(t *testing.T)
 
 func TestRecallActivityReplacesGenericSuccessWithExactReceiptIDs(t *testing.T) {
 	rows := []overviewEvent{{Key: "raw", State: "已完成", Record: activityRow{Operation: "recall"}}, {Key: "failure", State: "失败", Record: activityRow{Operation: "recall"}}}
-	receipts := []RecallEvent{{ID: "one", AgentID: "a", AgentKind: "codex", Channel: "automatic", Received: "2026-11-18T01:00:00Z", Hits: []RecallHit{{"dataset", "44"}}}, {ID: "one", AgentID: "b", AgentKind: "pi", Received: "2026-11-18T01:00:00Z", Hits: []RecallHit{{"dataset", "40"}}}}
+	receipts := []RecallEvent{{ID: "one", AgentID: "a", AgentKind: "codex", Channel: "automatic", Received: "2026-11-18T01:00:00Z", Hits: []RecallHit{{Dataset: "dataset", Document: "44"}}}, {ID: "one", AgentID: "b", AgentKind: "pi", Received: "2026-11-18T01:00:00Z", Hits: []RecallHit{{Dataset: "dataset", Document: "40"}}}}
 	merged, _ := mergeRecallActivity(rows, receipts, []Project{{Name: "项目", Dataset: "dataset"}}, 50)
 	if len(merged) != 3 {
 		t.Fatal("duplicated raw successful calls or dropped failed calls")

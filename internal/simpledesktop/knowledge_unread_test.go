@@ -1,111 +1,105 @@
 package simpledesktop
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
-	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
 
 func unreadDoc(id string) Document {
 	return Document{ID: id, Dataset: "ds", Name: "记忆 " + id, Created: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), Metadata: map[string]any{"node_set": []any{"session_learnings"}, "session_date": "2026-11-16"}}
 }
-func TestKnowledgeUnreadBaselineReadPersistenceAndIsolation(t *testing.T) {
-	a, q := projectQueueFixture()
-	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
-	p := a.access.Directory.Projects[0]
-	old, fresh := unreadDoc("old"), unreadDoc("new")
-	a.observeKnowledgeCatalog(p, q, []Document{old})
-	if q.unreadCount() != 0 || !q.KnowledgeRead.Initialized {
-		t.Fatal("existing knowledge was called unread")
-	}
-	lateOld := unreadDoc("late-old")
-	lateOld.Created = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
-	a.observeKnowledgeCatalog(p, q, []Document{old, lateOld})
-	if q.unreadCount() != 0 {
-		t.Fatal("late enumeration of pre-enable knowledge was called new")
-	}
-	a.observeKnowledgeCatalog(p, q, []Document{old, fresh})
-	if q.unreadCount() != 1 {
-		t.Fatal("new knowledge not counted", q.KnowledgeReadError)
-	}
-	a.observeKnowledgeCatalog(p, q, []Document{old, fresh})
-	if q.unreadCount() != 1 {
-		t.Fatal("background catalog read marked knowledge read")
-	}
-	i := Item{ID: fresh.ID, Dataset: fresh.Dataset, Kind: "知识", Document: &fresh}
+
+func TestKnowledgeUnreadServerStateAndHumanOpen(t *testing.T) {
+	const endpoint = "http://127.0.0.1:16132"
+	a, updates := p1TestApp(t, endpoint, endpoint, p1TempToken(t))
+	project := a.access.Directory.Projects[0]
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/reading-state/mark-read" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(api.MarkReadResponse{ReadingStateView: api.ReadingStateView{UnreadCount: 0, StateRev: 2}})
+	})}
+	q := a.projectQueueStateFor(project)
+	applyServerUnreadSnapshot(q, 1, 1, false)
+	q.InboxFailed = 2
+	d := unreadDoc("doc")
+	d.Dataset = project.Dataset
+	i := Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Document: &d, BodyLoaded: true, ServerUnreadKnown: true, ServerUnread: true}
 	a.publishOverviewTitle(i)
-	if q.unreadCount() != 1 {
-		t.Fatal("not-yet-loaded title marked read")
+	if !a.itemIsUnread(i) || q.unreadCount() != 1 {
+		t.Fatal("a background publication marked full content as read")
 	}
-	i.BodyLoaded = true
-	a.publishOverviewTitle(i)
-	if q.unreadCount() != 0 {
-		t.Fatal("opening knowledge did not mark read")
-	}
-	a.Client.PolicyRevision = "updated"
-	reload := &projectQueueState{}
-	a.observeKnowledgeCatalog(p, reload, []Document{old, fresh})
-	if reload.unreadCount() != 0 || !reload.KnowledgeRead.Read[fresh.ID] {
-		t.Fatal("restart/revision lost read state")
-	}
-	a.observeKnowledgeCatalog(p, q, []Document{old, fresh, unreadDoc("newer")})
-	a.observeKnowledgeCatalog(p, q, []Document{old, fresh})
-	if q.unreadCount() != 0 {
-		t.Fatal("deleted knowledge remained unread")
-	}
-	path, _ := a.knowledgeReadPath(p)
-	before, _ := os.ReadFile(path)
-	wrong := unreadDoc("foreign")
-	wrong.Dataset = "other"
-	a.observeKnowledgeCatalog(p, q, []Document{wrong})
-	after, _ := os.ReadFile(path)
-	if string(before) != string(after) || q.KnowledgeReadError == "" {
-		t.Fatal("foreign dataset overwrote read state")
-	}
-	os.WriteFile(path, []byte("corrupt"), 0600)
-	i.ID = "newer"
+	i.BodyTruncated = true
 	a.markKnowledgeRead(i)
-	if b, _ := os.ReadFile(path); string(b) != "corrupt" {
-		t.Fatal("corrupt state replaced with invented read baseline")
+	if !a.itemIsUnread(i) || q.unreadCount() != 1 {
+		t.Fatal("truncated content was marked as read")
+	}
+	i.BodyTruncated = false
+	a.markKnowledgeRead(i)
+	a.waitKnowledgeReadFlush()
+	drainReading(t, updates, func() bool { return q.ServerUnreadStateRev == 2 })
+	if a.itemIsUnread(i) || q.unreadCount() != 0 || q.InboxFailed != 2 {
+		t.Fatal("human open did not clear only the unread knowledge")
 	}
 }
-func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
-	a, q := projectQueueFixture()
-	// This scenario covers ordinary unsent work; confirmed unknown writes now notify immediately.
-	q.InboxFailed = 0
-	a.Update = nil
-	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
-	t.Cleanup(a.waitKnowledgeReadFlush)
-	p := a.access.Directory.Projects[0]
-	q.Next = time.Now().Add(time.Hour)
-	q.BacklogNext = q.Next
-	a.observeKnowledgeCatalog(p, q, []Document{unreadDoc("old")})
-	d := unreadDoc("new")
-	a.observeKnowledgeCatalog(p, q, []Document{unreadDoc("old"), d})
-	a.page = "知识"
-	a.kind = "知识"
+
+func TestKnowledgeCatalogVersionWithdrawsOnlyChangedBody(t *testing.T) {
+	const endpoint = "http://127.0.0.1:16136"
+	a, updates := p1TestApp(t, endpoint, endpoint, p1TempToken(t))
+	a.page, a.kind = "知识", "知识"
 	s := a.state()
-	s.Items = []Item{{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.Name, Document: &d}}
-	s.Selected = nil
-	s.Loaded = true
-	s.Error = ""
-	s.Loading = false
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("未读记忆：memlane") || !tt.HasText("未读标记") {
-		t.Fatal("unread badge/list marker absent")
+	doc := unreadDoc("doc")
+	doc.Dataset, doc.ContentHash = "ds-1", "old"
+	s.Selected = &Item{ID: doc.ID, Dataset: doc.Dataset, Kind: "知识", Document: &doc, BodyLoaded: true, Body: "旧正文"}
+	s.Loaded, s.Knowledge.Detail = true, true
+	s.Knowledge.CatalogVersion = "v1"
+	hash, content := "old", "旧正文"
+	bodyStarted := make(chan struct{})
+	releaseBody := make(chan struct{})
+	t.Cleanup(func() { close(releaseBody) })
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/knowledge/ds-1/doc":
+			_ = json.NewEncoder(w).Encode(api.DocumentDetail{CatalogItem: api.CatalogItem{
+				DocID: doc.ID, DatasetID: doc.Dataset, ContentHash: hash,
+			}, Content: content})
+		case "/api/knowledge/ds-1/doc/body":
+			close(bodyStarted)
+			<-releaseBody
+			_ = json.NewEncoder(w).Encode(api.DocumentBody{DatasetID: doc.Dataset, DocumentID: doc.ID, Content: content})
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	apply := func() {
+		t.Helper()
+		select {
+		case fn := <-updates:
+			fn()
+		case <-time.After(time.Second):
+			t.Fatal("catalog version check did not publish")
+		}
 	}
-	if tt.HasText("待处理文档：memlane") {
-		t.Fatal("normal pending state notified")
+	a.handleKnowledgeCatalogVersionChanged("p1", doc.Dataset, "v2")
+	apply()
+	if !s.Knowledge.NewCatalogAvailable || s.Selected == nil || !s.Selected.BodyLoaded || s.Selected.Body != "旧正文" {
+		t.Fatal("catalog-only change unmounted the valid selected body")
 	}
-	fixtureImage(t, tt, "project-knowledge-unread")
-	i := s.Items[0]
-	i.BodyLoaded = true
-	a.publishOverviewTitle(i)
-	tt.Frame()
-	if tt.HasText("未读记忆：memlane") || tt.HasText("未读标记") {
-		t.Fatal("read item remained unread")
+	hash, content = "new", "新正文"
+	a.handleKnowledgeCatalogVersionChanged("p1", doc.Dataset, "v3")
+	apply()
+	select {
+	case <-bodyStarted:
+	case <-time.After(time.Second):
+		t.Fatal("updated body did not start loading")
+	}
+	if s.Selected == nil || s.Selected.BodyLoaded || s.Selected.Body != "" {
+		t.Fatal("previous version stayed copyable while the new body was loading")
 	}
 }

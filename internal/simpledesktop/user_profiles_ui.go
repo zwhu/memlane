@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 func profileUpdatedDay(ts float64) string {
@@ -171,7 +172,7 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 								ui.Text(c, p.Name).Font("system-ui").FontSize(fsBody).FontWeight(500).
 									TextColor(nameCol).SingleLine().Grow(1).MinWidth(0)
 								if dotState != "" {
-									v4StatusDot(c, dotState).Tooltip(p.label())
+									v4StatusDot(c, dotState).Tooltip(p.Label())
 								}
 							})
 							ui.Text(c, metaText).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").
@@ -185,11 +186,11 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 			hostBox := listHost.Bounds()
 			rowBox := activeBtn.Bounds()
 			hasActive := rowBox.H > 0 && hostBox.W > 0
-			targetY := s.lastIndY
+			targetY := s.LastIndicatorY
 			fade := float32(1)
 			if hasActive {
 				targetY = rowBox.Y - hostBox.Y
-				s.lastIndY = targetY
+				s.LastIndicatorY = targetY
 				fade = 0
 				ind.Width(rowBox.W).Height(rowBox.H)
 			}
@@ -204,12 +205,6 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 		})
 	})
 }
-
-const (
-	profileMarkdownVirtualizeThreshold = 4096
-	profileMarkdownChunkTargetBytes    = 1400
-	profileMarkdownChunkHardLimitBytes = 3600
-)
 
 var (
 	profileReaderThemeBase *ui.Theme
@@ -230,92 +225,10 @@ func profileReaderListTheme() *ui.Theme {
 	return profileReaderThemeVal
 }
 
-// splitProfileMarkdownChunks splits large Markdown profiles into fence-safe
-// chunks for virtualized ui.List rendering, never breaking fenced code blocks.
-func splitProfileMarkdownChunks(md string) []string {
-	if md == "" {
-		return nil
-	}
-	lines := strings.Split(md, "\n")
-	var chunks []string
-	var buf strings.Builder
-	fenceChar := byte(0)
-	fenceLen := 0
+var splitProfileMarkdownChunks = reading.SplitProfileMarkdownChunks
 
-	flush := func() {
-		chunk := strings.TrimRight(buf.String(), "\n")
-		if strings.TrimSpace(chunk) != "" {
-			chunks = append(chunks, chunk)
-		}
-		buf.Reset()
-	}
-
-	for idx, line := range lines {
-		trimmed := strings.TrimLeft(line, " \t")
-		if fenceChar == 0 {
-			if len(trimmed) >= 3 && (trimmed[0] == '`' || trimmed[0] == '~') {
-				ch := trimmed[0]
-				n := 0
-				for n < len(trimmed) && trimmed[n] == ch {
-					n++
-				}
-				if n >= 3 {
-					fenceChar = ch
-					fenceLen = n
-				}
-			}
-		} else if len(trimmed) >= fenceLen && trimmed[0] == fenceChar {
-			n := 0
-			for n < len(trimmed) && trimmed[n] == fenceChar {
-				n++
-			}
-			if n >= fenceLen && strings.TrimSpace(trimmed[n:]) == "" {
-				fenceChar = 0
-				fenceLen = 0
-			}
-		}
-
-		isHeading := fenceChar == 0 && (strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### "))
-		if isHeading && buf.Len() >= profileMarkdownChunkTargetBytes/2 {
-			flush()
-		}
-
-		if buf.Len() > 0 {
-			buf.WriteByte('\n')
-		}
-		buf.WriteString(line)
-
-		if fenceChar == 0 {
-			isBlank := strings.TrimSpace(line) == ""
-			if (isBlank && buf.Len() >= profileMarkdownChunkTargetBytes) || buf.Len() >= profileMarkdownChunkHardLimitBytes {
-				if idx < len(lines)-1 {
-					flush()
-				}
-			}
-		}
-	}
-	flush()
-	if len(chunks) == 0 {
-		return []string{md}
-	}
-	return chunks
-}
-
-func profileCachedMarkdownChunks(s *userProfilesState) (normalized string, chunks []string) {
-	if s.Body == "" {
-		return "", nil
-	}
-	if s.cachedBody == s.Body && s.cachedNormalized != "" {
-		return s.cachedNormalized, s.cachedChunks
-	}
-	normalized = profileReadingMarkdown(s.Body)
-	if len(normalized) > profileMarkdownVirtualizeThreshold {
-		chunks = splitProfileMarkdownChunks(normalized)
-	}
-	s.cachedBody = s.Body
-	s.cachedNormalized = normalized
-	s.cachedChunks = chunks
-	return normalized, chunks
+func profileCachedMarkdownChunks(s *userProfilesState) (string, []string) {
+	return s.Markdown.Resolve(s.BodyKey, s.Body)
 }
 
 func (a *App) userProfileReaderHeader(c *ui.Context, p userProfile, s *userProfilesState) {
@@ -324,7 +237,7 @@ func (a *App) userProfileReaderHeader(c *ui.Context, p userProfile, s *userProfi
 	if p.Kind == "manual" {
 		groupLabel = "其他 AI"
 	}
-	methodLabel := p.label()
+	methodLabel := p.Label()
 	if p.Status == "ready" {
 		if p.Method == "manual" {
 			methodLabel = "手动导入"
@@ -361,8 +274,8 @@ func (a *App) userProfileReaderHeader(c *ui.Context, p userProfile, s *userProfi
 	}
 
 	// Error / warning banner
-	message := p.failureLabel()
-	if message == "" && !p.working() {
+	message := p.FailureLabel()
+	if message == "" && !p.Working() {
 		message = s.Message
 	}
 	if message != "" {
@@ -383,41 +296,16 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 			})
 			return
 		}
-		if s.docKey != p.ID {
-			s.docKey = p.ID
-			s.docEnter++
+		if s.DocumentKey != p.ID {
+			s.DocumentKey = p.ID
+			s.DocumentEnter++
 		}
 
 		normalized, chunks := profileCachedMarkdownChunks(s)
 		if s.Body != "" && len(chunks) > 1 {
-			mdOpts := a.v4MarkdownOptions(fsReading)
-			s.ReaderList.KeepOffset = true
-			s.ReaderList.Selected = nil
-			s.ReaderList.Key = func(row int) any {
-				if row == 0 {
-					return "header/" + p.ID + "/" + s.BodyKey
-				}
-				return fmt.Sprintf("chunk/%s/%s/%d", p.ID, s.BodyKey, row-1)
-			}
 			ui.Themed(c, profileReaderListTheme()).Grow(1).MinHeight(0).FillWidth().Background(ui.Transparent).Children(func() {
-				ui.List(c.Key("user-profile-list-"+p.ID+"-"+s.BodyKey), &s.ReaderList, 1+len(chunks), func(row int) {
-					ui.Column(c.Key(fmt.Sprintf("profile-vrow-%s-%d", s.BodyKey, row))).FillWidth().MaxWidth(readerMaxW).Padding(0, sp10).Gap(sp4).Children(func() {
-						if row == 0 {
-							ui.Column(c).FillWidth().Padding(sp6, 0, sp2, 0).Gap(sp4).Children(func() {
-								a.userProfileReaderHeader(c, p, s)
-							})
-							return
-						}
-						idx := row - 1
-						padBottom := float32(sp2)
-						if idx == len(chunks)-1 {
-							padBottom = sp8
-						}
-						ui.Column(c).FillWidth().Padding(0, 0, padBottom, 0).Children(func() {
-							markdown.View(c.Key(fmt.Sprintf("user-profile-markdown-%s-%d", s.BodyKey, idx)), chunks[idx], mdOpts)
-						})
-					})
-				}).Label("用户画像内容").Grow(1).MinHeight(0).TrackScroll(&s.Scroll)
+				reading.RenderProfileWithHeader(c, p.ID, s.BodyKey, chunks, &s.ReaderList, &s.Scroll, readerMaxW,
+					a.v4MarkdownOptions(fsReading), func() { a.userProfileReaderHeader(c, p, s) })
 			})
 			a.userProfileFooterBar(c, p)
 			return
@@ -426,9 +314,9 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 		// Scrollable reading body (680px max width, smooth fade-in on switch)
 		ui.Scroll(c.Key("user-profile-document-"+p.ID+"-"+s.BodyKey)).Grow(1).MinHeight(0).
 			TrackScroll(&s.Scroll).Padding(sp6, sp10, sp8, sp10).Children(func() {
-			docKey := fmt.Sprintf("profile-doc-%d-%s", s.docEnter, p.ID)
+			docKey := fmt.Sprintf("profile-doc-%d-%s", s.DocumentEnter, p.ID)
 			doc := ui.Column(c.Key(docKey)).FillWidth().MaxWidth(readerMaxW).Gap(sp4)
-			a.poseEnter.apply(c, doc, "profile-doc", s.docEnter, ui.Pose{Y: 6, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
+			a.poseEnter.apply(c, doc, "profile-doc", s.DocumentEnter, ui.Pose{Y: 6, Scale: 1, Fade: 1}, ui.Pose{Scale: 1}, 0, v4Smooth)
 			doc.Children(func() {
 				a.userProfileReaderHeader(c, p, s)
 
@@ -438,7 +326,7 @@ func (a *App) userProfileReaderPane(c *ui.Context) {
 					markdown.View(c.Key("user-profile-markdown-"+s.BodyKey), normalized, a.v4MarkdownOptions(fsReading))
 				case s.Reading:
 					v4SkeletonGroup(c, 3, 2, false, false)
-				case !p.working():
+				case !p.Working():
 					emptyMsg := fmt.Sprintf("尚未从 %s 导入画像，可点击底部「尝试导入」或「手动导入」", p.Name)
 					if !p.CanGenerate {
 						emptyMsg = "该来源支持手动导入：复制提示词后粘贴画像正文"
@@ -468,14 +356,14 @@ func (a *App) userProfileFooterBar(c *ui.Context, p userProfile) {
 	if p.Status == "unknown" && !p.SaveUnknown {
 		automatic = "结果待确认"
 	}
-	if p.working() {
+	if p.Working() {
 		automatic = "停止导入"
 	}
 	if p.SaveUnknown {
 		automatic = "核对保存结果"
 	}
 	automaticLabel := "从" + p.Name + "导入画像"
-	if p.working() {
+	if p.Working() {
 		automaticLabel = "停止从" + p.Name + "导入画像"
 	}
 	if p.Status == "saving" {
@@ -489,9 +377,9 @@ func (a *App) userProfileFooterBar(c *ui.Context, p userProfile) {
 		if time.Now().Before(s.CopyUntil) {
 			homeText(c, s.Copied+"已复制", homeMeta)
 		}
-		if p.CanGenerate || p.SaveUnknown || p.working() || p.Status == "unknown" {
+		if p.CanGenerate || p.SaveUnknown || p.Working() || p.Status == "unknown" {
 			onAuto := func() {
-				if p.working() {
+				if p.Working() {
 					a.userProfileAction(p, "cancel", "")
 				} else if p.SaveUnknown {
 					a.userProfileAction(p, "reconcile", "")
@@ -500,20 +388,34 @@ func (a *App) userProfileFooterBar(c *ui.Context, p userProfile) {
 				}
 			}
 			disabled := s.Busy || p.Status == "saving" || (!p.CanGenerate && !p.SaveUnknown) || (p.Status == "unknown" && !p.SaveUnknown)
-			if p.working() {
+			if p.Working() {
 				v4DangerOutlineButton(c, automatic, false, onAuto).Label(automaticLabel).Tooltip("使用 Agent 默认模型").Disabled(disabled)
 			} else {
 				v4OutlineButton(c, automatic, v4IconRefresh, onAuto).Label(automaticLabel).Tooltip("使用 Agent 默认模型").Disabled(disabled)
 			}
 		}
 		v4OutlineButton(c, "手动导入", v4IconUpload, func() { a.beginProfileImport(p) }).
-			Label("导入此来源画像").Disabled(s.Busy || p.working() || p.SaveUnknown)
+			Label("导入此来源画像").Disabled(s.Busy || p.Working() || p.SaveUnknown)
+		if s.Gateway && p.Document != nil {
+			v4DangerOutlineButton(c, "删除画像", false, func() { s.DeleteOpen = true }).Disabled(s.Busy || p.Working())
+		}
+
 		v4OutlineButton(c, "复制正文", v4IconCopy, func() {
-			c.WriteClipboard(s.Body)
+			if body, ok := reading.ProfileCopy(s.Body); ok {
+				c.WriteClipboard(body)
+			}
 			s.Copied = "正文"
 			s.CopyUntil = time.Now().Add(3 * time.Second)
 		}).Disabled(s.Body == "")
 	})
+	if s.DeleteOpen {
+		v4Dialog(c, &s.DeleteOpen, v4DialogOptions{
+			Key: "profile-delete-" + p.ID, Title: "删除此来源的画像？", Danger: true,
+			CancelText: "保留画像", ConfirmText: "删除画像", ConfirmDisabled: s.Busy || p.Working(),
+			OnConfirm: func() { s.DeleteOpen = false; a.userProfileAction(p, "delete", "") },
+		})
+	}
+
 }
 
 func (a *App) userProfileImportDialog(c *ui.Context) {
@@ -534,6 +436,7 @@ func (a *App) userProfileImportDialog(c *ui.Context) {
 		ScrollBody:      true,
 		Hint:            "支持直接粘贴任意 Markdown 正文，保留原文不做改写",
 		CancelText:      "取消",
+		CancelDisabled:  s.Busy,
 		ConfirmText:     "保存画像",
 		ConfirmDisabled: s.Busy || strings.TrimSpace(s.Draft) == "" || len(s.Draft) > 256*1024 || source.ID == "",
 		Leading: func() {

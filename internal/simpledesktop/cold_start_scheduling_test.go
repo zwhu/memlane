@@ -271,7 +271,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				if attaches != 0 || loginReads.Load() != 0 {
 					t.Fatalf("main-thread prewarm/login ran before post-first-frame delay: attaches=%d loginReads=%d", attaches, loginReads.Load())
 				}
-				if !a.overviewState.overviewColdStartMotion {
+				if !a.overviewState.ColdStartMotion {
 					t.Fatal("first payload did not arm cold-start motion")
 				}
 				assertColdStartHeatmapPainted(t, tt)
@@ -302,7 +302,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 			if scenario == "success" {
 				a.navigate("设置", 0)
 				a.navigate("总览", 0)
-				if a.overviewState.overviewColdStartMotion {
+				if a.overviewState.ColdStartMotion {
 					t.Fatal("Overview return kept cold-start motion")
 				}
 			}
@@ -376,6 +376,7 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 	}
 	builds = 0
 	tt.Advance(2 * time.Second)
+	drainReading(t, updates, func() bool { return a.readingIdentity != identity })
 	if builds == 0 || a.readingIdentity == identity || p.Loaded || p.Selected != nil {
 		t.Fatal("visible unfocused window failed to withdraw content after credential removal")
 	}
@@ -509,7 +510,7 @@ func TestColdStartFirstUseLoadsOnceAndRendersAfterPublication(t *testing.T) {
 	tt := ui.NewTester(a.overviewHome, 1200, 820)
 	tt.Frame()
 	if tt.HasText("使用时间暂不可用。") || tt.HasText("17") || !tt.HasText("—") ||
-		a.overviewFirstUse.seq != 1 || a.overviewFirstUse.cachedFirstUseLoadingKey == (overviewFirstUseKey{}) {
+		a.overviewFirstUse.Request != 1 || a.overviewFirstUse.LoadingKey == (overviewFirstUseKey{}) {
 		t.Fatal("first-use count did not stay in the deduplicated pending state")
 	}
 	nextStartupUpdate(t, updates)()
@@ -622,7 +623,7 @@ func TestColdStartWaitsForV2OverviewAndActivityBootstrap(t *testing.T) {
 	}
 	close(releaseBootstrap)
 	drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.overviewState.ActivityLoaded })
-	if !a.overviewState.overviewColdStartMotion || !a.startupDeferred.done ||
+	if !a.overviewState.ColdStartMotion || !a.startupDeferred.done ||
 		a.startupDeferred.timer != nil || !a.monitor.PollEnabled {
 		t.Fatal("overview did not release deferred startup after both results")
 	}

@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 const (
-	knowledgeBatch                = 30
+	knowledgeBatch                = reading.KnowledgeBatchSize
 	knowledgeInset        float32 = pageInset
 	knowledgeGap          float32 = sectionGap
 	knowledgeBodySize     float32 = fsReading
@@ -49,6 +50,7 @@ type knowledgeFeedState struct {
 	ServerCategoryCounts map[string]int
 	ServerBaseTotal      int
 	CatalogVersion       string
+	CatalogCheck         uint64
 	NewCatalogAvailable  bool
 	Appending            bool
 }
@@ -61,15 +63,15 @@ func enforceListSlidingWindow(s *pane) {
 }
 
 func enforceListSlidingWindowDir(s *pane, trimFront bool) {
-	if s == nil || len(s.Items) <= maxActiveListItems {
+	if s == nil {
 		return
 	}
-	drop := len(s.Items) - maxActiveListItems
-	var evicted []Item
-	kept := make([]Item, maxActiveListItems)
+	kept, evicted := reading.EnforceSlidingWindowDir(s.Items, trimFront)
+	if len(evicted) == 0 {
+		return
+	}
 	if trimFront {
-		evicted = s.Items[:drop]
-		copy(kept, s.Items[drop:])
+		drop := len(evicted)
 		if s.Knowledge.V2Mode {
 			s.Knowledge.HasPrev = true
 			s.Knowledge.PrevCursor = ""
@@ -81,8 +83,6 @@ func enforceListSlidingWindowDir(s *pane, trimFront bool) {
 			}
 		}
 	} else {
-		evicted = s.Items[maxActiveListItems:]
-		copy(kept, s.Items[:maxActiveListItems])
 		if s.Knowledge.V2Mode {
 			s.More = true
 			s.Knowledge.NextCursor = ""
@@ -142,18 +142,6 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	s.Knowledge.RecallChecked = nil
 	client := a.Client
 	control, hasControl := a.accessClient()
-	stateDir := a.readingStateDir()
-	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
-	hasCurrentProject := false
-	for _, ap := range accessProjects {
-		if ap.ID == p.ID && ap.Dataset == p.Dataset {
-			hasCurrentProject = true
-			break
-		}
-	}
-	if !hasCurrentProject && p.ID != "" && p.Dataset != "" {
-		accessProjects = append(accessProjects, AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset})
-	}
 	sortByRecalls := s.Knowledge.SortByRecalls
 	categoryFilter := s.Knowledge.CategoryFilter
 	unreadOnly := s.Knowledge.UnreadOnly
@@ -184,30 +172,13 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 			failClosed(fmt.Errorf("项目正在登记，内容归属尚未确认"))
 			return
 		}
-		if len(accessProjects) > 0 {
-			if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
-					failClosed(migErr)
-					return
-				}
-			}
-		}
 		sortParam := "date"
 		if sortByRecalls {
 			sortParam = "recall"
 		}
-		v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
+		v2Resp, v2Err := control.listKnowledgePage(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, v2KnowledgePageOpts{})
 		if v2Err == nil {
-			mapped := make([]Item, 0, len(v2Resp.Items))
-			for _, row := range v2Resp.Items {
-				if row.DocID == "" {
-					continue
-				}
-				mapped = append(mapped, row.toItem(recallStartedAt))
-			}
+			mapped := mapKnowledgePage(v2Resp.Items, recallStartedAt)
 			baseTotal := v2Resp.TotalFiltered
 			if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
 				sum := 0
@@ -235,19 +206,30 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 				s.Knowledge.CountsLoaded = true
 				s.Knowledge.CountsError = ""
 				s.Knowledge.Catalog = nil
+				a.withdrawChangedReadingBody(s, mapped)
 				s.Items = mapped
 				s.More = v2Resp.HasMore
 				s.Loaded = true
 				a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
 				a.hydrateKnowledgeCards(s)
 				if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
-					a.selectItem(s, s.Items[0])
+					a.selectReadingItem(s, s.Items[0], false)
 				}
 			})
 			return
 		}
 		failClosed(v2Err)
 	}()
+}
+
+func mapKnowledgePage(rows []v2KnowledgeItem, recallStartedAt string) []Item {
+	mapped := make([]Item, 0, len(rows))
+	for _, row := range rows {
+		if row.DocID != "" {
+			mapped = append(mapped, row.toItem(recallStartedAt))
+		}
+	}
+	return mapped
 }
 
 func (a *App) appendKnowledgeBatch(s *pane) {
@@ -285,7 +267,7 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			resp, err := control.projectKnowledgePageV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
+			resp, err := control.listKnowledgePage(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
 			a.Update(func() {
 				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 					return
@@ -308,20 +290,9 @@ func (a *App) appendKnowledgeBatch(s *pane) {
 					}
 					return
 				}
-				seen := make(map[string]bool, len(s.Items))
-				for _, existing := range s.Items {
-					seen[existing.key()] = true
-				}
-				for _, row := range resp.Items {
-					if row.DocID == "" {
-						continue
-					}
-					item := row.toItem(recallStartedAt)
-					if !seen[item.key()] {
-						s.Items = append(s.Items, item)
-						seen[item.key()] = true
-					}
-				}
+				mapped := mapKnowledgePage(resp.Items, recallStartedAt)
+				a.withdrawChangedReadingBody(s, mapped)
+				s.Items = reading.AppendDistinct(s.Items, mapped, Item.key)
 				enforceListSlidingWindowDir(s, true)
 				s.Knowledge.NextCursor = resp.NextCursor
 				s.More = resp.HasMore
@@ -370,7 +341,7 @@ func (a *App) prependKnowledgeBatch(s *pane) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		resp, err := control.projectKnowledgePageV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
+		resp, err := control.listKnowledgePage(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, opts)
 		a.Update(func() {
 			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
 				return
@@ -392,21 +363,9 @@ func (a *App) prependKnowledgeBatch(s *pane) {
 				}
 				return
 			}
-			seen := make(map[string]bool, len(s.Items))
-			for _, existing := range s.Items {
-				seen[existing.key()] = true
-			}
-			prefix := make([]Item, 0, len(resp.Items))
-			for _, row := range resp.Items {
-				if row.DocID == "" {
-					continue
-				}
-				item := row.toItem(recallStartedAt)
-				if !seen[item.key()] {
-					prefix = append(prefix, item)
-					seen[item.key()] = true
-				}
-			}
+			mapped := mapKnowledgePage(resp.Items, recallStartedAt)
+			a.withdrawChangedReadingBody(s, mapped)
+			prefix := reading.DistinctPageRows(s.Items, mapped, Item.key)
 			if len(prefix) > 0 {
 				s.Items = append(prefix, s.Items...)
 				if s.ListSelection >= 0 {
@@ -473,7 +432,6 @@ func (a *App) hydrateKnowledgeCards(s *pane) {
 						if s.Selected != nil && s.Selected.key() == i.key() && !s.Selected.BodyLoaded {
 							updated := result
 							s.Selected = &updated
-							a.markKnowledgeRead(updated)
 						}
 						return
 					}
@@ -575,9 +533,7 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 			body.Children(func() {
 				a.knowledgeFilterBar(c, s)
 				if s.Knowledge.NewCatalogAvailable {
-					ui.Row(c.Key("knowledge-new-catalog-banner")).FillWidth().Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Background(tok.AccentSofter).Shrink(0).Children(func() {
-						ui.Text(c, "有新记忆可用").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
-						ui.Spacer(c)
+					reading.CatalogUpdateBanner(c, &tok.Tokens, func() {
 						homeLink(c, "点击刷新", func() {
 							s.Knowledge.NewCatalogAvailable = false
 							s.ListScroll.Y = 0

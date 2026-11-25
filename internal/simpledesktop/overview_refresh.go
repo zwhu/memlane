@@ -1,8 +1,12 @@
 package simpledesktop
 
-import "time"
+import (
+	"time"
 
-const overviewRefreshInterval = 30 * time.Second
+	appoverview "github.com/zwhu/memlane/app/overview"
+)
+
+const overviewRefreshInterval = appoverview.RefreshInterval
 const focusRefreshDebounce = 2 * time.Second
 
 // OnWindowFocus is called on the UI thread by the native window focus handler.
@@ -92,13 +96,13 @@ func (a *App) refreshWindowProjectDirectory(wasHidden bool) {
 }
 
 func (a *App) refreshReactivatedWindow(reactivated, wasHidden bool) {
-	if wasHidden && a.page == "总览" && !a.overviewState.Loaded && a.access.Loaded && a.overviewState.scope != a.overviewScope() {
+	if wasHidden && a.page == "总览" && !a.overviewState.Loaded && a.access.Loaded && a.overviewState.ScopeKey != a.overviewScope() {
 		a.loadOverview(true)
 		return
 	}
 	if reactivated && a.page == "总览" && !a.overviewState.Loading && !a.overviewState.ActivityLoading && !a.searchUI.Open {
 		// Avoid starting a second enumeration on rapid blur/focus cycles.
-		if a.overviewRefreshAt.IsZero() || time.Since(a.overviewRefreshAt.Add(-overviewRefreshInterval)) >= 3*time.Second {
+		if a.overview.RefreshAt.IsZero() || time.Since(a.overview.RefreshAt.Add(-overviewRefreshInterval)) >= 3*time.Second {
 			a.loadOverview(true)
 		}
 	}
@@ -126,17 +130,5 @@ func (a *App) refreshOverviewIfDue(now time.Time) bool {
 	if a.page != "总览" || a.windowInactive || a.windowHidden || a.searchUI.Open || a.Update == nil {
 		return false
 	}
-	v := &a.overviewState
-	if v.Loading || v.ActivityLoading {
-		return false
-	}
-	if a.overviewRefreshAt.IsZero() {
-		a.overviewRefreshAt = now.Add(overviewRefreshInterval)
-		return false
-	}
-	if now.Before(a.overviewRefreshAt) {
-		return false
-	}
-	a.loadOverview()
-	return true
+	return a.overviewPageController().RefreshIfDue(now)
 }

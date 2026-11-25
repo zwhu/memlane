@@ -24,7 +24,7 @@ func TestCommonNormalDocumentPresentationPreservesRawAndUsesTitle(t *testing.T) 
 
 func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 	draft := CommonDraft{Title: "A preference", Body: "Use the project validation command.", Category: "preference"}
-	body, _ := draft.markdown()
+	body, _ := draft.FormatDocument()
 	outcome := ""
 	kind := "pipeline"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,13 +77,17 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 
 func TestCommonConfirmBoundsCandidateReadsAndFailsClosed(t *testing.T) {
 	draft := CommonDraft{Title: "A preference", Body: "Keep internal  spacing.", Category: "preference"}
-	expected, err := draft.markdown()
+	expected, err := draft.FormatDocument()
 	if err != nil {
 		t.Fatal(err)
 	}
 	controlCfg := readingControlConfig(t, "http://127.0.0.1:12345")
 	reads := 0
 	httpClient := &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/knowledge/") {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path == "/v1/common/knowledge" {
 			items := []v2KnowledgeItem{
 				{DocID: "foreign", DatasetID: "other", CommonCategory: "preference"},
@@ -144,10 +148,10 @@ func TestCommonEditorChangedSourceVersionNeverSubmitsPatch(t *testing.T) {
 
 func TestCommonDraftRoundtripRetainsSourceAndApplicability(t *testing.T) {
 	original := CommonDraft{Title: "A preference", Body: "Use pnpm.\n\nKeep the lockfile.", Category: "preference", Source: "User's original note", Applicability: "JavaScript repositories"}
-	body, _ := original.markdown()
+	body, _ := original.FormatDocument()
 	d := Document{Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference", "source": original.Source}}
 	parsed := commonDraftFor(Item{Body: body, BodyLoaded: true, Document: &d})
-	roundtrip, err := parsed.markdown()
+	roundtrip, err := parsed.FormatDocument()
 	if err != nil || roundtrip != body {
 		t.Fatalf("edit duplicated/lost source or applicability: %q %v", roundtrip, err)
 	}

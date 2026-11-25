@@ -1,10 +1,13 @@
 package simpledesktop
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/zwhu/memlane/app/reading"
 )
 
 // Presentation is derived only. Body always remains the official raw bytes.
@@ -254,10 +257,10 @@ func readingUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if status, ok := httpStatusCode(err); ok && (status == 401 || status == 403 || status == 404) {
+	if status, ok := httpStatusCode(err); ok && (status == 401 || status == 403 || status == 404 || status == 413) {
 		return true
 	}
-	return readingAuthDenied(err) || isControlErrorCode(err, 503, "reading_contract_mismatch")
+	return errors.Is(err, reading.ErrInvalidBody) || readingAuthDenied(err) || isControlErrorCode(err, 503, "reading_contract_mismatch")
 }
 
 func readingAuthDenied(err error) bool {

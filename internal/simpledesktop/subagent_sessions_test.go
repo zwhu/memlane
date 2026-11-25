@@ -160,6 +160,8 @@ func TestSubagentUILinkingQAsToolsAndReturnLightDark(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			http.NotFound(w, r)
+		case "/api/raw-records":
+			http.NotFound(w, r)
 		case "/v1/projects/p-sub/raw-records":
 			_ = json.NewEncoder(w).Encode(feed)
 		case "/v1/raw-records/session-history":

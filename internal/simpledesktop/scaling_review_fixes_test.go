@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
 
 func strPtr(s string) *string { return &s }
@@ -216,15 +217,6 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 				},
 			})
 			return
-		case "/v1/reading-state/migrate-local":
-			// Complete reading-state migration immediately so all 3 data loads reach
-			// their actual endpoints concurrently instead of blocking behind one flight.
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
-				Migrated: []v2ReadingStateMigratedScope{
-					{ProjectID: "p1", DatasetID: "ds-1", Status: "already_migrated"},
-				},
-			})
-			return
 		case "/v1/overview/bootstrap", "/v1/projects/p1/knowledge", "/v1/projects/p1/message-summary":
 			handlersWG.Add(1)
 			defer handlersWG.Done()
@@ -276,7 +268,7 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 	a.searchAnchor = &anchor
 	a.searchPane = s
 	q := a.projectQueueStateFor(a.access.Directory.Projects[0])
-	q.UnreadKnowledge = []Item{anchor}
+	q.UnreadPreview = []Item{anchor}
 	q.ServerUnreadKnown = true
 	q.ServerUnreadCount = 5
 	q.Documents = []Item{{ID: "pending-0", Dataset: "ds-1", Kind: "文档"}}
@@ -332,8 +324,8 @@ checked:
 	if len(s.Items) != 0 || s.HomeAnchor != nil || s.SubagentParent != nil || a.searchAnchor != nil {
 		t.Fatalf("pane leaked state after InvalidateReading: items=%d home=%v sub=%v search=%v", len(s.Items), s.HomeAnchor, s.SubagentParent, a.searchAnchor)
 	}
-	if q.ServerUnreadKnown || q.ServerUnreadCount != 0 || len(q.UnreadKnowledge) != 0 || len(q.Documents) != 0 {
-		t.Fatalf("queue repopulated after InvalidateReading: known=%v cnt=%d unread=%d docs=%d", q.ServerUnreadKnown, q.ServerUnreadCount, len(q.UnreadKnowledge), len(q.Documents))
+	if q.ServerUnreadKnown || q.ServerUnreadCount != 0 || len(q.UnreadPreview) != 0 || len(q.Documents) != 0 {
+		t.Fatalf("queue repopulated after InvalidateReading: known=%v cnt=%d unread=%d docs=%d", q.ServerUnreadKnown, q.ServerUnreadCount, len(q.UnreadPreview), len(q.Documents))
 	}
 }
 
@@ -401,24 +393,11 @@ func TestReviewFixReadingStateBatch200StateRevAndNoLegacyFile(t *testing.T) {
 	q := a.projectQueueStateFor(p)
 	q.ServerUnreadKnown = true
 	q.ServerUnreadCount = 300
-	ctrl, _ := a.accessClient()
-	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
-
-	// Hold worker via single bulk enqueue of 255 IDs -> must chunk into 200 + 55.
-	w := a.ensureKnowledgeWriter()
-	w.mu.Lock()
 	ids := make([]string, 255)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("doc-%03d", i)
+	for n := range ids {
+		ids[n] = fmt.Sprintf("doc-%03d", n)
 	}
-	w.jobs = append(w.jobs, &knowledgeReadMarkJob{
-		key: "k1", queue: q, update: a.Update, control: &ctrl,
-		readingIdentity: readingID, projectID: p.ID, datasetID: p.Dataset,
-		app: a, authEpoch: a.authEpoch, docIDs: ids,
-	})
-	w.running = true
-	go w.drainLoop()
-	w.mu.Unlock()
+	a.enqueueKnowledgeReadMarks(ids, q, p)
 
 	a.FlushPendingState(2 * time.Second)
 	for {
@@ -442,7 +421,7 @@ afterFirst:
 	}
 
 	// Send a third mark-read that receives stale state_rev=5 with count=99 -> must NOT overwrite rev=11!
-	a.enqueueKnowledgeReadMark("", "doc-extra", q, &ctrl, readingID, p.ID, p.Dataset)
+	a.enqueueKnowledgeReadMark("doc-extra", q, p)
 	a.FlushPendingState(2 * time.Second)
 	for {
 		select {
@@ -496,8 +475,8 @@ func TestReviewFixOverviewRawCountKPIAndV2DayVirtualization(t *testing.T) {
 	defer srv.Close()
 
 	a := New(Config{ServiceURL: srv.URL, Projects: projects[:1]}, nil)
-	a.overviewState.scope = a.overviewScope()
-	a.overviewRefreshAt = time.Now().Add(time.Hour)
+	a.overviewState.ScopeKey = a.overviewScope()
+	a.overview.RefreshAt = time.Now().Add(time.Hour)
 	a.overviewState.Loaded = true
 	a.overviewState.V2Mode = true
 	a.overviewState.Day = "2026-11-21"
@@ -1238,14 +1217,14 @@ drainedQueued:
 	// 3. project_queue.go 401 on message-summary must trigger InvalidateReading clearing UnreadKnowledge.
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
-	q.UnreadKnowledge = []Item{{ID: "old-u", Dataset: "ds-1", Kind: "知识"}}
+	q.UnreadPreview = []Item{{ID: "old-u", Dataset: "ds-1", Kind: "知识"}}
 	q.ServerUnreadKnown = true
 	q.ServerUnreadCount = 4
 	queueStatus.Store(http.StatusUnauthorized)
 	a.loadProjectQueue(q, p)
 	drainReading(t, updates, func() bool { return !q.Loading })
-	if len(q.UnreadKnowledge) != 0 || q.ServerUnreadKnown || q.ServerUnreadCount != 0 {
-		t.Fatalf("project_queue 401 failed to invalidate cached unread state: known=%v cnt=%d items=%d", q.ServerUnreadKnown, q.ServerUnreadCount, len(q.UnreadKnowledge))
+	if len(q.UnreadPreview) != 0 || q.ServerUnreadKnown || q.ServerUnreadCount != 0 {
+		t.Fatalf("project_queue 401 failed to invalidate cached unread state: known=%v cnt=%d items=%d", q.ServerUnreadKnown, q.ServerUnreadCount, len(q.UnreadPreview))
 	}
 
 	// 4a. loadMoreSubagents 400 invalid_cursor clears dead cursor.
@@ -1274,136 +1253,6 @@ drainedQueued:
 	drainReading(t, updates, func() bool { return s.Selected == nil || !s.Selected.SubagentsLoading })
 	if s.Selected != nil || len(s.Items) != 1 || s.Items[0].ReadingState != "unavailable" || len(s.Items[0].Subagents) != 0 || s.Items[0].SubagentsHasMore || s.Items[0].SubagentsNextCursor != "" || s.Items[0].SubagentTotalCount != 0 {
 		t.Fatalf("loadMoreSubagents 401 must clear Selected and scrub item Subagents, got sel=%v item=%+v", s.Selected, s.Items[0])
-	}
-}
-
-// TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit verifies R2-GO-P0-03:
-//  1. When local knowledge-read-<hash>.json exists and migration fails (500 or unknown status),
-//     overview/knowledge/queue/locate/mark-read ALL fail closed without issuing V2 reads/writes
-//     or marking migrated.
-//  2. Empty initialized local state sends explicit `"expected_items":0` on import/commit.
-//  3. Corrupt local JSON file never marks migrated.
-func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T) {
-	controlCapabilitiesCache.mu.Lock()
-	clear(controlCapabilitiesCache.entries)
-	controlCapabilitiesCache.mu.Unlock()
-
-	var migMode atomic.Int32 // 0=unknown status, 1=500, 2=no_legacy_file (staging import)
-	var v2DataHits atomic.Int32
-	var rawCommitBody atomic.Value
-
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/capabilities":
-			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1"}, ReadingContract: readingContract,
-				Features: []string{
-					v2FeatureOverview, v2FeatureKnowledgeCursor,
-					v2FeatureMessageSummary, v2FeatureReadingState,
-				},
-			})
-		case "/v1/projects":
-			_ = json.NewEncoder(w).Encode(AccessDirectory{
-				Projects: []AccessProject{{ID: "p1", Dataset: "ds-1", Status: "verified"}},
-			})
-		case "/v1/reading-state/migrate-local":
-			switch migMode.Load() {
-			case 0:
-				_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
-					Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p1", DatasetID: "ds-1", Status: "mystery_pending"}},
-				})
-			case 1:
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "db_locked"})
-			default:
-				_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
-					Migrated: []v2ReadingStateMigratedScope{{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"}},
-				})
-			}
-		case "/v1/reading-state/import/begin":
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "b-zero"})
-		case "/v1/reading-state/import/commit":
-			raw, _ := io.ReadAll(r.Body)
-			rawCommitBody.Store(string(raw))
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-0", Committed: 0, UnreadCount: 1, StateRev: 1})
-		case "/v1/overview/bootstrap":
-			v2DataHits.Add(1)
-			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 1})
-		case "/v1/projects/p1/knowledge":
-			v2DataHits.Add(1)
-			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
-		case "/v1/projects/p1/message-summary":
-			v2DataHits.Add(1)
-			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{ProjectID: "p1", DatasetID: "ds-1", UnreadStateRev: 1})
-		case "/v1/reading-state/mark-read":
-			v2DataHits.Add(1)
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "sh-0", Marked: 1, UnreadCount: 0, StateRev: 2})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer control.Close()
-
-	token := p1TempToken(t)
-	a, updates := p1TestApp(t, control.URL, control.URL, token)
-	p := a.access.Directory.Projects[0]
-	readPath, err := a.knowledgeReadPath(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Write initialized local knowledge-read file with ZERO read IDs (tests expected_items: 0 too).
-	if err := writeKnowledgeState(readPath, knowledgeReadState{
-		Version: 1, Initialized: true, StartedAt: time.Now().UTC(), Read: map[string]bool{},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Phase A: unknown status -> ALL V2 consumers MUST fail closed with ZERO V2 data calls.
-	migMode.Store(0)
-	a.loadOverview()
-	drainReading(t, updates, func() bool { return !a.overviewState.Loading })
-	a.page, a.kind = "知识", "知识"
-	s := a.state()
-	a.loadKnowledgeFeed(s)
-	drainReading(t, updates, func() bool { return !s.Loading })
-	q := a.projectQueueStateFor(p)
-	a.loadProjectQueue(q, p)
-	drainReading(t, updates, func() bool { return !q.Loading })
-	ctrl, _ := a.accessClient()
-	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
-	a.enqueueKnowledgeReadMark(readPath, "doc-1", q, &ctrl, readingID, p.ID, p.Dataset)
-	if flushErr := a.FlushPendingState(2 * time.Second); flushErr == nil {
-		t.Fatalf("expected FlushPendingState error when mark-read blocked on failed migration")
-	}
-	if v2DataHits.Load() != 0 {
-		t.Fatalf("V2 data endpoints received %d calls despite failed pending migration!", v2DataHits.Load())
-	}
-
-	// Phase B: corrupt local file with no_legacy_file -> MUST fail closed and NOT mark migrated.
-	migMode.Store(2)
-	if err := os.WriteFile(readPath, []byte("{corrupt-json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if migErr := a.migrateReadingStateV2(context.Background(), ctrl, []AccessProject{p}); migErr == nil {
-		t.Fatalf("corrupt local knowledge-read file must return error without marking migrated")
-	}
-
-	// Phase C: restore valid empty-read initialized file -> staging import commits with explicit `"expected_items":0`.
-	if err := writeKnowledgeState(readPath, knowledgeReadState{
-		Version: 1, Initialized: true, StartedAt: time.Now().UTC(), Read: map[string]bool{},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// FlushPendingState re-enqueues the previously failed doc-1 mark-read, migrates via staging import, and succeeds!
-	if flushErr := a.FlushPendingState(2 * time.Second); flushErr != nil {
-		t.Fatalf("expected FlushPendingState to succeed after migration recovered, got %v", flushErr)
-	}
-	commitJSON, _ := rawCommitBody.Load().(string)
-	if !strings.Contains(commitJSON, `"expected_items":0`) {
-		t.Fatalf("import/commit payload omitted explicit expected_items=0: %s", commitJSON)
-	}
-	if v2DataHits.Load() == 0 {
-		t.Fatalf("expected mark-read to execute once migration settled")
 	}
 }
 
@@ -1462,10 +1311,8 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndMarkAllRace(t *testing.T) {
 	}
 
 	// 2. FlushPendingState returns error on unsaved mark-read failure, and retries cleanly on next flush.
-	ctrl, _ := a.accessClient()
-	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
 	markFail.Store(true)
-	a.enqueueKnowledgeReadMark("", "doc-fail", q, &ctrl, readingID, p.ID, p.Dataset)
+	a.enqueueKnowledgeReadMark("doc-fail", q, p)
 	if err := a.FlushPendingState(2 * time.Second); err == nil {
 		t.Fatalf("FlushPendingState must return error when mark-read failed")
 	}
@@ -1484,8 +1331,8 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndMarkAllRace(t *testing.T) {
 	a.clearProjectNotificationsAsync(q, p)
 	a.clearProjectNotificationsAsync(q, p)
 	drainReading(t, updates, func() bool { return q.StateVersion >= version+2 })
-	if q.KnowledgeReadError != "" {
-		t.Fatalf("concurrent clearProjectNotificationsAsync failed: read=%q", q.KnowledgeReadError)
+	if q.UnreadState.Error != "" {
+		t.Fatalf("concurrent clearProjectNotificationsAsync failed: read=%q", q.UnreadState.Error)
 	}
 }
 
@@ -1623,7 +1470,7 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 //  1. P0-3: project_queue 403 on processing-notices returns immediately without writing concurrent
 //     official Documents/UnreadKnowledge; InvalidateReading withdraws commonEdit and clears Events/History.
 //  2. P1-1: partial InvalidateReading(ds-1) never leaves unrelated project ds-2 q.Loading stuck true.
-//  3. P1-2: migrate-local strictly excludes unconfirmed/pending projects so verified project A is never blocked.
+//  3. P1-2: pending projects do not block overview for verified projects.
 //  4. P1-5/P1-6: stale mark-all-read state_rev never wipes newer unread preview; equal-length same-mtime
 //     token file replacement immediately busts controlCapabilitiesCache.
 func TestReviewFixR3ConvergenceClosure(t *testing.T) {
@@ -1679,8 +1526,8 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	q1 := a0.projectQueueStateFor(p1)
 	a0.loadProjectQueue(q1, p1)
 	drainReading(t, updates0, func() bool { return !q1.Loading })
-	if len(q1.Documents) != 0 || len(q1.UnreadKnowledge) != 0 || q1.DocumentError == "" {
-		t.Fatalf("P0-3 VIOLATION: 403 processing-notices wrote concurrent official docs/unread: docs=%d unread=%d err=%q", len(q1.Documents), len(q1.UnreadKnowledge), q1.DocumentError)
+	if len(q1.Documents) != 0 || len(q1.UnreadPreview) != 0 || q1.DocumentError == "" {
+		t.Fatalf("P0-3 VIOLATION: 403 processing-notices wrote concurrent official docs/unread: docs=%d unread=%d err=%q", len(q1.Documents), len(q1.UnreadPreview), q1.DocumentError)
 	}
 
 	// A successful parallel document response must also be discarded on activity 403.
@@ -1689,9 +1536,9 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	q1.Activity = []overviewEvent{{Title: "cached activity"}}
 	a0.loadProjectQueue(q1, p1)
 	drainReading(t, updates0, func() bool { return !q1.Loading })
-	if len(q1.Activity) != 0 || len(q1.Documents) != 0 || len(q1.UnreadKnowledge) != 0 || q1.DocumentError == "" {
+	if len(q1.Activity) != 0 || len(q1.Documents) != 0 || len(q1.UnreadPreview) != 0 || q1.DocumentError == "" {
 		t.Fatalf("activity denial leaked queue data: activity=%d docs=%d unread=%d err=%q",
-			len(q1.Activity), len(q1.Documents), len(q1.UnreadKnowledge), q1.DocumentError)
+			len(q1.Activity), len(q1.Documents), len(q1.UnreadPreview), q1.DocumentError)
 	}
 
 	// --- 1b. P0-3: InvalidateReading withdraws commonEdit and clears Events/History ---
@@ -1710,11 +1557,11 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	a0.overviewState.History = []overviewEvent{{Key: "h-1", Title: "搜索历史 1"}}
 	a0.overviewState.HistoryLoaded = true
 	a0.overviewState.ActivityLoaded = true
-	a0.overviewState.cachedGroupedEvents = a0.overviewState.Events
+	a0.overviewState.GroupedEvents = a0.overviewState.Events
 
 	// Partial invalidate ds-1: drops ds-1 event + ds-1 recall, keeps ds-2 event and ds-common editor.
 	a0.InvalidateReading("ds-1")
-	if len(a0.overviewState.Events) != 1 || a0.overviewState.Events[0].Key != "ev-ds2" || a0.overviewState.cachedGroupedEvents != nil {
+	if len(a0.overviewState.Events) != 1 || a0.overviewState.Events[0].Key != "ev-ds2" || a0.overviewState.GroupedEvents != nil {
 		t.Fatalf("InvalidateReading(ds-1) did not cleanly filter Events: %+v", a0.overviewState.Events)
 	}
 	if !a0.commonEdit.Open || a0.commonEdit.Existing == nil {
@@ -1780,9 +1627,7 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 		t.Fatalf("p2 follow-up poll failed after recovery: known=%v count=%d", q2.ServerUnreadKnown, q2.ServerUnreadCount)
 	}
 
-	// --- 3. P1-2: migrate-local excludes transitional unconfirmed project B so verified A loads cleanly ---
-	var sawMigratedIDs []string
-	var migMu sync.Mutex
+	// --- 3. P1-2: transitional project B does not block overview for verified A ---
 	var overviewHits atomic.Int32
 	controlP2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1791,24 +1636,6 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{v2FeatureOverview, v2FeatureReadingState},
 			})
-		case "/v1/reading-state/migrate-local":
-			var req v2ReadingStateMigrateRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			resp := v2ReadingStateMigrateResponse{}
-			for _, pr := range req.Projects {
-				migMu.Lock()
-				sawMigratedIDs = append(sawMigratedIDs, pr.ProjectID)
-				migMu.Unlock()
-				if pr.ProjectID == "p-unconfirmed" {
-					w.WriteHeader(http.StatusForbidden)
-					_ = json.NewEncoder(w).Encode(map[string]string{"error": "project_not_verified"})
-					return
-				}
-				resp.Migrated = append(resp.Migrated, v2ReadingStateMigratedScope{
-					ProjectID: pr.ProjectID, DatasetID: pr.DatasetID, Status: "already_migrated",
-				})
-			}
-			_ = json.NewEncoder(w).Encode(resp)
 		case "/v1/overview/bootstrap":
 			overviewHits.Add(1)
 			_ = json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
@@ -1831,12 +1658,6 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	if a2.overviewState.Error != "" || overviewHits.Load() != 1 {
 		t.Fatalf("P1-2 VIOLATION: unconfirmed project blocked verified overview load: err=%q hits=%d", a2.overviewState.Error, overviewHits.Load())
 	}
-	migMu.Lock()
-	gotMig := append([]string(nil), sawMigratedIDs...)
-	migMu.Unlock()
-	if len(gotMig) != 1 || gotMig[0] != "p1" {
-		t.Fatalf("P1-2 VIOLATION: expected only verified [p1] in migrate-local, got %v", gotMig)
-	}
 
 	// An empty directory leaves only the fallback config, which has no verified status.
 	aConfig, configUpdates := p1TestApp(t, controlP2.URL, controlP2.URL, tokenP2)
@@ -1844,13 +1665,10 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	aConfig.Config.Projects = append(aConfig.Config.Projects, Project{ID: "p-unconfirmed", Dataset: "ds-pending"})
 	aConfig.loadOverview()
 	drainReading(t, configUpdates, func() bool { return !aConfig.overviewState.Loading })
-	migMu.Lock()
-	requested := len(sawMigratedIDs)
-	migMu.Unlock()
-	if requested != 1 || overviewHits.Load() != 2 {
-		t.Fatalf("config fallback requested migration or failed overview: migrated=%d overview=%d", requested, overviewHits.Load())
-	}
 
+	if overviewHits.Load() != 2 {
+		t.Fatal("config fallback did not load overview")
+	}
 	// --- 4a. P1-5: stale mark-all-read (state_rev=5) must NOT clear newer unread preview (state_rev=10) ---
 	controlP5 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1878,12 +1696,12 @@ func TestReviewFixR3ConvergenceClosure(t *testing.T) {
 	q5.ServerUnreadStateRev = 10
 	q5.ServerUnreadCount = 3
 	q5.UnreadHasMore = true
-	q5.UnreadKnowledge = []Item{{ID: "newer-unread", Dataset: "ds-1", Kind: "知识", Title: "新到达未读"}}
+	q5.UnreadPreview = []Item{{ID: "newer-unread", Dataset: "ds-1", Kind: "知识", Title: "新到达未读"}}
 	a5.clearProjectNotificationsAsync(q5, p5)
 	drainReading(t, updates5, func() bool { return q5.StateVersion > 0 })
-	if q5.ServerUnreadStateRev != 10 || q5.ServerUnreadCount != 3 || len(q5.UnreadKnowledge) != 1 || !q5.UnreadHasMore {
+	if q5.ServerUnreadStateRev != 10 || q5.ServerUnreadCount != 3 || len(q5.UnreadPreview) != 1 || !q5.UnreadHasMore {
 		t.Fatalf("P1-5 VIOLATION: stale mark-all-read rev=5 clobbered newer unread rev=10: rev=%d cnt=%d unread=%d more=%v",
-			q5.ServerUnreadStateRev, q5.ServerUnreadCount, len(q5.UnreadKnowledge), q5.UnreadHasMore)
+			q5.ServerUnreadStateRev, q5.ServerUnreadCount, len(q5.UnreadPreview), q5.UnreadHasMore)
 	}
 
 	// --- 4b. P1-6: equal-length, identical-mtime token replacement immediately busts capabilities cache ---
@@ -1944,7 +1762,7 @@ func (handler queueTestTransport) RoundTrip(r *http.Request) (*http.Response, er
 	return w.Result(), nil
 }
 
-func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
+func TestReviewFixQueueReadingAuthorizationIsolation(t *testing.T) {
 	var denySummary atomic.Bool
 	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1953,20 +1771,6 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{v2FeatureReadingState, v2FeatureMessageSummary},
 			})
-		case "/v1/reading-state/migrate-local":
-			var req v2ReadingStateMigrateRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			resp := v2ReadingStateMigrateResponse{}
-			for _, ref := range req.Projects {
-				if ref.ProjectID == "stale" {
-					http.Error(w, `{"error":"project_unconfirmed"}`, http.StatusForbidden)
-					return
-				}
-				resp.Migrated = append(resp.Migrated, v2ReadingStateMigratedScope{
-					ProjectID: ref.ProjectID, DatasetID: ref.DatasetID, Status: "already_migrated",
-				})
-			}
-			_ = json.NewEncoder(w).Encode(resp)
 		case "/v1/projects/p1/message-summary":
 			if denySummary.Load() {
 				http.Error(w, `{"error":"project_unconfirmed"}`, http.StatusForbidden)
@@ -1991,18 +1795,18 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 	a.loadProjectQueue(q, p)
 	drainReading(t, updates, func() bool { return !q.Loading })
 	if q.DocumentError != "" || !q.ServerUnreadKnown || q.ServerUnreadCount != 3 {
-		t.Fatalf("unrelated migration denial blocked queue: err=%q known=%t count=%d",
+		t.Fatalf("unrelated project blocked queue: err=%q known=%t count=%d",
 			q.DocumentError, q.ServerUnreadKnown, q.ServerUnreadCount)
 	}
 
 	denySummary.Store(true)
 	q.Activity = []overviewEvent{{Title: "cached activity"}}
 	q.Documents = []Item{{ID: "cached document"}}
-	q.UnreadKnowledge = []Item{{ID: "cached unread"}}
+	q.UnreadPreview = []Item{{ID: "cached unread"}}
 	a.loadProjectQueue(q, p)
 	a.InvalidateReading("ds-stale")
 	drainReading(t, updates, func() bool { return !q.Loading })
-	if len(q.Activity) != 0 || len(q.Documents) != 0 || len(q.UnreadKnowledge) != 0 ||
+	if len(q.Activity) != 0 || len(q.Documents) != 0 || len(q.UnreadPreview) != 0 ||
 		q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.DocumentError == "" {
 		t.Fatalf("403 after unrelated invalidation left stale queue state: %+v", q)
 	}
@@ -2011,17 +1815,15 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 func TestReviewFixR4MarkAllReceiptPreservesSameRevisionUnread(t *testing.T) {
 	t.Parallel()
 	a := &App{}
-	q := &projectQueueState{ServerUnreadStateRev: 5}
+	q := &projectQueueState{UnreadState: UnreadState{ServerUnreadStateRev: 5}}
 	before := q.ServerUnreadSnapshot
 	if !applyServerUnreadSnapshot(q, 1, 5, false) {
 		t.Fatal("expected same-revision unread snapshot to be accepted")
 	}
-	q.UnreadKnowledge = []Item{{ID: "late"}}
+	q.UnreadPreview = []Item{{ID: "late"}}
 
-	a.applyMarkAllReadReceipt(q, "ds-1", v2ReadingStateMarkAllReadResponse{
-		UnreadCount: 0, UnreadCountKnown: boolPtr(true), StateRev: 5,
-	}, before, q.KnowledgeCatalogVersion)
-	if q.ServerUnreadCount != 1 || len(q.UnreadKnowledge) != 1 || q.UnreadKnowledge[0].ID != "late" {
+	a.applyMarkAllReadReceipt(q, "ds-1", api.MarkReadResponse{ReadingStateView: api.ReadingStateView{StateRev: 5}}, before, q.KnowledgeCatalogVersion)
+	if q.ServerUnreadCount != 1 || len(q.UnreadPreview) != 1 || q.UnreadPreview[0].ID != "late" {
 		t.Fatal("delayed mark-all cleared a new unread at the same reading revision")
 	}
 }

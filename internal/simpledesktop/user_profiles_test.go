@@ -17,7 +17,7 @@ func profileUIFixture(t *testing.T) *App {
 	a := overviewFixture(t)
 	a.page = "用户画像"
 	a.access.Next = time.Now().Add(time.Hour)
-	a.overviewRefreshAt = time.Now().Add(time.Hour)
+	a.overview.RefreshAt = time.Now().Add(time.Hour)
 	a.userProfiles = userProfilesState{Loaded: true, Next: time.Now().Add(time.Hour), Selected: "codex", Directory: userProfilesDirectory{
 		Prompt: "请导出你自己已经保存的关于我的记忆。尽可能保留我的原话；未知内容写未知。",
 		Profiles: []userProfile{
@@ -169,7 +169,7 @@ func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
 	if got := profileReadingMarkdown(body); got != "## Instructions\n\n- 原话\n\nComplete." {
 		t.Fatal(got)
 	}
-	if got := (userProfile{Status: "failed", Error: "profile_generation_timeout"}).failureLabel(); !strings.Contains(got, "导出超时") {
+	if got := (userProfile{Status: "failed", Error: "profile_generation_timeout"}).FailureLabel(); !strings.Contains(got, "导出超时") {
 		t.Fatal(got)
 	}
 }
@@ -177,6 +177,10 @@ func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
 func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *testing.T) {
 	called := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/profiles") {
+			http.NotFound(w, r)
+			return
+		}
 		select {
 		case called <- r.Method + " " + r.URL.Path:
 		default:

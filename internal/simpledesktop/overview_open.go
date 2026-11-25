@@ -50,14 +50,6 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 	client, category := a.Client, a.commonCategoryFilter()
 	control, hasControl := a.accessClient()
 	readingID, _ := readingIdentity(Client{Config: client.Config})
-	stateDir := a.readingStateDir()
-	var migProjects []AccessProject
-	for _, ap := range a.access.Directory.Projects {
-		if ap.ID == p.ID && ap.Dataset == p.Dataset {
-			migProjects = []AccessProject{ap}
-			break
-		}
-	}
 	recallStartedAt := a.overviewState.V2RecallStartedAt
 	go func() {
 		defer cancel()
@@ -76,11 +68,8 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 		if !hasControl {
 			err = fmt.Errorf("控制面服务不可用，无法定位这条记忆")
 		} else if !common {
-			if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, migProjects); migErr != nil && (isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, migProjects)) {
-				err = migErr
-			}
 			if err == nil {
-				v2Resp, v2Err := control.projectKnowledgePageV2(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
+				v2Resp, v2Err := control.listKnowledgePage(ctx, readingID, p.ID, "date", "", false, "", "", knowledgeBatch, v2KnowledgePageOpts{
 					AnchorDocID: item.ID,
 				})
 				if v2Err == nil {
@@ -116,7 +105,7 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 				}
 			}
 		} else {
-			v2Resp, v2Err := control.commonKnowledgePageV2(ctx, p.Dataset, category, knowledgeBatch, v2KnowledgePageOpts{
+			v2Resp, v2Err := control.commonPage(ctx, p.Dataset, category, knowledgeBatch, v2KnowledgePageOpts{
 				AnchorDocID: item.ID,
 			})
 			if v2Err == nil {
@@ -215,7 +204,6 @@ func (a *App) locateOverviewItem(s *pane, item Item) {
 }
 
 func (a *App) publishOverviewTitle(item Item) {
-	a.markKnowledgeRead(item)
 	if item.Document == nil {
 		return
 	}
@@ -223,7 +211,7 @@ func (a *App) publishOverviewTitle(item Item) {
 		if row.key() != item.key() {
 			continue
 		}
-		generation := fmt.Sprint(a.overviewState.generation)
+		generation := fmt.Sprint(a.overviewState.Generation)
 		if keyForReading(a.readingIdentity, row, generation) == keyForReading(a.readingIdentity, item, generation) {
 			a.overviewState.Snapshot.Knowledge[n].Title = overviewReadingTitle(item)
 			a.overviewState.Snapshot.Knowledge[n].ReadingState = "ready"

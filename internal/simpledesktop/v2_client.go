@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/zwhu/memlane/app/reading"
 )
 
 const (
@@ -25,7 +27,7 @@ const (
 	v2FeatureMessageSummary        = "message_summary_v2"
 	v2FeatureProvenanceBackfill    = "provenance_backfill_v2"
 
-	maxActiveListItems = 300
+	maxActiveListItems = reading.MaxActiveListItems
 )
 
 type v2DocumentBodyResponse struct {
@@ -755,93 +757,6 @@ func (c ProjectControlClient) projectMessageSummaryV2(ctx context.Context, readi
 	var out v2MessageSummaryResponse
 	path := "/v1/projects/" + url.PathEscape(projectID) + "/message-summary"
 	err := c.requestWithHeaders(ctx, "GET", path, v2IdentityHeaders(readingID), nil, &out, 512*1024)
-	return out, err
-}
-
-type v2ReadingStateProjectRef struct {
-	ProjectID string `json:"project_id"`
-	DatasetID string `json:"dataset_id"`
-}
-
-type v2ReadingStateMigrateRequest struct {
-	ReadingIdentity string                     `json:"reading_identity"`
-	Projects        []v2ReadingStateProjectRef `json:"projects,omitempty"`
-}
-
-type v2ReadingStateMigratedScope struct {
-	ProjectID     string `json:"project_id"`
-	DatasetID     string `json:"dataset_id"`
-	ScopeHash     string `json:"scope_hash"`
-	Status        string `json:"status"`
-	ImportedItems int    `json:"imported_items"`
-	UnreadCount   int    `json:"unread_count"`
-}
-
-type v2ReadingStateMigrateResponse struct {
-	Migrated []v2ReadingStateMigratedScope `json:"migrated"`
-}
-
-func (c ProjectControlClient) readingStateMigrateLocalV2(ctx context.Context, req v2ReadingStateMigrateRequest) (v2ReadingStateMigrateResponse, error) {
-	var out v2ReadingStateMigrateResponse
-	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/migrate-local", req, &out, 512*1024)
-	return out, err
-}
-
-type v2ReadingStateImportBeginRequest struct {
-	ReadingIdentity string `json:"reading_identity"`
-	ProjectID       string `json:"project_id"`
-	DatasetID       string `json:"dataset_id"`
-	Initialized     bool   `json:"initialized"`
-	EnabledAt       string `json:"enabled_at"`
-}
-
-type v2ReadingStateImportBeginResponse struct {
-	BatchID   string `json:"batch_id"`
-	ScopeHash string `json:"scope_hash"`
-}
-
-func (c ProjectControlClient) readingStateImportBeginV2(ctx context.Context, req v2ReadingStateImportBeginRequest) (v2ReadingStateImportBeginResponse, error) {
-	var out v2ReadingStateImportBeginResponse
-	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/begin", req, &out, 256*1024)
-	return out, err
-}
-
-type v2ReadingStateImportChunkItem struct {
-	DocID  string `json:"doc_id"`
-	IsRead bool   `json:"is_read"`
-}
-
-type v2ReadingStateImportChunkRequest struct {
-	BatchID string                          `json:"batch_id"`
-	Items   []v2ReadingStateImportChunkItem `json:"items"`
-}
-
-type v2ReadingStateImportChunkResponse struct {
-	BatchID string `json:"batch_id"`
-	Staged  int    `json:"staged"`
-}
-
-func (c ProjectControlClient) readingStateImportChunkV2(ctx context.Context, req v2ReadingStateImportChunkRequest) (v2ReadingStateImportChunkResponse, error) {
-	var out v2ReadingStateImportChunkResponse
-	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/chunk", req, &out, 256*1024)
-	return out, err
-}
-
-type v2ReadingStateImportCommitRequest struct {
-	BatchID       string `json:"batch_id"`
-	ExpectedItems *int   `json:"expected_items,omitempty"`
-}
-
-type v2ReadingStateImportCommitResponse struct {
-	ScopeHash   string `json:"scope_hash"`
-	Committed   int    `json:"committed"`
-	UnreadCount int    `json:"unread_count"`
-	StateRev    int64  `json:"state_rev,omitempty"`
-}
-
-func (c ProjectControlClient) readingStateImportCommitV2(ctx context.Context, req v2ReadingStateImportCommitRequest) (v2ReadingStateImportCommitResponse, error) {
-	var out v2ReadingStateImportCommitResponse
-	err := c.requestWithLimit(ctx, "POST", "/v1/reading-state/import/commit", req, &out, 256*1024)
 	return out, err
 }
 

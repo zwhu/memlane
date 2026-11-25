@@ -452,7 +452,7 @@ func TestSidebarShowsUnreadCountWithoutProjectAlertDot(t *testing.T) {
 	t.Cleanup(func() { applyAppearance(false) })
 	a, q := projectQueueFixture()
 	q.Loaded = true
-	q.KnowledgeRead = knowledgeReadState{Read: map[string]bool{"unread": false}}
+	q.UnreadState = UnreadState{ServerUnreadKnown: true, ServerUnreadCount: 1}
 	if _, isTemplate, _ := a.TrayIconState(); isTemplate {
 		t.Fatal("project anomaly did not mark the macOS status icon")
 	}

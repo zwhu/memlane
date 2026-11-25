@@ -28,8 +28,8 @@ func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
 	a.access.Queues = map[string]*projectQueueState{
 		baseIdentity + "/" + project.ID + "/" + project.Dataset: {
 			Loaded: true,
-			KnowledgeRead: knowledgeReadState{
-				Read: map[string]bool{"doc-1": false, "doc-2": true},
+			UnreadState: UnreadState{
+				ServerUnreadKnown: true, ServerUnreadCount: 1, ReadIDs: map[string]bool{"doc-2": true},
 			},
 		},
 	}
@@ -40,7 +40,7 @@ func TestBaseReadingIdentityCachedAndSyncedOnTokenChange(t *testing.T) {
 	if count := a.projectUnread(project); count != 1 {
 		t.Fatalf("expected cached unread count 1 after token file removal, got %d", count)
 	}
-	if !a.itemIsUnread(Item{ID: "doc-1", Dataset: project.Dataset, Kind: "知识"}) {
+	if !a.itemIsUnread(Item{ID: "doc-1", Dataset: project.Dataset, Kind: "知识", ServerUnreadKnown: true, ServerUnread: true}) {
 		t.Fatal("expected cached unread status for doc-1")
 	}
 
@@ -90,15 +90,6 @@ func TestRenderPathQueueHelpersAvoidSyncTokenAndLocalJSONReads(t *testing.T) {
 	a.access.Loaded = true
 	a.access.Directory.Projects = []AccessProject{accessProject}
 
-	// A persisted read state would mark the queue as initialized if loaded synchronously.
-	readPath, err := a.knowledgeReadPath(accessProject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeKnowledgeState(readPath, knowledgeReadState{Initialized: true, Read: map[string]bool{"existing": true}}); err != nil {
-		t.Fatal(err)
-	}
-
 	// Remove token file after initial cache population: render-path helpers must use cachedBaseReadingIdentity
 	// and never synchronously read local JSON state files on missing queue entries.
 	if err := os.Remove(tokenPath); err != nil {
@@ -116,12 +107,12 @@ func TestRenderPathQueueHelpersAvoidSyncTokenAndLocalJSONReads(t *testing.T) {
 
 	// projectQueueStateForAsync allocates without reading local JSON synchronously.
 	q := a.projectQueueStateForAsync(accessProject)
-	if q == nil || q.KnowledgeRead.Initialized || q.localStateLoaded {
+	if q == nil || q.ServerUnreadKnown || len(q.ReadIDs) != 0 {
 		t.Fatalf("projectQueueStateForAsync unexpectedly read disk synchronously: %+v", q)
 	}
 	q.Next = time.Now().Add(time.Hour)
 	a.refreshSidebarQueueIfDue(time.Now())
-	if q.localStateLoaded || q.KnowledgeRead.Initialized {
+	if q.ServerUnreadKnown || len(q.ReadIDs) != 0 {
 		t.Fatal("refreshSidebarQueueIfDue performed synchronous local JSON read")
 	}
 

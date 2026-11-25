@@ -3,6 +3,9 @@ package simpledesktop
 import (
 	"context"
 	"time"
+
+	"github.com/zwhu/memlane/app/reading"
+	"github.com/zwhu/memlane/app/shell"
 )
 
 // Appending uses server cursor pagination in v2 mode (bounded by the 300-item
@@ -21,18 +24,20 @@ func (a *App) appendRawRecords(s *pane) {
 			return
 		}
 		s.RawAppending = true
-		request, epoch, authEpoch := s.request, a.epoch, a.authEpoch
+		request := s.request
+		adapter := appShellAdapter{a}
+		fence := shell.CaptureFence(adapter)
 		cursor, kind := s.RawNextCursor, a.kind
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			resp, err := control.rawRecordsV2(ctx, p.ID, kind, 30, cursor)
+			resp, err := control.rawPage(ctx, p.ID, kind, cursor)
 			var mapped []Item
 			if err == nil {
 				mapped, err = v2RawRecordsToItems(p.Dataset, resp)
 			}
 			a.Update(func() {
-				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+				if !fence.Valid(adapter) || request != s.request || !a.syncReadingIdentity() {
 					return
 				}
 				s.RawAppending = false
@@ -50,16 +55,7 @@ func (a *App) appendRawRecords(s *pane) {
 					}
 					return
 				}
-				seen := make(map[string]bool, len(s.Items))
-				for _, existing := range s.Items {
-					seen[existing.key()] = true
-				}
-				for _, item := range mapped {
-					if !seen[item.key()] {
-						s.Items = append(s.Items, item)
-						seen[item.key()] = true
-					}
-				}
+				s.Items = reading.AppendDistinct(s.Items, mapped, Item.key)
 				enforceListSlidingWindow(s)
 				s.RawNextCursor = resp.NextCursor
 				s.More = resp.HasMore
@@ -71,14 +67,14 @@ func (a *App) appendRawRecords(s *pane) {
 	if len(s.RawCatalog) <= len(s.Items) {
 		return
 	}
-	end := min(len(s.Items)+30, len(s.RawCatalog))
+	end := min(len(s.Items)+reading.RawBatchSize, len(s.RawCatalog))
 	s.Items = append(s.Items, s.RawCatalog[len(s.Items):end]...)
 	s.More = end < len(s.RawCatalog)
 	a.startTitles(s)
 }
 
 func (a *App) rawRecordsAutoLoad(s *pane) {
-	if s.SourceReturn == nil && s.Query == "" && s.ListScroll.MaxY > 0 && s.ListScroll.Y >= s.ListScroll.MaxY-160 {
+	if s.SourceReturn == nil && s.Query == "" && reading.NearRawListEnd(s.ListScroll.Y, s.ListScroll.MaxY) {
 		a.appendRawRecords(s)
 	}
 }

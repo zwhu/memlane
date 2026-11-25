@@ -2,8 +2,7 @@ package simpledesktop
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
 
 func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
@@ -29,7 +29,7 @@ func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
 	now := time.Now()
 	nowRFC := now.Format(time.RFC3339)
 	a.overviewState.Loaded = true
-	a.overviewState.generation = 1
+	a.overviewState.Generation = 1
 	a.overviewState.Snapshot = overviewSnapshot{
 		Knowledge: []Item{
 			{ID: "k1", Dataset: "ds", Kind: "知识", Date: nowRFC, Document: &Document{ID: "k1", Created: nowRFC}},
@@ -70,7 +70,7 @@ func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
 	}
 
 	// Advancing overview generation invalidates todayCount cache.
-	a.overviewState.generation++
+	a.overviewState.Generation++
 	a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge,
 		Item{ID: "k3", Dataset: "ds", Kind: "知识", Date: nowRFC, Document: &Document{ID: "k3", Created: nowRFC}})
 	if got := a.trayTodayMemoryCount(now); got != 3 {
@@ -237,115 +237,59 @@ func TestStartTitlesCapsAt30EvenWithRawCatalogAndInvalidateReadingClearsPreviewA
 	}
 }
 
-func TestMarkKnowledgeReadAsyncCoalescedCorruptSafeAndDoubleSlashCompat(t *testing.T) {
-	a, q := projectQueueFixture()
-	dir := t.TempDir()
-	a.Config.ClientStateFile = filepath.Join(dir, "client-state.json")
-	a.Client.Config.ClientStateFile = a.Config.ClientStateFile
-	updates := make(chan func(), 16)
-	a.Update = func(fn func()) { updates <- fn }
-	p := a.access.Directory.Projects[0]
-
-	// 1. Verify exact double-slash // SHA256 hash compatibility.
-	identity, err := readingIdentity(Client{Config: a.Client.Config})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(identity, "/") {
-		t.Fatalf("expected readingIdentity to end with '/', got %q", identity)
-	}
-	wantPath := filepath.Join(dir, fmt.Sprintf("knowledge-read-%x.json", sha256.Sum256([]byte(identity+"/"+p.ID+"/"+p.Dataset))))
-	gotPath, err := a.knowledgeReadPath(p)
-	if err != nil || gotPath != wantPath {
-		t.Fatalf("knowledgeReadPath broke // hash compat: got %q want %q err=%v", gotPath, wantPath, err)
-	}
-
-	// Seed baseline + 3 unread items.
-	old := unreadDoc("old")
-	u1, u2, u3 := unreadDoc("u1"), unreadDoc("u2"), unreadDoc("u3")
-	a.observeKnowledgeCatalog(p, q, []Document{old})
-	a.observeKnowledgeCatalog(p, q, []Document{old, u1, u2, u3})
-	if q.unreadCount() != 3 {
-		t.Fatalf("expected 3 unread items, got %d", q.unreadCount())
-	}
-
-	// 2. BodyLoaded == false must NOT mark read.
-	a.markKnowledgeRead(Item{ID: u1.ID, Dataset: u1.Dataset, Kind: "知识", Document: &u1, BodyLoaded: false})
-	if q.unreadCount() != 3 {
-		t.Fatalf("BodyLoaded=false item was marked read: unread=%d", q.unreadCount())
-	}
-
-	// 3. Block disk writes and prove markKnowledgeRead returns immediately with instant memory update.
-	writer := a.ensureKnowledgeWriter()
-	writeEntered := make(chan struct{}, 4)
-	releaseWrite := make(chan struct{})
-	var writeCount atomic.Int32
-	var failNext atomic.Bool
-	writer.writeFn = func(path string, s knowledgeReadState) error {
-		writeCount.Add(1)
-		select {
-		case writeEntered <- struct{}{}:
-		default:
+func TestMarkKnowledgeReadAsyncCoalescedThroughGateway(t *testing.T) {
+	const url = "http://127.0.0.1:16141"
+	a, updates := p1TestApp(t, url, url, p1TempToken(t))
+	project := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(project)
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	batches := make(chan []string, 3)
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/reading-state/mark-read" {
+			t.Errorf("unexpected route %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
 		}
-		<-releaseWrite
-		if failNext.Load() {
-			return errors.New("simulated disk full")
+		var req api.MarkReadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
 		}
-		return writeKnowledgeState(path, s)
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		batches <- req.DocIDs
+		_ = json.NewEncoder(w).Encode(api.MarkReadResponse{ReadingStateView: api.ReadingStateView{StateRev: int64(calls.Load())}})
+	})}
+	mark := func(id string, loaded, truncated bool) {
+		doc := unreadDoc(id)
+		a.markKnowledgeRead(Item{ID: id, Dataset: project.Dataset, Kind: "知识", Document: &doc, BodyLoaded: loaded, BodyTruncated: truncated})
 	}
-
-	start := time.Now()
-	a.markKnowledgeRead(Item{ID: u1.ID, Dataset: u1.Dataset, Kind: "知识", Document: &u1, BodyLoaded: true})
-	<-writeEntered
-	// While u1's write is blocked in background, queue u2 and u3: both must return instantaneously and coalesce.
-	a.markKnowledgeRead(Item{ID: u2.ID, Dataset: u2.Dataset, Kind: "知识", Document: &u2, BodyLoaded: true})
-	a.markKnowledgeRead(Item{ID: u3.ID, Dataset: u3.Dataset, Kind: "知识", Document: &u3, BodyLoaded: true})
-	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
-		t.Fatalf("markKnowledgeRead blocked UI thread: %v", elapsed)
+	mark("unloaded", false, false)
+	mark("truncated", true, true)
+	if len(q.ReadIDs) != 0 {
+		t.Fatal("partial body changed unread state")
 	}
-	if q.unreadCount() != 0 {
-		t.Fatalf("expected immediate in-memory unreadCount=0, got %d", q.unreadCount())
+	mark("first", true, false)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("mark-read did not start")
 	}
-
-	close(releaseWrite)
+	mark("second", true, false)
+	mark("third", true, false)
+	if !q.ReadIDs["third"] {
+		t.Fatal("optimistic update did not happen on the UI thread")
+	}
+	close(release)
 	a.waitKnowledgeReadFlush()
 	for len(updates) > 0 {
 		(<-updates)()
 	}
-
-	persisted, err := readKnowledgeState(gotPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"u1", "u2", "u3"} {
-		if !persisted.Read[id] {
-			t.Fatalf("persisted file missing read mark for %s: %+v", id, persisted.Read)
-		}
-	}
-	if got := writeCount.Load(); got > 2 {
-		t.Fatalf("expected coalesced <=2 writes for 3 rapid marks, got %d", got)
-	}
-
-	// 4. Write failure surfaces KnowledgeReadError via a.Update.
-	u4 := unreadDoc("u4")
-	a.observeKnowledgeCatalog(p, q, []Document{old, u1, u2, u3, u4})
-	failNext.Store(true)
-	a.markKnowledgeRead(Item{ID: u4.ID, Dataset: u4.Dataset, Kind: "知识", Document: &u4, BodyLoaded: true})
-	a.waitKnowledgeReadFlush()
-	drainReading(t, updates, func() bool { return q.KnowledgeReadError == "已读状态未保存" })
-
-	// 5. Corrupt file on disk must never be overwritten by async mark-read.
-	failNext.Store(false)
-	writer.writeFn = writeKnowledgeState
-	if err := os.WriteFile(gotPath, []byte("corrupt"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	u5 := unreadDoc("u5")
-	a.markKnowledgeRead(Item{ID: u5.ID, Dataset: u5.Dataset, Kind: "知识", Document: &u5, BodyLoaded: true})
-	a.waitKnowledgeReadFlush()
-	raw, _ := os.ReadFile(gotPath)
-	if string(raw) != "corrupt" {
-		t.Fatalf("corrupt state file was overwritten: %q", string(raw))
+	first, second := <-batches, <-batches
+	if calls.Load() != 2 || len(first) != 1 || len(second) != 2 || q.ServerUnreadStateRev != 2 {
+		t.Fatalf("unexpected batches %v %v, revision %d", first, second, q.ServerUnreadStateRev)
 	}
 }
 

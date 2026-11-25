@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/zwhu/memlane/app/reading"
 	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
@@ -315,15 +316,12 @@ func canonicalIDMatch(a, b string) bool {
 func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	if i.Document != nil {
 		if control, ok := c.controlClient(); ok && i.Dataset != "" && i.ID != "" {
-			res, err := control.documentBodyV2(ctx, i.Dataset, i.ID)
+			res, err := control.readingBody(ctx, i.Dataset, i.ID)
 			if err == nil {
-				if res.Body == nil || !canonicalIDMatch(res.ID, i.ID) || !canonicalIDMatch(res.DatasetID, i.Dataset) {
-					return i, fmt.Errorf("官方文档正文回执不完整")
+				if err := reading.ValidateBody(i.Dataset, i.ID, res.DatasetID, res.ID, res.Body); err != nil {
+					return i, err
 				}
 				body := *res.Body
-				if !utf8.ValidString(body) || strings.IndexByte(body, 0) >= 0 {
-					return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
-				}
 				i.Body = body
 				i.BodyLoaded = true
 				i.BodyTruncated = res.Truncated
@@ -350,7 +348,7 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 			return i, e
 		}
 		if !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
-			return i, fmt.Errorf("此官方文档不是 UTF-8 文本")
+			return i, fmt.Errorf("此官方文档不是 UTF-8 文本: %w", reading.ErrInvalidBody)
 		}
 		i.Body = string(b)
 		i.BodyLoaded = true
@@ -372,9 +370,8 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 		if i.Session != nil {
 			userID = i.Session.User
 		}
-		res, err := control.sessionLookupV2(ctx, i.Dataset, i.Source, userID)
+		s, err := control.readingSourceSession(ctx, i.Dataset, i.Source, userID)
 		if err == nil {
-			s := res.Session
 			if s.ID != i.Source || (s.Dataset != "" && s.Dataset != i.Dataset) {
 				return i, fmt.Errorf("官方会话身份不匹配")
 			}
@@ -386,7 +383,7 @@ func (c Client) source(ctx context.Context, i Item) (Item, error) {
 		if isControlAuthDenied(err) {
 			return i, err
 		}
-		if isControlErrorCode(err, http.StatusNotFound, "session_not_found") {
+		if reading.Status(err, http.StatusNotFound) || isControlErrorCode(err, http.StatusNotFound, "session_not_found") {
 			return i, fmt.Errorf("官方未保留此记忆关联的会话")
 		}
 		return i, err

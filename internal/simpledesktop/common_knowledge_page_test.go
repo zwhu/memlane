@@ -30,7 +30,7 @@ func commonUIFixture() *App {
 			category = "experience"
 		}
 		draft := CommonDraft{Title: title, Body: "先检查项目已有的约定与工具，再选择具体实现方式。\n\n- 保留原有命名与结构\n- 给出可操作的验证步骤", Category: category, Applicability: "适用于编程任务；项目明确约定优先。", Source: "用户明确约定 · 人工示例"}
-		body, _ := draft.markdown()
+		body, _ := draft.FormatDocument()
 		d := Document{ID: fmt.Sprint(n), Dataset: "common", Name: title, Created: "2026-11-13T16:56:00Z", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": category, "source": draft.Source}}
 		i := Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Date: d.Created, Document: &d, CommonCategory: category, Body: body, BodyLoaded: true}
 		a.state().Items = append(a.state().Items, i)
@@ -202,7 +202,7 @@ func TestCommonPageEmptyAndLoadingDiffer(t *testing.T) {
 func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	var writes atomic.Int32
 	draft := CommonDraft{Title: "A reusable preference", Body: "Use the applicable project command.", Category: "preference"}
-	body, _ := draft.markdown()
+	body, _ := draft.FormatDocument()
 	d := Document{ID: "saved", Dataset: "common", Name: "Saved preference", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -259,6 +259,8 @@ func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
 			return
 		}
 		switch r.URL.Path {
+		case "/api/common/0":
+			http.NotFound(w, r)
 		case "/v1/capabilities":
 			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
 		case "/v1/common/knowledge":
@@ -306,7 +308,7 @@ func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
 
 func TestCommonConfirmKnownOlderDocumentOutsideFirstPage(t *testing.T) {
 	draft := CommonDraft{Title: "Older saved preference", Body: "An edited document retains its creation date.", Category: "preference"}
-	body, _ := draft.markdown()
+	body, _ := draft.FormatDocument()
 	rawReads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zwhu/memlane/app/reading"
 	"github.com/zwhu/memlane/internal/controlplane"
 )
 
@@ -263,6 +264,9 @@ func formatControlConflictMessage(code, phase string) string {
 }
 
 func isControlAuthDenied(err error) bool {
+	if reading.Status(err, http.StatusUnauthorized, http.StatusForbidden) {
+		return true
+	}
 	var ce *ControlResponseError
 	return errors.As(err, &ce) && (ce.Status == http.StatusUnauthorized || ce.Status == http.StatusForbidden)
 }
@@ -281,7 +285,7 @@ func isControlIndexRebuilding(err error) bool {
 }
 
 func isControlInvalidCursor(err error) bool {
-	return isControlErrorCode(err, http.StatusBadRequest, "invalid_cursor")
+	return reading.InvalidCursor(err) || isControlErrorCode(err, http.StatusBadRequest, "invalid_cursor")
 }
 
 func isControlFailClosedV2(err error) bool {

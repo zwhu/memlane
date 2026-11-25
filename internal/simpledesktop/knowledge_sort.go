@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"sort"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/reading"
 )
 
 var v4KnowledgeCategories = []string{
@@ -54,24 +54,11 @@ func applyRecallCounts(rows []Item, counts *knowledgeRecallCounts) {
 }
 
 func sortKnowledgeRows(rows []Item, byRecalls bool) {
-	sort.SliceStable(rows, func(i, j int) bool {
-		if byRecalls {
-			x, y := int64(-1), int64(-1)
-			if rows[i].RecallStats != nil {
-				x = rows[i].RecallStats.Count
-			}
-			if rows[j].RecallStats != nil {
-				y = rows[j].RecallStats.Count
-			}
-			if x != y {
-				return x > y
-			}
+	reading.SortByRecalls(rows, byRecalls, Item.key, func(i Item) string { return i.Date }, func(i Item) int64 {
+		if i.RecallStats == nil {
+			return -1
 		}
-		x, y := dateOrder(rows[i].Date), dateOrder(rows[j].Date)
-		if !x.Equal(y) {
-			return x.After(y)
-		}
-		return rows[i].key() < rows[j].key()
+		return i.RecallStats.Count
 	})
 }
 
@@ -80,34 +67,14 @@ func (a *App) knowledgeBaseRows(s *pane) []Item {
 	if len(rows) == 0 && len(s.Items) > 0 {
 		rows = s.Items
 	}
-	if len(s.Knowledge.RecallFilter) == 0 && !s.Knowledge.UnreadOnly {
-		return rows
-	}
-	filtered := make([]Item, 0, len(rows))
-	for _, row := range rows {
-		if len(s.Knowledge.RecallFilter) > 0 && !s.Knowledge.RecallFilter[row.ID] {
-			continue
-		}
-		if s.Knowledge.UnreadOnly && !a.itemIsUnread(row) {
-			continue
-		}
-		filtered = append(filtered, row)
-	}
-	return filtered
+	return reading.FilterKnowledge(rows, reading.KnowledgeFilter{
+		RecallFilter: s.Knowledge.RecallFilter, UnreadOnly: s.Knowledge.UnreadOnly,
+	}, func(i Item) string { return i.ID }, knowledgeCategoryLabel, a.itemIsUnread)
 }
 
 func (a *App) filteredKnowledgeCatalog(s *pane) []Item {
-	rows := a.knowledgeBaseRows(s)
-	if s.Knowledge.CategoryFilter == "" {
-		return rows
-	}
-	filtered := make([]Item, 0, len(rows))
-	for _, row := range rows {
-		if knowledgeCategoryLabel(row) == s.Knowledge.CategoryFilter {
-			filtered = append(filtered, row)
-		}
-	}
-	return filtered
+	return reading.FilterKnowledge(a.knowledgeBaseRows(s), reading.KnowledgeFilter{CategoryFilter: s.Knowledge.CategoryFilter},
+		func(i Item) string { return i.ID }, knowledgeCategoryLabel, a.itemIsUnread)
 }
 
 func (a *App) knowledgeCategoryCounts(s *pane) (int, map[string]int) {

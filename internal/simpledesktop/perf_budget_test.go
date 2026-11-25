@@ -61,9 +61,8 @@ func perfFixture(t *testing.T) *App {
 		ap := AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset}
 		a.access.Directory.Projects = append(a.access.Directory.Projects, ap)
 		a.access.Queues[baseIdentity+"/"+p.ID+"/"+p.Dataset] = &projectQueueState{
-			Loaded:           true,
-			Next:             time.Now().Add(time.Hour),
-			localStateLoaded: true,
+			Loaded: true,
+			Next:   time.Now().Add(time.Hour),
 		}
 	}
 	now := time.Now()
@@ -278,9 +277,8 @@ func TestColdStartOverviewPerformanceBudget(t *testing.T) {
 	a.access.Directory.Projects = []AccessProject{{ID: "p1", Name: "memlane", Dataset: "ds-main"}}
 	a.access.Queues = map[string]*projectQueueState{
 		a.cachedBaseReadingIdentity() + "/p1/ds-main": {
-			Loaded:           true,
-			Next:             time.Now().Add(time.Hour),
-			localStateLoaded: true,
+			Loaded: true,
+			Next:   time.Now().Add(time.Hour),
 		},
 	}
 	updates := make(chan func(), 16)
@@ -333,12 +331,12 @@ func TestKnowledgeUnreadToggleKeepsFirstItemVisible(t *testing.T) {
 	if a.access.Queues == nil {
 		a.access.Queues = map[string]*projectQueueState{}
 	}
-	readMap := map[string]bool{}
-	for n, item := range s.Knowledge.Catalog {
-		readMap[item.ID] = n < 5 // first 5 read, rest unread
+	for n := range s.Knowledge.Catalog {
+		s.Knowledge.Catalog[n].ServerUnreadKnown = true
+		s.Knowledge.Catalog[n].ServerUnread = n >= 5
 	}
 	a.access.Queues[identity+"/"+p.ID+"/"+p.Dataset] = &projectQueueState{
-		KnowledgeRead: knowledgeReadState{Version: 1, Initialized: true, Read: readMap},
+		UnreadState: UnreadState{ServerUnreadKnown: true, ServerUnreadCount: len(s.Knowledge.Catalog) - 5},
 	}
 	a.reorderKnowledge(s)
 	tt := ui.NewTester(a.View, 1200, 820)
@@ -405,13 +403,13 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 			At:      now.Add(-time.Duration(n) * time.Minute),
 		})
 	}
-	a.overviewState.scope = a.overviewScope()
+	a.overviewState.ScopeKey = a.overviewScope()
 	a.overviewState.Loaded = true
 	a.overviewState.RawLoaded = true
 	a.overviewState.Snapshot = overviewSnapshot{Knowledge: items, Raw: 83}
 	a.overviewState.ActivityLoaded = true
 	a.overviewState.Events = events
-	a.overviewRefreshAt = now.Add(time.Hour)
+	a.overview.RefreshAt = now.Add(time.Hour)
 
 	a.Config.Projects[1].Name = "dcim-fe"
 	a.navigate("知识", 1)
@@ -433,7 +431,7 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 		a.View(c)
 	}, 1200, 820)
 	tt.Frame()
-	if len(a.overviewState.cachedBuckets) == 0 || len(a.overviewState.cachedHeatmapCells) == 0 {
+	if len(a.overviewState.BucketCache) == 0 || len(a.overviewState.HeatmapCache) == 0 {
 		t.Fatalf("expected overview heatmap caches to be populated on initial render")
 	}
 
@@ -464,7 +462,7 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 	if a.recentRequest != prevReq || updateCalls.Load() != 0 {
 		t.Fatalf("returning to overview restarted ready titles: req %d->%d updates=%d", prevReq, a.recentRequest, updateCalls.Load())
 	}
-	if a.overviewState.heatmapGrowStart.IsZero() {
+	if a.overviewState.HeatmapGrowStart.IsZero() {
 		t.Fatalf("expected heatmapGrowStart to latch on frame 1")
 	}
 	imgStart := tt.Image()
@@ -728,8 +726,6 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 			})
 		case r.URL.Path == "/v1/reading-state/mark-read":
 			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkReadResponse{ScopeHash: "s1", Marked: 1, UnreadCount: 2, ReadHorizonAtNS: now.UTC().Format(time.RFC3339Nano)})
-		case r.URL.Path == "/v1/reading-state/migrate-local":
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{})
 		case r.URL.Path == "/v1/provenance/backfill-legacy-dates":
 			_ = json.NewEncoder(w).Encode(v2ProvenanceBackfillResponse{Status: "absent"})
 		case strings.HasPrefix(r.URL.Path, "/v1/projects/") && strings.HasSuffix(r.URL.Path, "/message-summary"):
@@ -868,8 +864,9 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 		a.navigate("用户画像", 0)
 		measureFrames("50k-profile-256k-"+appearance, 15, 16*time.Millisecond, 25*time.Millisecond)
 		first, last := a.userProfiles.ReaderList.Visible()
-		if len(a.userProfiles.cachedChunks) < 20 || (last-first+1) >= len(a.userProfiles.cachedChunks) {
-			t.Fatalf("[%s] 256 KiB profile was not virtualized: chunks=%d visible=%d..%d", appearance, len(a.userProfiles.cachedChunks), first, last)
+		_, profileChunks := profileCachedMarkdownChunks(&a.userProfiles)
+		if len(profileChunks) < 20 || (last-first+1) >= len(profileChunks) {
+			t.Fatalf("[%s] 256 KiB profile was not virtualized: chunks=%d visible=%d..%d", appearance, len(profileChunks), first, last)
 		}
 	}
 

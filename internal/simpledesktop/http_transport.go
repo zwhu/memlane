@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zwhu/memlane/app/api"
 	"github.com/zwhu/memlane/internal/controlplane"
 )
 
@@ -47,6 +48,10 @@ func (e *OfficialHTTPError) Error() string {
 func httpStatusCode(err error) (int, bool) {
 	if err == nil {
 		return 0, false
+	}
+	var gateway *api.APIError
+	if errors.As(err, &gateway) {
+		return gateway.Status, true
 	}
 	var official *OfficialHTTPError
 	if errors.As(err, &official) {

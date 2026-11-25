@@ -2,7 +2,6 @@ package simpledesktop
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
 
 func p1TestTokenFile(t *testing.T) string {
@@ -198,10 +198,12 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	if unselected.Preview == "" || unselected.Body != "" || unselected.BodyLoaded {
 		t.Fatalf("preview/body decoupling violated on unselected item: preview=%q body=%q loaded=%v", unselected.Preview, unselected.Body, unselected.BodyLoaded)
 	}
-	// Flush any pending mark-read from auto-selected doc-1 first, then assert
-	// trying to mark an unloaded item read is a strict NO-OP.
+	// Auto-selection and preheating must never clear unread.
 	a.waitKnowledgeReadFlush()
 	beforeMarks := markReadCalls.Load()
+	if beforeMarks != 0 {
+		t.Fatal("background selected content was marked read")
+	}
 	a.markKnowledgeRead(unselected)
 	a.waitKnowledgeReadFlush()
 	if markReadCalls.Load() != beforeMarks {
@@ -214,6 +216,8 @@ func TestScalingP1BodyFastpathAndPreviewDecoupling(t *testing.T) {
 	if s.Selected == nil || !s.Selected.BodyLoaded || s.Selected.BodyTruncated {
 		t.Fatalf("expected selected item loaded & non-truncated via fastpath, got %+v", s.Selected)
 	}
+	a.selectItem(s, s.Items[0])
+	drainReading(t, updates, func() bool { return !s.Reading })
 	a.waitKnowledgeReadFlush()
 	drainReading(t, updates, func() bool { return true })
 	markMu.Lock()
@@ -810,142 +814,70 @@ func TestScalingP1RawRecordsCursorV2AndSubagentChildrenPagination(t *testing.T) 
 	}
 }
 
-func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *testing.T) {
+func TestScalingP1ServerUnreadPopupAndNonDisruptiveRefresh(t *testing.T) {
 	token := p1TestTokenFile(t)
-	var migrateLocalCalls, beginCalls, chunkCalls, commitCalls, markAllCalls atomic.Int32
-	var stagedItems int
-	var committedBatchID string
+	var markAllCalls atomic.Int32
 	var catalogVersion atomic.Value
 	catalogVersion.Store("cv-1")
 	var knowledgeV2Calls atomic.Int32
 	var sawUnreadOnly atomic.Bool
 
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const endpoint = "http://127.0.0.1:16231"
+	a, updates := p1TestApp(t, endpoint, endpoint, token)
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
-				APIVersions: []string{"v1"}, ReadingContract: readingContract,
-				Features: []string{v2FeatureReadingState, v2FeatureMessageSummary, v2FeatureKnowledgeCursor},
+				APIVersions: []string{"v1"}, ReadingContract: readingContract, Features: []string{"async_capture"},
 			})
-		case "/v1/reading-state/migrate-local":
-			migrateLocalCalls.Add(1)
-			// Simulate custom ClientStateFile dir returning Python's exact no_legacy_file -> triggers 2-phase staging!
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
-				Migrated: []v2ReadingStateMigratedScope{
-					{ProjectID: "p1", DatasetID: "ds-1", Status: "no_legacy_file"},
-				},
-			})
-		case "/v1/reading-state/import/begin":
-			beginCalls.Add(1)
-			var raw map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&raw)
-			if len(raw) != 5 {
-				t.Errorf("import/begin must send exact 5 keys, got %v", raw)
+		case "/api/reading-state":
+			if r.URL.Query().Get("project_id") != "p1" {
+				t.Error("reading-state request did not scope to the project")
 			}
-			for _, k := range []string{"reading_identity", "project_id", "dataset_id", "initialized", "enabled_at"} {
-				if _, ok := raw[k]; !ok {
-					t.Errorf("import/begin missing key %q", k)
-				}
-			}
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportBeginResponse{BatchID: "batch-1", ScopeHash: "sh-1"})
-		case "/v1/reading-state/import/chunk":
-			chunkCalls.Add(1)
-			var req v2ReadingStateImportChunkRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			if req.BatchID != "batch-1" {
-				t.Errorf("import/chunk unexpected batch_id=%q", req.BatchID)
-			}
-			if len(req.Items) > 500 || len(req.Items) == 0 {
-				t.Errorf("chunk size out of range (1..500): %d", len(req.Items))
-			}
-			stagedItems += len(req.Items)
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportChunkResponse{BatchID: req.BatchID, Staged: len(req.Items)})
-		case "/v1/reading-state/import/commit":
-			commitCalls.Add(1)
-			var req v2ReadingStateImportCommitRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			committedBatchID = req.BatchID
-			if req.ExpectedItems == nil || *req.ExpectedItems != stagedItems {
-				t.Errorf("import/commit expected_items=%v want=%d", req.ExpectedItems, stagedItems)
-			}
-			_ = json.NewEncoder(w).Encode(v2ReadingStateImportCommitResponse{ScopeHash: "sh-1", Committed: stagedItems, UnreadCount: 25})
-		case "/v1/reading-state/mark-all-read":
+			_ = json.NewEncoder(w).Encode(api.ReadingStateResponse{Projects: []api.ReadingStateView{
+				{ProjectID: "p1", DatasetID: "ds-1", UnreadCount: 25, StateRev: 1},
+			}})
+		case "/v1/reading-state/migrate-local", "/v1/reading-state/import/begin", "/v1/reading-state/import/chunk", "/v1/reading-state/import/commit":
+			t.Errorf("retired reading-state route called: %s", r.URL.Path)
+			http.NotFound(w, r)
+		case "/api/reading-state/mark-all-read":
 			markAllCalls.Add(1)
-			_ = json.NewEncoder(w).Encode(v2ReadingStateMarkAllReadResponse{ScopeHash: "sh-1", UnreadCount: 0, ReadHorizonAtNS: "2026-11-21T10:00:00.000000000Z"})
-		case "/v1/projects/p1/message-summary":
-			previews := make([]v2UnreadPreviewItem, 0, 10)
-			for i := 0; i < 10; i++ {
-				previews = append(previews, v2UnreadPreviewItem{
-					DocID:         fmt.Sprintf("u-%d", i),
-					Title:         fmt.Sprintf("未读预览 %d", i),
-					EffectiveDate: "2026-11-21",
-					CreatedAt:     "2026-11-21T10:00:00Z",
-				})
+			_ = json.NewEncoder(w).Encode(api.MarkReadResponse{ReadingStateView: api.ReadingStateView{StateRev: 2}})
+		case "/api/projects/p1":
+			_ = json.NewEncoder(w).Encode(api.ProjectView{ID: "p1", DatasetID: "ds-1", CatalogVersion: catalogVersion.Load().(string)})
+		case "/api/knowledge":
+			query := r.URL.Query()
+			limit := 10
+			if query.Get("limit") != "10" {
+				knowledgeV2Calls.Add(1)
+				if query.Get("unread_only") == "true" {
+					sawUnreadOnly.Store(true)
+				}
+				limit = 1
 			}
-			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
-				ProjectID:               "p1",
-				DatasetID:               "ds-1",
-				KnowledgeCatalogVersion: catalogVersion.Load().(string),
-				UnreadCount:             25,
-				UnreadPreview:           previews,
-				UnreadHasMore:           true,
-			})
-		case "/v1/projects/p1/knowledge":
-			knowledgeV2Calls.Add(1)
-			if r.URL.Query().Get("unread_only") == "1" {
-				sawUnreadOnly.Store(true)
+			rows := make([]api.CatalogItem, 0, limit)
+			for i := range limit {
+				rows = append(rows, api.CatalogItem{DocID: fmt.Sprintf("u-%d", i), DatasetID: "ds-1", ProjectID: "p1",
+					Title: fmt.Sprintf("未读记忆 %d", i), EffectiveDate: "2026-11-21", Kind: "knowledge", IsUnread: true})
 			}
-			_ = json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{
-				ProjectID:      "p1",
-				DatasetID:      "ds-1",
-				CatalogVersion: catalogVersion.Load().(string),
-				TotalFiltered:  25,
-				UnreadCount:    25,
-				Items: []v2KnowledgeItem{
-					{DocID: "u-0", DatasetID: "ds-1", ProjectID: "p1", Title: "未读记忆 0", EffectiveDate: "2026-11-21", Kind: "knowledge", PreviewText: "未读摘要", IsUnread: true},
-				},
+			_ = json.NewEncoder(w).Encode(api.KnowledgePage{
+				ProjectID: "p1", DatasetID: "ds-1", CatalogVersion: catalogVersion.Load().(string), TotalFiltered: 25,
+				UnreadCount: 25, UnreadStateRev: 1, Items: rows,
 			})
+		case "/api/knowledge/ds-1/u-0/body":
+			_ = json.NewEncoder(w).Encode(api.DocumentBody{DatasetID: "ds-1", DocumentID: "u-0", Content: "正文"})
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer control.Close()
-
-	a, updates := p1TestApp(t, control.URL, control.URL, token)
+	})}
 	p := a.access.Directory.Projects[0]
-
-	// Seed a local 650-item knowledge-read-<hash>.json (using exact // hash path) to test 2-phase staging import.
-	localPath, err := a.knowledgeReadPath(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Verify double-slash // hash compatibility!
-	readingID, _ := readingIdentity(Client{Config: a.Client.Config})
-	expectedHash := fmt.Sprintf("knowledge-read-%x.json", sha256.Sum256([]byte(readingID+"/"+p.ID+"/"+p.Dataset)))
-	if filepath.Base(localPath) != expectedHash || !strings.HasSuffix(readingID, "/") {
-		t.Fatalf("double-slash hash mismatch: base=%s expected=%s id=%q", filepath.Base(localPath), expectedHash, readingID)
-	}
-	readMap := make(map[string]bool, 650)
-	for i := 0; i < 650; i++ {
-		readMap[fmt.Sprintf("old-%04d", i)] = i%10 != 0
-	}
-	if err := writeKnowledgeState(localPath, knowledgeReadState{Version: 1, Initialized: true, StartedAt: time.Now().UTC(), Read: readMap}); err != nil {
-		t.Fatal(err)
-	}
 
 	q := a.projectQueueStateFor(p)
 	a.loadProjectQueue(q, p)
 	drainReading(t, updates, func() bool { return q.Loaded && !q.Loading })
 
-	// 1. Verify migrate-local + 2-phase staging (2 chunks: 500 + 150) executed once.
-	if migrateLocalCalls.Load() != 1 || beginCalls.Load() != 1 || chunkCalls.Load() != 2 || commitCalls.Load() != 1 {
-		t.Fatalf("unexpected migration calls: local=%d begin=%d chunk=%d commit=%d", migrateLocalCalls.Load(), beginCalls.Load(), chunkCalls.Load(), commitCalls.Load())
-	}
-	if committedBatchID != "batch-1" || stagedItems != 650 {
-		t.Fatalf("unexpected commit totals: batch=%q staged=%d", committedBatchID, stagedItems)
-	}
-	if q.unreadCount() != 25 || !q.UnreadHasMore || len(q.UnreadKnowledge) != 10 {
-		t.Fatalf("unexpected v2 message-summary unread state: count=%d more=%v preview=%d", q.unreadCount(), q.UnreadHasMore, len(q.UnreadKnowledge))
+	if q.unreadCount() != 25 || !q.UnreadHasMore || len(q.UnreadPreview) != 10 {
+		t.Fatalf("unexpected gateway unread state: count=%d more=%v preview=%d", q.unreadCount(), q.UnreadHasMore, len(q.UnreadPreview))
 	}
 
 	// 2. Verify sidebar unread badge (>10) popover opens and displays "查看全部 25 条未读记忆" closure!
@@ -963,7 +895,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 	s := a.state()
 	drainReading(t, updates, func() bool { return s.Loaded && !s.Loading })
 	if !s.Knowledge.UnreadOnly || !sawUnreadOnly.Load() {
-		t.Fatalf("expected UnreadOnly=true and unread_only=1 server request")
+		t.Fatalf("expected UnreadOnly=true and unread_only=true server request")
 	}
 
 	// 3. Non-disruptive refresh Case A: user scrolled down -> banner appears, viewport stays fixed!
@@ -993,7 +925,7 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 		t.Fatalf("top-of-list silent refresh should clear NewCatalogAvailable")
 	}
 
-	// 5. clearProjectNotifications calls POST /v1/reading-state/mark-all-read and zeroes unreadCount.
+	// 5. clearProjectNotifications calls POST /api/reading-state/mark-all-read and zeroes unreadCount.
 	if err := a.clearProjectNotifications(q, p); err != nil {
 		t.Fatalf("clearProjectNotifications v2 failed: %v", err)
 	}
