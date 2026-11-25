@@ -20,12 +20,17 @@ import (
 	"github.com/zwhu/memlane/core/engine"
 )
 
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func testConfig(t *testing.T, endpoint string) Config {
 	t.Helper()
 	tokenFile := filepath.Join(t.TempDir(), "runner.token")
-	if err := os.WriteFile(tokenFile, []byte("synthetic-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	requireNoError(t, os.WriteFile(tokenFile, []byte("synthetic-token\n"), 0o600))
 	return Config{
 		Endpoint: endpoint, TokenFile: tokenFile, StorePath: t.TempDir(),
 		Location: time.FixedZone("UTC+8", 8*60*60),
@@ -42,14 +47,12 @@ func openTestAdapter(t *testing.T, serve http.HandlerFunc) (*Adapter, Config) {
 		t.Cleanup(server.Close)
 		endpoint = server.URL
 	} else if !errors.Is(bindErr, syscall.EPERM) && !errors.Is(bindErr, syscall.EACCES) {
-		t.Fatal(bindErr)
+		requireNoError(t, bindErr)
 	}
 
 	cfg := testConfig(t, endpoint)
 	adapter, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireNoError(t, err)
 	if bindErr != nil {
 		t.Logf("loopback bind unavailable, using in-process HTTP transport: %v", bindErr)
 		transport := inProcessTransport{handler: serve}
@@ -77,17 +80,28 @@ func (t inProcessTransport) RoundTrip(req *http.Request) (*http.Response, error)
 
 func assertJSON(t *testing.T, got []byte, want string) {
 	t.Helper()
-	var gotValue, wantValue any
-	if err := json.Unmarshal(got, &gotValue); err != nil {
-		t.Errorf("invalid JSON %q: %v", got, err)
-		return
+	var values [2]any
+	for i, data := range [][]byte{got, []byte(want)} {
+		if err := json.Unmarshal(data, &values[i]); err != nil {
+			t.Errorf("invalid JSON %q: %v", data, err)
+			return
+		}
 	}
-	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
-		t.Errorf("invalid fixture %q: %v", want, err)
-		return
-	}
-	if !reflect.DeepEqual(gotValue, wantValue) {
-		t.Errorf("JSON = %s, want %s", got, want)
+	assertWireResult(t, "JSON", values[0], nil, values[1])
+}
+
+const cogneeItemJSON = `{"id":"doc","name":"notes.md","label":"notes","mimeType":"text/markdown","rawDataLocation":"notes.md","createdAt":"2026-11-26T00:00:00Z","updatedAt":"2026-11-26T01:00:00Z","nodeSet":["notes"],"extension":"md"}`
+
+func cogneeItem(datasetID string) engine.Item {
+	return engine.Item{ID: "doc", DatasetID: datasetID, Name: "notes.md", Label: "notes",
+		MimeType: "text/markdown", RawDataLocation: "notes.md", CreatedAt: "2026-11-26T00:00:00Z", UpdatedAt: "2026-11-26T01:00:00Z",
+		Metadata: map[string]any{"node_set": []any{"notes"}, "extension": "md"}}
+}
+
+func writeTestResponse(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("write test response: %v", err)
 	}
 }
 
@@ -104,7 +118,7 @@ func TestAdapterRunnerWire(t *testing.T) {
 	}
 	ctx := context.Background()
 	scopeParams := url.Values{"dataset_id": {scope.DatasetID}, "user_id": {scope.UserID}}
-	cases := []wireCall{
+	for _, tc := range []wireCall{
 		{
 			method: "GET", path: "/health",
 			response: `{"ok":true,"engine":"cognee","mode":"ready","capabilities":{"tool_graph":true}}`,
@@ -147,18 +161,17 @@ func TestAdapterRunnerWire(t *testing.T) {
 		{
 			method: "GET", path: "/items",
 			query:    url.Values{"dataset_id": {scope.DatasetID}, "user_id": {scope.UserID}, "limit": {"3"}, "cursor": {"next+?="}},
-			response: `{"ok":true,"items":[{"id":"doc","dataset_id":"ds & space"}],"next_cursor":"next","has_more":true}`,
+			response: `{"ok":true,"items":[` + cogneeItemJSON + `],"next_cursor":"3"}`,
 			call: func(a *Adapter) (any, error) {
 				return a.ListItems(ctx, engine.ListRequest{Scope: scope, Limit: 3, Cursor: "next+?="})
 			},
-			want: engine.ListResult{OK: true, Items: []engine.Item{{ID: "doc", DatasetID: scope.DatasetID}},
-				NextCursor: "next", HasMore: true},
+			want: engine.ListResult{OK: true, Items: []engine.Item{cogneeItem(scope.DatasetID)}, NextCursor: "3", HasMore: true},
 		},
 		{
 			method: "GET", path: "/items/" + url.PathEscape(itemID), query: scopeParams,
-			response: `{"id":"doc","dataset_id":"ds & space","content":"body"}`,
+			response: `{"ok":true,"item":` + cogneeItemJSON + `}`,
 			call:     func(a *Adapter) (any, error) { return a.GetItem(ctx, scope, itemID) },
-			want:     engine.Item{ID: "doc", DatasetID: scope.DatasetID, Content: "body"},
+			want:     cogneeItem(scope.DatasetID),
 		},
 		{
 			method: "DELETE", path: "/items/" + url.PathEscape(itemID), query: scopeParams,
@@ -186,8 +199,7 @@ func TestAdapterRunnerWire(t *testing.T) {
 			call:     func(a *Adapter) (any, error) { return a.ModelStatus(ctx) },
 			want:     engine.ModelStatusResult{OK: true, Mode: "ready", ModelDigest: "sha", OutputLanguage: "zh-CN", ActiveTasks: 3},
 		},
-	}
-	for _, tc := range cases {
+	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			a, _ := openTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != tc.method || r.URL.EscapedPath() != "/internal/v1"+tc.path {
@@ -213,15 +225,55 @@ func TestAdapterRunnerWire(t *testing.T) {
 					w.WriteHeader(http.StatusNoContent)
 					return
 				}
-				if _, err := io.WriteString(w, tc.response); err != nil {
-					t.Errorf("write test response: %v", err)
-				}
+				writeTestResponse(t, w, tc.response)
 			})
 			got, err := tc.call(a)
-			if err != nil || !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("adapter = (%#v, %v), want %#v", got, err, tc.want)
-			}
+			assertWireResult(t, "adapter", got, err, tc.want)
 		})
+	}
+}
+
+func assertWireResult(t *testing.T, call string, got any, err error, want any) {
+	t.Helper()
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("%s = (%#v, %v), want %#v", call, got, err, want)
+	}
+}
+
+func TestAdapterItemWireDecoding(t *testing.T) {
+	scope := engine.Scope{DatasetID: "scope"}
+	camel := cogneeItem("camel")
+	camel.ContentHash, camel.PipelineStatus = "hash", "ready"
+	snake := engine.Item{ID: "doc", DatasetID: "snake", Kind: "note", Content: "body", ContentHash: "sha",
+		MimeType: "text/plain", RawDataLocation: "raw.txt", CreatedAt: "created", UpdatedAt: "updated",
+		PipelineStatus: "ready", Metadata: map[string]any{"extension": "stored", "node_set": []any{"set"}}}
+	for _, tc := range []struct {
+		name, item, cursorJSON, cursor string
+		want                           engine.Item
+	}{
+		{"camelCase", `{"datasetId":"camel","contentHash":"hash","pipelineStatus":"ready",` + cogneeItemJSON[1:], `null`, "", camel},
+		{"snake_case", `{"id":"doc","dataset_id":"snake","datasetId":"other","kind":"note","content":"body","content_hash":"sha","mime_type":"text/plain","raw_data_location":"raw.txt","created_at":"created","updated_at":"updated","pipeline_status":"ready","node_set":["set"],"extension":"top-level","metadata":{"extension":"stored"}}`, `"3"`, "3", snake},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := openTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == apiPrefix+"/items" {
+					writeTestResponse(t, w, `{"ok":true,"items":[`+tc.item+`],"next_cursor":`+tc.cursorJSON+`}`)
+					return
+				}
+				writeTestResponse(t, w, `{"ok":true,"item":`+tc.item+`}`)
+			})
+			list, err := a.ListItems(t.Context(), engine.ListRequest{Scope: scope})
+			want := engine.ListResult{OK: true, Items: []engine.Item{tc.want}, NextCursor: tc.cursor, HasMore: tc.cursor != ""}
+			assertWireResult(t, "ListItems", list, err, want)
+			item, err := a.GetItem(t.Context(), scope, "doc")
+			assertWireResult(t, "GetItem", item, err, tc.want)
+		})
+	}
+	for _, body := range []string{`{"ok":false,"item":{"id":"doc"}}`, `{"ok":true,"item":null}`, `{"id":"doc"}`} {
+		a, _ := openTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) { writeTestResponse(t, w, body) })
+		if _, err := a.GetItem(t.Context(), scope, "doc"); !errors.Is(err, engine.ErrUnavailable) {
+			t.Errorf("GetItem with %s = %v, want unavailable", body, err)
+		}
 	}
 }
 
@@ -249,25 +301,17 @@ func TestQAContextDate(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := engine.IngestRequest{
-				Kind: engine.IngestKindCaptureQA, Content: json.RawMessage(tc.content),
-				SourceMeta: engine.SourceMeta{ContextDate: tc.sourceDate},
-			}
+			req := engine.IngestRequest{Kind: engine.IngestKindCaptureQA, Content: json.RawMessage(tc.content),
+				SourceMeta: engine.SourceMeta{ContextDate: tc.sourceDate}}
 			got, err := qaWithContextDate(req, now, loc)
-			if err != nil {
-				t.Fatal(err)
-			}
+			requireNoError(t, err)
 			if got.SourceMeta.ContextDate != tc.wantDate {
 				t.Errorf("context_date = %q, want %q", got.SourceMeta.ContextDate, tc.wantDate)
 			}
 			data, err := json.Marshal(got.Content)
-			if err != nil {
-				t.Fatal(err)
-			}
+			requireNoError(t, err)
 			var content map[string]json.RawMessage
-			if err := json.Unmarshal(data, &content); err != nil {
-				t.Fatal(err)
-			}
+			requireNoError(t, json.Unmarshal(data, &content))
 			if string(content["context"]) != tc.wantContext {
 				t.Errorf("context = %s, want %s", content["context"], tc.wantContext)
 			}
@@ -288,9 +332,7 @@ func TestApplyModelUsesExtractTimeout(t *testing.T) {
 			return
 		case <-time.After(120 * time.Millisecond):
 		}
-		if _, err := io.WriteString(w, `{"ok":true,"applied":true}`); err != nil {
-			t.Errorf("write test response: %v", err)
-		}
+		writeTestResponse(t, w, `{"ok":true,"applied":true}`)
 	})
 	a.client.http.Timeout = 50 * time.Millisecond
 	a.client.extractHTTP.Timeout = 2 * time.Second
@@ -323,9 +365,7 @@ func TestRunnerStatusMapping(t *testing.T) {
 		t.Run(tc.code, func(t *testing.T) {
 			a, _ := openTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
-				if _, err := io.WriteString(w, tc.body); err != nil {
-					t.Errorf("write test response: %v", err)
-				}
+				writeTestResponse(t, w, tc.body)
 			})
 			_, err := a.Extract(context.Background(), engine.ExtractRequest{})
 			var typed *engine.EngineError
@@ -342,7 +382,8 @@ func TestRunnerStatusMapping(t *testing.T) {
 
 func TestAdapterRejectsInvalidToken(t *testing.T) {
 	config := testConfig(t, "http://127.0.0.1:1")
-	invalidPaths := map[string]string{"missing": filepath.Join(t.TempDir(), "missing")}
+	invalidPaths := map[string]string{"missing": filepath.Join(config.StorePath, "missing"), "symlink": filepath.Join(config.StorePath, "link")}
+	requireNoError(t, os.Symlink(config.TokenFile, invalidPaths["symlink"]))
 	for _, mode := range []struct {
 		name string
 		mode os.FileMode
@@ -352,20 +393,11 @@ func TestAdapterRejectsInvalidToken(t *testing.T) {
 		{"empty", 0o600, " \n"},
 		{"multiline", 0o600, "test\nother"},
 	} {
-		path := filepath.Join(t.TempDir(), mode.name)
-		if err := os.WriteFile(path, []byte(mode.data), mode.mode); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(path, mode.mode); err != nil {
-			t.Fatal(err)
-		}
+		path := filepath.Join(config.StorePath, mode.name)
+		requireNoError(t, os.WriteFile(path, []byte(mode.data), mode.mode))
+		requireNoError(t, os.Chmod(path, mode.mode))
 		invalidPaths[mode.name] = path
 	}
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(config.TokenFile, link); err != nil {
-		t.Fatal(err)
-	}
-	invalidPaths["symlink"] = link
 	for name, path := range invalidPaths {
 		t.Run(name, func(t *testing.T) {
 			bad := config
@@ -378,9 +410,7 @@ func TestAdapterRejectsInvalidToken(t *testing.T) {
 	a, cfg := openTestAdapter(t, func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("request sent after token became insecure")
 	})
-	if err := os.Chmod(cfg.TokenFile, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	requireNoError(t, os.Chmod(cfg.TokenFile, 0o644))
 	if _, err := a.Health(context.Background()); !errors.Is(err, engine.ErrUnauthorized) {
 		t.Fatalf("Health with invalidated token = %v, want unauthorized", err)
 	}
@@ -400,9 +430,7 @@ func TestAdapterEndpointAndItemPaths(t *testing.T) {
 		}
 	}
 	a, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireNoError(t, err)
 	for _, id := range []string{"", " ", ".", "..", "parent..", "sub/item", "sub\\item"} {
 		if _, err := a.GetItem(context.Background(), engine.Scope{}, id); !errors.Is(err, engine.ErrInvalidArgument) {
 			t.Errorf("GetItem with ID %q = %v, want invalid argument", id, err)
@@ -419,9 +447,7 @@ func TestAdapterRegistry(t *testing.T) {
 		Engine: "cognee", Endpoint: cfg.Endpoint, TokenFile: cfg.TokenFile,
 		StorePath: cfg.StorePath, Options: map[string]any{"location": cfg.Location},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	requireNoError(t, err)
 	adapter, ok := opened.(*Adapter)
 	if !ok || adapter.location != cfg.Location {
 		t.Fatalf("factory returned %T with wrong location", opened)
@@ -452,9 +478,7 @@ func TestAdapterTransportLimits(t *testing.T) {
 	})
 	t.Run("oversized JSON", func(t *testing.T) {
 		a, _ := openTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) {
-			if _, err := io.WriteString(w, strings.Repeat(" ", maxRunnerResponseBytes)+`{"ok":true}`); err != nil {
-				t.Errorf("write test response: %v", err)
-			}
+			writeTestResponse(t, w, strings.Repeat(" ", maxRunnerResponseBytes)+`{"ok":true}`)
 		})
 		if _, err := a.Health(context.Background()); !errors.Is(err, engine.ErrUnavailable) {
 			t.Errorf("Health with oversized response = %v, want unavailable", err)

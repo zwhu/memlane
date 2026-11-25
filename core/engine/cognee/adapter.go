@@ -1,8 +1,10 @@
 package cognee
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -102,6 +104,82 @@ func (a *Adapter) Search(ctx context.Context, req engine.SearchRequest) (engine.
 	return result, err
 }
 
+type wireItem struct {
+	ID                   string            `json:"id"`
+	DatasetID            string            `json:"dataset_id"`
+	CamelDatasetID       string            `json:"datasetId"`
+	Kind                 string            `json:"kind"`
+	Name                 string            `json:"name"`
+	Label                string            `json:"label"`
+	Content              string            `json:"content"`
+	ContentHash          string            `json:"content_hash"`
+	CamelContentHash     string            `json:"contentHash"`
+	CreatedAt            string            `json:"created_at"`
+	CamelCreatedAt       string            `json:"createdAt"`
+	UpdatedAt            string            `json:"updated_at"`
+	CamelUpdatedAt       string            `json:"updatedAt"`
+	RawDataLocation      string            `json:"raw_data_location"`
+	CamelRawDataLocation string            `json:"rawDataLocation"`
+	MimeType             string            `json:"mime_type"`
+	CamelMimeType        string            `json:"mimeType"`
+	PipelineStatus       string            `json:"pipeline_status"`
+	CamelPipelineStatus  string            `json:"pipelineStatus"`
+	Metadata             map[string]any    `json:"metadata"`
+	Extension            wireMetadataValue `json:"extension"`
+	NodeSet              wireMetadataValue `json:"node_set"`
+	CamelNodeSet         wireMetadataValue `json:"nodeSet"`
+}
+
+// wireMetadataValue distinguishes an explicit null from an omitted field.
+type wireMetadataValue struct {
+	value   any
+	present bool
+}
+
+func (v *wireMetadataValue) UnmarshalJSON(data []byte) error {
+	v.present = true
+	return json.Unmarshal(data, &v.value)
+}
+
+func (w wireItem) toEngineItem(datasetID string) engine.Item {
+	metadata := maps.Clone(w.Metadata)
+	nodeSet := w.NodeSet
+	if !nodeSet.present {
+		nodeSet = w.CamelNodeSet
+	}
+	for key, field := range map[string]wireMetadataValue{"extension": w.Extension, "node_set": nodeSet} {
+		if _, exists := metadata[key]; field.present && !exists {
+			if metadata == nil {
+				metadata = make(map[string]any)
+			}
+			metadata[key] = field.value
+		}
+	}
+	return engine.Item{
+		ID: w.ID, DatasetID: cmp.Or(w.DatasetID, w.CamelDatasetID, datasetID),
+		Kind: w.Kind, Name: w.Name, Label: w.Label, Content: w.Content,
+		ContentHash:     cmp.Or(w.ContentHash, w.CamelContentHash),
+		CreatedAt:       cmp.Or(w.CreatedAt, w.CamelCreatedAt),
+		UpdatedAt:       cmp.Or(w.UpdatedAt, w.CamelUpdatedAt),
+		RawDataLocation: cmp.Or(w.RawDataLocation, w.CamelRawDataLocation),
+		MimeType:        cmp.Or(w.MimeType, w.CamelMimeType),
+		PipelineStatus:  cmp.Or(w.PipelineStatus, w.CamelPipelineStatus),
+		Metadata:        metadata,
+	}
+}
+
+type wireItemResponse struct {
+	OK   bool      `json:"ok"`
+	Item *wireItem `json:"item"`
+}
+
+type wireListResult struct {
+	OK         bool       `json:"ok"`
+	Items      []wireItem `json:"items"`
+	NextCursor string     `json:"next_cursor"`
+	HasMore    bool       `json:"has_more"`
+}
+
 func (a *Adapter) ListItems(ctx context.Context, req engine.ListRequest) (engine.ListResult, error) {
 	query := scopeQuery(req.Scope.DatasetID, req.Scope.UserID)
 	if req.Limit != 0 {
@@ -110,9 +188,18 @@ func (a *Adapter) ListItems(ctx context.Context, req engine.ListRequest) (engine
 	if req.Cursor != "" {
 		query.Set("cursor", req.Cursor)
 	}
-	var result engine.ListResult
-	err := a.client.request(ctx, http.MethodGet, "/items", query, nil, &result)
-	return result, err
+	var wire wireListResult
+	if err := a.client.request(ctx, http.MethodGet, "/items", query, nil, &wire); err != nil {
+		return engine.ListResult{}, err
+	}
+	result := engine.ListResult{OK: wire.OK, NextCursor: wire.NextCursor, HasMore: wire.HasMore || wire.NextCursor != ""}
+	if wire.Items != nil {
+		result.Items = make([]engine.Item, len(wire.Items))
+		for i, item := range wire.Items {
+			result.Items[i] = item.toEngineItem(req.Scope.DatasetID)
+		}
+	}
+	return result, nil
 }
 
 func (a *Adapter) GetItem(ctx context.Context, scope engine.Scope, itemID string) (engine.Item, error) {
@@ -120,9 +207,14 @@ func (a *Adapter) GetItem(ctx context.Context, scope engine.Scope, itemID string
 	if err != nil {
 		return engine.Item{}, err
 	}
-	var result engine.Item
-	err = a.client.request(ctx, http.MethodGet, path, scopeQuery(scope.DatasetID, scope.UserID), nil, &result)
-	return result, err
+	var resp wireItemResponse
+	if err := a.client.request(ctx, http.MethodGet, path, scopeQuery(scope.DatasetID, scope.UserID), nil, &resp); err != nil {
+		return engine.Item{}, err
+	}
+	if !resp.OK || resp.Item == nil {
+		return engine.Item{}, runnerUnavailable("invalid engine item response", nil)
+	}
+	return resp.Item.toEngineItem(scope.DatasetID), nil
 }
 
 func (a *Adapter) DeleteItem(ctx context.Context, scope engine.Scope, itemID string) error {
