@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -76,7 +75,7 @@ func TestKnowledgeUnreadBaselineReadPersistenceAndIsolation(t *testing.T) {
 func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	a, q := projectQueueFixture()
 	// This scenario covers ordinary unsent work; confirmed unknown writes now notify immediately.
-	q.Sessions[1].View.Status.Unknown = 0
+	q.InboxFailed = 0
 	a.Update = nil
 	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client-state.json")
 	t.Cleanup(a.waitKnowledgeReadFlush)
@@ -108,57 +107,5 @@ func TestUnreadBadgeAndListAreDistinctFromPendingWork(t *testing.T) {
 	tt.Frame()
 	if tt.HasText("未读记忆：memlane") || tt.HasText("未读标记") {
 		t.Fatal("read item remained unread")
-	}
-}
-
-func TestProjectModelFailureAppearsWithoutChangingSavedMessageState(t *testing.T) {
-	a, q := projectQueueFixture()
-	q.ProcessingNotices = []processingNotice{{Operation: "original-operation", Status: 502, Code: "codex_model_failed", Backend: "codex"}}
-	p := a.access.Directory.Projects[0]
-	_, info := a.messageNotices(q, p)
-	found := false
-	for _, n := range info {
-		if n.Key == "processing/original-operation" {
-			found = n.Title == "记忆提炼调用失败"
-		}
-	}
-	if !found {
-		t.Fatal("model error was hidden behind message-save status")
-	}
-}
-
-func TestProjectModelFailureRequiresOperationReceiptForRecovery(t *testing.T) {
-	a, q := projectQueueFixture()
-	now := time.Now().UTC()
-	failedAt := now.Add(-15 * time.Minute)
-	recoveredAt := now.Add(-5 * time.Minute)
-	q.ProcessingNotices = []processingNotice{{
-		Operation:   "op-502",
-		Status:      502,
-		Code:        "codex_connection_failed",
-		Backend:     "codex",
-		At:          failedAt.Format(time.RFC3339),
-		RecoveredAt: recoveredAt.Format(time.RFC3339),
-	}}
-	p := a.access.Directory.Projects[0]
-	_, info := a.messageNotices(q, p)
-	var got *messageNotice
-	for i := range info {
-		if info[i].Key == "processing/op-502" {
-			got = &info[i]
-			break
-		}
-	}
-	if got == nil {
-		t.Fatal("missing processing notice")
-	}
-	if !strings.Contains(got.Source, "Codex · 记忆提炼 · ") {
-		t.Fatalf("expected failure clock in source, got %q", got.Source)
-	}
-	if !strings.Contains(got.Detail, "连接 Codex 上游模型服务失败（HTTP 502）") {
-		t.Fatalf("unexpected detail: %q", got.Detail)
-	}
-	if !strings.Contains(got.Followup, "该次提炼结果仍需核对") {
-		t.Fatalf("a legacy HTTP recovery hint appeared to complete the operation: %q", got.Followup)
 	}
 }

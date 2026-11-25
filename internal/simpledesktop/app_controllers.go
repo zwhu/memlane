@@ -4,14 +4,20 @@ import (
 	"context"
 	"time"
 
-	"github.com/egoist/mygo"
+	"fmt"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
+	appgraph "github.com/zwhu/memlane/app/graph"
+	appsearch "github.com/zwhu/memlane/app/search"
+	"github.com/zwhu/memlane/app/shell"
+	kitui "github.com/zwhu/memlane/kit/ui"
 )
 
 // searchController owns unified search modal state, result-origin navigation,
 // and reading-page search filters.
 type searchController struct {
 	searchUI            unifiedSearchState
+	searchPage          appsearch.ControllerOf[Item, searchLaneResult]
 	searchOrigin        *readingLocation
 	searchPane          *pane
 	searchAnchor        *Item
@@ -19,10 +25,6 @@ type searchController struct {
 	searchType          string
 	searchProject       string
 	focusSearch         bool
-}
-
-func (c *searchController) initSearch() {
-	c.searchType = "全部类型"
 }
 
 func (c *searchController) clearSearchOrigin() {
@@ -46,67 +48,13 @@ func (c *searchController) hasSearchOriginFor(p *pane) bool {
 	return c.searchOrigin != nil && c.searchPane == p
 }
 
-// graphController owns graph rendering host state, graph mode/selection,
-// tool-graph modal state, pending step hints, and code-graph indexing state.
 type graphController struct {
-	graph                *GraphHost
-	graphWindow          *mygo.Window
-	graphWindowClosed    bool
-	graphAssetsDir       string
-	graphAssets          map[string][]byte
-	graphAssetsCheck     *graphAssetCheck
-	graphAssetsChecked   bool
-	graphAssetsErr       error
-	graphAttachErr       error
-	graphAttachRequested bool
-	graphAttachFn        func(*GraphHost) error
-	pendingGraphLoad     *graphLoad
-	graphLoadRequest     uint64
-	graphError           string
-	graphMode            string
-	graphSelection       string
-	graphLoading         bool
-	graphPending         graphPendingState
-	toolGraph            toolGraphUIState
-	codeStatus           string
-	codeBusy             bool
-	codeUnknown          bool
-	codeRemoteActive     bool
+	appgraph.Controller
+	graphPending graphPendingState
+	toolGraph    toolGraphUIState
 }
 
-func (c *graphController) initGraph(assets string) {
-	c.graphMode = "实体关系"
-	c.graphAssetsDir = assets
-	ensureGraphProtocolAndBridge()
-}
-
-func (c *graphController) codeIndexBlocked() bool {
-	return c.codeBusy || c.codeUnknown || c.codeRemoteActive
-}
-
-func (c *graphController) resetGraphView(mode string) {
-	c.graphMode = mode
-	c.graph.clear()
-	c.graphSelection, c.graphError = "", ""
-	c.cancelGraphLoad()
-}
-
-func (c *graphController) cancelGraphLoad() {
-	c.graphLoadRequest++
-	c.pendingGraphLoad = nil
-	c.graphLoading = false
-}
-
-func (c *graphController) invalidateReading(dataset string) {
-	// authEpoch is incremented globally by InvalidateReading, so any in-flight
-	// graph request will be fenced when it returns; cancelGraphLoad must always
-	// clear graphLoading to avoid leaving another dataset's refresh button stuck.
-	c.cancelGraphLoad()
-	if dataset == "" || c.graph == nil || c.graph.dataset == "" || c.graph.dataset == dataset {
-		c.graph.clear()
-		c.graphSelection = ""
-	}
-}
+func (c *graphController) invalidateReading(dataset string) { c.InvalidateReading(dataset) }
 
 // readingController owns reading panes, title cache, reading identity tracking,
 // reading revisions, and recent-title hydration state.
@@ -261,4 +209,71 @@ func (c *overviewController) clampOverviewFloor(s *pane, floor, historyLen int) 
 	if c.fromOverview {
 		c.overviewSourceFloor[s] = min(floor, historyLen)
 	}
+}
+
+type appShellAdapter struct{ app *App }
+
+var (
+	_ shell.Dispatcher    = appShellAdapter{}
+	_ shell.Router        = appShellAdapter{}
+	_ shell.SessionFence  = appShellAdapter{}
+	_ shell.ThemeProvider = appShellAdapter{}
+)
+
+func (s appShellAdapter) Dispatch(fn func())      { shell.DispatchFunc(s.app.Update).Dispatch(fn) }
+func (s appShellAdapter) Epoch() uint64           { return s.app.epoch }
+func (s appShellAdapter) AuthEpoch() uint64       { return s.app.authEpoch }
+func (s appShellAdapter) ReadingIdentity() string { return s.app.readingIdentity }
+func (s appShellAdapter) InvalidateReading()      { s.app.InvalidateReading("") }
+func (s appShellAdapter) Tokens() *kitui.Tokens   { return &tok.Tokens }
+func (s appShellAdapter) ReduceMotion() bool      { return s.app.reduceMotion }
+func (s appShellAdapter) NavigateOverview()       { s.app.navigate("总览", 0) }
+func (s appShellAdapter) NavigateProject(id string) {
+	for index, project := range s.app.Config.Projects {
+		if project.ID == id {
+			s.app.navigate("知识", index)
+			return
+		}
+	}
+}
+func (s appShellAdapter) NavigateCommon()   { s.app.navigate("通用知识", 0) }
+func (s appShellAdapter) NavigateProfiles() { s.app.navigate("用户画像", 0) }
+func (s appShellAdapter) NavigateSettings(section string) {
+	s.app.access.SettingsSection = section
+	s.app.navigate("设置", 0)
+}
+func (s appShellAdapter) OpenItem(target shell.ItemTarget) error {
+	if target.ProjectID != "" {
+		found := false
+		for _, p := range overviewProjects(s.app.Config) {
+			if p.ID != target.ProjectID {
+				continue
+			}
+			if target.DatasetID == "" {
+				target.DatasetID = p.Dataset
+			}
+			found = p.Dataset == target.DatasetID
+			break
+		}
+		if !found {
+			return fmt.Errorf("结果范围已失效，请重新搜索")
+		}
+	}
+	return s.app.openSearchResult(Item{ID: target.ItemID, Dataset: target.DatasetID, Kind: target.Kind,
+		SourceDocument: target.SourceDocument, Title: target.Title, Date: target.Date, Preview: target.Preview})
+}
+
+func projectRef(p Project) shell.ProjectRef {
+	return shell.ProjectRef{ID: p.ID, Name: p.Name, DatasetID: p.Dataset, CodeDatasetID: p.CodeDataset, CodeEnabled: p.CodeEnabled, Path: p.Path}
+}
+
+func desktopProject(p shell.ProjectRef) Project {
+	return Project{ID: p.ID, Name: p.Name, Dataset: p.DatasetID, CodeDataset: p.CodeDatasetID, CodeEnabled: p.CodeEnabled, Path: p.Path}
+}
+
+func newAppAPIClient(control ProjectControlClient, identity string) (*api.Client, error) {
+	return api.NewClient(api.Config{
+		BaseURL: control.Config.URL, ManagementTokenFile: control.Config.ManagementTokenFile,
+		ReadingIdentity: identity, HTTPClient: control.HTTP,
+	})
 }

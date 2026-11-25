@@ -164,6 +164,7 @@ func (a *App) beginFirstRuntime(step int) {
 			if loadError == nil && loaded.FirstInstall != nil {
 				a.Config = loaded
 				a.Client.Config = loaded
+				a.loadProjectVisibility()
 				a.configError = ""
 			}
 			if environment != nil {

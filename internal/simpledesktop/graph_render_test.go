@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	appgraph "github.com/zwhu/memlane/app/graph"
+	"github.com/zwhu/memlane/app/shell"
 	"strings"
 	"testing"
 	"time"
@@ -27,14 +29,13 @@ func TestGraphBlockedJSDoesNotBlockUIAndCoalescesLatest(t *testing.T) {
 	updates := make(chan func(), 20)
 	sent := make(chan string, 20)
 	release := make(chan struct{})
-	g := &GraphHost{ready: true, update: func(fn func()) { updates <- fn }}
-	g.eval = func(ctx context.Context, code string) (any, error) {
+	g := appgraph.NewTestHost(func(fn func()) { updates <- fn }, func(ctx context.Context, code string) (any, error) {
 		sent <- code
 		<-release // Model JS which has not completed, even after cancellation.
 		return nil, errors.New("old renderer failed")
-	}
+	})
 	raw := json.RawMessage(`{"nodes":[{"id":"node"}],"links":[],"color_maps":{}}`)
-	if err := g.apply(context.Background(), Project{ID: "old"}, "old-dataset", raw); err != nil {
+	if err := g.ApplyRaw(context.Background(), shell.ProjectRef{ID: "old"}, "old-dataset", raw, nil); err != nil {
 		t.Fatal(err)
 	}
 	graphTestReceive(t, sent)
@@ -42,20 +43,20 @@ func TestGraphBlockedJSDoesNotBlockUIAndCoalescesLatest(t *testing.T) {
 	go func() {
 		// This goroutine is the fixture's single UI owner; workers only enqueue updates.
 		for n := 0; n < 50; n++ {
-			g.clear()
+			g.Clear()
 		}
-		_ = g.apply(context.Background(), Project{ID: "latest"}, "latest-dataset", raw)
+		_ = g.ApplyRaw(context.Background(), shell.ProjectRef{ID: "latest"}, "latest-dataset", raw, nil)
 		close(done)
 	}()
 	graphTestReceive(t, done)
-	if !g.rendering || g.pending == nil || g.pending.epoch != g.epoch {
+	if !g.IsRendering() || !g.HasPending() {
 		t.Fatal("latest frame not retained")
 	}
 	if len(sent) != 0 {
 		t.Fatal("started overlapping render workers")
 	}
 	var reported []error
-	g.onRenderError = func(err error) { reported = append(reported, err) }
+	g.SetOnRenderError(func(err error) { reported = append(reported, err) })
 	close(release)
 	graphTestReceive(t, updates)()
 	code := graphTestReceive(t, sent)
@@ -66,7 +67,7 @@ func TestGraphBlockedJSDoesNotBlockUIAndCoalescesLatest(t *testing.T) {
 		t.Fatal("old render error leaked into new scope")
 	}
 	graphTestReceive(t, updates)()
-	if g.rendering || g.pending != nil {
+	if g.IsRendering() || g.HasPending() {
 		t.Fatal("render queue did not settle")
 	}
 	if len(reported) != 1 {
@@ -76,11 +77,11 @@ func TestGraphBlockedJSDoesNotBlockUIAndCoalescesLatest(t *testing.T) {
 
 func TestGraphBindingStateIsDispatchedAndCancellationIsSafe(t *testing.T) {
 	updates := make(chan func(), 1)
-	g := &GraphHost{update: func(fn func()) { updates <- fn }}
+	g := appgraph.NewTestHost(func(fn func()) { updates <- fn }, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	mutated := false
-	go func() { done <- g.onUI(ctx, func() error { mutated = true; return nil }) }()
+	go func() { done <- g.OnUI(ctx, func() error { mutated = true; return nil }) }()
 	update := graphTestReceive(t, updates)
 	if mutated {
 		t.Fatal("binding modified UI state on SDK worker")
@@ -99,28 +100,25 @@ func TestGraphClearCancelsOutstandingJSWait(t *testing.T) {
 	updates := make(chan func(), 2)
 	started := make(chan struct{}, 2)
 	canceled := make(chan struct{}, 2)
-	g := &GraphHost{ready: true, update: func(fn func()) { updates <- fn }}
-	g.eval = func(ctx context.Context, _ string) (any, error) {
+	g := appgraph.NewTestHost(func(fn func()) { updates <- fn }, func(ctx context.Context, _ string) (any, error) {
 		started <- struct{}{}
 		<-ctx.Done()
 		canceled <- struct{}{}
 		return nil, ctx.Err()
-	}
+	})
 	raw := json.RawMessage(`{"nodes":[],"links":[],"color_maps":{}}`)
-	if err := g.apply(context.Background(), Project{ID: "p"}, "ds", raw); err != nil {
+	if err := g.ApplyRaw(context.Background(), shell.ProjectRef{ID: "p"}, "ds", raw, nil); err != nil {
 		t.Fatal(err)
 	}
 	graphTestReceive(t, started)
-	g.clear()
+	g.Clear()
 	graphTestReceive(t, canceled)
 	graphTestReceive(t, updates)()
 	graphTestReceive(t, started)
-	g.closed = true
-	g.pending = nil
-	g.renderCancel()
+	g.Close()
 	graphTestReceive(t, canceled)
 	graphTestReceive(t, updates)()
-	if g.rendering || g.pending != nil {
+	if g.IsRendering() || g.HasPending() {
 		t.Fatal("closed graph retained pending work")
 	}
 }

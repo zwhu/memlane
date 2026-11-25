@@ -728,8 +728,7 @@ func TestBeta3SetupOnlyQueueDoesNotOfferBacklogActions(t *testing.T) {
 	}
 
 	a.changeBacklog(q, p, false)
-	a.runProcessingAction(q, p, "/backlog/retry", "", false)
-	if q.BacklogBusy || q.BacklogOperation != "" || q.ProcessingActionBusy || requests.Load() != 0 {
+	if q.BacklogBusy || q.BacklogOperation != "" || requests.Load() != 0 {
 		t.Fatal("setup-only runtime scheduled a backlog mutation")
 	}
 	a.Update = nil // The CTA may refresh the generation directory on entry to Settings.
@@ -752,13 +751,13 @@ func TestBeta3SetupOnlyGraphTabDoesNotRequestGraph(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})}
 	a.Update = func(func()) {}
-	a.graphAttachFn = func(*GraphHost) error {
+	a.graphController.AttachHost = func(*GraphHost) error {
 		t.Error("graph surface was attached in setup-only mode")
 		return nil
 	}
-	a.graphError, a.graphLoading = "HTTP 503", true
+	a.graphController.Error, a.graphController.Loading = "HTTP 503", true
 	a.loadGraph()
-	if a.graphLoading || a.graphError != "" || a.graphAttachRequested {
+	if a.graphController.Loading || a.graphController.Error != "" || a.graphController.AttachRequested {
 		t.Fatal("setup-only graph did not clear a pending load and stale error")
 	}
 	tt := ui.NewTester(func(c *ui.Context) {
@@ -770,7 +769,7 @@ func TestBeta3SetupOnlyGraphTabDoesNotRequestGraph(t *testing.T) {
 		})
 	}, 1200, 820)
 	clickProjectUI(t, tt, "图谱")
-	if a.page != "图谱" || a.graphLoading || a.graphAttachRequested || requests.Load() != 0 ||
+	if a.page != "图谱" || a.graphController.Loading || a.graphController.AttachRequested || requests.Load() != 0 ||
 		!tt.HasText("配置记忆提炼后可查看图谱") || tt.HasText("HTTP 503") {
 		t.Fatalf("unexpected setup-only graph: %v", tt.Texts())
 	}
@@ -882,32 +881,6 @@ func TestBeta3SetupOnlyToolGraphSettingsAndActions(t *testing.T) {
 	clickProjectUI(t, tt, "前往配置记忆提炼")
 	if a.page != "设置" || a.access.SettingsSection != "记忆提炼" {
 		t.Fatal("tool graph CTA did not navigate to generation settings")
-	}
-}
-
-func TestBeta3SetupOnlyQueueDetailsHidePendingCheck(t *testing.T) {
-	root := t.TempDir()
-	a := New(Config{GenerationSetupOnly: true, ProjectControl: beta3ControlConfig(t, root)}, nil)
-	a.initialSetup, a.setupDeferredMode = false, true
-	var requests atomic.Int32
-	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		t.Errorf("unexpected queue request %s %s", r.Method, r.URL.Path)
-		http.NotFound(w, r)
-	})}
-	a.Update = func(func()) {}
-	p := AccessProject{ID: "p1"}
-	q := &projectQueueState{}
-	row := queuedSession{Agent: AccessAgent{ID: "agent"}, Binding: ProjectBinding{HostSessionKey: "session"}, View: &pendingBufferView{}}
-	q.Checks = map[string]pendingCheckState{"agent/session": {Status: "unconfirmed"}}
-	a.retryPendingCheck(q, p, row)
-	if requests.Load() != 0 || q.pendingCheck(row).Status != "unconfirmed" {
-		t.Fatal("setup-only queue changed or scheduled a pending check")
-	}
-	n := messageNotice{Key: "pending", Title: "采集结果待确认", Session: &row}
-	tt := ui.NewTester(func(c *ui.Context) { a.renderMessageNoticeDialog(c, q, p, n) }, 1200, 820)
-	if !tt.HasText(n.Title) || tt.HasText("重新检查采集结果") {
-		t.Fatalf("unexpected setup-only queue details: %v", tt.Texts())
 	}
 }
 

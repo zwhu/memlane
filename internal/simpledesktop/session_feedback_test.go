@@ -6,37 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/egoist/mygo/ui"
 )
-
-func TestQueueKeepsVisibleActionReceipt(t *testing.T) {
-	a, q := projectQueueFixture()
-	q.Sessions[0].View.Message = "本次已保存 20 条，剩余 95 条。"
-	q.Sessions[1].View.Message = "已核对：20 条结果仍未知，未重复发送。"
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText(q.Sessions[0].View.Message) || !tt.HasText(q.Sessions[1].View.Message) {
-		t.Fatal("save and check receipts disappeared from project queue")
-	}
-}
-
-func TestPendingObservationSeparatesNewEntriesAndKeepsReceipt(t *testing.T) {
-	v := pendingBufferView{Message: "已保存20条"}
-	v.observe(PendingMaterials{Pending: 95, Signature: "a"})
-	v.observe(PendingMaterials{Pending: 107, Signature: "b"})
-	if v.Added != 12 || v.Message != "已保存20条" {
-		t.Fatal("new material hid prior save receipt", v)
-	}
-	v.observe(PendingMaterials{Pending: 107, Signature: "b", Checked: true, Matched: 2, Unknown: 2})
-	v.observe(PendingMaterials{Pending: 107, Signature: "b", Unknown: 2})
-	if !v.Status.Checked || v.Status.Matched != 2 {
-		t.Fatal("refresh erased reviewed identical snapshot")
-	}
-	v.observe(PendingMaterials{Pending: 108, Signature: "c", Unknown: 2})
-	if v.Status.Checked {
-		t.Fatal("new snapshot reused an obsolete check")
-	}
-}
 
 func TestRawRecordSessionRowsPreserveWholeSessionIdentity(t *testing.T) {
 	resp := v2RawRecordsResponse{DatasetID: "ds", CacheReady: true, Items: []v2RawRecordItem{

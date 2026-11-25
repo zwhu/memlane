@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -14,11 +15,11 @@ func TestProjectVisibilityPersistsWithoutChangingProjectsOrNotices(t *testing.T)
 	p := a.Config.Projects[0]
 	before := append([]Project(nil), a.Config.Projects...)
 	unread := q.unreadCount()
-	message, job := q.Sessions[0].View.Status, *q.Backlog
+	failed, job := q.InboxFailed, q.Backlog
 	if err := a.setProjectHidden(p, true); err != nil {
 		t.Fatal(err)
 	}
-	if !a.projectIsHidden(p) || !reflect.DeepEqual(before, a.Config.Projects) || unread != q.unreadCount() || !reflect.DeepEqual(message, q.Sessions[0].View.Status) || job != *q.Backlog {
+	if !a.projectIsHidden(p) || !reflect.DeepEqual(before, a.Config.Projects) || unread != q.unreadCount() || failed != q.InboxFailed || job != q.Backlog {
 		t.Fatal("hiding changed project, notification or task data")
 	}
 	other := p
@@ -163,5 +164,24 @@ func TestProjectVisibilityCorruptStateIsNotOverwritten(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); string(b) != "corrupt" || a.projectIsHidden(p) {
 		t.Fatal("failed save replaced state or hid project")
+	}
+}
+
+func TestWritePrivateJSONFileRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "original.json")
+	path := filepath.Join(dir, "preference.json")
+	if err := os.WriteFile(target, []byte(`{"original":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateJSONFile(path, []byte(`{"original":false}`)); err == nil {
+		t.Fatal("successfully replaced a symlink")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != `{"original":true}` {
+		t.Fatalf("symlink target changed: %s %v", raw, err)
 	}
 }

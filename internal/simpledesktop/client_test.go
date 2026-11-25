@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/shell"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,20 +165,22 @@ func TestProjectSavePreservesLauncherConfiguration(t *testing.T) {
 func TestGraphRejectsWrongEndpointsAndDuplicateNodes(t *testing.T) {
 	g := &GraphHost{}
 	for _, raw := range []string{`{"nodes":[{"id":"same"},{"id":"same"}],"links":[],"color_maps":{}}`, `{"nodes":[{"id":"one"}],"links":[{"source":"one","target":"absent"}],"color_maps":{}}`} {
-		if e := g.apply(context.Background(), Project{ID: "p"}, "d", json.RawMessage(raw)); e == nil {
+		if e := g.ApplyRaw(context.Background(), shell.ProjectRef{ID: "p"}, "d", json.RawMessage(raw), nil); e == nil {
 			t.Fatal("invalid graph accepted")
 		}
 	}
 }
 
 func TestSupersededGraphLoadCannotRestoreOldProject(t *testing.T) {
-	g := &GraphHost{epoch: 2}
+	g := &GraphHost{}
+	g.Clear()
+	g.Clear()
 	ticket := uint64(1)
 	raw := json.RawMessage(`{"nodes":[{"id":"old-project"}],"links":[],"color_maps":{"node_set":{}}}`)
-	if err := g.applyCurrent(context.Background(), Project{ID: "old"}, "old-dataset", raw, &ticket); err == nil {
+	if err := g.ApplyRaw(context.Background(), shell.ProjectRef{ID: "old"}, "old-dataset", raw, &ticket); err == nil {
 		t.Fatal("stale graph applied")
 	}
-	if g.frame != nil || len(g.nodes) != 0 {
+	if g.HasFrame() || g.Node("old-project") != nil {
 		t.Fatal("old project retained")
 	}
 }
@@ -283,7 +286,7 @@ func TestNativeFirstCodeEnableUsesOfficialDatasetAndOneBlockingIndex(t *testing.
 	a.toggleCode(true)
 	step()
 	step()
-	if creates != 1 || indexes != 1 || a.Config.Projects[0].CodeDataset != "code-dataset" || a.codeBusy || a.codeUnknown || !strings.Contains(a.codeStatus, "completed") {
+	if creates != 1 || indexes != 1 || a.Config.Projects[0].CodeDataset != "code-dataset" || a.graphController.CodeBusy || a.graphController.CodeUnknown || !strings.Contains(a.graphController.CodeStatus, "completed") {
 		t.Fatalf("create/index ownership incorrect: %d %d %+v", creates, indexes, a)
 	}
 }

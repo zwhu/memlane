@@ -596,7 +596,6 @@ func (a *App) knowledgePage(c *ui.Context, s *pane) {
 						}
 					})
 				}
-				a.projectSessionDriftBanner(c, s)
 				if s.Error != "" {
 					ui.Row(c).Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).Shrink(0).Children(func() {
 						homeText(c, "读取未完成 · "+s.Error, homeMeta).MaxLines(2)

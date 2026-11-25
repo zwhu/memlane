@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/zwhu/memlane/app/shell"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -281,15 +282,13 @@ func TestRevocationAndIdentityChangeClearAllMemoryCopiesGraphAndProfile(t *testi
 		}
 
 		// Graph canvas + selection.
-		a.graph = &GraphHost{
-			project: "p1",
-			dataset: "ds1",
-			epoch:   3,
-			frame:   map[string]any{"dataset": "ds1"},
-			nodes:   map[string]json.RawMessage{"n1": json.RawMessage(`{"id":"n1","dataset":"ds1"}`)},
+		a.graphController.Host = graphFixtureHost(t, "ds1")
+		a.graphController.Host.Clear()
+		if err := a.graphController.Host.ApplyRaw(context.Background(), shell.ProjectRef{ID: "p1"}, "ds1", json.RawMessage(`{"nodes":[{"id":"n1"}],"links":[],"color_maps":{}}`), nil); err != nil {
+			t.Fatal(err)
 		}
-		a.graphSelection = `{"id":"n1","dataset":"ds1"}`
-		a.graphLoading = true
+		a.graphController.Selection = `{"id":"n1","dataset":"ds1"}`
+		a.graphController.Loading = true
 
 		// User profile cached body.
 		a.userProfiles = userProfilesState{
@@ -342,8 +341,8 @@ func TestRevocationAndIdentityChangeClearAllMemoryCopiesGraphAndProfile(t *testi
 	if len(s.Knowledge.Catalog) != 1 || s.Knowledge.Catalog[0].Dataset != "ds2" {
 		t.Fatalf("InvalidateReading(ds1) did not strip ds1 from Knowledge.Catalog: %+v", s.Knowledge.Catalog)
 	}
-	if a.graph.frame != nil || a.graph.nodes != nil || a.graph.epoch <= 3 || a.graphSelection != "" || a.graphLoading {
-		t.Fatalf("InvalidateReading(ds1) did not clear graph canvas/selection: frame=%v nodes=%v epoch=%d sel=%q", a.graph.frame, a.graph.nodes, a.graph.epoch, a.graphSelection)
+	if a.graphController.Host.HasFrame() || a.graphController.Host.Node("n1") != nil || a.graphController.Host.Epoch() <= 3 || a.graphController.Selection != "" || a.graphController.Loading {
+		t.Fatalf("InvalidateReading(ds1) did not clear graph canvas/selection: frame=%v nodes=%v epoch=%d sel=%q", a.graphController.Host.HasFrame(), a.graphController.Host.Node("n1"), a.graphController.Host.Epoch(), a.graphController.Selection)
 	}
 	if a.overviewState.Snapshot.Knowledge[0].Body != "" || a.overviewState.Snapshot.Knowledge[0].BodyLoaded {
 		t.Fatal("InvalidateReading(ds1) retained overview body")
@@ -357,7 +356,7 @@ func TestRevocationAndIdentityChangeClearAllMemoryCopiesGraphAndProfile(t *testi
 	if a.userProfiles.Body != "" || a.userProfiles.BodyKey != "" || a.userProfiles.ReadGeneration <= prevGen {
 		t.Fatalf("identity change retained user profile body/key: body=%q key=%q gen=%d", a.userProfiles.Body, a.userProfiles.BodyKey, a.userProfiles.ReadGeneration)
 	}
-	if a.graph.frame != nil || a.graph.nodes != nil || a.graphSelection != "" {
+	if a.graphController.Host.HasFrame() || a.graphController.Host.Node("n1") != nil || a.graphController.Selection != "" {
 		t.Fatal("identity change retained graph canvas or selection")
 	}
 	if s.SubagentParent != nil || s.SubagentParentPage != nil || s.HomeAnchor != nil || len(s.Knowledge.Catalog) != 0 || a.searchAnchor != nil {
@@ -776,19 +775,19 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 			CommonNav: []v2KnowledgePageOpts{{Cursor: "page"}}, CommonCursors: []string{"page"}, CommonPageIndex: 1,
 		}
 	}
-	p1, p2, queueReader := newPane(first), newPane(second), newPane(first)
+	p1, p2 := newPane(first), newPane(second)
 	a.panes["first"], a.panes["alias"], a.panes["second"] = p1, p1, p2
-	newQueue := func(reader *pane) *projectQueueState {
+	newQueue := func() *projectQueueState {
 		return &projectQueueState{
-			Reader: reader, Loading: true, UnreadKnowledge: []Item{first}, UnreadHasMore: true,
+			Loading: true, UnreadKnowledge: []Item{first}, UnreadHasMore: true,
 			ServerUnreadKnown: true, ServerUnreadCount: 4, ServerUnreadStateRev: 7,
-			Activity: []overviewEvent{{Key: "event"}}, ProcessingNotices: []processingNotice{{Code: "notice"}},
-			ProcessingIssues: []processingIssue{{Reason: "issue"}}, Documents: []Item{first}, PendingDocumentsCount: 1,
+			Activity:  []overviewEvent{{Key: "event"}},
+			Documents: []Item{first}, PendingDocumentsCount: 1,
 		}
 	}
-	q1, q2, qAlias := newQueue(p1), newQueue(p2), newQueue(queueReader)
+	q1, q2, qAlias := newQueue(), newQueue(), newQueue()
 	a.access.Queues = map[string]*projectQueueState{
-		"project/ds-1": q1, "project/ds-2": q2, "alias/ds-1": qAlias, "other/ds-2": {Reader: queueReader},
+		"project/ds-1": q1, "project/ds-2": q2, "alias/ds-1": qAlias,
 	}
 
 	a.commonEdit = commonEditorState{Open: true, Existing: &Document{Dataset: first.Dataset}, Draft: CommonDraft{Body: first.Body},
@@ -797,7 +796,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	a.searchOrigin, a.searchAnchor, a.searchPane = &readingLocation{}, &second, p2
 	a.projectUI.InfoOpen = true
 	a.userProfiles = userProfilesState{Body: first.Body, BodyKey: "profile/ds-1/one", Reading: true}
-	a.graph, a.graphSelection, a.pendingGraphLoad, a.graphLoading = &GraphHost{dataset: second.Dataset}, "node", &graphLoad{}, true
+	a.graphController.Host, a.graphController.Selection, a.graphController.PendingLoad, a.graphController.Loading = graphFixtureHost(t, second.Dataset), "node", &graphLoad{}, true
 	a.recentScope, a.recent = "recent", []Item{second}
 	for _, item := range []Item{first, second} {
 		a.titles.cache[readingKey{Dataset: item.Dataset, ID: item.ID}] = readingCacheEntry{item: item}
@@ -819,7 +818,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	cancelCount := 0
 	cancel := func() { cancelCount++ }
 	a.recentCancel, p1.cancel, p1.readCancel, p1.titleCancel = cancel, cancel, cancel, cancel
-	v.cancel, v.activityCancel, v.dayCancel, v.recallCancel, a.searchUI.cancel = cancel, cancel, cancel, cancel, cancel
+	v.cancel, v.activityCancel, v.dayCancel, v.recallCancel = cancel, cancel, cancel, cancel
 
 	var customCalls []string
 	a.registerReadingInvalidator("probe", readingInvalidatorFunc(func(string) { t.Fatal("replaced hook was called") }))
@@ -833,7 +832,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	}))
 
 	a.InvalidateReading(first.Dataset)
-	if !slices.Equal(customCalls, []string{"probe:ds-1", "last:ds-1"}) || cancelCount != 9 {
+	if !slices.Equal(customCalls, []string{"probe:ds-1", "last:ds-1"}) || cancelCount != 8 {
 		t.Fatalf("scoped invalidation calls = %v, cancellations = %d", customCalls, cancelCount)
 	}
 	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.commonEdit.Draft.Body != "" ||
@@ -841,9 +840,9 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		a.userProfiles.Reading || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 1 {
 		t.Fatal("scoped invalidation did not withdraw editor/profile content and preserve the save receipt")
 	}
-	if a.searchUI.Open || a.searchUI.Loading || a.searchUI.request != 1 || len(a.searchUI.Rows) != 1 ||
+	if a.searchUI.Open || a.searchUI.Loading || len(a.searchUI.Rows) != 1 ||
 		a.searchUI.Rows[0].ID != second.ID || a.searchAnchor != &second ||
-		a.pendingGraphLoad != nil || a.graphLoading || a.graphSelection != "node" || a.graphLoadRequest != 1 || a.graph.epoch != 0 {
+		a.graphController.PendingLoad != nil || a.graphController.Loading || a.graphController.Selection != "node" || a.graphController.LoadRequest != 1 || a.graphController.Host.Epoch() != 1 {
 		t.Fatal("scoped invalidation changed unrelated search/graph content or left graphLoading stuck")
 	}
 	if len(a.titles.cache) != 1 || a.titles.cache[readingKey{Dataset: second.Dataset, ID: second.ID}].item.Body != second.Body ||
@@ -865,8 +864,8 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		t.Fatal("scoped invalidation did not reset the matched pane exactly once")
 	}
 	if p2.request != 0 || p2.readRequest != 0 || p2.titleRequest != 1 || p2.Loading || p2.Reading || p2.Selected == nil ||
-		p2.Items[0].Body != second.Body || queueReader.request != 1 || queueReader.readRequest != 1 || queueReader.titleRequest != 1 {
-		t.Fatal("scoped invalidation changed unrelated pane data, left loading stuck, or failed to deduplicate the queue reader")
+		p2.Items[0].Body != second.Body {
+		t.Fatal("scoped invalidation changed unrelated pane data, or left loading stuck")
 	}
 	if v.snapshotVersion != 1 || v.generation != 1 || v.activityGeneration != 1 || v.dayRequest != 1 ||
 		v.cancel != nil || v.activityCancel != nil || v.dayCancel != nil || v.recallCancel != nil ||
@@ -884,7 +883,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		t.Helper()
 		if q.Loading || q.Request != version || q.StateVersion != version ||
 			q.UnreadKnowledge != nil || q.UnreadHasMore || q.ServerUnreadKnown || q.ServerUnreadCount != 0 || q.ServerUnreadStateRev != 0 ||
-			q.Activity != nil || q.ProcessingNotices != nil || q.ProcessingIssues != nil || q.Documents != nil || q.PendingDocumentsCount != 0 {
+			q.Activity != nil || q.Documents != nil || q.PendingDocumentsCount != 0 {
 			t.Fatalf("queue did not reset at generation %d", version)
 		}
 	}
@@ -903,12 +902,11 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	}
 	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 2 ||
 		a.searchOrigin != nil || a.searchAnchor != nil || a.searchPane != nil || a.searchUI.Rows != nil ||
-		a.graph.epoch != 1 || a.graphSelection != "" || a.graphLoading || a.graphLoadRequest != 2 ||
+		a.graphController.Host.Epoch() != 2 || a.graphController.Selection != "" || a.graphController.Loading || a.graphController.LoadRequest != 2 ||
 		len(a.titles.cache) != 0 || a.detailChunks.Len() != 0 || a.recent != nil || a.recentRequest != 2 {
 		t.Fatal("global invalidation retained controller state")
 	}
 	if p1.request != 2 || p1.readRequest != 2 || p1.titleRequest != 2 ||
-		queueReader.request != 2 || queueReader.readRequest != 2 || queueReader.titleRequest != 2 ||
 		p2.request != 1 || p2.readRequest != 1 || p2.titleRequest != 2 || p2.Selected != nil ||
 		p2.Items[0].BodyLoaded || p2.RawCatalog != nil || p2.Knowledge.Catalog != nil ||
 		len(p2.History) != 0 || len(p2.DetailLists) != 0 || len(p2.Knowledge.Measurements) != 0 {
@@ -939,17 +937,17 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		app.openOverviewFailureDetail(evDS1, time.UTC)
 		app.overviewState.CopiedEvent = evDS1.Key
 		app.overviewState.Events = []overviewEvent{evDS2}
-		app.graph = &GraphHost{dataset: "ds-2"}
-		app.graphSelection = "node-ds2"
-		app.graphLoading = true
+		app.graphController.Host = graphFixtureHost(t, "ds-2")
+		app.graphController.Selection = "node-ds2"
+		app.graphController.Loading = true
 
 		app.InvalidateReading("ds-1")
 		if app.overviewState.ExpandedEvent != "" || app.overviewState.ExpandedReport != "" ||
 			app.overviewState.ExpandedDetail != nil || app.overviewState.CopiedEvent != "" {
 			t.Fatal("revoking ds-1 retained evicted failure dialog or copy report")
 		}
-		if app.graphLoading || app.graphLoadRequest != 1 || app.graph.dataset != "ds-2" ||
-			app.graph.epoch != 0 || app.graphSelection != "node-ds2" {
+		if app.graphController.Loading || app.graphController.LoadRequest != 1 || app.graphController.Host.Dataset() != "ds-2" ||
+			app.graphController.Host.Epoch() != 1 || app.graphController.Selection != "node-ds2" {
 			t.Fatal("revoking ds-1 left ds-2 graphLoading stuck or cleared ds-2 graph canvas")
 		}
 
@@ -999,4 +997,13 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 			t.Fatal("unrelated pane stayed stuck loading or lost its already-loaded ds-2 data")
 		}
 	})
+}
+
+func graphFixtureHost(t *testing.T, dataset string) *GraphHost {
+	t.Helper()
+	h := &GraphHost{}
+	if err := h.ApplyRaw(context.Background(), shell.ProjectRef{ID: "p"}, dataset, json.RawMessage(`{"nodes":[],"links":[],"color_maps":{}}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	return h
 }

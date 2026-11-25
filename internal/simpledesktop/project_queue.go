@@ -5,127 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/app/api"
 )
-
-type pendingMessageDetail struct {
-	ID      string `json:"id"`
-	Kind    string `json:"kind"`
-	Summary string `json:"summary"`
-	Unknown bool   `json:"unknown"`
-}
-
-type PendingMaterials struct {
-	Details          []pendingMessageDetail `json:"details,omitempty"`
-	Pending          int                    `json:"pending"`
-	UnknownEntryIDs  []string               `json:"unknown_entry_ids"`
-	Signature        string                 `json:"signature"`
-	Unknown          int                    `json:"unknown_outcomes"`
-	RetryableUnknown int                    `json:"retryable_unknown"`
-	Blocked          *struct {
-		Reason string `json:"reason"`
-	} `json:"blocked"`
-	Drained         int    `json:"drained"`
-	Discarded       int    `json:"discarded"`
-	Error           string `json:"error"`
-	Checked         bool   `json:"checked"`
-	Matched         int    `json:"matched_unknown"`
-	SessionID       string `json:"session_id"`
-	SessionInactive bool   `json:"session_inactive,omitempty"`
-}
-
-var pendingBufferObserveSeq atomic.Uint64
-
-type pendingBufferView struct {
-	Status           PendingMaterials
-	Loaded, Busy     bool
-	Message          string
-	ReadError        string
-	ReadCode         string
-	Details          []pendingMessageDetail
-	DetailsLoaded    bool
-	DetailsError     string
-	Observed         bool
-	Added            int
-	Action           string
-	CheckDetailsOpen bool
-	DiagnosticsOpen  bool
-	ExpandedMessages map[string]bool
-	AllMessagesOpen  bool
-}
-
-func (v *pendingBufferView) observe(status PendingMaterials) {
-	if v.Observed && status.Pending > v.Status.Pending {
-		v.Added += status.Pending - v.Status.Pending
-	}
-	if status.Signature == v.Status.Signature && v.Status.Checked {
-		status.Checked, status.Matched, status.SessionID = v.Status.Checked, v.Status.Matched, v.Status.SessionID
-	}
-	if status.Signature != v.Status.Signature {
-		v.Details = nil
-		v.DetailsLoaded = false
-		v.ExpandedMessages = nil
-		v.AllMessagesOpen = false
-	}
-	v.Status = status
-	if v.ReadError != "" && v.Message == v.ReadError {
-		v.Message = ""
-	}
-	v.ReadError = ""
-	v.ReadCode = ""
-	v.Loaded, v.Observed = true, true
-	pendingBufferObserveSeq.Add(1)
-}
-
-func shortSessionLabel(key string) string {
-	r := []rune(key)
-	if len(r) > 22 {
-		return string(r[:10]) + "…" + string(r[len(r)-8:])
-	}
-	return key
-}
-
-type queuedSession struct {
-	Agent   AccessAgent
-	Binding ProjectBinding
-	View    *pendingBufferView
-}
-type processingNotice struct {
-	Operation   string `json:"operation_id"`
-	Request     string `json:"request_id"`
-	At          string `json:"at"`
-	RecoveredAt string `json:"recovered_at,omitempty"`
-	ResolvedAt  string `json:"resolved_at,omitempty"`
-	FailedAt    string `json:"failed_at,omitempty"`
-	Status      int    `json:"http_status"`
-	Code        string `json:"code"`
-	Backend     string `json:"backend"`
-}
-
-func (n processingNotice) resolved() bool {
-	return n.hasTerminalTime(n.ResolvedAt)
-}
-
-func (n processingNotice) hasTerminalTime(terminal string) bool {
-	at, validAt := officialTime(n.At)
-	ended, validEnd := officialTime(terminal)
-	return validAt && validEnd && !ended.Before(at)
-}
-
-type processingIssue struct {
-	AgentID         string  `json:"agent_id"`
-	Host            string  `json:"host"`
-	SessionID       string  `json:"session_id"`
-	Processing      string  `json:"processing"`
-	Reason          string  `json:"reason"`
-	AttemptedAt     float64 `json:"attempted_at"`
-	ReconcileStatus string  `json:"reconcile_status"`
-	ReconciledAt    float64 `json:"reconciled_at"`
-}
 
 type projectQueueState struct {
 	InboxPending                   int
@@ -134,18 +18,6 @@ type projectQueueState struct {
 	InboxRetryBusy                 bool
 	InboxRetryError                string
 	inboxRevision                  uint64
-	BufferReviews                  []bufferReview
-	noticeAckEpoch                 uint64
-	NoticeAcknowledgements         map[string]noticeAcknowledgement
-	NoticeAcknowledgementError     string
-	NoticeHistoryOpen              bool
-	ResolvedProcessingOpen         bool
-	ProcessingNotices              []processingNotice
-	ProcessingIssues               []processingIssue
-	ProcessingActionBusy           bool
-	ProcessingActionError          string
-	ProcessingReadError            string
-	NotificationFailures           map[string]projectFailure
 	KnowledgeRead                  knowledgeReadState
 	KnowledgeCatalogVersion        string
 	ServerUnreadKnown              bool
@@ -158,28 +30,19 @@ type projectQueueState struct {
 	KnowledgeReadError             string
 	StateVersion                   uint64
 	Scroll                         ui.ScrollState
-	LocatedNoticeKey               string
-	DetailNoticeKey                string
-	DetailDialogOpen               bool
-	DetailDiagnosticsOpen          bool
-	Reader                         *pane
 	Activity                       []overviewEvent
 	ActivityError                  string
 	Loading, Loaded                bool
 	Request                        uint64
 	Next                           time.Time
-	Sessions                       []queuedSession
-	Checks                         map[string]pendingCheckState
 	Documents                      []Item
 	DocumentError                  string
 	Offset                         int
 	Backlog                        *backlogJob
-	AutomaticSave                  bool
 	AutoCapture                    *bool
 	AutoCaptureVersion             int64
 	AutoCaptureBusy                bool
 	AutoCaptureError               string
-	SaveDetailsOpen                bool
 	BacklogLoading, BacklogBusy    bool
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
@@ -232,7 +95,6 @@ func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	q := a.access.Queues[key]
 	if q == nil {
 		q = &projectQueueState{}
-		q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
 		if path, err := a.knowledgeReadPath(p); err == nil {
 			if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
 				q.KnowledgeRead = s
@@ -244,15 +106,7 @@ func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	return q
 }
 func (a *App) projectQueue(p AccessProject) *projectQueueState {
-	var q *projectQueueState
-	if a.Update != nil {
-		q = a.projectQueueStateForAsync(p)
-	} else {
-		q = a.projectQueueStateFor(p)
-	}
-	if time.Now().After(q.BacklogNext) {
-		a.refreshBacklog(q, p)
-	}
+	q := a.projectQueueStateForAsync(p)
 	if !q.Loading && !a.access.Busy && (!q.Loaded || time.Now().After(q.Next)) && a.Update != nil {
 		a.loadProjectQueue(q, p)
 	}
@@ -272,43 +126,36 @@ type projectQueueFetchInput struct {
 
 type projectQueueSnapshot struct {
 	setupOnly             bool
+	gateway               bool
+	readingState          *api.ReadingStateView
 	inbox                 *api.ProjectView
 	authDenied            bool
 	v2Summary             v2MessageSummaryResponse
 	v2SummaryOK           bool
 	summaryBacklogErr     string
 	v2ReadStateErr        string
-	documents             []Item
 	pendingDocumentsCount int
 	knowledgeVersion      string
 	documentErr           error
 	activity              []activityRow
 	activityErr           error
-	notices               []processingNotice
-	noticeErr             error
 	localKnowledgeRead    knowledgeReadState
-	ackPath               string
-	noticeAckSeq          uint64
-	noticeAcks            map[string]noticeAcknowledgement
-	noticeAckErr          string
 }
 
 type projectQueueApplyMeta struct {
 	request       uint64
 	authEpoch     uint64
-	ackEpoch      uint64
 	baseIdentity  string
 	inboxRevision uint64
 }
 
 func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
-	if q.Loading || a.access.Busy {
+	if q.Loading || a.access.Busy || a.Update == nil {
 		return
 	}
 	q.Loading = true
 	q.Request++
 	request, authEpoch := q.Request, a.authEpoch
-	ackEpoch := q.noticeAckEpoch
 	q.Next = time.Now().Add(30 * time.Second)
 	if q.Backlog.active() {
 		q.Next = time.Now().Add(5 * time.Second)
@@ -333,7 +180,7 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		project: p, client: a.Client, control: control,
 		stateDir: stateDir, migrationProject: migrationProject, needLocalState: needLocalState, setupOnly: a.isSetupOnlyRuntime(), refreshInbox: q.inboxRevision > 0,
 	}
-	meta := projectQueueApplyMeta{request, authEpoch, ackEpoch, baseIdentity, q.inboxRevision}
+	meta := projectQueueApplyMeta{request, authEpoch, baseIdentity, q.inboxRevision}
 	update := a.Update
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -352,8 +199,6 @@ func (a *App) fetchProjectQueueSnapshot(ctx context.Context, in projectQueueFetc
 	})
 	workers.Go(func() {
 		p := in.project
-		snap.ackPath, _ = noticeAcknowledgementPath(in.stateDir, in.client, p)
-		snap.noticeAcks, snap.noticeAckErr, snap.noticeAckSeq = readNoticeAcknowledgementsWithSeq(snap.ackPath)
 		if in.needLocalState {
 			if path, err := knowledgeReadPath(in.stateDir, in.client, p); err == nil {
 				if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
@@ -365,12 +210,19 @@ func (a *App) fetchProjectQueueSnapshot(ctx context.Context, in projectQueueFetc
 
 	workers.Wait()
 
-	snap.authDenied = readingAuthDenied(snap.documentErr) || readingAuthDenied(snap.noticeErr) || readingAuthDenied(snap.activityErr) ||
+	snap.authDenied = readingAuthDenied(snap.documentErr) || readingAuthDenied(snap.activityErr) ||
 		isControlErrorCode(snap.documentErr, 503, "reading_contract_mismatch")
-	if !in.setupOnly && in.control != nil && !snap.authDenied && (!snap.v2SummaryOK || in.refreshInbox) {
+	if !in.setupOnly && in.control != nil && !snap.authDenied && (snap.gateway || !snap.v2SummaryOK || in.refreshInbox) {
 		var err error
 		snap.inbox, err = fetchProjectInbox(ctx, in)
+		if err == nil && isControlNotFound(snap.documentErr) {
+			// The Go gateway exposes the inbox without the legacy summary.
+			snap.documentErr, snap.activityErr = nil, nil
+		}
 		if err != nil {
+			if snap.gateway {
+				snap.documentErr = err
+			}
 			var apiErr *api.APIError
 			if errors.As(err, &apiErr) && (apiErr.IsUnauthorized() || apiErr.IsForbidden()) {
 				snap.authDenied = true
@@ -387,7 +239,7 @@ func fetchProjectInbox(ctx context.Context, in projectQueueFetchInput) (*api.Pro
 		return nil, err
 	}
 	manager := ProjectControlClient{Config: *in.control, HTTP: in.client.HTTP}
-	client, err := newInboxClient(manager, identity)
+	client, err := newAppAPIClient(manager, identity)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +258,7 @@ func fetchProjectInbox(ctx context.Context, in projectQueueFetchInput) (*api.Pro
 func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetchInput, snap *projectQueueSnapshot) {
 	if in.control == nil {
 		err := fmt.Errorf("控制面服务不可用，请确认服务已启动")
-		snap.noticeErr, snap.documentErr, snap.activityErr = err, err, err
+		snap.documentErr, snap.activityErr = err, err
 		return
 	}
 	client, p := in.client, in.project
@@ -416,13 +268,29 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 	defer cancel()
 	manager := ProjectControlClient{Config: *in.control, HTTP: client.HTTP}
 	if err := manager.requireReadingContract(summaryCtx); err != nil {
-		snap.noticeErr, snap.documentErr, snap.activityErr = err, err, err
+		snap.documentErr, snap.activityErr = err, err
 		return
+	}
+	if !in.setupOnly {
+		gateway, err := manager.probeFeature(summaryCtx, "async_capture")
+		if err != nil {
+			snap.documentErr, snap.activityErr = err, err
+			return
+		}
+		if gateway {
+			snap.gateway = true
+			snap.readingState, err = fetchGatewayQueueReadingState(summaryCtx, manager, identity, p)
+			if readingAuthDenied(err) {
+				snap.documentErr = err
+			} else if err != nil {
+				snap.v2ReadStateErr = err.Error()
+			}
+			return
+		}
 	}
 	if migErr := a.migrateReadingStateV2Snapshot(summaryCtx, manager, identity, in.stateDir, migrationProjects); migErr != nil {
 		if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(manager.Config.URL, in.stateDir, identity, migrationProjects) {
 			cancel()
-			snap.noticeErr = migErr
 			snap.documentErr = migErr
 			return
 		}
@@ -432,15 +300,9 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 	if v2Err == nil {
 		snap.v2Summary = v2Res
 		snap.v2SummaryOK = true
-		if msg := v2Res.Errors["processing_notices"]; msg != "" {
-			snap.noticeErr = fmt.Errorf("%s", msg)
-		} else {
-			snap.notices = v2Res.Notices
-		}
 		if msg := v2Res.Errors["documents"]; msg != "" {
 			snap.documentErr = fmt.Errorf("%s", msg)
 		} else {
-			snap.documents = v2Res.pendingItems(p.Dataset)
 			snap.pendingDocumentsCount = v2Res.PendingDocumentsCount
 			snap.knowledgeVersion = v2Res.KnowledgeCatalogVersion
 		}
@@ -453,7 +315,24 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 		snap.v2ReadStateErr = v2Res.Errors["reading_state"]
 		return
 	}
-	snap.noticeErr, snap.documentErr, snap.activityErr = v2Err, v2Err, v2Err
+	snap.documentErr, snap.activityErr = v2Err, v2Err
+}
+
+func fetchGatewayQueueReadingState(ctx context.Context, manager ProjectControlClient, identity string, p AccessProject) (*api.ReadingStateView, error) {
+	client, err := newAppAPIClient(manager, identity)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.ReadingState(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, state := range response.Projects {
+		if state.ProjectID == p.ID && state.DatasetID == p.Dataset {
+			return &state, nil
+		}
+	}
+	return nil, fmt.Errorf("项目未读状态暂时无法读取")
 }
 
 type projectQueueReconciled struct {
@@ -462,17 +341,9 @@ type projectQueueReconciled struct {
 	BacklogError            string
 	UpdateBacklog           bool
 	Backlog                 *backlogJob
-	ProcessingIssues        []processingIssue
-	AutomaticSave           bool
-	BufferReviews           []bufferReview
-	Checks                  []pendingCheckState
-	ProcessingReadError     string
-	UpdateNotices           bool
-	Notices                 []processingNotice
 	ActivityError           string
 	Activity                []overviewEvent
 	DocumentError           string
-	Documents               []Item
 	PendingDocumentsCount   int
 	KnowledgeReadError      string
 	ServerUnreadCount       int
@@ -493,19 +364,9 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 		if rec.UpdateBacklog {
 			summary := snap.v2Summary
 			rec.Backlog = summary.Backlog
-			rec.ProcessingIssues = summary.ProcessingIssues
-			rec.AutomaticSave = summary.AutomaticSave
-			rec.BufferReviews = summary.BufferReviews
-			rec.Checks = summary.Checks
 		} else if !snap.setupOnly {
 			rec.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
 		}
-	}
-	if snap.noticeErr != nil {
-		rec.ProcessingReadError = "记忆提炼异常记录暂时无法读取"
-	} else {
-		rec.UpdateNotices = true
-		rec.Notices = snap.notices
 	}
 	if snap.activityErr != nil {
 		rec.ActivityError = "近期提炼记录暂时无法读取"
@@ -527,8 +388,7 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 		rec.DocumentError = "提炼状态暂时无法读取"
 		return rec
 	}
-	rec.Documents = snap.documents
-	rec.PendingDocumentsCount = max(snap.pendingDocumentsCount, len(snap.documents))
+	rec.PendingDocumentsCount = snap.pendingDocumentsCount
 	rec.KnowledgeCatalogVersion = snap.knowledgeVersion
 	if snap.v2SummaryOK {
 		if snap.v2ReadStateErr != "" {
@@ -539,6 +399,18 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 			rec.ServerUnreadStateRev = summary.UnreadStateRev
 			rec.UnreadHasMore = summary.UnreadHasMore || summary.UnreadCount > len(summary.UnreadPreview)
 			rec.UnreadKnowledge = summary.unreadPreviewItems(p.Dataset)
+		}
+	}
+	if snap.gateway {
+		if snap.v2ReadStateErr != "" {
+			rec.KnowledgeReadError = "未读状态暂时无法读取"
+		} else if snap.readingState != nil {
+			rec.ServerUnreadCount = snap.readingState.UnreadCount
+			rec.ServerUnreadStateRev = snap.readingState.StateRev
+			rec.UnreadHasMore = rec.ServerUnreadCount > 0
+		}
+		if snap.inbox != nil {
+			rec.KnowledgeCatalogVersion = snap.inbox.CatalogVersion
 		}
 	}
 	return rec
@@ -562,10 +434,13 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 	_, current, _ := readingIdentityPair(Client{Config: a.Client.Config})
 	if meta.baseIdentity != current {
 		q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
-		q.Sessions = nil
 		q.Documents = nil
 		q.Loaded = false
 		return
+	}
+	if snap.inbox != nil && snap.inbox.AutoCaptureVersion > 0 {
+		autoCapture := snap.inbox.AutoCapture
+		q.applyAutoCapture(&autoCapture, int64(snap.inbox.AutoCaptureVersion))
 	}
 	if snap.inbox != nil && meta.inboxRevision == q.inboxRevision {
 		q.InboxPending, q.InboxFailed, q.LastError = snap.inbox.InboxPending, snap.inbox.InboxFailed, snap.inbox.LastError
@@ -579,7 +454,6 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 		}
 		q.localStateLoaded = true
 	}
-	q.applyNoticeAcknowledgementRead(snap.ackPath, meta.ackEpoch, snap.noticeAckSeq, snap.noticeAcks, snap.noticeAckErr)
 	if a.isSetupOnlyRuntime() {
 		q.BacklogError = ""
 	} else if snap.v2SummaryOK {
@@ -589,20 +463,8 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 		q.applyAutoCapture(snap.v2Summary.AutoCapture, snap.v2Summary.AutoCaptureVersion)
 		if rec.UpdateBacklog {
 			q.Backlog = rec.Backlog
-			q.ProcessingIssues = rec.ProcessingIssues
 			q.BacklogLoaded = true
-			q.AutomaticSave = rec.AutomaticSave
-			if rec.BufferReviews != nil {
-				q.BufferReviews = rec.BufferReviews
-			}
-			if rec.Checks != nil {
-				a.applyPendingChecks(q, rec.Checks)
-			}
 		}
-	}
-	q.ProcessingReadError = rec.ProcessingReadError
-	if rec.UpdateNotices {
-		q.ProcessingNotices = rec.Notices
 	}
 	q.Loaded = true
 	q.ActivityError = rec.ActivityError
@@ -612,9 +474,13 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 	q.DocumentError = rec.DocumentError
 	prevCatalogVersion := q.KnowledgeCatalogVersion
 	if rec.DocumentError == "" {
-		q.Documents = rec.Documents
-		q.PendingDocumentsCount = rec.PendingDocumentsCount
 		if snap.v2SummaryOK {
+			q.PendingDocumentsCount = rec.PendingDocumentsCount
+			if q.PendingDocumentsCount == 0 {
+				q.Documents, q.Offset = nil, 0
+			}
+		}
+		if snap.v2SummaryOK || snap.gateway {
 			q.KnowledgeReadError = rec.KnowledgeReadError
 			if rec.KnowledgeReadError == "" &&
 				applyServerUnreadSnapshot(q, rec.ServerUnreadCount, rec.ServerUnreadStateRev, a.knowledgeWriterHasPending(p.ID, p.Dataset)) {
@@ -626,54 +492,11 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 			}
 
 		}
-		q.Offset = min(q.Offset, max(0, len(rec.Documents)-1))
 	}
 	q.StateVersion++
 	if prevCatalogVersion != "" && q.KnowledgeCatalogVersion != "" && prevCatalogVersion != q.KnowledgeCatalogVersion {
 		a.handleKnowledgeCatalogVersionChanged(p.ID, p.Dataset, q.KnowledgeCatalogVersion)
 	}
-	q.observeNotificationFailures(time.Now())
-	recovered := reconcileRecoveredNoticeKeys(p, q, snap.v2SummaryOK, snap.summaryBacklogErr)
-	a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
-}
-
-func reconcileRecoveredNoticeKeys(p AccessProject, q *projectQueueState, v2SummaryOK bool, summaryBacklogErr string) []string {
-	recovered := []string{}
-	for index, row := range q.Sessions {
-		if !row.View.Loaded || row.View.ReadError != "" {
-			continue
-		}
-		key := noticeSessionKey(row, index)
-		recovered = append(recovered, key+"/read")
-		s := row.View.Status
-		if s.Unknown == 0 {
-			recovered = append(recovered, key+"/unknown", key+"/retry")
-		}
-		if s.Pending == 0 {
-			recovered = append(recovered, key+"/pending")
-		}
-	}
-	for key, message := range map[string]string{"knowledge": q.KnowledgeReadError, "activity": q.ActivityError, "documents": q.DocumentError, "processing-read": q.ProcessingReadError} {
-		if message == "" {
-			recovered = append(recovered, key)
-		}
-	}
-	if v2SummaryOK && summaryBacklogErr == "" {
-		if q.Backlog == nil || q.Backlog.ProcessingFailed == 0 {
-			recovered = append(recovered, "processing-failed")
-		}
-	}
-	if !p.policySyncUnconfirmed() {
-		recovered = append(recovered, "policy-sync")
-	}
-	return recovered
-}
-
-func newInboxClient(control ProjectControlClient, identity string) (*api.Client, error) {
-	return api.NewClient(api.Config{
-		BaseURL: control.Config.URL, ManagementTokenFile: control.Config.ManagementTokenFile,
-		ReadingIdentity: identity, HTTPClient: control.HTTP,
-	})
 }
 
 func (a *App) retryProjectInbox(q *projectQueueState, p AccessProject) {
@@ -695,7 +518,7 @@ func (a *App) retryProjectInbox(q *projectQueueState, p AccessProject) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		client, err := newInboxClient(control, identity)
+		client, err := newAppAPIClient(control, identity)
 		if err == nil {
 			_, err = client.RetryProject(ctx, p.ID)
 		}
@@ -722,4 +545,211 @@ func (a *App) retryProjectInbox(q *projectQueueState, p AccessProject) {
 			}
 		})
 	}()
+}
+
+type trayProjectAlert struct {
+	ProjectID    string
+	ProjectName  string
+	ProjectIndex int
+	ActionCount  int
+	ErrorCount   int
+}
+
+type trayProjectProgress struct {
+	ProjectID    string
+	ProjectName  string
+	ProjectIndex int
+	Count        int
+}
+
+// Reuse the settings queue reader with bounded concurrent projects. Enumeration
+// only reads status; it never saves materials or starts knowledge processing.
+func (a *App) refreshSidebarQueueIfDue(now time.Time) {
+	if a.windowInactive || a.windowHidden || a.coldStartOverviewPending() {
+		return
+	}
+	a.refreshSidebarQueueForTray(now)
+}
+
+func (a *App) refreshSidebarQueueForTray(now time.Time) {
+	if a.Update == nil || !a.access.Loaded || a.access.Busy {
+		return
+	}
+	projects := a.access.Directory.Projects
+	if len(projects) == 0 {
+		return
+	}
+	active := 0
+	for _, p := range projects {
+		if q := a.existingProjectQueueState(p); q != nil && q.Loading {
+			active++
+		}
+	}
+	start := a.access.SidebarQueueIndex % len(projects)
+	for offset := 0; offset < len(projects) && active < 3; offset++ {
+		index := (start + offset) % len(projects)
+		p := projects[index]
+		q := a.projectQueueStateForAsync(p)
+		if !q.Loading && (!q.Loaded || now.After(q.Next)) {
+			a.loadProjectQueue(q, p)
+			if q.Loading {
+				active++
+			}
+			a.access.SidebarQueueIndex = (index + 1) % len(projects)
+		}
+	}
+}
+
+type trayProjectSummary struct {
+	Alerts        []trayProjectAlert
+	Progress      []trayProjectProgress
+	HasErrorAlert bool
+}
+
+type trayFlyoutCache struct {
+	summarySig          uint64
+	summaryValid        bool
+	summary             trayProjectSummary
+	summaryComputations uint64
+
+	todayGen            uint64
+	todayLoaded         bool
+	todayKnowledgeCount int
+	todayDay            string
+	todayCount          int
+	todayValid          bool
+	todayComputations   uint64
+}
+
+func fnvMixUint64(h, v uint64) uint64 {
+	const prime = 1099511628211
+	h ^= v & 0xff
+	h *= prime
+	h ^= (v >> 8) & 0xff
+	h *= prime
+	h ^= (v >> 16) & 0xff
+	h *= prime
+	h ^= (v >> 24) & 0xff
+	h *= prime
+	h ^= (v >> 32) & 0xff
+	h *= prime
+	h ^= (v >> 40) & 0xff
+	h *= prime
+	h ^= (v >> 48) & 0xff
+	h *= prime
+	h ^= (v >> 56) & 0xff
+	h *= prime
+	return h
+}
+
+func fnvMixString(h uint64, s string) uint64 {
+	const prime = 1099511628211
+	h = fnvMixUint64(h, uint64(len(s)))
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+	return h
+}
+
+func fnvMixBool(h uint64, b bool) uint64 {
+	if b {
+		return fnvMixUint64(h, 1)
+	}
+	return fnvMixUint64(h, 0)
+}
+
+func (a *App) trayProjectAlerts() []trayProjectAlert {
+	return a.trayCachedSummary().Alerts
+}
+
+func (a *App) trayProjectProgressItems() []trayProjectProgress {
+	return a.trayCachedSummary().Progress
+}
+
+func (a *App) traySummaryFingerprint() uint64 {
+	h := uint64(14695981039346656037)
+	for _, p := range a.Config.Projects {
+		h = fnvMixString(h, p.ID)
+		h = fnvMixString(h, p.Dataset)
+		h = fnvMixString(h, p.Name)
+	}
+	for _, p := range a.access.Directory.Projects {
+		h = fnvMixString(h, p.ID)
+		h = fnvMixString(h, p.Dataset)
+		h = fnvMixString(h, p.Name)
+		h = fnvMixBool(h, p.policySyncUnconfirmed())
+		q := a.existingProjectQueueState(p)
+		h = fnvMixBool(h, q != nil)
+		if q != nil {
+			h = fnvMixBool(h, q.Loaded)
+			h = fnvMixBool(h, q.LastError != "")
+			h = fnvMixBool(h, q.DocumentError != "")
+			h = fnvMixUint64(h, uint64(q.InboxFailed))
+			h = fnvMixUint64(h, uint64(q.InboxPending))
+			h = fnvMixUint64(h, uint64(max(q.PendingDocumentsCount, len(q.Documents))))
+		}
+	}
+	return h
+}
+
+func (a *App) trayCachedSummary() trayProjectSummary {
+	sig := a.traySummaryFingerprint()
+	if a.trayCache.summaryValid && a.trayCache.summarySig == sig {
+		return a.trayCache.summary
+	}
+	indexByID, indexByDataset := make(map[string]int), make(map[string]int)
+	for i, p := range a.Config.Projects {
+		if _, ok := indexByID[p.ID]; !ok && p.ID != "" {
+			indexByID[p.ID] = i
+		}
+		if _, ok := indexByDataset[p.Dataset]; !ok && p.Dataset != "" {
+			indexByDataset[p.Dataset] = i
+		}
+	}
+	var out trayProjectSummary
+	for _, p := range a.access.Directory.Projects {
+		syncUnconfirmed := p.policySyncUnconfirmed()
+		q := a.existingProjectQueueState(p)
+		errors, progress := 0, 0
+		if q != nil {
+			if q.InboxFailed > 0 || q.LastError != "" || q.DocumentError != "" {
+				errors = max(1, q.InboxFailed)
+			}
+			if q.Loaded && q.DocumentError == "" {
+				progress = max(0, q.InboxPending) + max(q.PendingDocumentsCount, len(q.Documents))
+			}
+		}
+		if !syncUnconfirmed && errors == 0 && progress == 0 {
+			continue
+		}
+		index, ok := indexByID[p.ID]
+		if byDataset, found := indexByDataset[p.Dataset]; found && (!ok || byDataset < index) {
+			index, ok = byDataset, true
+		}
+		if !ok {
+			index = -1
+		}
+		name := p.Name
+		if name == "" && ok {
+			name = a.Config.Projects[index].Name
+		}
+		if name == "" {
+			name = p.ID
+		}
+		if syncUnconfirmed || errors > 0 {
+			actions := 0
+			if syncUnconfirmed {
+				actions = 1
+			}
+			out.Alerts = append(out.Alerts, trayProjectAlert{p.ID, name, index, actions, errors})
+			out.HasErrorAlert = out.HasErrorAlert || errors > 0
+		}
+		if progress > 0 {
+			out.Progress = append(out.Progress, trayProjectProgress{p.ID, name, index, progress})
+		}
+	}
+	a.trayCache.summarySig, a.trayCache.summaryValid, a.trayCache.summary = sig, true, out
+	a.trayCache.summaryComputations++
+	return out
 }

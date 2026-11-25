@@ -1,4 +1,4 @@
-package simpledesktop
+package graph
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// GraphHost's mutable state belongs to the UI thread. A render worker receives
+// Host's mutable state belongs to the UI thread. A render worker receives
 // only this immutable snapshot; it never reads or modifies the host's state.
 type graphRender struct {
 	epoch uint64
@@ -17,7 +17,7 @@ type graphRender struct {
 
 // Binding calls run on SDK workers. Enqueue the state operation on the UI and
 // return its receipt to that worker; UI code must never call this waiting seam.
-func (g *GraphHost) onUI(ctx context.Context, fn func() error) error {
+func (g *Host) OnUI(ctx context.Context, fn func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -40,9 +40,9 @@ func (g *GraphHost) onUI(ctx context.Context, fn func() error) error {
 	}
 }
 
-// flush schedules, rather than waits for, JS. At most one evaluation is active
+// Flush schedules, rather than waits for, JS. At most one evaluation is active
 // and one latest snapshot is pending. Leaving a page cancels the old wait.
-func (g *GraphHost) flush(ctx context.Context) error {
+func (g *Host) Flush(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func (g *GraphHost) flush(ctx context.Context) error {
 	return nil
 }
 
-func (g *GraphHost) startRender() {
+func (g *Host) startRender() {
 	if g.closed || g.rendering || g.pending == nil {
 		return
 	}

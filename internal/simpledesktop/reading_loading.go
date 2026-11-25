@@ -276,12 +276,6 @@ func (a *App) allReadingPanes() []*pane {
 			out = append(out, s)
 		}
 	}
-	for _, q := range a.access.Queues {
-		if q != nil && q.Reader != nil && !seen[q.Reader] {
-			seen[q.Reader] = true
-			out = append(out, q.Reader)
-		}
-	}
 	return out
 }
 
@@ -330,12 +324,12 @@ func (a *App) unavailableReadingItem(i Item) {
 		a.clearSearchOrigin()
 	}
 	a.clearUserProfileBody(i.Dataset, i.ID)
-	if a.graph != nil && a.graph.dataset == i.Dataset {
-		a.graph.clear()
-		a.graphSelection = ""
-		a.graphLoading = false
-	} else if a.graphSelection != "" && (strings.Contains(a.graphSelection, i.ID) || (i.Dataset != "" && strings.Contains(a.graphSelection, i.Dataset))) {
-		a.graphSelection = ""
+	if a.graphController.Host != nil && a.graphController.Host.Dataset() == i.Dataset {
+		a.graphController.Host.Clear()
+		a.graphController.Selection = ""
+		a.graphController.Loading = false
+	} else if a.graphController.Selection != "" && (strings.Contains(a.graphController.Selection, i.ID) || (i.Dataset != "" && strings.Contains(a.graphController.Selection, i.Dataset))) {
+		a.graphController.Selection = ""
 	}
 	a.titles.InvalidateObject(i.Dataset, i.ID)
 	a.detailChunks.InvalidateObject(i.Dataset, i.ID)
@@ -845,12 +839,6 @@ func (a *App) invalidateProjectQueues(dataset string) {
 	for _, s := range a.panes {
 		seen[s] = true
 	}
-	for _, q := range a.access.Queues {
-		if q != nil && q.Reader != nil && !seen[q.Reader] {
-			seen[q.Reader] = true
-			invalidateReadingPane(q.Reader, dataset)
-		}
-	}
 	for k, q := range a.access.Queues {
 		if q == nil {
 			continue
@@ -864,8 +852,6 @@ func (a *App) invalidateProjectQueues(dataset string) {
 			q.ServerUnreadCount = 0
 			q.ServerUnreadStateRev = 0
 			q.Activity = nil
-			q.ProcessingNotices = nil
-			q.ProcessingIssues = nil
 			q.Documents = nil
 			q.PendingDocumentsCount = 0
 			q.StateVersion++

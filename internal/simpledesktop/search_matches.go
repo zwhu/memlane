@@ -3,7 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"errors"
-	"strings"
+	appsearch "github.com/zwhu/memlane/app/search"
 	"sync"
 	"time"
 )
@@ -12,24 +12,14 @@ var lexicalSearchSoftTimeout = 3 * time.Second
 
 func keywordMatch(i Item, query string) bool {
 	title, body := searchRowText(i)
-	text := strings.ToLower(title + "\n" + body)
-	terms := strings.Fields(strings.ToLower(query))
-	if len(terms) == 0 {
-		return false
-	}
-	for _, term := range terms {
-		if !strings.Contains(text, term) {
-			return false
-		}
-	}
-	return true
+	return appsearch.KeywordMatch(title, body, query)
 }
 
 type searchLaneResult struct {
-	Metadata, Keyword, Semantic              []Item
-	MetadataOK, KeywordOK, SemanticOK        bool
+	Metadata, Keyword, Semantic                []Item
+	MetadataOK, KeywordOK, SemanticOK          bool
 	MetadataError, KeywordError, SemanticError error
-	KeywordTimedOut                          bool
+	KeywordTimedOut                            bool
 }
 
 func (r searchLaneResult) err() error {
@@ -134,25 +124,5 @@ func searchHitText(i Item, query string) (string, string) {
 	if i.SearchMatch != "关键词匹配" || preview == "" {
 		return title, preview
 	}
-	// Excerpt around the actual hit instead of always showing the chunk header.
-	runes := []rune(preview)
-	lower := []rune(strings.ToLower(preview))
-	for _, term := range strings.Fields(strings.ToLower(query)) {
-		needle := []rune(term)
-		for start := 0; start+len(needle) <= len(lower); start++ {
-			if string(lower[start:start+len(needle)]) != term {
-				continue
-			}
-			from, to := max(0, start-50), min(len(runes), start+len(needle)+130)
-			text := string(runes[from:to])
-			if from > 0 {
-				text = "…" + text
-			}
-			if to < len(runes) {
-				text += "…"
-			}
-			return title, text
-		}
-	}
-	return title, preview
+	return title, appsearch.HitExcerpt(preview, query)
 }

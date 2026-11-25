@@ -144,14 +144,7 @@ func (a *App) openProjectSettings(index int) {
 	a.navigateKind("知识", index, "管理")
 	a.access.OpenProject, a.settingsOrigin = id, origin
 	a.access.RevealQueueProject = ""
-	for _, p := range a.access.Directory.Projects {
-		if p.ID == id {
-			q := a.projectQueueStateFor(p)
-			q.Reader = nil
-			q.LocatedNoticeKey = ""
-			break
-		}
-	}
+
 }
 
 // Open the project's Management tab and scroll directly to its active status/anomaly notice.
@@ -178,11 +171,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		return
 	}
 	p := *project
-	q := a.projectQueueStateFor(p)
-	if q.Reader != nil {
-		a.queuedDocumentDetail(c, p, q)
-		return
-	}
+	q := a.projectQueueStateForAsync(p)
 	ui.Scroll(c.Key("project-settings-"+p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
 			// 1. 消息与采集状态（固定顶部展示，不再随状态变化在顶部与底部之间跳动）

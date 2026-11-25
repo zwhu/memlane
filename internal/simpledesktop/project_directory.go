@@ -65,7 +65,7 @@ func (a *App) reconcileProjectReading(oldProjects, oldCommon []Project) {
 		} else {
 			a.page, a.project = "总览", 0
 			a.epoch++
-			a.graph.clear()
+			a.graphController.Host.Clear()
 			a.closeUnifiedSearch()
 		}
 	}

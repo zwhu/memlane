@@ -139,6 +139,7 @@ type App struct {
 	project                 int
 	kind                    string
 	epoch                   uint64
+	reduceMotion            bool
 	authEpoch               uint64
 	service, completion     string
 	monitor                 serviceMonitorState
@@ -169,6 +170,7 @@ func New(c Config, err error) *App {
 	}
 	a.initReading(a.Client)
 	a.initDesktopPreferences()
+	a.loadProjectVisibility()
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -529,7 +531,7 @@ func (a *App) navigateKind(page string, index int, kind string) {
 	a.cancelRecentTitles()
 	a.epoch++
 	a.cancelGraphLoad()
-	a.graph.clear()
+	a.graphController.Host.Clear()
 	for _, p := range a.panes {
 		p.Knowledge.RecallFilter = nil
 		p.Knowledge.RecallAgentID = ""
@@ -1006,6 +1008,7 @@ func button(c *ui.Context, label string, fn func()) {
 	ui.Button(c, label).FontSize(12).Padding(8, 12).Background(ui.Transparent).BorderWidth(0).Justify(ui.Start).OnClick(fn)
 }
 func (a *App) View(c *ui.Context) {
+	a.reduceMotion = c.Preferences().ReduceMotion
 	applyAppearance(a.effectiveDark(c.Theme().Dark))
 	if a.initialSetup {
 		if c.Preferences().ReduceMotion {

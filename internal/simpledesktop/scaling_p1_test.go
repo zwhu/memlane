@@ -885,7 +885,6 @@ func TestScalingP1ReadingStateMigrationUnreadPopupAndNonDisruptiveRefresh(t *tes
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID:               "p1",
 				DatasetID:               "ds-1",
-				AutomaticSave:           true,
 				KnowledgeCatalogVersion: catalogVersion.Load().(string),
 				UnreadCount:             25,
 				UnreadPreview:           previews,

@@ -845,22 +845,23 @@ func TestBeta3StaleOwnerRestartReverifiesReloadedGraphAssets(t *testing.T) {
 			s.OwnerStatus = &bootstrap.OwnerRuntimeStatus{StaleVersionDetected: true, OwnerFingerprint: "old-owner"}
 			s.RuntimePreparation.ConfigPath = config.ConfigFile
 			var oldHost *GraphHost
-			a.applyGraphAssetCheck(map[string][]byte{"old": []byte("old")}, nil)
+			a.graphController.Assets = map[string][]byte{"old": []byte("old")}
+			a.graphController.AssetsChecked = true
 			switch scenario {
 			case "asset_error":
-				a.graphAssetsErr = errors.New("old asset error")
-				a.graphError = a.graphAssetsErr.Error()
+				a.graphController.AssetsErr = errors.New("old asset error")
+				a.graphController.Error = a.graphController.AssetsErr.Error()
 			case "attach_error_same_dir":
-				a.graphAttachErr = errors.New("old attach error")
-				a.graphError = a.graphAttachErr.Error()
-				a.graphAttachRequested = true
+				a.graphController.AttachErr = errors.New("old attach error")
+				a.graphController.Error = a.graphController.AttachErr.Error()
+				a.graphController.AttachRequested = true
 			case "attached_host_changed_dir":
 				a.syncReadingIdentity()
 				oldHost = &GraphHost{}
-				a.graph = oldHost
-				a.graphError = "old host render error"
-				a.graphSelection = "old node"
-				a.page, a.project, a.graphMode = "图谱", 0, "代码结构"
+				a.graphController.Host = oldHost
+				a.graphController.Error = "old host render error"
+				a.graphController.Selection = "old node"
+				a.page, a.project, a.graphController.Mode = "图谱", 0, "代码结构"
 			}
 			attachRequested := scenario != "asset_error"
 			updates := make(chan func(), 16)
@@ -870,13 +871,17 @@ func TestBeta3StaleOwnerRestartReverifiesReloadedGraphAssets(t *testing.T) {
 					w.Write([]byte(`{"nodes":[{"id":"reloaded"}],"links":[],"color_maps":{}}`))
 					return
 				}
+				if r.URL.Path == "/api/graph" {
+					http.NotFound(w, r)
+					return
+				}
 				w.Write([]byte("{}"))
 			})}
-			a.graphAttachFn = func(host *GraphHost) error {
+			a.graphController.AttachHost = func(host *GraphHost) error {
 				if !attachRequested {
 					t.Error("graph attached before it was requested")
 				}
-				t.Cleanup(host.close)
+				t.Cleanup(host.Close)
 				return nil
 			}
 			a.InspectOwnerRuntimeStatusFn = func(context.Context, string, string) (bootstrap.OwnerRuntimeStatus, error) {
@@ -886,19 +891,21 @@ func TestBeta3StaleOwnerRestartReverifiesReloadedGraphAssets(t *testing.T) {
 
 			a.restartStaleRuntimeOwner()
 			nextStartupUpdate(t, updates)()
-			if !s.RuntimeStarted || a.graphAssetsDir != assetsDir || a.graphAssetsChecked ||
-				a.graphAssets != nil || a.graphAssetsErr != nil || a.graphAttachErr != nil ||
-				a.graphError != "" || a.graphSelection != "" || a.graphAssetsCheck == nil || a.graph != nil ||
-				(oldHost != nil && (!oldHost.closed || !a.graphLoading)) {
-				t.Fatalf("restart did not reset graph host and schedule verification for %q: %q", assetsDir, a.graphError)
+			if !s.RuntimeStarted || a.graphController.AssetsDir != assetsDir || a.graphController.AssetsChecked ||
+				a.graphController.Assets != nil || a.graphController.AssetsErr != nil || a.graphController.AttachErr != nil ||
+				a.graphController.Error != "" || a.graphController.Selection != "" || a.graphController.AssetsCheck == nil || a.graphController.Host != nil ||
+				(oldHost != nil && (!oldHost.IsClosed() || !a.graphController.Loading)) {
+				t.Fatalf("restart did not reset graph host and schedule verification for %q: %q", assetsDir, a.graphController.Error)
 			}
-			drainReading(t, updates, func() bool { return a.graphAssetsChecked && !a.integrations.Loading && !a.graphLoading })
-			if a.graphAssetsErr != nil || len(a.graphAssets["app.js"]) == 0 || a.graphAssetsCheck != nil ||
-				(a.graph != nil) != attachRequested {
-				t.Fatalf("reloaded graph assets were not verified and attached as requested: %v", a.graphAssetsErr)
+			drainReading(t, updates, func() bool {
+				return a.graphController.AssetsChecked && !a.integrations.Loading && !a.graphController.Loading
+			})
+			if a.graphController.AssetsErr != nil || len(a.graphController.Assets["app.js"]) == 0 || a.graphController.AssetsCheck != nil ||
+				(a.graphController.Host != nil) != attachRequested {
+				t.Fatalf("reloaded graph assets were not verified and attached as requested: %v", a.graphController.AssetsErr)
 			}
-			if oldHost != nil && (a.graph == oldHost || a.graph.nodes["reloaded"] == nil || a.graphError != "") {
-				t.Fatalf("active graph did not load data on the replacement host: %q", a.graphError)
+			if oldHost != nil && (a.graphController.Host == oldHost || a.graphController.Host.Node("reloaded") == nil || a.graphController.Error != "") {
+				t.Fatalf("active graph did not load data on the replacement host: %q", a.graphController.Error)
 			}
 		})
 	}

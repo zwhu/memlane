@@ -285,6 +285,7 @@ func (a *App) reloadConfigAfterWorker(worker bootstrap.InstallWorkerState) {
 			}
 			if err == nil && loaded.FirstInstall != nil && (a.Config.FirstInstall == nil || runtimeCompleted) {
 				a.Config, a.Client.Config = loaded, loaded
+				a.loadProjectVisibility()
 				a.configError = ""
 				s.FastLaneChecked = false
 				if runtimeCompleted && !s.RuntimeStarted {
@@ -374,6 +375,7 @@ func (a *App) restartStaleRuntimeOwner() {
 			s.RuntimeStartError, s.StaleDaemonError = "", ""
 			s.RuntimePreparation = prepared
 			a.Config, a.Client.Config = loaded, loaded
+			a.loadProjectVisibility()
 			a.configError = ""
 			a.reloadGraphAssetsAfterOwnerSwitch(loaded.GraphAssets)
 			if a.initialSetup {
@@ -387,32 +389,8 @@ func (a *App) restartStaleRuntimeOwner() {
 }
 
 func (a *App) reloadGraphAssetsAfterOwnerSwitch(dir string) {
-	assetsChanged := dir != a.graphAssetsDir
-	closedGraph := assetsChanged && a.graph != nil
-	a.graphAssetsDir = dir
-	if !assetsChanged && a.graph != nil && a.graphAttachErr == nil {
-		return
-	}
-	if closedGraph {
-		a.cancelGraphLoad()
-		a.graph.close()
-		a.graph = nil
-		a.graphSelection = ""
-	}
-	if assetsChanged || (a.graphAssetsErr != nil && a.graphError == a.graphAssetsErr.Error()) ||
-		(a.graphAttachErr != nil && a.graphError == a.graphAttachErr.Error()) {
-		a.graphError = ""
-	}
-	a.graphAttachErr = nil
-	a.graphAssetsChecked = false
-	a.graphAssets, a.graphAssetsErr, a.graphAssetsCheck = nil, nil, nil
-	a.verifyGraphAssetsAsync()
-	if a.graphAttachRequested || a.page == "图谱" {
-		a.EnsureGraphAttached()
-	}
-	if closedGraph && a.page == "图谱" {
-		a.loadGraph()
-	}
+	a.configureGraphTransport()
+	a.graphController.ReloadAssets(dir, a.page == "图谱")
 }
 
 func (a *App) staleDaemonBanner(c *ui.Context) {

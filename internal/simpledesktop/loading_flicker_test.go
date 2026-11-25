@@ -57,10 +57,10 @@ func TestDesktopPagesSuppressTransientLoadingAndRefreshFlicker(t *testing.T) {
 				t.Fatalf("[%s] empty raw records disappeared during background refresh: %v", appearance, tt.Texts())
 			}
 
-			// 3. 项目 -> 图谱：a.graphLoading=true 时工具栏无“正在读取…”。
+			// 3. 项目 -> 图谱：a.graphController.Loading=true 时工具栏无“正在读取…”。
 			a.page = "图谱"
-			a.graphMode = "实体关系"
-			a.graphLoading = true
+			a.graphController.Mode = "实体关系"
+			a.graphController.Loading = true
 			tt.Frame()
 			if tt.HasText("正在读取…") || !tt.HasText("刷新图谱") {
 				t.Fatalf("[%s] graph toolbar flashed loading text or hid action: %v", appearance, tt.Texts())
@@ -90,17 +90,6 @@ func TestDesktopPagesSuppressTransientLoadingAndRefreshFlicker(t *testing.T) {
 			if stt.HasText("更新中…") {
 				t.Fatalf("[%s] loaded project queue flashed 更新中…: %v", appearance, stt.Texts())
 			}
-
-			// 管理队列原文查看器：读取尚未就绪时不显示纯文字“正在读取原文…”。
-			q.Reader = &pane{
-				Reading:  true,
-				Selected: &Item{ID: "doc-raw", Dataset: "ds", Kind: "文档", Title: "session.md", BodyLoaded: false},
-			}
-			stt.Frame()
-			if stt.HasText("正在读取原文…") {
-				t.Fatalf("[%s] queued doc reader flashed 正在读取原文…: %v", appearance, stt.Texts())
-			}
-			q.Reader = nil
 
 			// 5. 全局设置 -> Agent 与模型 / 服务：按钮不抖动为“检测中…”，未载入不用“正在读取连接状态…”。
 			sa.page = "设置"

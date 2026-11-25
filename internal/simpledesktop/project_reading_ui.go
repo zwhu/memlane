@@ -16,11 +16,10 @@ type projectReadingState struct {
 	UnreadPopoverOpen    bool
 	UnreadPopoverProject string
 	InfoKey              string
-	Expanded           map[string]bool
-	Copied             string
-	CopyUntil          time.Time
-	InfoScroll         ui.ScrollState
-	SessionDrifts      map[string]*projectDriftState
+	Expanded             map[string]bool
+	Copied               string
+	CopyUntil            time.Time
+	InfoScroll           ui.ScrollState
 }
 type readingLocation struct {
 	Page, Kind, ProjectID string
@@ -502,7 +501,6 @@ func (a *App) projectDetailTail(c *ui.Context, s *pane, i *Item) {
 					sub = sessionIdentity(i.Source)
 				}
 				homeText(c, sub, homeMeta).SingleLine()
-				a.itemSessionDriftNote(c, *i)
 			})
 			label := "查看来源会话"
 			if i.SourceDocument != "" {

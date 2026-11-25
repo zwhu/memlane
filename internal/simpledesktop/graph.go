@@ -1,637 +1,31 @@
 package simpledesktop
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane"
+	"github.com/zwhu/memlane/app/api"
+	appgraph "github.com/zwhu/memlane/app/graph"
+	"github.com/zwhu/memlane/app/shell"
 )
 
-// GraphHost passes only a bounded official payload and selected identities to
-// the pinned renderer. The page never receives credentials or a network API.
-type GraphHost struct {
-	assets           map[string][]byte
-	view             *mygo.WebView
-	page             *mygo.Page
-	pageReady        chan struct{}
-	epoch            uint64
-	frame            map[string]any
-	ready            bool
-	nodes            map[string]json.RawMessage
-	project, dataset string
-	selected         func(json.RawMessage)
-	update           func(func())
-	eval             func(context.Context, string) (any, error)
-	onRenderError    func(error)
-	pending          *graphRender
-	rendering        bool
-	renderCancel     context.CancelFunc
-	closed           bool
-}
-
-type graphSelectRequest struct {
-	Epoch   uint64 `json:"epoch"`
-	Project string `json:"project"`
-	Dataset string `json:"dataset"`
-	Node    string `json:"node"`
-}
-
-type officialGraphBridge struct {
-	host atomic.Pointer[GraphHost]
-}
-
-func (b *officialGraphBridge) Ready(ctx context.Context) error {
-	if h := b.host.Load(); h != nil && h.pagePublished() {
-		return h.Ready(ctx)
-	}
-	return fmt.Errorf("graph host unavailable")
-}
-
-func (b *officialGraphBridge) Select(ctx context.Context, s graphSelectRequest) error {
-	if h := b.host.Load(); h != nil && h.pagePublished() {
-		return h.Select(ctx, s)
-	}
-	return fmt.Errorf("graph host unavailable")
-}
-
-var (
-	officialGraphBridgeOnce sync.Once
-	officialGraphDispatcher officialGraphBridge
-
-	embeddedGraphOnce   sync.Once
-	embeddedGraphAssets map[string][]byte
-	embeddedGraphErr    error
-)
-
-func validateGraphAssets(readFile func(string) ([]byte, error)) (map[string][]byte, error) {
-	raw, err := readFile("assets.json")
-	if err != nil {
-		return nil, err
-	}
-	var manifest struct {
-		Protocol int               `json:"protocol"`
-		Upstream string            `json:"upstream"`
-		Files    map[string]string `json:"files"`
-	}
-	if json.Unmarshal(raw, &manifest) != nil || manifest.Protocol != 1 || manifest.Upstream != "8853378eae5366addb064e758e560a456146ae1a" {
-		return nil, fmt.Errorf("官方图组件版本不匹配")
-	}
-	allowed := map[string]bool{"index.html": true, "app.js": true, "app.css": true, "host.css": true, "app.js.LEGAL.txt": true, "COGNEE-LICENSE": true, "THIRD-PARTY-LICENSES.txt": true, "build.json": true}
-	assets := make(map[string][]byte, len(manifest.Files))
-	size := 0
-	for name, digest := range manifest.Files {
-		if !allowed[name] {
-			return nil, fmt.Errorf("图组件资产不在白名单")
-		}
-		b, e := readFile(name)
-		if e != nil {
-			return nil, e
-		}
-		size += len(b)
-		sum := sha256.Sum256(b)
-		if size > 16<<20 || hex.EncodeToString(sum[:]) != digest {
-			return nil, fmt.Errorf("图组件校验失败")
-		}
-		assets[name] = b
-	}
-	for _, name := range []string{"index.html", "app.js", "app.css", "host.css"} {
-		if assets[name] == nil {
-			return nil, fmt.Errorf("图组件资源缺失")
-		}
-	}
-	return assets, nil
-}
-
-func ensureGraphProtocolAndBridge() {
-	officialGraphBridgeOnce.Do(func() {
-		mygo.BindAs("OfficialGraph", &officialGraphDispatcher)
-		_ = mygo.Protocol.HandleFunc("memlanegraph", officialGraphDispatcher.serveProtocol)
-	})
-}
-
-func (b *officialGraphBridge) serveProtocol(w http.ResponseWriter, r *http.Request) {
-	if g := b.host.Load(); g != nil {
-		g.serveProtocol(w, r)
-		return
-	}
-	http.NotFound(w, r)
-}
-
-func (g *GraphHost) pagePublished() bool {
-	// Closing pageReady publishes the page and binding transport to workers.
-	select {
-	case <-g.pageReady:
-		return true
-	default:
-		return false
-	}
-}
-
-func (g *GraphHost) serveProtocol(w http.ResponseWriter, r *http.Request) {
-	if !g.pagePublished() {
-		http.NotFound(w, r)
-		return
-	}
-	name := r.URL.Path
-	if name == "/" {
-		name = "/index.html"
-	}
-	if g.page == nil || mygo.CallerPage(r.Context()) != g.page || r.Method != "GET" || r.URL.Host != "graph" || name != "/"+filepath.Base(name) || r.URL.RawQuery != "" {
-		http.NotFound(w, r)
-		return
-	}
-	b, ok := g.assets[filepath.Base(name)]
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", mime.TypeByExtension(filepath.Ext(name)))
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write(b)
-}
-
-func registerGraphHostFromAssets(source map[string][]byte) *GraphHost {
-	ensureGraphProtocolAndBridge()
-	assets := make(map[string][]byte, len(source))
-	for k, v := range source {
-		assets[k] = v
-	}
-	g := &GraphHost{assets: assets, pageReady: make(chan struct{})}
-	officialGraphDispatcher.host.Store(g)
-	return g
-}
-
-func validateGraphDirAssets(directory string) (map[string][]byte, error) {
-	if !filepath.IsAbs(directory) {
-		return nil, fmt.Errorf("官方图组件目录必须为绝对路径")
-	}
-	return validateGraphAssets(func(name string) ([]byte, error) {
-		return os.ReadFile(filepath.Join(directory, name))
-	})
-}
-
-func RegisterGraph(directory string) (*GraphHost, error) {
-	assets, err := validateGraphDirAssets(directory)
-	if err != nil {
-		return nil, err
-	}
-	return registerGraphHostFromAssets(assets), nil
-}
-
-// RegisterGraphFS verifies and registers official graph assets from an fs.FS.
-func RegisterGraphFS(assetsFS fs.FS) (*GraphHost, error) {
-	if assetsFS == nil {
-		return nil, fmt.Errorf("图组件文件系统不可用")
-	}
-	assets, err := validateGraphAssets(func(name string) ([]byte, error) {
-		return fs.ReadFile(assetsFS, name)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return registerGraphHostFromAssets(assets), nil
-}
-
-func loadEmbeddedGraphAssets() (map[string][]byte, error) {
-	embeddedGraphOnce.Do(func() {
-		sub, err := fs.Sub(memlane.RuntimeAssets, "web/official-graph/dist")
-		if err != nil {
-			embeddedGraphErr = err
-			return
-		}
-		embeddedGraphAssets, embeddedGraphErr = validateGraphAssets(func(name string) ([]byte, error) {
-			return fs.ReadFile(sub, name)
-		})
-	})
-	return embeddedGraphAssets, embeddedGraphErr
-}
-
-func loadEmbeddedGraphHost() (*GraphHost, error) {
-	assets, err := loadEmbeddedGraphAssets()
-	if err != nil {
-		return nil, err
-	}
-	return registerGraphHostFromAssets(assets), nil
-}
-func (g *GraphHost) attach(win *mygo.Window, selected func(json.RawMessage)) error {
-	v, e := win.NewWebView(mygo.WebViewOptions{URL: "about:blank", BackgroundColor: "#0E1526"})
-	if e != nil {
-		return e
-	}
-	g.view = v
-	g.selected = selected
-	g.update = win.Update
-	g.eval = v.Page().EvalContext
-	g.page = v.Page()
-	close(g.pageReady)
-
-	v.Page().OnWillNavigate(func(e *mygo.NavigateEvent) {
-		if e.URL != "memlanegraph://graph/index.html" {
-			e.PreventDefault()
-		}
-	})
-	return v.Page().LoadURL("memlanegraph://graph/index.html")
-}
-
-func (g *GraphHost) close() {
-	officialGraphDispatcher.host.CompareAndSwap(g, nil)
-	g.closed = true
-	g.pending = nil
-	if g.renderCancel != nil {
-		g.renderCancel()
-	}
-	if g.view != nil {
-		g.view.Destroy()
-	}
-}
-
-// Ready and Select are invoked on SDK binding workers. Only their immutable
-// transport references are read there; all graph state is accessed on the UI.
-func (g *GraphHost) Ready(ctx context.Context) error {
-	return g.onUI(ctx, func() error {
-		if g.closed || g.view == nil || mygo.CallerPage(ctx) != g.view.Page() {
-			return fmt.Errorf("graph page unavailable")
-		}
-		g.ready = true
-		return g.flush(ctx)
-	})
-}
-func (g *GraphHost) Select(ctx context.Context, s graphSelectRequest) error {
-	return g.onUI(ctx, func() error {
-		if g.closed || g.view == nil || mygo.CallerPage(ctx) != g.view.Page() || s.Epoch != g.epoch || s.Project != g.project || s.Dataset != g.dataset || g.nodes[s.Node] == nil {
-			return fmt.Errorf("selected graph identity changed")
-		}
-		if g.selected != nil {
-			g.selected(append(json.RawMessage(nil), g.nodes[s.Node]...))
-		}
-		return nil
-	})
-}
-func (g *GraphHost) clear() {
-	if g == nil {
-		return
-	}
-	g.epoch++
-	g.frame, g.nodes = nil, nil
-	_ = g.flush(context.Background())
-}
-func (g *GraphHost) apply(ctx context.Context, p Project, dataset string, raw json.RawMessage) error {
-	return g.applyCurrent(ctx, p, dataset, raw, nil)
-}
-func (g *GraphHost) applyCurrent(ctx context.Context, p Project, dataset string, raw json.RawMessage, ticket *uint64) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	data, err := decodeGraph(raw)
-	if err != nil {
-		return err
-	}
-	return g.applyParsed(p, dataset, data, ticket)
-}
-
-type graphData struct {
-	raw   json.RawMessage
-	nodes map[string]json.RawMessage
-}
-
-func decodeGraph(raw json.RawMessage) (graphData, error) {
-	var payload struct {
-		Nodes []json.RawMessage `json:"nodes"`
-		Links []struct {
-			Source string `json:"source"`
-			Target string `json:"target"`
-		} `json:"links"`
-		Colors map[string]any `json:"color_maps"`
-	}
-	if json.Unmarshal(raw, &payload) != nil || payload.Nodes == nil || payload.Links == nil || payload.Colors == nil || len(payload.Nodes) > 1000 || len(payload.Links) > 50000 {
-		return graphData{}, fmt.Errorf("官方图数据结构不匹配")
-	}
-	nodes := map[string]json.RawMessage{}
-	for _, node := range payload.Nodes {
-		var n struct {
-			ID string `json:"id"`
-		}
-		if json.Unmarshal(node, &n) != nil || n.ID == "" || nodes[n.ID] != nil {
-			return graphData{}, fmt.Errorf("官方图节点身份不匹配")
-		}
-		nodes[n.ID] = node
-	}
-	for _, link := range payload.Links {
-		if nodes[link.Source] == nil || nodes[link.Target] == nil {
-			return graphData{}, fmt.Errorf("官方图边身份不匹配")
-		}
-	}
-	return graphData{raw: raw, nodes: nodes}, nil
-}
-
-// applyParsed is UI-owned. The decoder transfers an immutable result to it.
-func (g *GraphHost) applyParsed(p Project, dataset string, data graphData, ticket *uint64) error {
-	raw, nodes := data.raw, data.nodes
-	if ticket != nil && *ticket != g.epoch {
-		return fmt.Errorf("graph result superseded")
-	}
-	if g.frame != nil && g.project == p.ID && g.dataset == dataset {
-		if previous, ok := g.frame["payload"].(json.RawMessage); ok && bytes.Equal(previous, raw) {
-			return nil // Same official data: preserve the canvas, camera and selection.
-		}
-	}
-	g.epoch++
-	g.project = p.ID
-	g.dataset = dataset
-	g.nodes = nodes
-	g.frame = map[string]any{"epoch": g.epoch, "project": p.ID, "instance": "official", "dataset": dataset, "payload": raw}
-	return g.flush(context.Background())
-}
-
-// The verifier publishes its immutable result with done. A direct AttachGraph
-// can consume the result without waiting for the queued UI callback.
-type graphAssetCheck struct {
-	done   chan struct{}
-	assets map[string][]byte
-	err    error
-}
-
-func verifyGraphAssets(dir string) (map[string][]byte, error) {
-	if dir != "" {
-		return validateGraphDirAssets(dir)
-	}
-	return loadEmbeddedGraphAssets()
-}
-
-// BindGraphWindow records the native window before Show. WebView creation is
-// deferred until verification succeeds and the UI requests the graph host.
-func (a *App) BindGraphWindow(win *mygo.Window) {
-	if win == nil || a.graphWindow != nil {
-		return
-	}
-	a.graphWindow = win
-	a.graphWindowClosed = win.IsDestroyed()
-	if a.graphWindowClosed {
-		return
-	}
-	win.OnClosed(func() {
-		a.graphWindowClosed = true
-		a.startupDeferred.stopAllTimers()
-		a.cancelGraphLoad()
-		if a.graph != nil {
-			a.graph.close()
-		}
-	})
-}
-
-func (a *App) verifyGraphAssetsAsync() {
-	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil || a.graphAssetsChecked ||
-		a.graphAssetsCheck != nil || a.Update == nil || (a.graphWindow == nil && a.graphAttachFn == nil) {
-		return
-	}
-	check := &graphAssetCheck{done: make(chan struct{})}
-	a.graphAssetsCheck = check
-	dir, update := a.graphAssetsDir, a.Update
-	go func() {
-		check.assets, check.err = verifyGraphAssets(dir)
-		close(check.done)
-		update(func() {
-			if a.graphAssetsCheck != check {
-				return
-			}
-			a.applyGraphAssetCheck(check.assets, check.err)
-			if a.graphAttachRequested {
-				_ = a.attachVerifiedGraph()
-			}
-		})
-	}()
-}
-
-func (a *App) EnsureGraphAttached() {
-	if a.isSetupOnlyRuntime() || a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
-		(a.graphWindow == nil && a.graphAttachFn == nil) {
-		return
-	}
-	a.graphAttachRequested = true
-	if a.graphAssetsChecked {
-		_ = a.attachVerifiedGraph()
-		return
-	}
-	a.verifyGraphAssetsAsync()
-}
-
-func (a *App) PrewarmGraph() {
-	if !a.windowInactive && !a.windowHidden {
-		a.EnsureGraphAttached()
-	}
-}
-
-func (a *App) applyGraphAssetCheck(assets map[string][]byte, err error) {
-	a.graphAssetsCheck = nil
-	a.graphAssets, a.graphAssetsErr, a.graphAssetsChecked = assets, err, true
-	if err != nil {
-		a.graphError = err.Error()
-		a.cancelGraphLoad()
-	}
-}
-
-func (a *App) AttachGraph(win *mygo.Window) error {
-	a.BindGraphWindow(win)
-	if a.graphWindowClosed {
-		return nil
-	}
-	if !a.graphAssetsChecked {
-		if check := a.graphAssetsCheck; check != nil {
-			<-check.done
-			a.applyGraphAssetCheck(check.assets, check.err)
-		} else {
-			a.applyGraphAssetCheck(verifyGraphAssets(a.graphAssetsDir))
-		}
-	}
-	return a.attachVerifiedGraph()
-}
-
-func (a *App) attachVerifiedGraph() error {
-	if a.graphAssetsErr != nil {
-		a.graphError = a.graphAssetsErr.Error()
-		return a.graphAssetsErr
-	}
-	if a.graphAttachErr != nil {
-		a.graphError = a.graphAttachErr.Error()
-		return a.graphAttachErr
-	}
-	if a.graphWindowClosed || a.graph != nil || (a.graphWindow == nil && a.graphAttachFn == nil) {
-		return nil
-	}
-	g := registerGraphHostFromAssets(a.graphAssets)
-	g.onRenderError = func(err error) {
-		if a.page == "图谱" {
-			a.graphError = err.Error()
-		}
-	}
-	attach := a.graphAttachFn
-	if attach == nil {
-		attach = func(g *GraphHost) error {
-			return g.attach(a.graphWindow, func(raw json.RawMessage) { a.graphSelection = string(raw) })
-		}
-	}
-	if err := attach(g); err != nil {
-		g.close()
-		a.graphAttachErr = err
-		a.graphError = err.Error()
-		a.cancelGraphLoad()
-		return err
-	}
-	a.graph = g
-	if pending := a.pendingGraphLoad; pending != nil {
-		a.pendingGraphLoad = nil
-		a.graphLoading = false
-		if pending.epoch == a.epoch && pending.authEpoch == a.authEpoch && a.syncReadingIdentity() {
-			a.applyGraphLoad(*pending, nil)
-		}
-	}
-	return nil
-}
-
-type graphLoad struct {
-	epoch     uint64
-	authEpoch uint64
-	project   Project
-	dataset   string
-	data      graphData
-}
-
-func (a *App) loadGraph() {
-	if a.isSetupOnlyRuntime() {
-		a.cancelGraphLoad()
-		a.graphError = ""
-		return
-	}
-	a.EnsureGraphAttached()
-	if a.graphAssetsErr != nil || a.graphAttachErr != nil || a.graphWindowClosed || a.Update == nil {
-		return
-	}
-	p, ok := a.current()
-	if !ok {
-		a.graphError = "请先关联项目"
-		return
-	}
-	if a.graphMode != "代码结构" {
-		a.loadGraphPending(p)
-	}
-	dataset := p.Dataset
-	if a.graphMode == "代码结构" {
-		dataset = p.CodeDataset
-	}
-	if dataset == "" {
-		a.graphError = "尚未配置代码数据组"
-		return
-	}
-	a.cancelGraphLoad()
-	a.graphError = ""
-	a.graphLoading = true
-	var ticket *uint64
-	if a.graph != nil {
-		epoch := a.graph.epoch
-		ticket = &epoch
-	}
-	epoch, authEpoch, request := a.epoch, a.authEpoch, a.graphLoadRequest
-	client, update := a.Client, a.Update
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		raw, err := client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
-		var data graphData
-		if err == nil {
-			data, err = decodeGraph(raw)
-		}
-		update(func() {
-			if epoch != a.epoch || authEpoch != a.authEpoch || request != a.graphLoadRequest || !a.syncReadingIdentity() {
-				return
-			}
-			a.graphLoading = false
-			if err != nil {
-				a.graphError = err.Error()
-				return
-			}
-			result := graphLoad{epoch: epoch, authEpoch: authEpoch, project: p, dataset: dataset, data: data}
-			if a.graphAssetsCheck != nil {
-				a.pendingGraphLoad = &result
-				a.graphLoading = true
-				return
-			}
-			if a.graph == nil {
-				a.graphError = "官方图组件不可用"
-				return
-			}
-			a.applyGraphLoad(result, ticket)
-		})
-	}()
-}
-
-func (a *App) applyGraphLoad(result graphLoad, ticket *uint64) {
-	if err := a.graph.applyParsed(result.project, result.dataset, result.data, ticket); err != nil {
-		a.graphError = err.Error()
-		return
-	}
-	if a.graphSelection != "" {
-		var selected struct {
-			ID string `json:"id"`
-		}
-		_ = json.Unmarshal([]byte(a.graphSelection), &selected)
-		a.graphSelection = string(a.graph.nodes[selected.ID])
-	}
-}
-
-func (a *App) graphView(c *ui.Context) {
-	if a.isSetupOnlyRuntime() {
-		ui.Column(c.Key("graph-setup-notice")).Margin(sp3, pageInset).
-			Padding(sp4).Gap(sp2).Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
-			homeText(c, "配置记忆提炼后可查看图谱", homeBody)
-			v4SmallButton(c, "前往配置", nil, a.openSettingsFromDeferredBanner).AlignSelf(ui.Start)
-		})
-		return
-	}
-	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-		a.graphToolbar(c)
-		if p, ok := a.current(); ok && a.graphMode == "代码结构" && !p.CodeEnabled {
-			a.codeGraphEmpty(c)
-			return
-		}
-		if a.graphError != "" {
-			ui.Text(c, a.graphError).FontSize(11).TextColor(muted).Margin(10, 32)
-		}
-		if a.graphMode == "代码结构" && a.codeStatus != "" {
-			ui.Text(c, a.codeStatus).FontSize(11).TextColor(muted).Margin(10, 32)
-		}
-		if a.graph != nil && a.graph.view != nil && a.graph.frame != nil {
-			ui.Column(c.Key("graph-canvas-container")).Grow(1).MinHeight(0).Margin(0, pageInset, pageInset, pageInset).Radius(12).Clip().Children(func() {
-				ui.WebView(c.Key("official-graph-canvas"), a.graph.view).Grow(1).MinHeight(0)
-			})
-		}
-		if a.graphSelection != "" {
-			ui.Text(c, "选中节点 · "+a.graphSelection).FontSize(10).TextColor(muted).MaxLines(3).Margin(10, 32)
-			button(c, "查看官方文档出处", a.graphSource)
-		}
-	})
-}
 func (a *App) toggleCode(enabled bool) {
-	a.graphError = ""
+	a.graphController.Error = ""
 	p, ok := a.current()
 	if !ok || p.Path == "" {
-		a.graphError = "代码索引需要当前项目的仓库路径"
+		a.graphController.Error = "代码索引需要当前项目的仓库路径"
 		return
 	}
 	if enabled && a.codeIndexBlocked() {
@@ -642,17 +36,17 @@ func (a *App) toggleCode(enabled bool) {
 		return
 	}
 	if enabled && p.CodeDataset == "" {
-		a.codeBusy = true
-		a.codeStatus = "正在准备本项目的官方代码数据组…"
+		a.graphController.CodeBusy = true
+		a.graphController.CodeStatus = "正在准备本项目的官方代码数据组…"
 		client := a.Client
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			dataset, err := client.ensureCodeDataset(ctx, p)
 			a.Update(func() {
-				a.codeBusy = false
+				a.graphController.CodeBusy = false
 				if err != nil {
-					a.codeStatus = "代码数据组准备失败：" + err.Error()
+					a.graphController.CodeStatus = "代码数据组准备失败：" + err.Error()
 					return
 				}
 				index := -1
@@ -663,7 +57,7 @@ func (a *App) toggleCode(enabled bool) {
 					}
 				}
 				if index < 0 {
-					a.codeStatus = "项目关联已改变；已保留官方数据组，未开始索引"
+					a.graphController.CodeStatus = "项目关联已改变；已保留官方数据组，未开始索引"
 					return
 				}
 				before := a.Config.Projects[index]
@@ -672,7 +66,7 @@ func (a *App) toggleCode(enabled bool) {
 				a.Config.Projects[index] = p
 				if err := a.saveProjects(); err != nil {
 					a.Config.Projects[index] = before
-					a.codeStatus = "代码关联保存失败；未开始索引：" + err.Error()
+					a.graphController.CodeStatus = "代码关联保存失败；未开始索引：" + err.Error()
 					return
 				}
 				a.indexProjectCode(p)
@@ -683,13 +77,13 @@ func (a *App) toggleCode(enabled bool) {
 	a.Config.Projects[a.project].CodeEnabled = enabled
 	if err := a.saveProjects(); err != nil {
 		a.Config.Projects[a.project].CodeEnabled = !enabled
-		a.graphError = err.Error()
+		a.graphController.Error = err.Error()
 		return
 	}
 	if enabled {
 		a.indexCode()
 	} else {
-		a.codeStatus = "已停止发起新扫描；已有官方任务未请求取消"
+		a.graphController.CodeStatus = "已停止发起新扫描；已有官方任务未请求取消"
 	}
 }
 func (a *App) saveProjects() error {
@@ -725,30 +119,30 @@ func (a *App) indexProjectCode(p Project) {
 	if !p.CodeEnabled || p.CodeDataset == "" || a.codeIndexBlocked() {
 		return
 	}
-	a.codeBusy = true
-	a.codeStatus = "官方正在索引当前仓库；等待实际结果…"
+	a.graphController.CodeBusy = true
+	a.graphController.CodeStatus = "官方正在索引当前仓库；等待实际结果…"
 	client := a.Client
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		result, err := client.indexProject(ctx, p)
 		a.Update(func() {
-			a.codeBusy = false
+			a.graphController.CodeBusy = false
 			if errors.Is(err, errOfficialCodeActive) {
-				a.codeRemoteActive = true
-				a.codeStatus = "官方已有代码索引运行中；未重复提交"
+				a.graphController.CodeRemoteActive = true
+				a.graphController.CodeStatus = "官方已有代码索引运行中；未重复提交"
 				return
 			}
 			if err != nil {
-				a.codeUnknown = true
-				a.codeStatus = "索引结果未确认：" + err.Error() + "；未重发请求"
+				a.graphController.CodeUnknown = true
+				a.graphController.CodeStatus = "索引结果未确认：" + err.Error() + "；未重发请求"
 				return
 			}
-			a.codeStatus = fmt.Sprintf("官方代码索引：%s · 已处理 %d 个仓库 · %s", result.Status, result.Items, result.Run)
+			a.graphController.CodeStatus = fmt.Sprintf("官方代码索引：%s · 已处理 %d 个仓库 · %s", result.Status, result.Items, result.Run)
 			if result.Status == "completed" {
 				if current, ok := a.current(); ok && current.ID == p.ID && a.page == "图谱" {
-					a.graphMode = "代码结构"
-					a.graph.clear()
+					a.graphController.Mode = "代码结构"
+					a.graphController.Host.Clear()
 					a.loadGraph()
 				}
 			}
@@ -803,11 +197,11 @@ func (c Client) indexProject(ctx context.Context, p Project) (codeIndexResult, e
 
 func (a *App) graphSource() {
 	p, ok := a.current()
-	if !ok || a.graphSelection == "" {
+	if !ok || a.graphController.Selection == "" || a.Update == nil {
 		return
 	}
 	var node map[string]any
-	if json.Unmarshal([]byte(a.graphSelection), &node) != nil {
+	if json.Unmarshal([]byte(a.graphController.Selection), &node) != nil {
 		return
 	}
 	id, _ := node["document_id"].(string)
@@ -818,21 +212,22 @@ func (a *App) graphSource() {
 		id, _ = node["id"].(string)
 	}
 	dataset := p.Dataset
-	if a.graphMode == "代码结构" {
+	if a.graphController.Mode == "代码结构" {
 		dataset = p.CodeDataset
 	}
-	epoch := a.epoch
-	client := a.Client
+	adapter := appShellAdapter{a}
+	fence := shell.CaptureFence(adapter)
+	client, update := a.Client, a.Update
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		i, err := client.documentByID(ctx, dataset, id)
-		a.Update(func() {
-			if epoch != a.epoch {
+		update(func() {
+			if !fence.Valid(adapter) {
 				return
 			}
 			if err != nil {
-				a.graphError = "该节点没有可读取的官方文档出处；节点面板保留真实来源字段。"
+				a.graphController.Error = "该节点没有可读取的官方文档出处；节点面板保留真实来源字段。"
 				return
 			}
 			a.navigate("知识", a.project)
@@ -954,22 +349,22 @@ func (a *App) restoreCodeState() {
 			state, err := client.codeActivity(ctx, p)
 			cancel()
 			a.Update(func() {
-				if a.codeBusy {
+				if a.graphController.CodeBusy {
 					return
 				}
 				if err != nil {
-					a.codeUnknown = true
-					a.codeStatus = "官方代码索引状态读取失败；未发起新扫描：" + err.Error()
+					a.graphController.CodeUnknown = true
+					a.graphController.CodeStatus = "官方代码索引状态读取失败；未发起新扫描：" + err.Error()
 					return
 				}
-				a.codeRemoteActive = state.Active
-				a.codeUnknown = false
-				a.codeStatus = "官方代码索引状态：" + state.Status
+				a.graphController.CodeRemoteActive = state.Active
+				a.graphController.CodeUnknown = false
+				a.graphController.CodeStatus = "官方代码索引状态：" + state.Status
 				if state.Run != "" {
-					a.codeStatus += " · " + state.Run
+					a.graphController.CodeStatus += " · " + state.Run
 				}
 				if state.Status == "" {
-					a.codeStatus = "官方尚未提供代码索引运行记录；未自动重发"
+					a.graphController.CodeStatus = "官方尚未提供代码索引运行记录；未自动重发"
 				}
 			})
 		}
@@ -1032,3 +427,94 @@ func codeRunPredatesGeneration(created, started string, generation time.Time) (b
 	// even when its declared start is older. Equality belongs to the new dataset.
 	return rowCreated.Before(generation) && runStarted.Before(generation), nil
 }
+
+type GraphHost = appgraph.Host
+type graphLoad = appgraph.LoadResult
+
+func RegisterGraph(dir string) (*GraphHost, error)     { return appgraph.Register(dir) }
+func RegisterGraphFS(assets fs.FS) (*GraphHost, error) { return appgraph.RegisterFS(assets) }
+
+var embeddedGraph = sync.OnceValues(func() (fs.FS, error) {
+	return fs.Sub(memlane.RuntimeAssets, "web/official-graph/dist")
+})
+
+func loadEmbeddedGraphHost() (*GraphHost, error) {
+	assets, err := embeddedGraph()
+	if err != nil {
+		return nil, err
+	}
+	return appgraph.RegisterFS(assets)
+}
+
+func (a *App) initGraph(dir string) {
+	adapter := appShellAdapter{a}
+	assets, _ := embeddedGraph()
+	a.graphController.Controller = appgraph.New(appgraph.Deps{
+		Router: adapter, Fence: adapter, Theme: adapter, AssetsDir: dir, EmbeddedAssets: assets,
+		CurrentProject:     func() (shell.ProjectRef, bool) { p, ok := a.current(); return projectRef(p), ok },
+		IsSetupOnly:        a.isSetupOnlyRuntime,
+		IsWindowHidden:     func() bool { return a.windowHidden || a.windowInactive },
+		HasControl:         func() bool { return a.Config.ProjectControl != nil },
+		OnOpenSettings:     a.openSettingsFromDeferredBanner,
+		OnPreviewToolGraph: a.previewToolGraph,
+		OnToggleCode:       a.toggleCode, OnIndexCode: a.indexCode, OnRestoreCodeState: a.restoreCodeState,
+		OnOpenNodeSource:  a.graphSource,
+		OnLoadPending:     func(p shell.ProjectRef) { a.loadGraphPending(desktopProject(p)) },
+		RenderPendingHint: func(c *ui.Context, p shell.ProjectRef) { a.graphPendingHint(c, desktopProject(p)) },
+		OnWindowClosed:    a.startupDeferred.stopAllTimers,
+		OnRenderError: func(err error) {
+			if a.page == "图谱" {
+				a.graphController.Error = err.Error()
+			}
+		},
+	})
+}
+
+func (a *App) configureGraphTransport() {
+	g := &a.graphController.Controller
+	g.ClientFactory = nil
+	g.Dispatcher = nil
+	if a.Update == nil {
+		return
+	}
+	g.Dispatcher = shell.DispatchFunc(a.Update)
+	client := a.Client
+	g.RawFetcher = func(ctx context.Context, _ shell.ProjectRef, dataset string) (json.RawMessage, error) {
+		return client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
+	}
+	if control, ok := a.accessClient(); ok {
+		g.ClientFactory = func() (*api.Client, error) {
+			identity, err := readingIdentity(Client{Config: client.Config})
+			if err != nil {
+				return nil, err
+			}
+			return newAppAPIClient(control, identity)
+		}
+	}
+}
+
+func (a *App) BindGraphWindow(win *mygo.Window) { a.graphController.BindWindow(win) }
+func (a *App) verifyGraphAssetsAsync() {
+	a.configureGraphTransport()
+	a.graphController.VerifyAssetsAsync()
+}
+func (a *App) EnsureGraphAttached() {
+	a.configureGraphTransport()
+	a.graphController.EnsureAttached()
+}
+func (a *App) PrewarmGraph() {
+	a.configureGraphTransport()
+	a.graphController.Prewarm()
+}
+func (a *App) AttachGraph(win *mygo.Window) error {
+	a.configureGraphTransport()
+	return a.graphController.Attach(win)
+}
+func (a *App) loadGraph() {
+	a.configureGraphTransport()
+	a.graphController.Load()
+}
+func (a *App) graphView(c *ui.Context)    { a.graphController.RenderView(c) }
+func (a *App) resetGraphView(mode string) { a.graphController.ResetView(mode) }
+func (a *App) cancelGraphLoad()           { a.graphController.CancelLoad() }
+func (a *App) codeIndexBlocked() bool     { return a.graphController.CodeIndexBlocked() }

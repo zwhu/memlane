@@ -168,11 +168,7 @@ func TestProjectSettingsKeepsMessageStatusStableAtTop(t *testing.T) {
 	}
 
 	// Active alert: 消息与采集状态 remains at the exact top position without jumping.
-	q.Sessions = []queuedSession{{
-		Agent:   AccessAgent{ID: "agent", Name: "本机 Codex"},
-		Binding: ProjectBinding{HostSessionKey: "s1"},
-		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-	}}
+	q.InboxFailed = 1
 	tt.Frame()
 	infoRect, okInfo = tt.Find("项目信息")
 	msgTitleRect, okMsg := tt.Find("消息与采集状态")

@@ -2,7 +2,10 @@ package simpledesktop
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -488,6 +491,7 @@ type v2SearchRecentResponse struct {
 	Generation     int64                 `json:"generation"`
 	KnowledgeItems []v2KnowledgeItem     `json:"knowledge_items"`
 	SessionItems   []v2SearchSessionItem `json:"session_items"`
+	RecentItems    json.RawMessage       `json:"recent_items,omitempty"`
 }
 
 func (c ProjectControlClient) searchRecentV2(ctx context.Context, readingID string, limit int, projectID, datasetID string) (v2SearchRecentResponse, error) {
@@ -691,25 +695,20 @@ type v2UnreadPreviewItem struct {
 }
 
 type v2MessageSummaryResponse struct {
-	ProjectID               string                          `json:"project_id"`
-	DatasetID               string                          `json:"dataset_id"`
-	AutoCapture             *bool                           `json:"auto_capture,omitempty"`
-	AutoCaptureVersion      int64                           `json:"auto_capture_version,omitempty"`
-	AutomaticSave           bool                            `json:"automatic_save"`
-	Backlog                 *backlogJob                     `json:"backlog"`
-	Checks                  []pendingCheckState             `json:"checks,omitempty"`
-	ProcessingIssues        []processingIssue               `json:"processing_issues,omitempty"`
-	BufferReviews           []bufferReview                  `json:"buffer_reviews,omitempty"`
-	KnowledgeCatalogVersion string                          `json:"knowledge_catalog_version"`
-	UnreadCount             int                             `json:"unread_count"`
-	UnreadStateRev          int64                           `json:"unread_state_rev,omitempty"`
-	UnreadPreview           []v2UnreadPreviewItem           `json:"unread_preview"`
-	UnreadHasMore           bool                            `json:"unread_has_more"`
-	PendingDocumentsCount   int                             `json:"pending_documents_count"`
-	PendingDocuments        []projectMessageSummaryDocument `json:"pending_documents"`
-	Notices                 []processingNotice              `json:"notices"`
-	Activity                []activityRow                   `json:"activity"`
-	Errors                  map[string]string               `json:"errors"`
+	ProjectID               string                `json:"project_id"`
+	DatasetID               string                `json:"dataset_id"`
+	AutoCapture             *bool                 `json:"auto_capture,omitempty"`
+	AutoCaptureVersion      int64                 `json:"auto_capture_version,omitempty"`
+	AutomaticSave           bool                  `json:"automatic_save"`
+	Backlog                 *backlogJob           `json:"backlog"`
+	KnowledgeCatalogVersion string                `json:"knowledge_catalog_version"`
+	UnreadCount             int                   `json:"unread_count"`
+	UnreadStateRev          int64                 `json:"unread_state_rev,omitempty"`
+	UnreadPreview           []v2UnreadPreviewItem `json:"unread_preview"`
+	UnreadHasMore           bool                  `json:"unread_has_more"`
+	PendingDocumentsCount   int                   `json:"pending_documents_count"`
+	Activity                []activityRow         `json:"activity"`
+	Errors                  map[string]string     `json:"errors"`
 }
 
 func (r v2MessageSummaryResponse) unreadPreviewItems(defaultDataset string) []Item {
@@ -915,4 +914,9 @@ func (c ProjectControlClient) provenanceBackfillLegacyDatesV2(ctx context.Contex
 	var out v2ProvenanceBackfillResponse
 	err := c.requestWithLimit(ctx, "POST", "/v1/provenance/backfill-legacy-dates", req, &out, 512*1024)
 	return out, err
+}
+
+func isControlNotFound(err error) bool {
+	var ce *ControlResponseError
+	return errors.As(err, &ce) && ce.Status == http.StatusNotFound
 }

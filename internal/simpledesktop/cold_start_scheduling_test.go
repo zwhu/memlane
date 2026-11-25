@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -37,31 +36,25 @@ func TestColdStartGraphVerificationFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := New(Config{GraphAssets: dir}, nil)
-	before := officialGraphDispatcher.host.Load()
-	if !mygo.Protocol.IsHandled("memlanegraph") || a.graph != nil || a.graphError != "" || a.graphAssetsChecked {
+	if !mygo.Protocol.IsHandled("memlanegraph") || a.graphController.Host != nil || a.graphController.Error != "" || a.graphController.AssetsChecked {
 		t.Fatal("New must register the protocol and leave verification pending")
 	}
 	updates := make(chan func(), 4)
 	a.Update = func(fn func()) { updates <- fn }
-	a.graphAttachFn = func(*GraphHost) error {
+	a.graphController.AttachHost = func(*GraphHost) error {
 		t.Fatal("attach ran with unverified assets")
 		return nil
 	}
-	a.pendingGraphLoad = &graphLoad{}
-	a.graphLoading = true
+	a.graphController.PendingLoad = &graphLoad{}
+	a.graphController.Loading = true
 	a.EnsureGraphAttached()
-	if a.graphAssetsChecked {
+	if a.graphController.AssetsChecked {
 		t.Fatal("verification published before the UI callback")
 	}
 	nextStartupUpdate(t, updates)()
-	if !a.graphAssetsChecked || a.graphAssetsErr == nil || a.graphError != "图组件校验失败" ||
-		a.graph != nil || a.pendingGraphLoad != nil || a.graphLoading || officialGraphDispatcher.host.Load() != before {
-		t.Fatalf("verification did not fail closed: %q", a.graphError)
-	}
-	reply := httptest.NewRecorder()
-	officialGraphDispatcher.serveProtocol(reply, httptest.NewRequest("GET", "memlanegraph://graph/app.js", nil))
-	if reply.Code != http.StatusNotFound {
-		t.Fatalf("unverified asset request returned %d", reply.Code)
+	if !a.graphController.AssetsChecked || a.graphController.AssetsErr == nil || a.graphController.Error != "图组件校验失败" ||
+		a.graphController.Host != nil || a.graphController.PendingLoad != nil || a.graphController.Loading {
+		t.Fatalf("verification did not fail closed: %q", a.graphController.Error)
 	}
 	if err := a.AttachGraph(nil); err == nil {
 		t.Fatal("synchronous attachment accepted failed verification")
@@ -83,23 +76,23 @@ func TestColdStartGraphAttachesOnceAndAppliesWaitingHTTPResult(t *testing.T) {
 			updates := make(chan func(), 8)
 			a.Update = func(fn func()) { updates <- fn }
 			attaches := 0
-			a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+			a.graphController.AttachHost = func(*GraphHost) error { attaches++; return nil }
 
 			a.PrewarmGraph()
-			check := a.graphAssetsCheck
+			check := a.graphController.AssetsCheck
 			a.navigate("图谱", 0)
-			if check == nil || a.graphAssetsCheck != check || attaches != 0 || a.graph != nil {
+			if check == nil || a.graphController.AssetsCheck != check || attaches != 0 || a.graphController.Host != nil {
 				t.Fatal("graph entry did not share the asynchronous verification")
 			}
 			publishAssets := nextStartupUpdate(t, updates)
 			a.loadGraph()
 			nextStartupUpdate(t, updates)()
-			if a.pendingGraphLoad == nil || !a.graphLoading || a.graph != nil {
+			if a.graphController.PendingLoad == nil || !a.graphController.Loading || a.graphController.Host != nil {
 				t.Fatal("HTTP result was lost before asset publication")
 			}
 			switch scenario {
 			case "closed":
-				a.graphWindowClosed = true
+				a.graphController.WindowClosed = true
 				a.cancelGraphLoad()
 			case "navigate":
 				a.navigate("设置", 0)
@@ -115,24 +108,24 @@ func TestColdStartGraphAttachesOnceAndAppliesWaitingHTTPResult(t *testing.T) {
 			publishAssets()
 			a.EnsureGraphAttached()
 			a.PrewarmGraph()
-			if !a.graphAssetsChecked || a.graphAssetsErr != nil || a.pendingGraphLoad != nil || a.graphLoading {
+			if !a.graphController.AssetsChecked || a.graphController.AssetsErr != nil || a.graphController.PendingLoad != nil || a.graphController.Loading {
 				t.Fatal("graph did not settle")
 			}
 			if scenario == "closed" {
-				if a.graph != nil || attaches != 0 {
+				if a.graphController.Host != nil || attaches != 0 {
 					t.Fatal("closed window was attached")
 				}
 				return
 			}
-			if a.graph == nil || attaches != 1 || a.graph.assets["index.html"] == nil {
+			if a.graphController.Host == nil || attaches != 1 || a.graphController.Host.Asset("index.html") == nil {
 				t.Fatalf("expected one verified attach, got %d", attaches)
 			}
-			t.Cleanup(a.graph.close)
+			t.Cleanup(a.graphController.Host.Close)
 			if scenario == "attach" || scenario == "sync attach" {
-				if a.graph.project != "p" || a.graph.dataset != "ds" || a.graph.nodes["n"] == nil {
+				if a.graphController.Host.Project() != "p" || a.graphController.Host.Dataset() != "ds" || a.graphController.Host.Node("n") == nil {
 					t.Fatal("pending graph was not published")
 				}
-			} else if a.graph.frame != nil {
+			} else if a.graphController.Host.HasFrame() {
 				t.Fatal("superseded graph result was published")
 			}
 		})
@@ -197,10 +190,10 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 			loginReads := atomic.Int32{}
 			a.ReadOpenAtLoginFn = func() bool { loginReads.Add(1); return true }
 			attaches := 0
-			a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+			a.graphController.AttachHost = func(*GraphHost) error { attaches++; return nil }
 			defer func() {
-				if a.graph != nil {
-					a.graph.close()
+				if a.graphController.Host != nil {
+					a.graphController.Host.Close()
 				}
 			}()
 
@@ -218,7 +211,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				}
 				nextStartupUpdate(t, updates)()
 				drainReading(t, updates, func() bool { return a.integrations.Loaded && a.OpenAtLogin() })
-				if a.monitor.Request != 0 || a.graphAssetsCheck != nil || a.graph != nil || a.overviewFirstScreenReady || a.monitor.PollEnabled {
+				if a.monitor.Request != 0 || a.graphController.AssetsCheck != nil || a.graphController.Host != nil || a.overviewFirstScreenReady || a.monitor.PollEnabled {
 					t.Fatal("hidden startup started visible monitor, prewarm, or marked first screen ready")
 				}
 				// First reveal must run overview bootstrap BEFORE releasing monitor/sidebar/prewarm.
@@ -228,7 +221,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				case <-time.After(3 * time.Second):
 					t.Fatal("first reveal did not start overview bootstrap")
 				}
-				if a.monitor.Polling || a.monitor.Request != 0 || a.graphAssetsCheck != nil || attaches != 0 || !a.coldStartOverviewPending() {
+				if a.monitor.Polling || a.monitor.Request != 0 || a.graphController.AssetsCheck != nil || attaches != 0 || !a.coldStartOverviewPending() {
 					t.Fatal("first reveal overlapped monitor/prewarm with initial overview bootstrap")
 				}
 				releaseBootstrap <- struct{}{}
@@ -246,7 +239,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				t.Fatal("first directory render did not start overview bootstrap")
 			}
 			if !a.coldStartOverviewPending() || a.integrations.Request != 0 || a.monitor.Request != 0 ||
-				loginReads.Load() != 0 || a.graphAssetsCheck != nil || a.existingProjectQueueState(a.access.Directory.Projects[0]) != nil {
+				loginReads.Load() != 0 || a.graphController.AssetsCheck != nil || a.existingProjectQueueState(a.access.Directory.Projects[0]) != nil {
 				t.Fatal("noncritical startup work began before bootstrap settled")
 			}
 			if request := <-requests; request != "/v1/projects" || len(requests) != 0 {
@@ -665,10 +658,10 @@ func TestColdStartHiddenRevealNeverDeadlocksVisibleStartup(t *testing.T) {
 		updates := make(chan func(), 64)
 		a.Update = func(fn func()) { updates <- fn }
 		attaches := 0
-		a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+		a.graphController.AttachHost = func(*GraphHost) error { attaches++; return nil }
 		defer func() {
-			if a.graph != nil {
-				a.graph.close()
+			if a.graphController.Host != nil {
+				a.graphController.Host.Close()
 			}
 		}()
 
@@ -720,10 +713,10 @@ func TestColdStartHiddenRevealNeverDeadlocksVisibleStartup(t *testing.T) {
 		updates := make(chan func(), 64)
 		a.Update = func(fn func()) { updates <- fn }
 		attaches := 0
-		a.graphAttachFn = func(*GraphHost) error { attaches++; return nil }
+		a.graphController.AttachHost = func(*GraphHost) error { attaches++; return nil }
 		defer func() {
-			if a.graph != nil {
-				a.graph.close()
+			if a.graphController.Host != nil {
+				a.graphController.Host.Close()
 			}
 		}()
 

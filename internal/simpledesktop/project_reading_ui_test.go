@@ -340,22 +340,22 @@ func TestProjectCodeGraphEmptyDoesNotStartWork(t *testing.T) {
 	for _, wh := range [][2]int{{1200, 820}, {1440, 900}} {
 		a := projectUIFixture()
 		a.page = "图谱"
-		a.graphMode = "代码结构"
-		a.codeStatus = "官方代码索引状态：DATASET_PROCESSING_COMPLETED · historical-run"
+		a.graphController.Mode = "代码结构"
+		a.graphController.CodeStatus = "官方代码索引状态：DATASET_PROCESSING_COMPLETED · historical-run"
 		tt := ui.NewTester(a.View, wh[0], wh[1])
-		if !tt.HasText("代码图谱尚未开启") || a.codeBusy || a.graphLoading {
+		if !tt.HasText("代码图谱尚未开启") || a.graphController.CodeBusy || a.graphController.Loading {
 			t.Fatal("disabled code graph was not an idle empty state")
 		}
-		if tt.HasText("更新代码图谱") || tt.HasText("刷新图谱") || tt.HasText(a.codeStatus) {
+		if tt.HasText("更新代码图谱") || tt.HasText("刷新图谱") || tt.HasText(a.graphController.CodeStatus) {
 			t.Fatal("disabled code graph exposes irrelevant toolbar actions")
 		}
 		if _, ok := tt.Find("开启代码图谱"); !ok {
 			t.Fatal("empty state has no explicit enable action")
 		}
 		fixtureImage(t, tt, fmt.Sprintf("project-%dx%d-graph-disabled", wh[0], wh[1]))
-		a.graphError = "代码设置尚未确认，请先核对原操作"
+		a.graphController.Error = "代码设置尚未确认，请先核对原操作"
 		tt.Frame()
-		if !tt.HasText(a.graphError) {
+		if !tt.HasText(a.graphController.Error) {
 			t.Fatal("empty state hid the failed enable result")
 		}
 	}

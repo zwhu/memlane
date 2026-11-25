@@ -736,7 +736,6 @@ func TestScale50kDesktopSLABudgets(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID:               "p-50k-0",
 				DatasetID:               "ds-50k-0",
-				AutomaticSave:           true,
 				KnowledgeCatalogVersion: "cv-50k-1",
 				UnreadCount:             3,
 			})

@@ -40,11 +40,7 @@ func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
 	q.Loaded = true
-	q.Sessions = []queuedSession{{
-		Agent:   AccessAgent{ID: "agent", Name: "Codex"},
-		Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "s1"},
-		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-	}}
+	q.InboxFailed = 1
 
 	// Warm both tray status level and full flyout body: must share a single summary computation.
 	_ = a.trayStatusLevel()
@@ -65,7 +61,7 @@ func TestTrayFlyoutCachesSummaryAndTodayCountAcrossFrames(t *testing.T) {
 	}
 
 	// Mutating queue state invalidates the cached summary immediately.
-	q.Sessions[0].View.observe(PendingMaterials{Pending: 0, Unknown: 0, Signature: "clean"})
+	q.InboxFailed = 0
 	if level := a.trayStatusLevel(); level != "ok" {
 		t.Fatalf("expected trayStatusLevel=ok after observe cleared anomaly, got %q", level)
 	}

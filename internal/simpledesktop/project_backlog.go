@@ -29,109 +29,6 @@ type backlogJob struct {
 	ProcessingDisabled  int    `json:"processing_disabled"`
 }
 
-type bufferReview struct {
-	Rejected        int    `json:"rejected"`
-	RejectedUnsent  int    `json:"rejected_unsent"`
-	RejectedUnknown int    `json:"rejected_unknown"`
-	DeferredUnsent  int    `json:"deferred_unsent"`
-	AgentID         string `json:"agent_id"`
-	Host            string `json:"host"`
-	Signature       string `json:"signature"`
-	Filtered        int    `json:"filtered"`
-}
-
-func (q *projectQueueState) heldPending(row queuedSession) bufferReview {
-	if row.View != nil && row.View.Loaded && row.View.ReadError == "" {
-		for _, review := range q.BufferReviews {
-			if review.AgentID == row.Agent.ID && review.Host == row.Binding.HostSessionKey && review.Signature != "" && review.Signature == row.View.Status.Signature {
-				return review
-			}
-		}
-	}
-	return bufferReview{}
-}
-
-func (q *projectQueueState) filteredPending(row queuedSession) int {
-	if row.View == nil || !row.View.Loaded || row.View.ReadError != "" {
-		return 0
-	}
-	s := row.View.Status
-	for _, review := range q.BufferReviews {
-		if review.AgentID == row.Agent.ID && review.Host == row.Binding.HostSessionKey && review.Signature != "" && review.Signature == s.Signature {
-			return min(max(0, review.Filtered), max(0, s.Pending-s.Unknown))
-		}
-	}
-	return 0
-}
-
-type pendingCheckState struct {
-	AgentID   string  `json:"agent_id"`
-	Host      string  `json:"host"`
-	Status    string  `json:"status"`
-	Reason    string  `json:"reason"`
-	CheckedAt float64 `json:"checked_at"`
-	Matched   int     `json:"matched"`
-}
-
-func (q *projectQueueState) pendingCheck(session queuedSession) pendingCheckState {
-	check := q.Checks[session.Agent.ID+"/"+session.Binding.HostSessionKey]
-	if q.BacklogError != "" {
-		check.Status, check.Reason = "unconfirmed", "official_review_unavailable"
-	}
-	return check
-}
-
-func (a *App) applyPendingChecks(q *projectQueueState, checks []pendingCheckState) {
-	next := map[string]pendingCheckState{}
-	for _, check := range checks {
-		key := check.AgentID + "/" + check.Host
-		if check.CheckedAt > q.Checks[key].CheckedAt {
-			q.Next = time.Time{}
-		}
-		next[key] = check
-	}
-	q.Checks = next
-}
-
-func (a *App) retryPendingCheck(q *projectQueueState, p AccessProject, session queuedSession) {
-	if a.isSetupOnlyRuntime() {
-		return
-	}
-	client, ok := a.accessClient()
-	if !ok || a.Update == nil {
-		return
-	}
-	key := session.Agent.ID + "/" + session.Binding.HostSessionKey
-	if q.pendingCheck(session).Status == "checking" {
-		return
-	}
-	if q.Checks == nil {
-		q.Checks = map[string]pendingCheckState{}
-	}
-	q.Checks[key] = pendingCheckState{AgentID: session.Agent.ID, Host: session.Binding.HostSessionKey, Status: "checking"}
-	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		defer cancel()
-		var result struct {
-			Checks []pendingCheckState `json:"checks"`
-		}
-		err := client.request(ctx, "POST", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog/check", map[string]string{"agent_id": session.Agent.ID, "host": session.Binding.HostSessionKey}, &result)
-		a.Update(func() {
-			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
-			if current != identity {
-				return
-			}
-			if err != nil {
-				q.Checks[key] = pendingCheckState{Status: "unconfirmed", Reason: "official_review_unavailable"}
-				return
-			}
-			a.applyPendingChecks(q, result.Checks)
-			q.BacklogNext = time.Time{}
-		})
-	}()
-}
-
 func (j *backlogJob) active() bool {
 	if j == nil {
 		return false
@@ -159,11 +56,7 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
 		var result struct {
-			Job              *backlogJob         `json:"job"`
-			Automatic        bool                `json:"automatic_enabled"`
-			Checks           []pendingCheckState `json:"checks"`
-			Reviews          []bufferReview      `json:"buffer_reviews"`
-			ProcessingIssues []processingIssue   `json:"processing_issues"`
+			Job *backlogJob `json:"job"`
 		}
 		err := client.request(ctx, "GET", "/v1/projects/"+url.PathEscape(p.ID)+"/backlog", nil, &result)
 		a.Update(func() {
@@ -184,28 +77,6 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 			q.BacklogError = ""
 			q.Backlog = result.Job
 			q.BacklogLoaded = true
-			q.AutomaticSave = result.Automatic
-			q.BufferReviews = result.Reviews
-			q.ProcessingIssues = result.ProcessingIssues
-			a.applyPendingChecks(q, result.Checks)
-			recovered := []string{"backlog-read"}
-			if result.Job == nil || result.Job.active() || result.Job.Status == "completed" {
-				recovered = append(recovered, "backlog")
-			}
-			if result.Job == nil || result.Job.ProcessingFailed == 0 {
-				recovered = append(recovered, "processing-failed")
-			}
-			currentProject := p
-			for _, candidate := range a.access.Directory.Projects {
-				if candidate.ID == p.ID {
-					currentProject = candidate
-					break
-				}
-			}
-			if !currentProject.policySyncUnconfirmed() {
-				recovered = append(recovered, "policy-sync")
-			}
-			a.clearRecoveredNoticeAcknowledgements(q, p, recovered)
 			if result.Job != nil && result.Job.Operation == q.BacklogOperation {
 				q.BacklogOperation = ""
 			}
@@ -306,73 +177,12 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 	}()
 }
 
-func (a *App) reconcileProjectProcessing(q *projectQueueState, p AccessProject) {
-	a.runProcessingAction(q, p, "/backlog/processing/check", "核对提炼状态失败", false)
-}
-
-func (a *App) retryProjectProcessing(q *projectQueueState, p AccessProject) {
-	a.runProcessingAction(q, p, "/backlog/processing/retry", "重新提交提炼失败", true)
-}
-
-func (a *App) runProcessingAction(q *projectQueueState, p AccessProject, suffix, errPrefix string, closeIfCleared bool) {
-	if a.isSetupOnlyRuntime() {
-		return
-	}
-	client, ok := a.accessClient()
-	if !ok || a.Update == nil || q.ProcessingActionBusy || a.access.Busy {
-		return
-	}
-	q.ProcessingActionBusy = true
-	q.ProcessingActionError = ""
-	identity := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		var result struct {
-			Job              *backlogJob         `json:"job"`
-			Automatic        bool                `json:"automatic_enabled"`
-			Checks           []pendingCheckState `json:"checks"`
-			Reviews          []bufferReview      `json:"buffer_reviews"`
-			ProcessingIssues []processingIssue   `json:"processing_issues"`
-		}
-		err := client.request(ctx, "POST", "/v1/projects/"+url.PathEscape(p.ID)+suffix, map[string]any{}, &result)
-		a.Update(func() {
-			q.ProcessingActionBusy = false
-			current := a.cachedBaseReadingIdentity() + a.Client.PolicyRevision
-			if current != identity {
-				return
-			}
-			if err != nil {
-				q.ProcessingActionError = errPrefix + "：" + err.Error()
-				return
-			}
-			q.ProcessingActionError = ""
-			q.BacklogError = ""
-			q.Backlog = result.Job
-			q.BacklogLoaded = true
-			q.AutomaticSave = result.Automatic
-			q.BufferReviews = result.Reviews
-			q.ProcessingIssues = result.ProcessingIssues
-			a.applyPendingChecks(q, result.Checks)
-			if result.Job == nil || result.Job.ProcessingFailed == 0 {
-				a.clearRecoveredNoticeAcknowledgements(q, p, []string{"processing-failed"})
-				if closeIfCleared && q.DetailNoticeKey == "processing-failed" {
-					q.closeDetailDialog(nil)
-				}
-			}
-			q.Next = time.Time{}
-			q.BacklogNext = time.Time{}
-		})
-	}()
-}
-
 func (a *App) reconcileProjectPolicy(q *projectQueueState, p AccessProject) {
 	a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
 		return client.reconcile(ctx, revision, p.ID)
 	}, func() {
 		q.BacklogNext = time.Time{}
 		q.Next = time.Time{}
-		a.clearRecoveredNoticeAcknowledgements(q, p, []string{"policy-sync"})
 	})
 }
 

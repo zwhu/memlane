@@ -85,15 +85,11 @@ func TestTrayFlyoutViewStructureAlertsSyncAndQuitActions(t *testing.T) {
 		},
 	}
 
-	// Add an unacknowledged project alert on project 0 ("memlane").
+	// Add a failed inbox item on project 0 ("memlane").
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
 	q.Loaded = true
-	q.Sessions = []queuedSession{{
-		Agent:   AccessAgent{ID: "agent", Name: "本机 Codex"},
-		Binding: ProjectBinding{HostSessionKey: "s1"},
-		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-	}}
+	q.InboxFailed = 1
 
 	var shownMain, hidFlyout, openedSearch bool
 	var quitCalls []bool
@@ -159,7 +155,7 @@ func TestTrayFlyoutViewStructureAlertsSyncAndQuitActions(t *testing.T) {
 	}
 
 	// Clearing alerts shows quiet healthy row.
-	q.Sessions = nil
+	q.InboxFailed = 0
 	tt.Frame()
 	if !tt.HasText("所有项目消息状态正常") {
 		t.Fatalf("expected quiet healthy message when no alerts exist; texts=%v", tt.Texts())
@@ -221,11 +217,7 @@ func TestV4BadgeAndTrayAlertVerticalAlignment(t *testing.T) {
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
 	q.Loaded = true
-	q.Sessions = []queuedSession{{
-		Agent:   AccessAgent{ID: "agent", Name: "本机 Codex"},
-		Binding: ProjectBinding{HostSessionKey: "s1"},
-		View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-	}}
+	q.InboxFailed = 1
 	ttTray := ui.NewTester(a.TrayFlyoutView, 300, 480)
 	memRect, ok := ttTray.Find("memlane")
 	if !ok {
@@ -267,13 +259,8 @@ func TestTrayIconAndFlyoutTreatInProgressStateAsHealthyLightAndDark(t *testing.T
 			a.access.Directory.Projects[0] = p
 			q := a.projectQueueStateFor(p)
 			q.Loaded = true
-			q.AutomaticSave = true
 			q.Backlog = &backlogJob{Status: "watching", ProcessingActive: 1}
-			q.Sessions = []queuedSession{{
-				Agent:   AccessAgent{ID: agent.ID, Name: "Gemini App"},
-				Binding: ProjectBinding{ProjectID: p.ID, AgentID: agent.ID, HostSessionKey: "s-progress"},
-				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 2}},
-			}}
+			q.InboxPending = 2
 
 			// 1. Menu bar tray icon must stay healthy template icon (no warning/danger badge dot).
 			_, isTemplate, tip := a.TrayIconState()
@@ -307,11 +294,7 @@ func TestTrayIconAndFlyoutTreatInProgressStateAsHealthyLightAndDark(t *testing.T
 			}
 
 			// 3. Mixed state: adding 1 real anomaly switches tray icon to danger and shows both sections accurately.
-			q.Sessions = append(q.Sessions, queuedSession{
-				Agent:   AccessAgent{ID: "agent", Name: "Codex"},
-				Binding: ProjectBinding{ProjectID: p.ID, AgentID: "agent", HostSessionKey: "s-unknown"},
-				View:    &pendingBufferView{Loaded: true, Status: PendingMaterials{Pending: 1, Unknown: 1}},
-			})
+			q.InboxFailed = 1
 			_, isTemplateMixed, mixedTip := a.TrayIconState()
 			if isTemplateMixed || mixedTip != "Memlane · 服务或项目存在异常" {
 				t.Fatalf("[%s] expected danger tray icon when real anomaly exists, got isTemplate=%v tip=%q", tc.name, isTemplateMixed, mixedTip)
@@ -426,11 +409,93 @@ func TestTrayFlyoutHeightFitsContentAndCapsScrollableBody(t *testing.T) {
 	q := a.projectQueueStateFor(p)
 	q.Loaded = true
 	q.PendingDocumentsCount = 1
-	q.ProcessingReadError = "提炼状态读取失败"
+	q.LastError = "提炼状态读取失败"
 	check(t, a, true)
 	for i := 0; i < 12; i++ {
 		id := fmt.Sprintf("alert-%d", i)
 		a.access.Directory.Projects = append(a.access.Directory.Projects, AccessProject{ID: id, Name: id, Status: "unconfirmed"})
 	}
 	check(t, a, true)
+}
+
+func TestSlowSidebarProjectDoesNotBlockOtherProjectBadges(t *testing.T) {
+	a := settingsFixture()
+	a.access.Directory.Bindings = nil
+	a.access.Directory.Projects = append(a.access.Directory.Projects,
+		AccessProject{ID: "third", Dataset: "third"}, AccessProject{ID: "fourth", Dataset: "fourth"})
+	a.access.Queues = nil
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	slow := a.projectQueueStateFor(a.access.Directory.Projects[0])
+	slow.Loading = true
+	fast := a.projectQueueStateFor(a.access.Directory.Projects[1])
+	a.refreshSidebarQueueIfDue(time.Now())
+	if !fast.Loading {
+		t.Fatal("a slow project blocked the entire sidebar queue")
+	}
+	active := 0
+	for _, q := range a.access.Queues {
+		if q.Loading {
+			active++
+		}
+	}
+	if active != 3 || a.projectQueueStateFor(a.access.Directory.Projects[3]).Loading {
+		t.Fatal("sidebar project reads exceeded the concurrency limit")
+	}
+	drainReading(t, updates, func() bool { return !fast.Loading })
+	if !fast.Loaded || !slow.Loading {
+		t.Fatal("independent project could not finish while the slow project remained pending")
+	}
+}
+
+func TestSidebarShowsUnreadCountWithoutProjectAlertDot(t *testing.T) {
+	t.Cleanup(func() { applyAppearance(false) })
+	a, q := projectQueueFixture()
+	q.Loaded = true
+	q.KnowledgeRead = knowledgeReadState{Read: map[string]bool{"unread": false}}
+	if _, isTemplate, _ := a.TrayIconState(); isTemplate {
+		t.Fatal("project anomaly did not mark the macOS status icon")
+	}
+
+	a.page = "总览"
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, dark := range []bool{false, true} {
+		applyAppearance(dark)
+		tt.SetDark(dark)
+		tt.Frame()
+		if !tt.HasText("未读记忆：memlane") || tt.HasText("待处理文档：memlane") {
+			t.Fatalf("sidebar did not show only the unread badge in dark=%t", dark)
+		}
+		name := "project-sidebar-no-alert-dot-light"
+		if dark {
+			name = "project-sidebar-no-alert-dot-dark"
+		}
+		fixtureImage(t, tt, name)
+	}
+	a.openProjectSettings(0)
+	tt.Frame()
+	if !tt.HasText("采集队列有 1 项失败") {
+		t.Fatal("project management lost the anomaly")
+	}
+}
+
+func TestTrayAlertRevealsInboxFailure(t *testing.T) {
+	t.Cleanup(func() { applyAppearance(false) })
+	a, q := projectQueueFixture()
+	a.page = "总览"
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, dark := range []bool{false, true} {
+		tt.SetDark(dark)
+		a.openProjectQueueStatus(0)
+		tt.Frame()
+		if a.page != "知识" || a.kind != "管理" || a.access.RevealQueueProject != "" {
+			t.Fatal("tray alert did not open the project queue")
+		}
+		row, ok := tt.Find("采集队列有 1 项失败")
+		if !ok || row.Y < 80 || row.Y+row.H > 820 {
+			t.Fatalf("failure not visible after reveal: %+v", row)
+		}
+		q.Scroll.Y = 300
+		tt.Frame()
+	}
 }

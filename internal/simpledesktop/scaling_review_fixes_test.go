@@ -257,10 +257,8 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 		case "/v1/projects/p1/message-summary":
 			_ = json.NewEncoder(w).Encode(v2MessageSummaryResponse{
 				ProjectID: "p1", DatasetID: "ds-1", UnreadCount: 7,
-				UnreadPreview: []v2UnreadPreviewItem{{DocID: "revoked-1", Title: "Secret"}},
-				PendingDocuments: []projectMessageSummaryDocument{
-					{ID: "pending-1", DatasetID: "ds-1", Title: "Secret Doc"},
-				},
+				UnreadPreview:         []v2UnreadPreviewItem{{DocID: "revoked-1", Title: "Secret"}},
+				PendingDocumentsCount: 1,
 			})
 		}
 	}))
@@ -898,33 +896,13 @@ func TestReviewFixBodyValidationSessionUserIDAndPendingDocs(t *testing.T) {
 		t.Fatalf("expected loadMoreSubagents to pass user_id=user-B, got %q", got)
 	}
 
-	// 4. V2 pending_documents without nested document object still produces readable Document + renders total PendingDocumentsCount.
-	summary := v2MessageSummaryResponse{
-		ProjectID:             "p1",
-		DatasetID:             "ds-1",
-		PendingDocumentsCount: 42,
-		PendingDocuments: []projectMessageSummaryDocument{
-			{ID: "pend-1", DatasetID: "ds-1", Name: "design.md", Title: "design.md", Date: "2026-11-21", Kind: "文档", CreatedAt: "2026-11-21T08:00:00Z"},
-		},
-	}
-	pendingItems := summary.pendingItems("ds-1")
-	if len(pendingItems) != 1 || pendingItems[0].Document == nil || pendingItems[0].Document.ID != "pend-1" || pendingItems[0].Document.Dataset != "ds-1" {
-		t.Fatalf("pendingItems failed to synthesize readable Document: %+v", pendingItems)
-	}
+	// Summary counts drive tray progress even when document rows are absent.
 	p := a.access.Directory.Projects[0]
 	q := a.projectQueueStateFor(p)
-	q.Loaded = true
-	q.Documents = pendingItems
-	q.PendingDocumentsCount = 42
-	for _, pref := range []string{appearanceLight, appearanceDark} {
-		a.setAppearancePreference(pref)
-		a.page, a.kind = "知识", "管理"
-		a.access.OpenProject = p.ID
-		tt := ui.NewTester(a.View, 1200, 820)
-		tt.Frame()
-		if !tt.HasText("42 份文档") {
-			t.Fatalf("[%s] expected PendingDocumentsCount=42 in queue progress header", pref)
-		}
+	q.Loaded, q.PendingDocumentsCount = true, 42
+	progress := a.trayProjectProgressItems()
+	if len(progress) != 1 || progress[0].Count != 42 {
+		t.Fatalf("pending document count was not preserved: %+v", progress)
 	}
 }
 
@@ -1429,11 +1407,11 @@ func TestReviewFixR2ReadingStateMigrationPreconditionAndZeroCommit(t *testing.T)
 	}
 }
 
-// TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace verifies R2-GO-P1-02, R2-GO-P1-03, R2-GO-P1-08:
+// TestReviewFixR2UnreadStateRevMonotonicFlushAndMarkAllRace verifies R2-GO-P1-02, R2-GO-P1-03, R2-GO-P1-08:
 // 1. GET snapshots with stale unread_state_rev cannot overwrite newer ServerUnreadCount.
 // 2. FlushPendingState returns error when mark-read or cold-store write fails.
-// 3. Concurrent clearProjectNotificationsAsync runs cleanly under -race with noticeAckMu serialization.
-func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
+// 3. Concurrent clearProjectNotificationsAsync runs cleanly with knowledge writer serialization.
+func TestReviewFixR2UnreadStateRevMonotonicFlushAndMarkAllRace(t *testing.T) {
 	controlCapabilitiesCache.mu.Lock()
 	clear(controlCapabilitiesCache.entries)
 	controlCapabilitiesCache.mu.Unlock()
@@ -1506,8 +1484,8 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
 	a.clearProjectNotificationsAsync(q, p)
 	a.clearProjectNotificationsAsync(q, p)
 	drainReading(t, updates, func() bool { return q.StateVersion >= version+2 })
-	if q.NoticeAcknowledgementError != "" || q.KnowledgeReadError != "" {
-		t.Fatalf("concurrent clearProjectNotificationsAsync failed: ack=%q read=%q", q.NoticeAcknowledgementError, q.KnowledgeReadError)
+	if q.KnowledgeReadError != "" {
+		t.Fatalf("concurrent clearProjectNotificationsAsync failed: read=%q", q.KnowledgeReadError)
 	}
 }
 

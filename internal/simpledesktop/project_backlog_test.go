@@ -54,30 +54,22 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	}
 	q.Next = time.Now().Add(time.Hour)
 	q.BacklogNext = time.Now().Add(time.Hour)
-	q.Sessions[0].View.Status = PendingMaterials{Pending: 75, Signature: "safe-snapshot"}
-	q.Sessions[1].View.Status = PendingMaterials{Pending: 20, Unknown: 20, Signature: "unknown-snapshot"}
-	maintain := "maintain"
-	p.Overrides["agent"] = ProjectOverride{Access: &maintain}
+	q.InboxPending, q.InboxFailed = 75, 20
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"自动采集", "75 条消息等待采集", "20 条消息未收到采集结果"} {
+	for _, label := range []string{"自动采集", "有 75 条原始记录等待提炼", "采集队列有 20 项失败"} {
 		if !tt.HasText(label) {
-			t.Fatal("missing real job progress", label)
+			t.Fatal("missing inbox status", label)
 		}
 	}
 	if tt.HasText("保存一批") {
 		t.Fatal("manual batch controls remain")
 	}
-	if tt.HasText("系统正在查询采集结果，不会重复发送。") {
-		t.Fatal("inflight journals were shown as final unknown outcomes")
-	}
-	fixtureImage(t, tt, "project-backlog-running")
-	q.Backlog = &backlogJob{Operation: "server-operation", Status: "completed", Saved: 95, Total: 95, Isolated: 20, ProcessingSubmitted: 1}
-	q.Sessions[0].View.Status.Pending = 0
+	q.Backlog = &backlogJob{Operation: "server-operation", Status: "completed", Saved: 95, Total: 95}
+	q.InboxPending = 0
 	tt.Frame()
-	if tt.HasText("上次采集已完成") || !tt.HasText("20 条消息未收到采集结果") {
-		t.Fatal("completion and processing submission were conflated")
+	if tt.HasText("有 75 条原始记录等待提炼") || !tt.HasText("采集队列有 20 项失败") {
+		t.Fatal("completion replaced the separate inbox failure")
 	}
-	fixtureImage(t, tt, "project-backlog-completed")
 	q.Backlog = job
 	a.page = "总览"
 	if !q.Backlog.active() || posts != 1 {
@@ -85,22 +77,9 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	}
 }
 
-func TestAutomaticBacklogPresentationKeepsExistingUnknownVisible(t *testing.T) {
-	a, q := projectQueueFixture()
-	q.AutomaticSave = true
-	q.Backlog = &backlogJob{Automatic: true, Status: "running", Saved: 8, Remaining: 7}
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("自动采集已开启") || !tt.HasText("自动采集") || tt.HasText("保存积压记录") {
-		t.Fatal("automatic save still requires a manual start")
-	}
-	if (!tt.HasText("2 条消息等待采集") || !tt.HasText("1 条消息未收到采集结果")) || tt.HasText("任务已采集 8 条 · 任务内剩余 7 条 · 待核对 0 条") {
-		t.Fatal("automatic job hid an older unknown record outside its send range")
-	}
-}
-
 func TestProjectAutoCaptureSwitchWorksWithoutBacklogJob(t *testing.T) {
 	a, q := projectQueueFixture()
-	q.Sessions, q.Documents = nil, nil
+	q.InboxPending, q.InboxFailed = 0, 0
 	token := filepath.Join(t.TempDir(), "control.token")
 	if err := os.WriteFile(token, []byte("private-test-control-credential-1234567890"), 0600); err != nil {
 		t.Fatal(err)
@@ -170,18 +149,5 @@ func TestProjectAutoCaptureSwitchWorksWithoutBacklogJob(t *testing.T) {
 		if !tt.HasText(label) || q.projectAutoCapture(a.access.Directory.Projects[0]) != enabled {
 			t.Fatalf("switch did not show confirmed project setting %v", enabled)
 		}
-	}
-}
-
-func TestPausedAutomaticSaveShowsPermissionActionInsteadOfResume(t *testing.T) {
-	a, q := projectQueueFixture()
-	q.AutomaticSave = true
-	q.Backlog = &backlogJob{Automatic: true, Status: "paused", Reason: "policy_unconfirmed", Remaining: 105}
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("后台采集已暂停") || !tt.HasText("这是权限状态核对问题，不表示你需要重新授权。") || tt.HasText("继续采集") {
-		t.Fatal("paused permission state presented as running or resumable")
-	}
-	if !tt.HasText("2 条消息等待采集") || !tt.HasText("1 条消息未收到采集结果") {
-		t.Fatal("live counts replaced by stale task remaining count")
 	}
 }

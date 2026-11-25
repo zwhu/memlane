@@ -106,7 +106,7 @@ func (a *App) setAppearancePreference(mode string) {
 	a.appearance = appearanceState{mode: mode, path: path, loaded: true}
 	if err == nil && path != "" {
 		if b, marshalErr := json.Marshal(appearancePreferenceFile{Version: 1, Appearance: mode}); marshalErr == nil {
-			_ = writeNoticeAcknowledgements(path, b)
+			_ = writePrivateJSONFile(path, b)
 		}
 	}
 	if a.ApplyAppearanceSource != nil {

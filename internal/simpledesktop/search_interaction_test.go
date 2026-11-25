@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -389,5 +390,47 @@ func TestSearchSpaceCollapsedWrapperStrippingAndNoKnowledgeTitleDuplication(t *t
 	primary, secondary := searchItemPrimaryText(knowledgeHit, "sandbox")
 	if secondary != "" || !strings.Contains(primary, "sandbox") || strings.Contains(primary, " — ") {
 		t.Fatalf("knowledge hit duplicated title and preview: primary=%q secondary=%q", primary, secondary)
+	}
+}
+
+func TestSearchPageUsesGoGatewayEndpoints(t *testing.T) {
+	a := New(Config{ServiceURL: coldStartTestURL, Projects: []Project{{ID: "p", Dataset: "ds"}},
+		ProjectControl: readingControlConfig(t, coldStartTestURL)}, nil)
+	var searchCalls, recentCalls atomic.Int32
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/search/recent":
+			fmt.Fprint(w, `{"recent_items":[]}`)
+		case "/api/search/recent":
+			recentCalls.Add(1)
+			fmt.Fprint(w, `{"recent_items":[{"doc_id":"recent","dataset_id":"ds","kind":"knowledge"}]}`)
+		case "/v1/capabilities":
+			fmt.Fprint(w, `{"api_versions":["v2","v1"],"reading_contract":"catalog-cursor-v1","features":{"async_capture":true}}`)
+		case "/api/search":
+			searchCalls.Add(1)
+			var request api.SearchRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ProjectID != "p" || request.Query != "WAL" {
+				t.Errorf("unexpected search request: %+v %v", request, err)
+			}
+			fmt.Fprint(w, `{"ok":true,"items":[{"doc_id":"result","dataset_id":"ds","kind":"knowledge","title":"WAL"}]}`)
+		default:
+			t.Errorf("unexpected search request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})}
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	a.page = "知识"
+	a.OpenSearch()
+	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
+	if rows := a.visibleSearchRows(); recentCalls.Load() != 1 || len(rows) != 1 || rows[0].ID != "recent" {
+		t.Fatalf("wrong gateway recent items: %+v %q", rows, a.searchUI.Error)
+	}
+	a.searchUI.Query = "WAL"
+	a.searchPage.CancelChanged()
+	a.searchPage.SubmitOrOpen()
+	drainReading(t, updates, func() bool { return !a.searchUI.Loading })
+	if rows := a.visibleSearchRows(); searchCalls.Load() != 1 || len(rows) != 1 || rows[0].ID != "result" {
+		t.Fatalf("wrong gateway search results: %+v %q", rows, a.searchUI.Error)
 	}
 }

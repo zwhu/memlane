@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -491,10 +492,33 @@ func (c ProjectControlClient) rename(ctx context.Context, revision int64, projec
 	return result, err
 }
 
+type controlFeatures []string
+
+func (f *controlFeatures) UnmarshalJSON(raw []byte) error {
+	var names []string
+	if err := json.Unmarshal(raw, &names); err == nil {
+		*f = names
+		return nil
+	}
+	var flags map[string]bool
+	if err := json.Unmarshal(raw, &flags); err != nil {
+		return err
+	}
+	names = make([]string, 0, len(flags))
+	for name, enabled := range flags {
+		if enabled {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	*f = names
+	return nil
+}
+
 type ControlCapabilities struct {
-	APIVersions     []string `json:"api_versions"`
-	ReadingContract string   `json:"reading_contract"`
-	Features        []string `json:"features"`
+	APIVersions     []string        `json:"api_versions"`
+	ReadingContract string          `json:"reading_contract"`
+	Features        controlFeatures `json:"features"`
 }
 
 func (caps ControlCapabilities) HasFeature(feature string) bool {

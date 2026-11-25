@@ -7,8 +7,8 @@ func TestAppControllerInitializationAndResets(t *testing.T) {
 	if a.searchController.searchType != "全部类型" {
 		t.Fatalf("searchController.searchType = %q, want 全部类型", a.searchController.searchType)
 	}
-	if a.graphController.graphMode != "实体关系" {
-		t.Fatalf("graphController.graphMode = %q, want 实体关系", a.graphController.graphMode)
+	if a.graphController.Mode != "实体关系" {
+		t.Fatalf("graphController.Mode = %q, want 实体关系", a.graphController.Mode)
 	}
 	if a.readingController.panes == nil || a.readingController.titles == nil {
 		t.Fatal("readingController panes and titles must be initialized")
@@ -33,21 +33,21 @@ func TestAppControllerInitializationAndResets(t *testing.T) {
 	if a.codeIndexBlocked() {
 		t.Fatal("fresh graphController should not block code indexing")
 	}
-	a.codeBusy = true
+	a.graphController.CodeBusy = true
 	if !a.codeIndexBlocked() {
 		t.Fatal("codeBusy should block code indexing")
 	}
-	a.codeBusy, a.codeUnknown = false, true
+	a.graphController.CodeBusy, a.graphController.CodeUnknown = false, true
 	if !a.codeIndexBlocked() {
 		t.Fatal("codeUnknown should block code indexing")
 	}
-	a.codeUnknown, a.codeRemoteActive = false, true
+	a.graphController.CodeUnknown, a.graphController.CodeRemoteActive = false, true
 	if !a.codeIndexBlocked() {
 		t.Fatal("codeRemoteActive should block code indexing")
 	}
-	a.graphSelection, a.graphError, a.graphLoading = "node-1", "err", true
+	a.graphController.Selection, a.graphController.Error, a.graphController.Loading = "node-1", "err", true
 	a.resetGraphView("代码结构")
-	if a.graphMode != "代码结构" || a.graphSelection != "" || a.graphError != "" || a.graphLoading {
+	if a.graphController.Mode != "代码结构" || a.graphController.Selection != "" || a.graphController.Error != "" || a.graphController.Loading {
 		t.Fatal("resetGraphView did not reset graph state")
 	}
 

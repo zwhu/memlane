@@ -27,7 +27,6 @@ type projectAccessState struct {
 	PermissionSaved              map[string]time.Time
 	Queues                       map[string]*projectQueueState
 	CheckboxPending              map[string]*projectCheckboxPending
-	Buffers                      map[string]*pendingBufferView
 	SidebarQueueIndex            int
 }
 

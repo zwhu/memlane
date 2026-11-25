@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/shell"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,27 +54,27 @@ func TestProjectRefreshKeepsListAndReadingGeometry(t *testing.T) {
 
 func TestGraphIdenticalRefreshPreservesCanvasEpoch(t *testing.T) {
 	g := &GraphHost{}
-	p := Project{ID: "p"}
+	p := shell.ProjectRef{ID: "p"}
 	raw := []byte(`{"nodes":[{"id":"a","name":"A"}],"links":[],"color_maps":{}}`)
-	if err := g.apply(context.Background(), p, "ds", raw); err != nil {
+	if err := g.ApplyRaw(context.Background(), p, "ds", raw, nil); err != nil {
 		t.Fatal(err)
 	}
-	epoch := g.epoch
-	if err := g.applyCurrent(context.Background(), p, "ds", raw, &epoch); err != nil {
+	epoch := g.Epoch()
+	if err := g.ApplyRaw(context.Background(), p, "ds", raw, &epoch); err != nil {
 		t.Fatal(err)
 	}
-	if g.epoch != epoch {
+	if g.Epoch() != epoch {
 		t.Fatal("identical refresh replaces the official canvas frame")
 	}
 	stale := epoch - 1
-	if err := g.applyCurrent(context.Background(), p, "ds", raw, &stale); err == nil {
+	if err := g.ApplyRaw(context.Background(), p, "ds", raw, &stale); err == nil {
 		t.Fatal("identical payload bypassed stale-result rejection")
 	}
 	changed := []byte(`{"nodes":[{"id":"a","name":"Updated"}],"links":[],"color_maps":{}}`)
-	if err := g.applyCurrent(context.Background(), p, "ds", changed, &epoch); err != nil {
+	if err := g.ApplyRaw(context.Background(), p, "ds", changed, &epoch); err != nil {
 		t.Fatal(err)
 	}
-	if g.epoch != epoch+1 {
+	if g.Epoch() != epoch+1 {
 		t.Fatal("changed graph was not published")
 	}
 }
@@ -157,7 +158,7 @@ func TestGraphToolbarAndCodeGraphEmptyV4Alignment(t *testing.T) {
 	a := projectUIFixture()
 	a.Config.ProjectControl = &ProjectControlConfig{}
 	a.page = "图谱"
-	a.graphMode = "实体关系"
+	a.graphController.Mode = "实体关系"
 	tt := ui.NewTester(a.View, 1200, 820)
 
 	if !tt.HasText("创建工具图谱") || !tt.HasText("刷新图谱") {
@@ -165,9 +166,9 @@ func TestGraphToolbarAndCodeGraphEmptyV4Alignment(t *testing.T) {
 	}
 
 	// Switch to code graph (disabled) -> V4 empty state + primary CTA + codeStatus filtering.
-	a.graphMode = "代码结构"
-	a.graphError = "代码索引暂不可用"
-	a.codeStatus = "官方代码索引状态：全局缓存不应展示"
+	a.graphController.Mode = "代码结构"
+	a.graphController.Error = "代码索引暂不可用"
+	a.graphController.CodeStatus = "官方代码索引状态：全局缓存不应展示"
 	tt.Frame()
 	if !tt.HasText("代码图谱尚未开启") || !tt.HasText("开启代码图谱") || !tt.HasText("仅当前项目 · 由你选择是否开启") {
 		t.Fatal("code graph empty state missing V4 elements or footer")
@@ -178,7 +179,7 @@ func TestGraphToolbarAndCodeGraphEmptyV4Alignment(t *testing.T) {
 	if tt.HasText("官方代码索引状态：全局缓存不应展示") {
 		t.Fatal("code graph empty state leaked global restored codeStatus")
 	}
-	a.codeStatus = "正在等待索引确认"
+	a.graphController.CodeStatus = "正在等待索引确认"
 	tt.Frame()
 	if !tt.HasText("正在等待索引确认") {
 		t.Fatal("code graph empty state hid project-scoped codeStatus")

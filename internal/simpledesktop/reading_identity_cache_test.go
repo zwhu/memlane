@@ -90,12 +90,12 @@ func TestRenderPathQueueHelpersAvoidSyncTokenAndLocalJSONReads(t *testing.T) {
 	a.access.Loaded = true
 	a.access.Directory.Projects = []AccessProject{accessProject}
 
-	// Corrupt the local acknowledgement JSON on disk so any synchronous read would set NoticeAcknowledgementError.
-	ackPath, err := a.noticeAcknowledgementPath(accessProject)
+	// A persisted read state would mark the queue as initialized if loaded synchronously.
+	readPath, err := a.knowledgeReadPath(accessProject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ackPath, []byte("{corrupt"), 0600); err != nil {
+	if err := writeKnowledgeState(readPath, knowledgeReadState{Initialized: true, Read: map[string]bool{"existing": true}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,12 +116,12 @@ func TestRenderPathQueueHelpersAvoidSyncTokenAndLocalJSONReads(t *testing.T) {
 
 	// projectQueueStateForAsync allocates without reading local JSON synchronously.
 	q := a.projectQueueStateForAsync(accessProject)
-	if q == nil || q.NoticeAcknowledgementError != "" || q.localStateLoaded {
+	if q == nil || q.KnowledgeRead.Initialized || q.localStateLoaded {
 		t.Fatalf("projectQueueStateForAsync unexpectedly read disk synchronously: %+v", q)
 	}
 	q.Next = time.Now().Add(time.Hour)
 	a.refreshSidebarQueueIfDue(time.Now())
-	if q.NoticeAcknowledgementError != "" {
+	if q.localStateLoaded || q.KnowledgeRead.Initialized {
 		t.Fatal("refreshSidebarQueueIfDue performed synchronous local JSON read")
 	}
 
