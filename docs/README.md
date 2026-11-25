@@ -17,6 +17,7 @@
 | --- | --- |
 | [overview.md](architecture/overview.md) | 当前系统分层、源码模块映射、核心数据流与架构全景图 |
 | [boundaries.md](architecture/boundaries.md) | 目标架构边界契约（Go 单二进制收口、Python ≤3.5k 引擎薄壳、方案 C `memlane hook` 与冲突策略、6 原语可替换引擎接口、`kit/*` 跨 App 复用预留与 5 万行预算红线） |
+| [refactor-roadmap-20261126.md](architecture/refactor-roadmap-20261126.md) | 目标架构重构实施蓝图（Stage 0 技术约束、功能处置账本、六层完整性与正确性保障体系、三权分立协同机制与 Wave 0–4 垂直切片路线图） |
 | [development.md](architecture/development.md) | 日常开发入口 `scripts/dev.py`、统一门禁、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
 | [agent-connection-contract.md](architecture/agent-connection-contract.md) | 电脑级 5 宿主发现、官方插件优先接入与零项目授权契约 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
