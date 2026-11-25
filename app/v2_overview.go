@@ -32,6 +32,7 @@ type v2OverviewCommonSummary struct {
 type v2OverviewBootstrapResponse struct {
 	Generation          int64                      `json:"generation"`
 	LocalTZName         string                     `json:"local_tz_name"`
+	FirstUseDays        int                        `json:"first_use_days"`
 	TotalKnowledgeCount int                        `json:"total_knowledge_count"`
 	TotalRawCount       *int                       `json:"total_raw_count,omitempty"`
 	DayBuckets          []v2OverviewDayBucket      `json:"day_buckets"`

@@ -37,12 +37,14 @@ func (e *testEngine) DeleteItem(ctx context.Context, scope engine.Scope, id stri
 
 const activeToken = "agent-secret"
 
+const activePrincipalID = "11111111-1111-4111-8111-111111111111"
+
 func fixture(t *testing.T) (*domain.Store, *testEngine) {
 	t.Helper()
 	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "mcp.sqlite"))
 	requireOK(t, err)
 	t.Cleanup(func() { store.Close() })
-	addAgent(t, store, domain.Agent{ID: "active", Name: "Active", PrincipalID: "principal", DefaultAccess: domain.AccessNone}, activeToken, 0o600)
+	addAgent(t, store, domain.Agent{ID: "active", Name: "Active", PrincipalID: activePrincipalID, DefaultAccess: domain.AccessNone}, activeToken, 0o600)
 	return store, &testEngine{}
 }
 

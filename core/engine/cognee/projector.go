@@ -6,27 +6,31 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/google/uuid"
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
 
 type Projector struct {
-	storePath string
-	loc       *time.Location
-	syncMu    sync.Mutex
+	storePath  string
+	loc        *time.Location
+	bodyReader *BodyReader
+	syncMu     sync.Mutex
 }
 
 func NewProjector(storePath string, loc *time.Location) *Projector {
 	if loc == nil {
 		loc = time.Local
 	}
-	return &Projector{storePath: storePath, loc: loc}
+	return &Projector{storePath: storePath, loc: loc, bodyReader: NewBodyReader(storePath, nil)}
 }
 
 func (p *Projector) database(name string) string {
@@ -134,6 +138,9 @@ func (p *Projector) SyncCatalog(ctx context.Context, store *domain.Store) (*engi
 		if err != nil {
 			return nil, fmt.Errorf("read official catalog snapshot: %w", err)
 		}
+	}
+	if err := p.resolveDocumentTitles(ctx, store, snapshot.docs); err != nil {
+		return nil, fmt.Errorf("resolve catalog titles: %w", err)
 	}
 	stats := &engine.SyncStats{
 		Datasets: len(snapshot.states), DocsProjected: len(snapshot.docs), SessionsProjected: len(snapshot.sessions),
@@ -248,6 +255,12 @@ func (p *Projector) projectDocument(d *projectedDoc, protected bool, sys, ext, t
 	if protected || metadataText(meta, "memlane_kind") == "user_profile" || metadataText(parseJSONDict(ext), "memlane_kind") == "user_profile" {
 		d.PipelineStatus = "not_applicable"
 	}
+	if !readableTitle(d.DocLabel) {
+		d.DocLabel = ""
+		if title := cleanTitle(metadataText(meta, "title")); readableTitle(title) {
+			d.DocLabel = title
+		}
+	}
 	classifyDocument(d, meta, nodeSet)
 	if d.Kind == "raw_doc" && (slices.Contains(nodeSet, "user_sessions_from_cache") || slices.Contains(nodeSet, "agent_trace_feedbacks")) {
 		return false
@@ -271,6 +284,102 @@ func (p *Projector) projectDocument(d *projectedDoc, protected bool, sys, ext, t
 	}
 	d.DayDescKey = dayToDescKey(d.EffectiveDate)
 	return true
+}
+
+var machineDocName = regexp.MustCompile(`(?i)^(text_[0-9a-f]{32}(\.(md|txt))?|(user_context|memory)-[0-9a-f]{32}(\.txt)?)$`)
+var orderedTitleMarker = regexp.MustCompile(`^[0-9]+[.)][[:space:]]+`)
+
+func readableTitle(title string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" || machineDocName.MatchString(title) {
+		return false
+	}
+	_, err := uuid.Parse(title)
+	return err != nil
+}
+
+func cleanTitle(line string) string {
+	line = strings.TrimLeft(strings.TrimSpace(line), "#>*-+ \t")
+	line = orderedTitleMarker.ReplaceAllString(line, "")
+	title := strings.Join(strings.Fields(line), " ")
+	if utf8.RuneCountInString(title) > 80 {
+		title = strings.TrimSpace(string([]rune(title)[:79])) + "…"
+	}
+	return title
+}
+
+func bodyTitle(body string) string {
+	var fence byte
+	var fenceSize int
+	for line := range strings.SplitSeq(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			size := len(trimmed) - len(strings.TrimLeft(trimmed, string(trimmed[0])))
+			if fence == 0 {
+				fence, fenceSize = trimmed[0], size
+			} else if trimmed[0] == fence && size >= fenceSize && strings.TrimSpace(trimmed[size:]) == "" {
+				fence = 0
+			}
+			continue
+		}
+		if fence != 0 || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") ||
+			strings.HasPrefix(trimmed, "![") && strings.HasSuffix(trimmed, ")") {
+			continue
+		}
+		title := cleanTitle(trimmed)
+		if strings.HasPrefix(title, "Lesson-Type:") || strings.HasPrefix(title, "State-Key:") ||
+			strings.HasPrefix(title, "Session learning (session ") {
+			continue
+		}
+		if readableTitle(title) {
+			return title
+		}
+	}
+	return ""
+}
+
+func (p *Projector) resolveDocumentTitles(ctx context.Context, store *domain.Store, docs []projectedDoc) error {
+	candidates := make(map[docKey]*projectedDoc)
+	for i := range docs {
+		d := &docs[i]
+		if d.IsKnowledge && !readableTitle(d.DocLabel) && !readableTitle(d.DocName) && d.RawDataLocation != "" {
+			candidates[docKey{d.DatasetID, d.DocID}] = d
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if err := reuseDocumentTitles(ctx, store, candidates); err != nil {
+		return err
+	}
+	for _, d := range candidates {
+		result, err := p.bodyReader.ReadBody(ctx, engine.LocalBodyRef{Location: d.RawDataLocation, MaxBytes: 4096})
+		if err == nil {
+			d.DocLabel = bodyTitle(result.Body)
+		}
+	}
+	return ctx.Err()
+}
+
+func reuseDocumentTitles(ctx context.Context, store *domain.Store, candidates map[docKey]*projectedDoc) error {
+	rows, err := store.DB().QueryContext(ctx, `SELECT dataset_id,doc_id,doc_label,content_hash,raw_data_location
+		FROM catalog_docs WHERE is_knowledge=1 AND doc_label<>''`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key docKey
+		var label, hash, location string
+		if err := rows.Scan(&key.dataset, &key.doc, &label, &hash, &location); err != nil {
+			return err
+		}
+		if d := candidates[key]; d != nil && d.ContentHash == hash && d.RawDataLocation == location && readableTitle(label) {
+			d.DocLabel = label
+			delete(candidates, key)
+		}
+	}
+	return rows.Err()
 }
 
 func readSessions(ctx context.Context, tx *sql.Tx, id string, cols map[string]bool, args []any) ([]domain.CatalogSession, error) {

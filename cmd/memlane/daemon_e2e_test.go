@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine/cognee"
 )
@@ -25,20 +27,31 @@ import (
 const engineHarness = `
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
 import sys
 from uuid import uuid4
 
 from fastapi import FastAPI
 import uvicorn
-from engines.cognee.engine_api import install_engine_api
+from engines.cognee.engine_api import CogneeBackend, install_engine_api
 from engines.cognee.handoff import ModelHandoffController
-from engines.cognee.runner import SetupOnlyMiddleware
+from engines.cognee.runner import SetupOnlyMiddleware, _configure_store, scrub_environment
 
-class Backend:
+scrub_environment()
+_configure_store({}, Path(sys.argv[2]))
+
+class Backend(CogneeBackend):
     def __init__(self):
+        super().__init__()
         self.items = {}
 
+    # Use the pinned SDK for ACLs and trace capture. Keep QA indexing, extraction
+    # and search deterministic without downloading a model.
+
     async def ingest(self, payload, content):
+        if payload.kind == 'capture_trace':
+            return await super().ingest(payload, content)
+        await self._dataset(payload.scope, 'write', allow_provision=True)
         ds, doc = payload.scope.dataset_id, str(uuid4())
         snippet = json.dumps(content) if isinstance(content, dict) else content
         self.items.setdefault(ds, {})[doc] = {
@@ -48,30 +61,22 @@ class Backend:
         return {'entry_id': doc, 'document_id': doc}
 
     async def extract(self, payload):
+        await self._dataset(payload.scope, 'write', allow_provision=True)
         assert handoff.status_reads > 0
+        if payload.doc_ids == ['fresh-session']:
+            return {'touched_doc_ids': []}
         for doc in payload.doc_ids:
             self.items[payload.scope.dataset_id][doc]['ready'] = True
         return {'touched_doc_ids': payload.doc_ids}
 
     async def search(self, payload, limit):
+        for scope in payload.scopes:
+            await self._dataset(scope)
         return [{'dataset_id': scope.dataset_id, 'document_id': item['id'],
                  'title': item['title'], 'snippet': item['snippet'], 'score': 1.0}
                 for scope in payload.scopes
                 for item in self.items.get(scope.dataset_id, {}).values()
                 if item['ready'] and payload.query.lower() in item['snippet'].lower()][:limit]
-
-    async def list_items(self, scope, limit, offset):
-        return list(self.items.get(scope.dataset_id, {}).values())[offset:offset+limit]
-
-    async def get_item(self, scope, item_id):
-        return self.items[scope.dataset_id][item_id]
-
-    async def delete_item(self, scope, item_id):
-        del self.items[scope.dataset_id][item_id]
-        return {'deleted': True}
-
-    async def graph(self, dataset_id, filter_text):
-        return {'nodes': [], 'edges': []}
 
 class HarnessHandoff(ModelHandoffController):
     status_reads = 0
@@ -93,6 +98,8 @@ handoff = HarnessHandoff(background=lambda: [], factory=lambda env: env)
 
 @asynccontextmanager
 async def lifespan(app):
+    from cognee.modules.engine.operations.setup import setup
+    await setup()
     try:
         yield
     finally:
@@ -105,7 +112,7 @@ uvicorn.run(app, fd=3, access_log=False, log_level='warning')
 `
 
 func TestLiveGoPythonGatewayE2E(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	root, err := filepath.Abs("../..")
 	require(t, err)
@@ -229,9 +236,12 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		t.Fatal(initial)
 	}
 
-	const common = "common-dataset"
+	const common = "33333333-3333-4333-8333-333333333333"
 	require(t, db.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "common", Name: "Common", DatasetID: common, DatasetName: "Common"}))
-	manage("POST", "/api/agents", map[string]any{"id": "agent", "kind": "codex", "name": "Test Codex", "key_file": agentFile}, 201)
+	registered := manage("POST", "/api/agents", map[string]any{"id": "agent", "kind": "codex", "name": "Test Codex", "key_file": agentFile}, 201)
+	if registered["principal_id"] != "" {
+		t.Fatal(registered)
+	}
 	manage("PUT", "/api/projects/project/acl/agent", map[string]any{"access": "maintain", "capture": true}, 200)
 	manage("PUT", "/api/common/acl/agent", map[string]any{"access": "read"}, 200)
 	commonDoc := manage("POST", "/api/common", map[string]any{"common_category": "experience", "title": "Common lesson", "content": "shared needle"}, 201)
@@ -240,25 +250,33 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	}
 	accepted := agent("/ingest", map[string]any{"kind": "capture_qa", "workspace": workspace, "session_id": "session",
 		"message_id": "turn-1", "content": map[string]string{"question": "Where is the needle?", "answer": "Project lesson"}}, 202)
-	inboxID, ok := accepted["inbox_id"].(string)
-	if !ok || inboxID == "" {
-		t.Fatal(accepted)
+	waitForCapture := func(accepted map[string]any, datasetID string) {
+		t.Helper()
+		inboxID, ok := accepted["inbox_id"].(string)
+		if !ok || inboxID == "" {
+			t.Fatal(accepted)
+		}
+		for {
+			item, err := db.GetInboxItem(ctx, inboxID)
+			require(t, err)
+			if item.Status == "succeeded" {
+				if item.DatasetID != datasetID {
+					t.Fatalf("capture reached dataset %q, want %q", item.DatasetID, datasetID)
+				}
+				break
+			}
+			if item.Status == "failed" {
+				t.Fatalf("capture failed: %s", item.LastError)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("capture did not complete: %+v", item)
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
 	}
-	for {
-		item, err := db.GetInboxItem(ctx, inboxID)
-		require(t, err)
-		if item.Status == "succeeded" {
-			break
-		}
-		if item.Status == "failed" {
-			t.Fatalf("capture failed: %s", item.LastError)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("capture did not complete: %+v", item)
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
+	waitForCapture(accepted, dataset)
+
 	overview := manage("GET", "/api/overview/bootstrap", nil, 200)
 	projects, ok := overview["projects"].([]any)
 	if !ok || len(projects) != 1 || asObject(t, projects[0])["project_id"] != "project" || asObject(t, overview["inbox"])["succeeded"] != float64(1) {
@@ -320,6 +338,34 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	if !ok || len(found) != 1 || asObject(t, found[0])["document_id"] != remembered["document_id"] {
 		t.Fatalf("remember=%v recall=%v", remembered, memory)
 	}
+	freshWorkspace := t.TempDir()
+	fresh := manage("POST", "/api/projects", map[string]any{"id": "fresh", "name": "Fresh project", "workspace": freshWorkspace}, 201)
+	freshDataset := fmt.Sprint(fresh["dataset_id"])
+	if _, err := uuid.Parse(freshDataset); err != nil || freshDataset == dataset || freshDataset == common {
+		t.Fatalf("expected a fresh dataset UUID: %v", fresh)
+	}
+	if denied := internal("GET", "/items?dataset_id="+freshDataset, nil, 403); denied["detail"] != "dataset_access_required" {
+		t.Fatal(denied)
+	}
+	manage("PUT", "/api/projects/fresh/acl/agent", map[string]any{"access": "maintain", "capture": true, "auto_process": false}, 200)
+	for _, capture := range []struct {
+		kind    string
+		content map[string]string
+	}{
+		{"capture_trace", map[string]string{"origin_function": "read_file", "status": "success"}},
+		{"capture_qa", map[string]string{"question": "Fresh question", "answer": "Fresh answer"}},
+	} {
+		accepted := agent("/ingest", map[string]any{"kind": capture.kind, "workspace": freshWorkspace, "session_id": "fresh-session",
+			"message_id": capture.kind, "content": capture.content}, 202)
+		waitForCapture(accepted, freshDataset)
+	}
+	internal("GET", "/items?dataset_id="+freshDataset, nil, 200)
+	freshRecall := tool("recall", map[string]any{"project_path": freshWorkspace, "query": "Fresh question"})
+	freshHits, ok := freshRecall["hits"].([]any)
+	if !ok || len(freshHits) != 1 || asObject(t, freshHits[0])["dataset_id"] != freshDataset {
+		t.Fatal(freshRecall)
+	}
+
 	h := asObject(t, tool("health", map[string]any{})["engine"])
 	if h["engine"] != "cognee" || h["ok"] != true {
 		t.Fatal(h)
@@ -340,7 +386,8 @@ func TestStartupCatalogProjection(t *testing.T) {
 	official := filepath.Join(dir, "official-store")
 	engineKey := filepath.Join(dir, "engine.token")
 	require(t, os.WriteFile(engineKey, []byte("projector-test-private-token"), 0o600))
-	stack, err := MountGatewayStack(StackConfig{Store: db, ManagementToken: "projector-startup-test-management-token",
+	const management = "projector-startup-test-management-token"
+	stack, err := MountGatewayStack(StackConfig{Store: db, ManagementToken: management,
 		Engine: cognee.Config{Endpoint: "http://127.0.0.1:12345", TokenFile: engineKey, StorePath: official}})
 	require(t, err)
 	defer func() { require(t, stack.Profiles.Close(ctx)) }()
@@ -355,6 +402,42 @@ func TestStartupCatalogProjection(t *testing.T) {
 	require(t, err)
 	if len(docs) != 1 || len(sessions) != 1 || sessions[0].SessionID != "imported-session" {
 		t.Fatalf("initial projection has %d knowledge documents and %d sessions", len(docs), len(sessions))
+	}
+	require(t, db.UpsertProject(ctx, domain.Project{ID: "profiles", Name: "Profiles", DatasetID: uuid.NewString(), DatasetName: "ml-user-profiles"}))
+	get := func(path string, out any) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+management)
+		response := httptest.NewRecorder()
+		stack.Gateway.Handler().ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body)
+		}
+		require(t, json.Unmarshal(response.Body.Bytes(), out))
+	}
+	var profile struct {
+		Protected bool `json:"protected"`
+	}
+	get("/api/projects/profiles", &profile)
+	if !profile.Protected {
+		t.Fatal("project directory did not mark profiles as protected")
+	}
+	var overview struct {
+		FirstUseDays int `json:"first_use_days"`
+		Projects     []struct {
+			ID        string `json:"project_id"`
+			Protected bool   `json:"protected"`
+		}
+		RecentItems []struct{ Title string } `json:"recent_items"`
+	}
+	get("/api/overview/bootstrap?days=10", &overview)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	want := int(today.Sub(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))/(24*time.Hour)) + 1
+	if overview.FirstUseDays != want || len(overview.Projects) != 2 ||
+		overview.Projects[0].ID != "profiles" || !overview.Projects[0].Protected ||
+		len(overview.RecentItems) != 1 || overview.RecentItems[0].Title != "Imported knowledge" {
+		t.Fatalf("overview = %+v, want %d days and a readable title", overview, want)
 	}
 }
 
@@ -375,7 +458,8 @@ func seedOfficialCatalog(t *testing.T, official, dataset string) {
 	_, err = data.Exec("INSERT INTO datasets VALUES(?, 'project')", dataset)
 	require(t, err)
 	_, err = data.Exec(`INSERT INTO data VALUES('55555555-5555-4555-8555-555555555555',?,
-  'Imported knowledge','{"lesson_type":"state","state_key":"initial"}','{}','["session_learnings"]','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, dataset)
+  'text_1234567890abcdef1234567890abcdef.txt',
+  '{"title":"Imported knowledge","lesson_type":"state","state_key":"initial","first_source_date":"2025-01-01"}','{}','["session_learnings"]','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, dataset)
 	require(t, err)
 	_, err = data.Exec(`INSERT INTO session_records VALUES(?, 'imported-session','77777777-7777-4777-8777-777777777777',
   'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, dataset)
@@ -433,7 +517,7 @@ func launchPythonHarness(t *testing.T, ctx context.Context, client *http.Client,
 	})
 	require(t, closeErr)
 	endpoint := "http://" + addr
-	ready, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ready, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	for {
 		req, err := http.NewRequestWithContext(ready, "GET", endpoint+"/internal/v1/health", nil)

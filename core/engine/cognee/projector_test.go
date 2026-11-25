@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -398,4 +399,65 @@ func copyProjectionFile(src, dst string) error {
 	}
 	_, err = io.Copy(output, input)
 	return errors.Join(err, output.Close())
+}
+
+func TestProjectorReadableTitles(t *testing.T) {
+	t.Setenv("FILE_ENCRYPTION_ENABLED", "")
+	ctx := t.Context()
+	p, store := testProjector(t), openProjectionStore(t)
+	src := openProjectionTestDB(t, p.database("cognee_db"), `
+		CREATE TABLE datasets(id TEXT,name TEXT);
+		CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT,label TEXT,raw_data_location TEXT,content_hash TEXT,
+			system_metadata TEXT,external_metadata TEXT,node_set TEXT);
+	`)
+	registerProjectionProject(t, store, "project", projectDS, "Project")
+	execProjectionTestSQL(t, src, "INSERT INTO datasets VALUES(?,?)", projectDS, "Project")
+	const machine = "text_1234567890abcdef1234567890abcdef.txt"
+	data := filepath.Join(p.storePath, "data")
+	mkdirBodyDir(t, data)
+	wrapper := filepath.Join(data, "wrapper.md")
+	writeBody(t, wrapper, "Lesson-Type: state\nState-Key: build\n\n# Session learning (session abc)\n"+
+		"\n````markdown\n# Inside a fence\n```\n````\n~~~~\n# Also inside a fence\n~~~~\n"+
+		"    Indented code\n![Diagram](chart.png)\n# Real Heading\nDetails")
+	writeBody(t, filepath.Join(data, "summary.md"), "> - "+strings.Repeat("字", 81))
+	tests := []struct{ id, name, label, location, system, external, want string }{
+		{"metadata", machine, machine, "", `{"title":"#  Trusted  title"}`, `{"title":"External title"}`, "Trusted title"},
+		{"wrapper", machine, "", "file:///old/official-store/data/wrapper.md", "", `{"title":"` + firstDoc + `"}`, "Real Heading"},
+		{"summary", "memory-1234567890abcdef1234567890abcdef.txt", "", "summary.md", "", "", strings.Repeat("字", 79) + "…"},
+		{"named", "Existing name.md", "", "wrapper.md", "", "", ""},
+		{"labeled", machine, "Handwritten title", "wrapper.md", "", `{"title":"A different title"}`, "Handwritten title"},
+	}
+	for _, tc := range tests {
+		execProjectionTestSQL(t, src, `INSERT INTO data VALUES(?,?,?,?,?,'hash',?,?,'["memory"]')`,
+			tc.id, projectDS, tc.name, tc.label, tc.location, tc.system, tc.external)
+	}
+	check := func() {
+		t.Helper()
+		if _, err := p.SyncCatalog(ctx, store); err != nil {
+			t.Fatal(err)
+		}
+		docs := projectionDocs(t, store, projectDS, "knowledge")
+		if len(docs) != len(tests) {
+			t.Fatalf("projected %d titles, want %d", len(docs), len(tests))
+		}
+		for _, d := range docs {
+			for _, tc := range tests {
+				if d.DocID == tc.id && (d.DocName != tc.name || d.DocLabel != tc.want) {
+					t.Errorf("%s: name=%q label=%q, want %q and %q", tc.id, d.DocName, d.DocLabel, tc.name, tc.want)
+				}
+			}
+		}
+	}
+	check()
+
+	// An unchanged hash and location must reuse the published label even without the body.
+	if err := os.Remove(wrapper); err != nil {
+		t.Fatal(err)
+	}
+	check()
+
+	writeBody(t, wrapper, "# Updated title")
+	execProjectionTestSQL(t, src, "UPDATE data SET content_hash='changed' WHERE id='wrapper'")
+	tests[1].want = "Updated title"
+	check()
 }

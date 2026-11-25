@@ -64,10 +64,14 @@ func New(cfg Config) (*Adapter, error) {
 	if location == nil {
 		location = time.Local
 	}
+	projector := NewProjector(cfg.StorePath, location)
+	if cfg.EncryptionEnabled != nil {
+		projector.bodyReader = NewBodyReader(cfg.StorePath, cfg.EncryptionEnabled)
+	}
 	return &Adapter{
 		client:     client,
-		projector:  NewProjector(cfg.StorePath, location),
-		bodyReader: NewBodyReader(cfg.StorePath, cfg.EncryptionEnabled),
+		projector:  projector,
+		bodyReader: projector.bodyReader,
 		runner:     SubprocessRunner{PythonBin: cfg.PythonBin, WorkDir: cfg.WorkDir},
 		location:   location,
 	}, nil

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
@@ -69,10 +70,11 @@ func protected(project domain.Project) bool {
 }
 
 func agentUserID(agent domain.Agent) string {
-	if principalID := strings.TrimSpace(agent.PrincipalID); principalID != "" {
-		return principalID
+	principalID := strings.TrimSpace(agent.PrincipalID)
+	if id, err := uuid.Parse(principalID); err == nil {
+		return id.String()
 	}
-	return agent.ID
+	return ""
 }
 
 func (s *Server) selectedProject(ctx context.Context, sel projectSelector) (domain.Project, error) {
@@ -155,9 +157,13 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 		return nil, err
 	}
 	userID := agentUserID(agent)
+	receiptUser := userID
+	if receiptUser == "" {
+		receiptUser = agent.ID
+	}
 	key := args.IdempotencyKey
 	if key == "" && args.SessionID != "" && args.MessageID != "" {
-		identity, _ := json.Marshal([]string{userID, project.DatasetID, args.SessionID, args.MessageID, string(args.Kind)})
+		identity, _ := json.Marshal([]string{receiptUser, project.DatasetID, args.SessionID, args.MessageID, string(args.Kind)})
 		key = "mcp:" + hash(identity)
 	}
 	if key == "" {
@@ -179,7 +185,7 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 	if err != nil {
 		return nil, err
 	}
-	receipt := domain.CaptureReceipt{CaptureKey: key, UserID: userID, DatasetID: project.DatasetID,
+	receipt := domain.CaptureReceipt{CaptureKey: key, UserID: receiptUser, DatasetID: project.DatasetID,
 		SessionID: args.SessionID, MessageID: args.MessageID, PayloadSHA256: hash(payload), EntryType: string(args.Kind)}
 	if receipt.SessionID == "" {
 		receipt.SessionID = key

@@ -49,7 +49,7 @@ func TestToolACLAndRememberReceipts(t *testing.T) {
 	}
 	var deleted string
 	eng.delete = func(_ context.Context, scope engine.Scope, id string) error {
-		if scope != (engine.Scope{DatasetID: "write-dataset", UserID: "principal"}) {
+		if scope != (engine.Scope{DatasetID: "write-dataset", UserID: activePrincipalID}) {
 			t.Errorf("delete scope: %+v", scope)
 		}
 		deleted = id
@@ -81,7 +81,7 @@ func TestToolACLAndRememberReceipts(t *testing.T) {
 		t.Fatalf("explicit remember: %s %q, %+v", data, msg, ingests)
 	}
 	req := ingests[0]
-	if req.Scope != (engine.Scope{DatasetID: "write-dataset", UserID: "principal"}) || req.Kind != engine.IngestKindDocument ||
+	if req.Scope != (engine.Scope{DatasetID: "write-dataset", UserID: activePrincipalID}) || req.Kind != engine.IngestKindDocument ||
 		req.Content != " \nwrite it " || req.SourceMeta.SessionID != "sess" || req.SourceMeta.ContextDate != "2026-11-26" ||
 		req.SourceMeta.ExternalMetadata["origin"] != "cli" {
 		t.Fatalf("ingest request: %+v", req)
@@ -108,49 +108,65 @@ func TestToolACLAndRememberReceipts(t *testing.T) {
 	}
 }
 
-func TestToolsUseAgentIDWithoutPrincipal(t *testing.T) {
-	store, eng := fixture(t)
-	agent := domain.Agent{ID: "active", Name: "Active"}
-	addAgent(t, store, agent, activeToken, 0o600)
-	requireOK(t, store.UpsertProject(t.Context(), domain.Project{ID: "write", Name: "Write", DatasetID: "write-dataset"}))
-	allow(t, store, "project", "write", domain.AccessMaintain)
+func TestToolsUseOwnerForInvalidPrincipal(t *testing.T) {
+	for _, principal := range []string{"", "not-a-uuid", " " + activePrincipalID + " "} {
+		t.Run("principal="+principal, func(t *testing.T) {
+			store, eng := fixture(t)
+			agent := domain.Agent{ID: "active", Name: "Active", PrincipalID: principal}
+			addAgent(t, store, agent, activeToken, 0o600)
+			requireOK(t, store.UpsertProject(t.Context(), domain.Project{ID: "write", Name: "Write", DatasetID: "write-dataset"}))
+			allow(t, store, "project", "write", domain.AccessMaintain)
 
-	want := engine.Scope{DatasetID: "write-dataset", UserID: agent.ID}
-	var ingested, deleted engine.Scope
-	var searched []engine.Scope
-	eng.ingest = func(_ context.Context, req engine.IngestRequest) (engine.IngestResult, error) {
-		ingested = req.Scope
-		return engine.IngestResult{OK: true, DocumentID: "entry"}, nil
-	}
-	eng.search = func(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
-		searched = req.Scopes
-		return engine.SearchResult{OK: true}, nil
-	}
-	eng.delete = func(_ context.Context, scope engine.Scope, _ string) error {
-		deleted = scope
-		return nil
-	}
+			want := engine.Scope{DatasetID: "write-dataset"}
+			receiptUser := agent.ID
+			if principal == " "+activePrincipalID+" " {
+				want.UserID, receiptUser = activePrincipalID, activePrincipalID
+			}
+			var captureKey string
+			var ingested, deleted engine.Scope
+			var searched []engine.Scope
+			eng.ingest = func(_ context.Context, req engine.IngestRequest) (engine.IngestResult, error) {
+				ingested, captureKey = req.Scope, req.IdempotencyKey
+				return engine.IngestResult{OK: true, DocumentID: "entry"}, nil
+			}
+			eng.search = func(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
+				searched = req.Scopes
+				return engine.SearchResult{OK: true}, nil
+			}
+			eng.delete = func(_ context.Context, scope engine.Scope, _ string) error {
+				deleted = scope
+				return nil
+			}
 
-	h := newTestServer(t, Config{Store: store, Engine: eng})
-	if _, msg := callTool(t, h, "remember", `{"project_id":"write","content":"note","session_id":"session","message_id":"message"}`); msg != "" || ingested != want {
-		t.Fatalf("remember: %q, scope %+v, want %+v", msg, ingested, want)
-	}
-	if _, msg := callTool(t, h, "recall", `{"project_id":"write","query":"note"}`); msg != "" || !slices.Equal(searched, []engine.Scope{want}) {
-		t.Fatalf("recall: %q, scopes %+v, want %+v", msg, searched, want)
-	}
-	if _, msg := callTool(t, h, "forget", `{"project_id":"write","item_id":"entry"}`); msg != "" || deleted != want {
-		t.Fatalf("forget: %q, scope %+v, want %+v", msg, deleted, want)
-	}
-	data, msg := callTool(t, h, "health", "{}")
-	if msg != "" {
-		t.Fatal(msg)
-	}
-	var health struct {
-		Scopes []authorizedScope
-	}
-	requireOK(t, json.Unmarshal(data, &health))
-	if len(health.Scopes) != 1 || health.Scopes[0].Scope != want {
-		t.Fatalf("health: scopes %+v, want %+v", health.Scopes, want)
+			h := newTestServer(t, Config{Store: store, Engine: eng})
+			if _, msg := callTool(t, h, "remember", `{"project_id":"write","content":"note","session_id":"session","message_id":"message"}`); msg != "" || ingested != want {
+				t.Fatalf("remember: %q, scope %+v, want %+v", msg, ingested, want)
+			}
+			identity, err := json.Marshal([]string{receiptUser, want.DatasetID, "session", "message", string(engine.IngestKindDocument)})
+			requireOK(t, err)
+			receipt, err := store.GetCaptureReceipt(t.Context(), captureKey)
+			requireOK(t, err)
+			if captureKey != "mcp:"+hash(identity) || receipt.UserID != receiptUser {
+				t.Fatalf("receipt = %+v, want user %q and a key scoped to that user", receipt, receiptUser)
+			}
+			if _, msg := callTool(t, h, "recall", `{"project_id":"write","query":"note"}`); msg != "" || !slices.Equal(searched, []engine.Scope{want}) {
+				t.Fatalf("recall: %q, scopes %+v, want %+v", msg, searched, want)
+			}
+			if _, msg := callTool(t, h, "forget", `{"project_id":"write","item_id":"entry"}`); msg != "" || deleted != want {
+				t.Fatalf("forget: %q, scope %+v, want %+v", msg, deleted, want)
+			}
+			data, msg := callTool(t, h, "health", "{}")
+			if msg != "" {
+				t.Fatal(msg)
+			}
+			var health struct {
+				Scopes []authorizedScope
+			}
+			requireOK(t, json.Unmarshal(data, &health))
+			if len(health.Scopes) != 1 || health.Scopes[0].Scope != want {
+				t.Fatalf("health: scopes %+v, want %+v", health.Scopes, want)
+			}
+		})
 	}
 }
 
@@ -187,7 +203,7 @@ func TestRecallAuthorizationFilteringAndTelemetry(t *testing.T) {
 		gotScopes := make([]string, 0, len(req.Scopes))
 		for _, scope := range req.Scopes {
 			gotScopes = append(gotScopes, scope.DatasetID)
-			if scope.UserID != "principal" {
+			if scope.UserID != activePrincipalID {
 				t.Fatalf("wrong scope principal: %+v", scope)
 			}
 		}

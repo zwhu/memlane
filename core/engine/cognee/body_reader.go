@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -134,7 +135,15 @@ func bodyPathParts(root, location string) ([]string, error) {
 			}
 			relative, ok = strings.CutPrefix(path, filepath.Join(resolved, "data")+"/")
 			if !ok {
-				return nil, engine.ErrPathDenied
+				// Imported catalogs can retain absolute locations from the original store.
+				if slices.Contains(strings.Split(path, "/"), "..") {
+					return nil, engine.ErrPathDenied
+				}
+				i := strings.LastIndex(path, "/data/")
+				if i < 0 {
+					return nil, engine.ErrPathDenied
+				}
+				relative = path[i+len("/data/"):]
 			}
 		}
 		path = relative
@@ -142,7 +151,9 @@ func bodyPathParts(root, location string) ([]string, error) {
 	var parts []string
 	for part := range strings.SplitSeq(path, "/") {
 		switch part {
-		case "", ".":
+		case "":
+			return nil, engine.ErrPathDenied
+		case ".":
 			continue
 		case "..":
 			return nil, engine.ErrPathDenied

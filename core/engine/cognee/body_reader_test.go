@@ -44,6 +44,24 @@ func TestReadBody(t *testing.T) {
 	}
 }
 
+func TestReadBodyFromRelocatedStore(t *testing.T) {
+	t.Setenv("FILE_ENCRYPTION_ENABLED", "")
+	root := t.TempDir()
+	mkdirBodyDir(t, filepath.Join(root, "data", "sub"))
+	writeBody(t, filepath.Join(root, "data", "text_abc.txt"), "one")
+	writeBody(t, filepath.Join(root, "data", "sub", "doc.md"), "two")
+	reader := NewBodyReader(root, nil)
+	for location, want := range map[string]string{
+		"/old/location/official-store/data/text_abc.txt":      "one",
+		"file:///old/location/official-store/data/sub/doc.md": "two",
+	} {
+		got, err := reader.ReadBody(t.Context(), engine.LocalBodyRef{Location: location})
+		if err != nil || got.Body != want {
+			t.Errorf("ReadBody(%q) = %+v, %v", location, got, err)
+		}
+	}
+}
+
 func TestReadBodyWithSymlinkedStore(t *testing.T) {
 	t.Setenv("FILE_ENCRYPTION_ENABLED", "")
 	root := t.TempDir()
@@ -87,6 +105,9 @@ func TestReadBodyPathDenied(t *testing.T) {
 	for _, path := range []string{
 		"", ".", data, "leaf-symlink", "dir-symlink/text", "../text", "a/../text",
 		"dir\\text", "bad\x00name", "fifo", outsideDoc, "s3://bucket/text",
+		"/old/../store/data/text", "/old/store/data/../secret", "/old/store/data/a/../text",
+		"/old/store/data/leaf-symlink", "/old/store/data/dir-symlink/text", "/old/store/data/",
+		"/old/store/data/sub//doc.md", "/old/store/text",
 		"file://remote" + outsideDoc, "file://" + data + "/%00", "file://" + data + "/%2E%2E/text",
 	} {
 		t.Run(path, func(t *testing.T) {

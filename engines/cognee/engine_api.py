@@ -76,25 +76,68 @@ def _uuid(value):
 
 
 class CogneeBackend:
-    async def _dataset(self, scope, permission='read'):
-        from cognee.infrastructure.databases.exceptions import EntityNotFoundError
+    def __init__(self):
+        self._provision_lock = asyncio.Lock()
+
+    async def _dataset(self, scope, permission='read', *, allow_provision=False):
+        from cognee.infrastructure.databases.exceptions import DatabaseNotCreatedError, EntityNotFoundError
         from cognee.modules.data.methods import get_authorized_existing_datasets
         from cognee.modules.users.exceptions import PermissionDeniedError
         from cognee.modules.users.methods.get_user import get_user
         from cognee.modules.users.methods.get_default_user import get_default_user
 
         dataset = _uuid(scope.dataset_id)
+        user_id = (scope.user_id or '').strip()
         try:
-            user = await get_user(_uuid(scope.user_id)) if scope.user_id is not None else await get_default_user()
+            user = await get_user(_uuid(user_id)) if user_id else await get_default_user()
+        except DatabaseNotCreatedError:
+            if user_id or not allow_provision:
+                raise PolicyError('dataset_access_required', 403) from None
+            from cognee.modules.engine.operations.setup import setup
+            async with self._provision_lock:
+                await setup()
+                user = await get_default_user()
         except EntityNotFoundError:
             raise PolicyError('user_not_found', 404) from None
-        try:
-            authorized = await get_authorized_existing_datasets(user=user, datasets=[dataset], permission_type=permission)
-        except PermissionDeniedError:
-            raise PolicyError('dataset_access_required', 403) from None
-        if not authorized:
-            raise PolicyError('dataset_access_required', 403)
-        return user, dataset
+
+        async def authorized():
+            try:
+                return await get_authorized_existing_datasets(
+                    user=user, datasets=[dataset], permission_type=permission)
+            except PermissionDeniedError:
+                return []
+
+        if await authorized():
+            return user, dataset
+        if allow_provision and (not user_id or user.id == (await get_default_user()).id):
+            # Serialize new owner writes until the dataset and its ACLs are visible.
+            async with self._provision_lock:
+                await self._provision_owner_dataset(user, dataset)
+                if await authorized():
+                    return user, dataset
+        raise PolicyError('dataset_access_required', 403)
+
+    @staticmethod
+    async def _provision_owner_dataset(user, dataset):
+        from cognee.infrastructure.databases.relational import get_relational_engine
+        from cognee.modules.data.models import Dataset
+        from cognee.modules.users.permissions.methods import give_permission_on_dataset
+        from sqlalchemy.exc import IntegrityError
+
+        async with get_relational_engine().get_async_session() as session:
+            if await session.get(Dataset, dataset) is not None:
+                return False
+            session.add(Dataset(id=dataset, name=str(dataset), data=[], owner_id=user.id,
+                                tenant_id=getattr(user, 'tenant_id', None)))
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return False  # Another writer may have created the dataset. Recheck its ACL.
+
+        for permission in ('read', 'write', 'delete', 'share'):
+            await give_permission_on_dataset(user, dataset, permission)
+        return True
 
     async def ingest(self, payload, content):
         from cognee import add, remember
@@ -102,7 +145,7 @@ class CogneeBackend:
         from cognee.modules.pipelines.models import PipelineRunErrored
         from cognee.tasks.ingestion.data_item import DataItem
 
-        user, dataset = await self._dataset(payload.scope, 'write')
+        user, dataset = await self._dataset(payload.scope, 'write', allow_provision=True)
         meta = payload.source_meta
         if payload.kind == 'document':
             body = content if isinstance(content, str) else _json(content)
@@ -131,7 +174,7 @@ class CogneeBackend:
         from cognee import cognify, improve
         from cognee.modules.pipelines.models import PipelineRunErrored
 
-        user, dataset = await self._dataset(payload.scope, 'write')
+        user, dataset = await self._dataset(payload.scope, 'write', allow_provision=True)
         if payload.mode == 'tool_graph':
             result = await run_tool_graph_pipeline(user, dataset, payload.doc_ids)
             runs = result['pipeline_run_ids']

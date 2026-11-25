@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/core/domain"
 )
 
 type dayBucket struct {
@@ -19,6 +21,7 @@ type dayBucket struct {
 type overviewSnapshot struct {
 	Generation       int64                `json:"generation"`
 	LocalTZName      string               `json:"local_tz_name"`
+	FirstUseDays     int                  `json:"first_use_days"`
 	TotalKnowledge   int                  `json:"total_knowledge_count"`
 	TotalRaw         int                  `json:"total_raw_count"`
 	TotalUnread      int                  `json:"total_unread_count"`
@@ -91,6 +94,17 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		var firstDay string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(d.effective_date),'') FROM catalog_docs d
+			WHERE d.is_knowledge=1 AND d.effective_date<>'' AND d.effective_date=date(d.effective_date,'+0 days')
+			AND d.dataset_id IN (SELECT dataset_id FROM projects WHERE dataset_id<>''
+				UNION SELECT dataset_id FROM common_config WHERE dataset_id<>'')`).Scan(&firstDay); err != nil {
+			return err
+		}
+		if first, err := time.Parse(time.DateOnly, firstDay); err == nil {
+			today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+			out.FirstUseDays = max(1, int(today.Sub(first)/(24*time.Hour))+1)
+		}
 		out.RecentItems, err = recentKnowledge(ctx, tx, refs, recent)
 		if err != nil {
 			return err
@@ -110,13 +124,15 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 
 func (out *overviewSnapshot) loadProjects(ctx context.Context, tx *sql.Tx, refs []datasetRef) error {
 	var err error
-	out.Projects, err = readRows(ctx, tx, `SELECT p.id,p.name,p.dataset_id,p.auto_capture,p.auto_capture_version,
+	out.Projects, err = readRows(ctx, tx, `SELECT p.id,p.name,p.dataset_id,p.dataset_name,p.auto_capture,p.auto_capture_version,
 		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='pending'),
 		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed'),
 		COALESCE((SELECT i.last_error FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed'
 		 ORDER BY i.updated_at DESC,i.id LIMIT 1),'') FROM projects p ORDER BY p.name,p.id`, nil, func(row rowScanner) (projectSummary, error) {
 		var p projectSummary
-		err := row.Scan(&p.ProjectID, &p.Name, &p.DatasetID, &p.AutoCapture, &p.AutoCaptureVersion, &p.InboxPending, &p.InboxFailed, &p.LastError)
+		var datasetName string
+		err := row.Scan(&p.ProjectID, &p.Name, &p.DatasetID, &datasetName, &p.AutoCapture, &p.AutoCaptureVersion, &p.InboxPending, &p.InboxFailed, &p.LastError)
+		p.Protected = domain.IsProtectedProject(p.Name, datasetName) || domain.IsProtectedProject(p.ProjectID, p.DatasetID)
 		if p.LastError != "" {
 			p.LastError = sanitizeError(errors.New(p.LastError))
 		}

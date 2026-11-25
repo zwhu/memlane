@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,6 +80,7 @@ func (a *Controller) ApplyAccessDirectory(directory AccessDirectory) {
 	if directory.CodexConnection == nil {
 		directory.CodexConnection = a.access.Directory.CodexConnection
 	}
+	directory.Projects = slices.DeleteFunc(slices.Clone(directory.Projects), AccessProject.IsProtected)
 	data, _ := json.Marshal(directory)
 	signature := fmt.Sprintf("%x", sha256.Sum256(data))
 	changed := !a.access.Loaded || accessPolicyChanged(a.access.Directory, directory)

@@ -47,6 +47,7 @@ func (a *App) initOverview() {
 		ActivityTimeout:    func() time.Duration { return overviewActivityTimeout },
 		OnBootstrapSettled: a.onOverviewBootstrapSettled,
 		OnBootstrapApplied: func(snapshot appoverview.Hydration[Item]) {
+			a.overviewFirstUse.FallbackDays = snapshot.FirstUseDays
 			a.recentScope = ""
 			a.applyOverviewV2ProjectSummaries(snapshot.Projects)
 		},
@@ -127,6 +128,7 @@ func (a *App) overviewBootstrap(control ProjectControlClient, hasControl bool) f
 			return result, err
 		}
 		result.Snapshot, result.Buckets, result.Events, result.More = buildOverviewFromV2Bootstrap(projects, resp, 50)
+		result.FirstUseDays = resp.FirstUseDays
 		result.Generation, result.TotalKnowledge, result.RecallStartedAt = resp.Generation, resp.TotalKnowledgeCount, resp.RecallStartedAt
 		for _, project := range resp.Projects {
 			result.Projects = append(result.Projects, api.ProjectSummary{ProjectID: project.ProjectID,

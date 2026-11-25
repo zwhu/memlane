@@ -52,6 +52,8 @@ type AccessProject struct {
 	Name                 string                     `json:"name"`
 	Aliases              []string                   `json:"aliases"`
 	Dataset              string                     `json:"dataset_id"`
+	DatasetName          string                     `json:"dataset_name,omitempty"`
+	Protected            bool                       `json:"protected,omitempty"`
 	Status               string                     `json:"status"`
 	DesiredRevision      int64                      `json:"desired_revision"`
 	Overrides            map[string]ProjectOverride `json:"overrides"`
@@ -59,6 +61,11 @@ type AccessProject struct {
 	CodeEnabled          bool                       `json:"code_enabled"`
 	CodeConfigured       bool                       `json:"code_configured"`
 	CodeDataset          string                     `json:"code_dataset_id"`
+}
+
+func (p AccessProject) IsProtected() bool {
+	const profiles = "ml-user-profiles"
+	return p.Protected || p.Name == profiles || p.DatasetName == profiles || p.ID == profiles || p.Dataset == profiles
 }
 
 func (p AccessProject) SyncLabel(agents ...AccessAgent) string {

@@ -5,7 +5,7 @@ import hashlib
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -13,7 +13,7 @@ import httpx
 from pydantic import BaseModel
 
 from engines.cognee import PolicyError
-from engines.cognee.engine_api import CogneeBackend, Extract, Scope, Search, SearchFilters, install_engine_api
+from engines.cognee.engine_api import CogneeBackend, Extract, Ingest, Scope, Search, SearchFilters, install_engine_api
 from engines.cognee.handoff import ModelHandoffController
 from engines.cognee.language_egress import current_output_language, set_default_language
 from engines.cognee.runner import SetupOnlyMiddleware
@@ -63,6 +63,110 @@ class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
         self.scope = Scope(dataset_id=str(self.dataset))
         self.user = object()
         self.enterContext(patch.object(self.backend, '_dataset', return_value=(self.user, self.dataset)))
+
+    def dataset_access(self, *, existing=None, authorization=None):
+        owner = SimpleNamespace(id=uuid4(), tenant_id=uuid4())
+        default = self.enterContext(patch(
+            'cognee.modules.users.methods.get_default_user.get_default_user', return_value=owner))
+        authorize = self.enterContext(patch(
+            'cognee.modules.data.methods.get_authorized_existing_datasets', new_callable=AsyncMock))
+        authorize.return_value = []
+        if authorization is not None:
+            authorize.side_effect = authorization
+        relational = self.enterContext(patch('cognee.infrastructure.databases.relational.get_relational_engine'))
+        session = relational.return_value.get_async_session.return_value.__aenter__.return_value
+        session.get = AsyncMock(return_value=existing)
+        session.add = Mock()
+        session.commit = AsyncMock()
+        session.rollback = AsyncMock()
+        grant = self.enterContext(patch('cognee.modules.users.permissions.methods.give_permission_on_dataset'))
+        return CogneeBackend(), owner, default, authorize, session, grant
+
+    async def test_owner_ingest_provisions_a_fresh_dataset(self):
+        from cognee.modules.data.models import Dataset
+        from cognee.modules.users.exceptions import PermissionDeniedError
+
+        backend, owner, default, authorize, session, grant = self.dataset_access()
+        with (patch('cognee.remember', return_value=SimpleNamespace(status='session_stored', entry_id='qa')) as remember,
+              patch('cognee.add', return_value=SimpleNamespace(data_ids=['doc'])) as add):
+            for user_id, kind in ((None, 'capture_qa'), ('', 'document'), ('  ', 'document')):
+                with self.subTest(user_id=user_id):
+                    default.reset_mock()
+                    authorize.reset_mock()
+                    session.add.reset_mock()
+                    session.commit.reset_mock()
+                    grant.reset_mock()
+                    def check_acl(**_):
+                        if not grant.await_count:
+                            raise PermissionDeniedError()
+                        self.assertEqual(grant.await_count, 4)
+                        return [self.dataset]
+
+                    authorize.side_effect = check_acl
+                    content = {'question': 'Q', 'answer': 'A', 'context': {}} if kind == 'capture_qa' else 'note'
+                    payload = Ingest(scope=Scope(dataset_id=str(self.dataset), user_id=user_id),
+                                     kind=kind, content=content, source_meta={'session_id': 'session'})
+                    result = await backend.ingest(payload, content)
+                    self.assertEqual(result['entry_id'], 'qa' if kind == 'capture_qa' else 'doc')
+                    default.assert_awaited_once()
+                    row = session.add.call_args.args[0]
+                    self.assertIsInstance(row, Dataset)
+                    self.assertEqual((row.id, row.name, row.owner_id, row.tenant_id),
+                                     (self.dataset, str(self.dataset), owner.id, owner.tenant_id))
+                    session.commit.assert_awaited_once()
+                    self.assertEqual([c.args for c in grant.await_args_list],
+                                     [(owner, self.dataset, p) for p in ('read', 'write', 'delete', 'share')])
+                    self.assertEqual(authorize.await_count, 2)
+                    downstream = remember if kind == 'capture_qa' else add
+                    self.assertEqual(downstream.call_args.kwargs['dataset_id'], self.dataset)
+                    self.assertIs(downstream.call_args.kwargs['user'], owner)
+
+    async def test_existing_unauthorized_dataset_is_never_granted(self):
+        backend, _, _, _, session, grant = self.dataset_access(existing=object())
+        with self.assertRaises(PolicyError) as raised:
+            await backend._dataset(self.scope, 'write', allow_provision=True)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_access_required', 403))
+        session.get.assert_awaited_once()
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+        grant.assert_not_awaited()
+
+    async def test_non_owner_cannot_provision(self):
+        backend, _, _, _, session, grant = self.dataset_access()
+        other = SimpleNamespace(id=uuid4())
+        scope = Scope(dataset_id=str(self.dataset), user_id=str(other.id))
+        with patch('cognee.modules.users.methods.get_user.get_user', return_value=other) as get_user:
+            with self.assertRaises(PolicyError) as raised:
+                await backend._dataset(scope, 'write', allow_provision=True)
+            get_user.assert_awaited_once_with(other.id)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_access_required', 403))
+        session.get.assert_not_awaited()
+        grant.assert_not_awaited()
+
+    async def test_missing_dataset_is_denied_for_read_and_delete(self):
+        backend, _, _, _, session, grant = self.dataset_access()
+        for operation, args in (
+            (backend.search, (Search(scopes=[self.scope], query='test'), 1)),
+            (backend.list_items, (self.scope, 1, 0)),
+            (backend.get_item, (self.scope, str(uuid4()))),
+            (backend.delete_item, (self.scope, str(uuid4()))),
+            (backend.graph, (str(self.dataset), None)),
+        ):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(PolicyError) as raised:
+                    await operation(*args)
+                self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_access_required', 403))
+        session.get.assert_not_awaited()
+        grant.assert_not_awaited()
+
+    async def test_insert_race_rolls_back_and_rechecks_acl(self):
+        from sqlalchemy.exc import IntegrityError
+
+        backend, owner, _, _, session, grant = self.dataset_access(authorization=[[], [self.dataset]])
+        session.commit.side_effect = IntegrityError('insert dataset', {}, ValueError('duplicate id'))
+        self.assertEqual(await backend._dataset(self.scope, 'write', allow_provision=True), (owner, self.dataset))
+        session.rollback.assert_awaited_once()
+        grant.assert_not_awaited()
 
     async def test_search_unwraps_sdk_results_and_resolves_document_ids(self):
         from cognee import SearchType

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func readingControlConfig(t *testing.T, url string) *ProjectControlConfig {
@@ -65,6 +67,63 @@ func TestOverviewBootstrapUsesScopedTotalsAndSourceDayBuckets(t *testing.T) {
 		len(v.Snapshot.Knowledge) != 1 || v.Snapshot.Knowledge[0].ID != "lesson" ||
 		v.V2DayBuckets["2026-11-13"] != 103 || v.V2DayBuckets["2026-11-16"] != 0 {
 		t.Fatalf("unexpected overview bootstrap: calls=%d state=%+v", calls, v)
+	}
+}
+
+func TestOverviewBootstrapFirstUseAndProtectedDirectory(t *testing.T) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			fmt.Fprint(w, `{"generation":1,"first_use_days":42,"day_buckets":[{"day":"2026-03-08","count":1}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	a := New(Config{ServiceURL: coldStartTestURL, ProjectControl: readingControlConfig(t, coldStartTestURL),
+		ClientStateFile: filepath.Join(t.TempDir(), "client-state.json")}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+	directory := AccessDirectory{Projects: []AccessProject{
+		{ID: "visible", Name: "Visible", Dataset: "project"},
+		{ID: "profiles-by-name", Name: "ml-user-profiles", Dataset: "profiles"},
+		{ID: "profiles-by-dataset-name", Name: "Profiles", DatasetName: "ml-user-profiles"},
+		{ID: "protected-by-server", Name: "Protected", Protected: true},
+	}}
+	a.applyAccessDirectory(directory)
+	if got := a.access.Directory.Projects; len(got) != 1 || got[0].ID != "visible" {
+		t.Fatalf("access directory projects = %+v", got)
+	}
+	if got := a.Config.Projects; len(got) != 1 || got[0].ID != "visible" {
+		t.Fatalf("sidebar projects = %+v", got)
+	}
+	if directory.Projects[1].ID != "profiles-by-name" {
+		t.Fatal("filter mutated the caller's directory")
+	}
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading })
+	if !a.overviewState.Loaded {
+		t.Fatalf("bootstrap failed: %s", a.overviewState.Error)
+	}
+	now := time.Now()
+	if days, err, ready := a.overviewFirstUseDays(now); days != 42 || err != nil || !ready {
+		t.Fatalf("bootstrap fallback = %d, %v, %v", days, err, ready)
+	}
+	drainReading(t, updates, func() bool { return a.overviewFirstUse.Err != nil })
+	if days, err, ready := a.overviewFirstUseDays(now); days != 42 || err != nil || !ready {
+		t.Fatalf("bootstrap fallback after client-state error = %d, %v, %v", days, err, ready)
+	}
+	view := ui.NewTester(a.overviewHome, 1200, 820)
+	view.Frame()
+	if !view.HasText("42") || view.HasText("使用时间暂不可用。") {
+		t.Fatalf("overview did not render the bootstrap fallback: %v", view.Texts())
+	}
+	a.overviewFirstUse.FallbackDays = 0
+	a.overviewState.V2DayBuckets = map[string]int{now.AddDate(0, 0, -2).Format(time.DateOnly): 1, "invalid": 1}
+	if days, err, ready := a.overviewFirstUseDays(now); days != 3 || err != nil || !ready {
+		t.Fatalf("day bucket fallback = %d, %v, %v", days, err, ready)
 	}
 }
 

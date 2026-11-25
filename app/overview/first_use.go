@@ -64,7 +64,25 @@ func (a *ControllerOf[T]) FirstUseDays(now time.Time) (int, error, bool) {
 	if v.CachedKey != key {
 		a.StartFirstUseDaysLoad(now)
 	}
+	if v.CachedKey == key && v.Err == nil && v.cachedFirstUseDays > 0 {
+		return v.cachedFirstUseDays, nil, true
+	}
+	if v.FallbackDays > 0 {
+		return v.FallbackDays, nil, true
+	}
 	if v.CachedKey == key {
+		if v.Err != nil && a.State != nil && a.State.Loaded {
+			var first time.Time
+			for day := range a.State.V2DayBuckets {
+				if date, err := time.Parse(time.DateOnly, day); err == nil && (first.IsZero() || date.Before(first)) {
+					first = date
+				}
+			}
+			if !first.IsZero() {
+				today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+				return max(1, int(today.Sub(first)/(24*time.Hour))+1), nil, true
+			}
+		}
 		return v.cachedFirstUseDays, v.Err, true
 	}
 	return 0, nil, false

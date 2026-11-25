@@ -19,6 +19,7 @@ type projectSummary struct {
 	ProjectID          string `json:"project_id"`
 	Name               string `json:"name"`
 	DatasetID          string `json:"dataset_id"`
+	Protected          bool   `json:"protected,omitempty"`
 	AutoCapture        bool   `json:"auto_capture"`
 	AutoCaptureVersion int    `json:"auto_capture_version"`
 	KnowledgeCount     int    `json:"knowledge_count"`
@@ -100,6 +101,7 @@ func (s *Server) populateProjectAccess(ctx context.Context, view *projectView, k
 
 func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView, error) {
 	view := projectView{projectSummary: projectSummary{ProjectID: p.ID, Name: p.Name, DatasetID: p.DatasetID,
+		Protected:   domain.IsProtectedProject(p.Name, p.DatasetName) || domain.IsProtectedProject(p.ID, p.DatasetID),
 		AutoCapture: p.AutoCapture, AutoCaptureVersion: p.AutoCaptureVersion}, ID: p.ID, DatasetName: p.DatasetName,
 		CodeDatasetID: p.CodeDatasetID, CodeEnabled: p.CodeEnabled, Status: p.Status, Aliases: append([]string{}, p.Aliases...),
 		DesiredRevision: int64(p.DesiredRevision), AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt, CodeConfigured: p.CodeConfigured}

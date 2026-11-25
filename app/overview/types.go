@@ -93,6 +93,7 @@ type FirstUseKey struct {
 }
 
 type FirstUseState struct {
+	FallbackDays       int
 	CachedKey          FirstUseKey
 	LoadingKey         FirstUseKey
 	cachedFirstUseDays int
@@ -181,6 +182,7 @@ type Snapshot = SnapshotOf[Item]
 type State = StateOf[Item]
 
 type Hydration[T any] struct {
+	FirstUseDays        int
 	Snapshot            SnapshotOf[T]
 	Generation          int64
 	TotalKnowledge      int
