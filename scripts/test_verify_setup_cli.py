@@ -35,18 +35,32 @@ import sys
 import time
 
 home = Path(os.environ['HOME'])
+echo_spec = home / 'echo-spec.json'
+if echo_spec.exists():
+    spec = json.loads(echo_spec.read_text(encoding='utf-8'))
+    assert 'MEMLANE_DEV_RUNTIME_CONFIG' not in os.environ
+    assert os.environ['TEST_MARKER'] == 'present'
+    assert os.environ['HOME'] == spec['expected_home']
+    print(spec['raw'])
+    sys.stderr.write(spec['stderr'])
+    sys.exit(spec['exit_code'])
+
 hooks = home / 'hooks.json'
 log = home / 'calls.jsonl'
-runtime = home / 'runtime.json'
-worker_dir = home / 'components' / 'installation'
+settings = json.loads((home / 'settings.json').read_text())
+runtime = Path(settings.get('config_path') or (home / 'runtime.json'))
+worker_dir = Path(settings.get('component_root') or (home / 'components')) / 'installation'
 worker_state = worker_dir / 'worker-state.json'
 worker_lock = worker_dir / 'installation.lock'
 worker_finish = home / 'finish-worker'
 worker_done = home / 'worker-done'
-settings = json.loads((home / 'settings.json').read_text())
 scenario = settings['scenario']
 args = sys.argv[1:]
 assert 'MEMLANE_DEV_RUNTIME_CONFIG' not in os.environ
+if settings.get('delete_trae_jwt'):
+    jwt_path = home / '.trae-cn' / 'trae-jwt-token'
+    if jwt_path.exists():
+        jwt_path.unlink()
 
 if args == ['worker']:
     worker_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +113,9 @@ def final_hooks():
 def reply(code, **fields):
     statuses = {0: 'ok', 10: 'action_required', 11: 'human_required', 20: 'in_progress_or_busy',
                 30: 'preflight_blocked', 40: 'needs_review'}
+    app_meta = settings.get('app_meta')
+    if app_meta and 'app' not in fields:
+        fields['app'] = app_meta
     print(json.dumps({'schema_version': 1, 'command': args[0], 'exit_code': code,
                       'ok': code == 0, 'status': statuses[code], **fields}, ensure_ascii=False))
     sys.exit(code)
@@ -173,11 +190,18 @@ if args[0] == 'doctor':
                 reply(20, operation_id='first-install', retry_after_ms=1,
                       components={'worker_active': True, 'progress': {'state': 'running'}})
         completed_worker()
+    if scenario == 'level-2a-prep':
+        reply(10, daemon={'state': 'stopped'}, components={'complete': True})
+    if scenario in ('level-2a', 'level-2b'):
+        reply(0, daemon={'state': settings.get('daemon_state', 'ready')},
+              components={'complete': True}, connections={'hosts': doctor_hosts})
     if scenario == 'clean-install':
-        assert '--check-network' in args and flag('--mirror') == 'official'
-        ok = settings.get('dns_ok', True)
-        reply(settings.get('doctor_exit', 10 if ok else 30), environment={'dns_ok': ok},
-              connections={'hosts': doctor_hosts})
+        if '--check-network' in args:
+            assert flag('--mirror') == 'official'
+            ok = settings.get('dns_ok', True)
+            reply(settings.get('doctor_exit', 10 if ok else 30), environment={'dns_ok': ok},
+                  connections={'hosts': doctor_hosts})
+        reply(0, daemon={'state': 'ready'}, components={'complete': True}, connections={'hosts': doctor_hosts})
     assert scenario == 'beta2-upgrade'
     reply(40, daemon={'stale_version_detected': not daemon_updated,
                       'owner_fingerprint': fresh if daemon_updated else fingerprint},
@@ -208,7 +232,7 @@ if args[0] == 'connect':
 if args[0] == 'verify':
     stage = flag('--stage')
     if stage == 'connection':
-        if settings.get('false_positive'):
+        if settings.get('connection_verified') or settings.get('false_positive'):
             reply(0)
         reply(11, human_steps=['Restart host and run a real session.'])
     if scenario == 'beta2-upgrade':
@@ -300,14 +324,51 @@ print(json.dumps({'locked_owners': [], 'errors': [], 'dry_run': not applied,
 '''
 
 
+class _EnvOsProxy:
+    """Read-only proxy over os exposing a per-call env dict without mutating process os.environ."""
+
+    def __init__(self, env: dict[str, str]):
+        self.environ = dict(env)
+
+    def __getattr__(self, name: str):
+        return getattr(os, name)
+
+
+class _ArgvSysProxy:
+    def __init__(self, argv: list[str], stderr_buf: io.StringIO):
+        self.argv = argv
+        self.stderr = stderr_buf
+        self.executable = sys.executable
+
+    def exit(self, code: int = 0):
+        raise SystemExit(code)
+
+    def __getattr__(self, name: str):
+        return getattr(sys, name)
+
+
 class RunnerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._shared_tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._shared_tmp.cleanup)
+        shared_dir = Path(cls._shared_tmp.name).resolve()
+        cls.shared_cli = shared_dir / 'Memlane'
+        cls.shared_cli.write_text(f'#!{sys.executable}\n' + FAKE_CLI, encoding='utf-8')
+        cls.shared_cli.chmod(0o700)
+        cls.shared_uninstall = shared_dir / 'uninstall.py'
+        cls.shared_uninstall.write_text(FAKE_UNINSTALL, encoding='utf-8')
+        cls._fake_cli_code = compile(FAKE_CLI, str(cls.shared_cli), 'exec')
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.executable = self.root / 'Memlane'
+        self.executable = self.shared_cli
         self.hooks = self.root / 'hooks.json'
-        self.uninstall = self.root / 'uninstall.py'
+        self.uninstall = self.shared_uninstall
+        self._inproc_patch = None
         preflight_patch = patch.object(
             gate.utm_guard,
             'run_preflight',
@@ -316,20 +377,61 @@ class RunnerTests(unittest.TestCase):
         self._preflight_mock = preflight_patch.start()
         self.addCleanup(preflight_patch.stop)
 
-    def write_executable(self, body):
-        self.executable.write_text(f'#!{sys.executable}\n' + body, encoding='utf-8')
-        self.executable.chmod(0o700)
+    def _enable_inproc_cli(self):
+        if self._inproc_patch is not None:
+            return
+        real_run = subprocess.run
+        target_exe = str(self.shared_cli)
+        code_obj = self._fake_cli_code
+
+        def dispatch(cmd, *args, **kwargs):
+            if not cmd or str(cmd[0]) != target_exe:
+                return real_run(cmd, *args, **kwargs)
+            env = dict(kwargs.get('env') or {})
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            sys_proxy = _ArgvSysProxy([target_exe, *[str(x) for x in cmd[1:]]], err_buf)
+            os_proxy = _EnvOsProxy(env)
+            ns = {'__name__': '__main__', '__file__': target_exe}
+            orig_import = __import__
+
+            def scoped_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == 'os' and level == 0:
+                    return os_proxy
+                if name == 'sys' and level == 0:
+                    return sys_proxy
+                return orig_import(name, globals, locals, fromlist, level)
+
+            ns['__builtins__'] = {**__builtins__, '__import__': scoped_import} if isinstance(__builtins__, dict) else {**vars(__builtins__), '__import__': scoped_import}
+            rc = 0
+            try:
+                with redirect_stdout(out_buf), redirect_stderr(err_buf):
+                    exec(code_obj, ns)
+            except SystemExit as exc:
+                rc = 0 if exc.code is None else (exc.code if isinstance(exc.code, int) else 1)
+            return subprocess.CompletedProcess(cmd, rc, out_buf.getvalue(), err_buf.getvalue())
+
+        self._inproc_patch = patch.object(gate.subprocess, 'run', side_effect=dispatch)
+        self._inproc_patch.start()
+        self.addCleanup(self._stop_inproc_cli)
+
+    def _stop_inproc_cli(self):
+        if self._inproc_patch is not None:
+            self._inproc_patch.stop()
+            self._inproc_patch = None
 
     def write_hooks(self, hooks):
         self.hooks.write_text(json.dumps({'version': 1, 'hooks': hooks}), encoding='utf-8')
 
-    def fixture(self, scenario, **settings):
-        self.write_executable(FAKE_CLI)
-        self.uninstall.write_text(FAKE_UNINSTALL, encoding='utf-8')
+    def fixture(self, scenario, *, real_subprocess=False, **settings):
+        (self.root / 'echo-spec.json').unlink(missing_ok=True)
         (self.root / 'settings.json').write_text(json.dumps({
             'scenario': scenario, 'final_hooks': HOOKS, **settings,
         }), encoding='utf-8')
-        (self.root / 'runtime.json').write_text(json.dumps({'official_data': str(self.root)}), encoding='utf-8')
+        cfg_path = Path(settings['config_path']) if 'config_path' in settings else (self.root / 'runtime.json')
+        if not settings.get('skip_runtime_json'):
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_path.write_text(json.dumps({'official_data': str(settings.get('official_data', self.root))}), encoding='utf-8')
         if settings.get('dirty_hooks'):
             self.write_hooks(LEGACY_HOOKS)
         if scenario == 'beta2-upgrade':
@@ -338,6 +440,10 @@ class RunnerTests(unittest.TestCase):
                 {'operation_id': 'ui-safe', 'kind': 'connection_prepare', 'revision': 1},
                 {'operation_id': 'ui-ambiguous', 'kind': 'connection_activate', 'revision': 2},
             ]), encoding='utf-8')
+        if real_subprocess or scenario == 'half-installed':
+            self._stop_inproc_cli()
+        else:
+            self._enable_inproc_cli()
 
     def run_gate(self, scenario, *extra):
         argv = ['--executable', str(self.executable), '--scenario', scenario,
@@ -379,13 +485,9 @@ class RunnerTests(unittest.TestCase):
         ]:
             with self.subTest(payload=payload, error=error):
                 raw = json.dumps(payload) if isinstance(payload, dict) else payload
-                self.write_executable(
-                    'import os, sys\n'
-                    'assert "MEMLANE_DEV_RUNTIME_CONFIG" not in os.environ\n'
-                    'assert os.environ["TEST_MARKER"] == "present"\n'
-                    f'assert os.environ["HOME"] == {str(self.root)!r}\n'
-                    f'print({raw!r})\nsys.stderr.write({stderr!r})\nsys.exit(10)\n'
-                )
+                (self.root / 'echo-spec.json').write_text(json.dumps({
+                    'expected_home': str(self.root), 'raw': raw, 'stderr': stderr, 'exit_code': 10,
+                }), encoding='utf-8')
                 env = {'HOME': str(self.root), 'TEST_MARKER': 'present',
                        'MEMLANE_DEV_RUNTIME_CONFIG': '/private/config'}
                 if error:
@@ -457,7 +559,7 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(list(self.root.iterdir()), [])
 
     def test_clean_install_polls_then_connects_both_hosts(self):
-        self.fixture('clean-install')
+        self.fixture('clean-install', real_subprocess=True)
         receipts = self.assert_gate('clean-install', args=('--agents', 'codex', 'trae_ide'))
         calls = self.calls()
         self.assertTrue(any(args[:3] == ['doctor', '--operation-id', 'first-install'] for args in calls))
@@ -1164,7 +1266,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(receipts[-1]['exit_code'], 40)
 
     def test_beta2_upgrade_retains_ambiguous_op_and_checks_uninstall(self):
-        self.fixture('beta2-upgrade', dirty_hooks=True)
+        self.fixture('beta2-upgrade', real_subprocess=True, dirty_hooks=True)
         receipts = self.assert_gate('beta2-upgrade')
         self.assertEqual([(r['step'], r['exit_code']) for r in receipts if r['step'].startswith('apply pending')],
                          [('apply pending operation 1', 0), ('apply pending operation 2', 40)])
@@ -1246,23 +1348,264 @@ class RunnerTests(unittest.TestCase):
         self._preflight_mock.assert_not_called()
 
     def test_sentinel_returns_32_when_protected_login_state_is_deleted(self):
-        self.fixture('clean-install')
+        self.fixture('clean-install', delete_trae_jwt=True)
         jwt_path = self.root / '.trae-cn' / 'trae-jwt-token'
         jwt_path.parent.mkdir(parents=True, exist_ok=True)
         jwt_path.write_text('jwt-present', encoding='utf-8')
-        # Inject a buggy CLI that deletes the protected Trae CN JWT during execution.
-        self.write_executable(
-            'from pathlib import Path\n'
-            'import os\n'
-            'p = Path(os.environ["HOME"]) / ".trae-cn" / "trae-jwt-token"\n'
-            'if p.exists(): p.unlink()\n'
-            + FAKE_CLI
-        )
         code, report = self.run_gate('clean-install')
         self.assertEqual(code, gate.EXIT_PROTECTED_PATH_VIOLATED)
         self.assertEqual(report['status'], 'protected_path_violated')
         self.assertFalse(report['sentinel']['ok'])
         self.assertEqual(report['sentinel']['violations'][0]['label'], 'trae_cn_jwt')
+
+    def _run_main_json(self, argv):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = gate.main(argv)
+        return code, json.loads(output.getvalue())
+
+    def _make_component_pool(self) -> Path:
+        pool = self.root / 'component-pool'
+        venv_bin = pool / 'runtime-1' / 'venv' / 'bin'
+        venv_bin.mkdir(parents=True)
+        (pool / 'runtime-1' / 'venv' / 'pyvenv.cfg').write_text(f'home = {pool}/py\n', encoding='utf-8')
+        script = venv_bin / 'tool'
+        script.write_text(f'#!{pool}/runtime-1/venv/bin/python\nprint("ok")\n', encoding='utf-8')
+        script.chmod(0o755)
+        return pool
+
+    def _seed_initialized_store(self, isolated_root: Path, *, store_id: str = 'store-2a', token_mode: int = 0o600):
+        lib = isolated_root / 'library'
+        lib.mkdir(parents=True, exist_ok=True)
+        (lib / 'store-identity.json').write_text(json.dumps({'schema': 1, 'store_id': store_id}), encoding='utf-8')
+        tok = isolated_root / 'owner.token'
+        tok.write_text('secret-owner-key-value', encoding='utf-8')
+        tok.chmod(token_mode)
+        reg = isolated_root / 'projects.json'
+        reg.write_text(json.dumps({'schema_version': 2, 'agents': {
+            'codex-id': {'kind': 'codex', 'name': 'Codex'},
+            'trae-cn-id': {'kind': 'trae_ide', 'name': 'TRAE CN'},
+        }}), encoding='utf-8')
+        (isolated_root / 'runtime.json').write_text(json.dumps({
+            'official_data': str(lib),
+            'service_url': 'http://127.0.0.1:18000',
+            'token_file': str(tok),
+            'project_control': {'url': 'http://127.0.0.1:18080', 'registry_file': str(reg)},
+        }), encoding='utf-8')
+
+    def test_parse_args_isolated_and_level_flags(self):
+        iso_dir = self.root / 'iso'
+        parsed = gate.parse_args([
+            '--executable', str(self.executable), '--level', '2b-check',
+            '--isolated-root', str(iso_dir), '--home', str(self.root), '--json',
+        ])
+        self.assertEqual(parsed.level, '2b-check')
+        self.assertEqual(parsed.config, iso_dir / 'runtime.json')
+        self.assertEqual(parsed.component_root, iso_dir / 'components')
+
+        td = gate.parse_args(['--teardown-isolated', '--isolated-root', str(iso_dir), '--home', str(self.root)])
+        self.assertTrue(td.teardown_isolated)
+        self.assertIsNone(td.scenario)
+
+        for bad_argv in (
+            ['--executable', str(self.executable), '--scenario', 'clean-install', '--keep-isolated', '--teardown-isolated'],
+            ['--teardown-isolated'],
+            ['--teardown-isolated', '--isolated-root', str(iso_dir), '--level', '2a-check'],
+        ):
+            with self.subTest(bad_argv=bad_argv), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as err:
+                gate.parse_args(bad_argv)
+            self.assertEqual(err.exception.code, 2)
+
+    def test_dry_run_for_teardown_and_level_2a_2b(self):
+        iso_dir = self.root / 'iso-dry'
+        for argv, key in (
+            (['--teardown-isolated', '--isolated-root', str(iso_dir), '--home', str(self.root), '--dry-run', '--json'], 'teardown_isolated'),
+            (['--executable', str(self.executable), '--level', '2a-check', '--isolated-root', str(iso_dir), '--home', str(self.root), '--dry-run', '--json'], '2a'),
+            (['--executable', str(self.executable), '--level', '2b-check', '--isolated-root', str(iso_dir), '--home', str(self.root), '--dry-run', '--json'], '2b'),
+        ):
+            with self.subTest(key=key):
+                code, report = self._run_main_json(argv)
+                self.assertEqual(code, 0)
+                self.assertEqual(report['status'], 'planned')
+                self.assertFalse(iso_dir.exists())
+
+    def test_clean_install_keep_isolated_warm_pool_level2b_and_teardown_lifecycle(self):
+        pool = self._make_component_pool()
+        iso_dir = self.root / 'iso-hot'
+        ev_dir = self.root / 'evidence'
+        orig_hooks = {'version': 1, 'hooks': {'PreToolUse': [THIRD_PARTY]}}
+        self.hooks.write_text(json.dumps(orig_hooks), encoding='utf-8')
+        self.fixture(
+            'clean-install',
+            config_path=str(iso_dir / 'runtime.json'),
+            component_root=str(iso_dir / 'components'),
+            official_data=str(iso_dir / 'library'),
+            skip_runtime_json=True,
+            app_meta={'bundled_runtime_hash': 'abcdef0123456789'},
+        )
+        # Step 1: Level 1 clean-install with APFS warm pool + --keep-isolated + --evidence-dir.
+        code, rep1 = self._run_main_json([
+            '--executable', str(self.executable), '--scenario', 'clean-install',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--mirror', 'official',
+            '--warm-components-from', str(pool), '--keep-isolated', '--evidence-dir', str(ev_dir), '--json',
+        ])
+        self.assertEqual(code, 0, rep1)
+        self.assertEqual(rep1['environment_mode'], 'apfs_clone_pool')
+        self.assertTrue(rep1['isolated_env']['kept'])
+        self.assertTrue((ev_dir / 'level1-report.json').is_file())
+        self.assertIn(str(iso_dir / 'components'),
+                      (iso_dir / 'components' / 'runtime-1' / 'venv' / 'pyvenv.cfg').read_text(encoding='utf-8'))
+
+        # Seed initialized store artifacts (as real Memlane setup would produce) and persist store_id.
+        self._seed_initialized_store(iso_dir, store_id='store-hot-001')
+        gate.utm_isolated_env.update_isolated_manifest(iso_dir, store_id='store-hot-001')
+
+        # Step 2: Re-running clean-install against an initialized isolated root is forbidden.
+        code_dup, rep_dup = self._run_main_json([
+            '--executable', str(self.executable), '--scenario', 'clean-install',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--mirror', 'official', '--keep-isolated', '--json',
+        ])
+        self.assertEqual(code_dup, 1, rep_dup)
+        self.assertIn('cannot reuse', rep_dup['error'])
+
+        # Step 3: Different candidate executable SHA returns exit 33.
+        other_exe = self.root / 'Memlane-other'
+        other_exe.write_bytes(b'#!/bin/sh\necho other\n')
+        other_exe.chmod(0o700)
+        code_mm, rep_mm = self._run_main_json([
+            '--executable', str(other_exe), '--level', '2b-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--json',
+        ])
+        self.assertEqual(code_mm, gate.EXIT_ISOLATED_VERSION_MISMATCH, rep_mm)
+        self.assertEqual(rep_mm['status'], 'isolated_version_mismatch')
+
+        # Step 4: Level 2b check reuses Level 1 hot daemon with P4 login preflight and emits evidence.
+        (self.root / 'settings.json').write_text(json.dumps({
+            'scenario': 'level-2b', 'final_hooks': HOOKS, 'connection_verified': True,
+            'config_path': str(iso_dir / 'runtime.json'), 'component_root': str(iso_dir / 'components'),
+            'app_meta': {'bundled_runtime_hash': 'abcdef0123456789'},
+        }), encoding='utf-8')
+        self._preflight_mock.reset_mock()
+        code_2b, rep_2b = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2b-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--evidence-dir', str(ev_dir), '--json',
+        ])
+        self.assertEqual(code_2b, 0, rep_2b)
+        self.assertEqual(rep_2b['reused_from'], 'level_1_hot')
+        self.assertEqual(rep_2b['host_sessions']['codex']['instance_id'], 'codex-id')
+        self.assertEqual(rep_2b['host_sessions']['trae_ide']['instance_id'], 'trae-cn-id')
+        self.assertEqual(self._preflight_mock.call_args.kwargs['require_login_agents'], gate.AGENTS)
+        self.assertTrue((ev_dir / 'level2b-manifest.json').is_file())
+        self.assertTrue((ev_dir / 'host-session-codex.json').is_file())
+        self.assertTrue((ev_dir / 'host-session-trae_ide.json').is_file())
+
+        # Step 5: Unified idempotent teardown stops daemon, restores hooks.json, and safe_removes root.
+        code_td, rep_td = self._run_main_json([
+            '--executable', str(self.executable), '--teardown-isolated',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--evidence-dir', str(ev_dir), '--json',
+        ])
+        self.assertEqual(code_td, 0, rep_td)
+        self.assertEqual(rep_td['status'], 'torn_down')
+        self.assertFalse(iso_dir.exists())
+        self.assertEqual(json.loads(self.hooks.read_text(encoding='utf-8')), orig_hooks)
+        self.assertTrue((self.root / 'stopped').exists())
+        self.assertTrue((ev_dir / 'teardown-report.json').is_file())
+
+        # Idempotent second teardown succeeds cleanly.
+        code_td2, rep_td2 = self._run_main_json([
+            '--teardown-isolated', '--home', str(self.root), '--isolated-root', str(iso_dir), '--json',
+        ])
+        self.assertEqual(code_td2, 0, rep_td2)
+        self.assertEqual(rep_td2['status'], 'already_absent')
+
+    def test_level_2a_check_prep_verify_restart_and_rejects_level1_hot_store(self):
+        pool = self._make_component_pool()
+        iso_dir = self.root / 'iso-2a'
+        ev_dir = self.root / 'ev-2a'
+        self.fixture(
+            'level-2a-prep', config_path=str(iso_dir / 'runtime.json'),
+            component_root=str(iso_dir / 'components'), skip_runtime_json=True,
+        )
+        # Prep mode clones pool into empty-store sandbox.
+        code_p, rep_p = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2a-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--warm-components-from', str(pool), '--evidence-dir', str(ev_dir), '--json',
+        ])
+        self.assertEqual(code_p, 0, rep_p)
+        self.assertEqual(rep_p['status'], 'ready_for_2a_onboarding')
+        self.assertEqual(rep_p['environment_mode'], 'apfs_clone_pool')
+
+        # Post-onboarding verify mode checks store_id + 0600 token + setup ready.
+        self._seed_initialized_store(iso_dir, store_id='store-2a-stable', token_mode=0o600)
+        self.fixture(
+            'level-2a', config_path=str(iso_dir / 'runtime.json'),
+            component_root=str(iso_dir / 'components'), skip_runtime_json=True,
+        )
+        code_v1, rep_v1 = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2a-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--evidence-dir', str(ev_dir), '--json',
+        ])
+        self.assertEqual(code_v1, 0, rep_v1)
+        self.assertEqual(rep_v1['level2a']['store_id'], 'store-2a-stable')
+        self.assertFalse(rep_v1['level2a']['restart_store_id_reused'])
+
+        # Restart verification confirms store_id stayed identical.
+        code_v2, rep_v2 = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2a-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir), '--json',
+        ])
+        self.assertEqual(code_v2, 0, rep_v2)
+        self.assertTrue(rep_v2['level2a']['restart_store_id_reused'])
+
+        # Insecure 0644 token file must fail Level 2a check.
+        (iso_dir / 'owner.token').chmod(0o644)
+        code_bad_perm, rep_bad_perm = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2a-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir), '--json',
+        ])
+        self.assertEqual(code_bad_perm, 1, rep_bad_perm)
+        (iso_dir / 'owner.token').chmod(0o600)
+
+        # Level 2a strictly forbids reusing a Level 1 clean-install hot store.
+        gate.utm_isolated_env.update_isolated_manifest(iso_dir, executed_scenarios=['clean-install'])
+        code_l1, rep_l1 = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2a-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir), '--json',
+        ])
+        self.assertEqual(code_l1, 1, rep_l1)
+
+    def test_level_2b_rejects_unadopted_connection_and_protected_evidence_dir(self):
+        iso_dir = self.root / 'iso-2b-fail'
+        self._seed_initialized_store(iso_dir, store_id='store-2b')
+        self.write_hooks(HOOKS)
+        self.fixture(
+            'level-2b', config_path=str(iso_dir / 'runtime.json'),
+            component_root=str(iso_dir / 'components'), skip_runtime_json=True,
+            connection_verified=False,
+        )
+        code, rep = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2b-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--json',
+        ])
+        self.assertEqual(code, 1, rep)
+
+        # Writing evidence inside protected ~/.trae-cn returns exit 32 without touching it.
+        protected_ev = self.root / '.trae-cn' / 'evidence'
+        code_p, rep_p = self._run_main_json([
+            '--executable', str(self.executable), '--level', '2b-check',
+            '--home', str(self.root), '--isolated-root', str(iso_dir),
+            '--hooks-path', str(self.hooks), '--evidence-dir', str(protected_ev), '--json',
+        ])
+        self.assertEqual(code_p, gate.EXIT_PROTECTED_PATH_VIOLATED, rep_p)
+        self.assertFalse(protected_ev.exists())
 
 
 if __name__ == '__main__':

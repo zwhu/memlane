@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -19,9 +20,10 @@ import sys
 import time
 
 if __package__:
-    from . import utm_guard
+    from . import utm_guard, utm_isolated_env
 else:
     import utm_guard
+    import utm_isolated_env
 
 EXIT_PREFLIGHT_BLOCKED = utm_guard.EXIT_PREFLIGHT_BLOCKED
 EXIT_PROTECTED_PATH_VIOLATED = utm_guard.EXIT_PROTECTED_PATH_VIOLATED
@@ -252,6 +254,7 @@ class Gate:
         self.runtime = options.config.parent
         self.hooks_path = options.hooks_path
         self.receipts = []
+        self.app_meta = {}
 
     def check(self, label, action):
         receipt = {'step': label, 'status': 'failed'}
@@ -282,6 +285,8 @@ class Gate:
             limit = timeout() if callable(timeout) else timeout
             result = run_cli(self.options.executable, command, env=self.env, timeout=limit)
             receipt['exit_code'] = result.returncode
+            if isinstance(result.payload.get('app'), dict):
+                self.app_meta.update(result.payload['app'])
             if validate:
                 validate(result)
             require(result.returncode in codes, f'expected CLI exit code in {codes}')
@@ -753,7 +758,10 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--executable', type=absolute_path)
     parser.add_argument('--scenario', choices=(*SCENARIOS, 'all'))
-    for name in ('home', 'config', 'component-root', 'uninstall-script', 'hooks-path'):
+    parser.add_argument('--level', choices=('1', '2a-check', '2b-check'), default='1',
+                        help='verification level: 1 (CLI gate), 2a-check (empty-store 3-step onboarding), 2b-check (warm daemon + real hosts)')
+    for name in ('home', 'config', 'component-root', 'uninstall-script', 'hooks-path',
+                 'isolated-root', 'warm-components-from', 'evidence-dir'):
         parser.add_argument('--' + name, type=absolute_path)
     parser.add_argument('--mirror', choices=('china', 'official'))
     parser.add_argument('--max-polls', type=positive_int, default=DEFAULT_MAX_POLLS,
@@ -769,21 +777,37 @@ def parse_args(argv):
                         help='run only the 3s fail-fast environment preflight probes and exit 0 or 31')
     parser.add_argument('--skip-preflight', action='store_true',
                         help='skip fail-fast preflight probes (recorded as skipped; rejected by release gate)')
+    parser.add_argument('--keep-isolated', action='store_true',
+                        help='keep isolated daemon and workspace alive with .memlane-utm-isolated.json for chained Level 2b reuse')
+    parser.add_argument('--teardown-isolated', action='store_true',
+                        help='stop isolated daemon, restore backed-up host configs, and safely remove isolated workspace')
+    parser.add_argument('--keep-host-config', action='store_true',
+                        help='skip restoring backed-up host config files during --teardown-isolated')
     parser.add_argument('--run-uninstall-apply', action='store_true')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     options = parser.parse_args(argv)
-    if not options.preflight_only:
+    if options.keep_isolated and options.teardown_isolated:
+        parser.error('--keep-isolated and --teardown-isolated are mutually exclusive')
+    if options.teardown_isolated:
+        if options.level != '1':
+            parser.error('--teardown-isolated cannot be combined with --level 2a-check/2b-check')
+        if options.isolated_root is None and options.config is None:
+            parser.error('--teardown-isolated requires --isolated-root or explicit --config')
+    elif not options.preflight_only:
         if options.executable is None:
             parser.error('the following arguments are required: --executable')
-        if options.scenario is None:
+        if options.level == '1' and options.scenario is None:
             parser.error('the following arguments are required: --scenario')
     if options.scenario == 'all' and not options.dry_run and not options.preflight_only:
         parser.error('--scenario all requires --dry-run. The three UTM snapshots are mutually exclusive. Run one --scenario per snapshot.')
     options.home = options.home or Path.home()
-    runtime = options.home / 'Library' / 'Application Support' / 'Memlane'
-    options.config = options.config or runtime / 'runtime.json'
-    options.component_root = options.component_root or runtime / 'components'
+    default_runtime = options.home / 'Library' / 'Application Support' / 'Memlane'
+    runtime_base = options.isolated_root or default_runtime
+    options.config = options.config or runtime_base / 'runtime.json'
+    options.component_root = options.component_root or runtime_base / 'components'
+    if (options.keep_isolated or options.teardown_isolated) and options.isolated_root is None:
+        options.isolated_root = options.config.parent
     options.hooks_path = options.hooks_path or options.home / '.trae-cn' / 'hooks.json'
     options.uninstall_script = options.uninstall_script or Path(__file__).resolve().with_name('uninstall.py')
     return options
@@ -819,7 +843,8 @@ def plan_steps(scenario, uninstall_apply):
     return steps[scenario]
 
 
-def _execute_preflight(options):
+def _execute_preflight(options, *, require_login_override=None):
+    login_agents = tuple(getattr(options, 'require_host_login', ())) if require_login_override is None else tuple(require_login_override)
     return utm_guard.run_preflight(
         home=options.home,
         component_root=options.component_root,
@@ -827,8 +852,371 @@ def _execute_preflight(options):
         scenario=options.scenario or '',
         check_network=True,
         extra_probe_hosts=tuple(getattr(options, 'probe_host', ())),
-        require_login_agents=tuple(getattr(options, 'require_host_login', ())),
+        require_login_agents=login_agents,
     )
+
+
+def _check_evidence_dir_safe(evidence_dir, home):
+    if evidence_dir is not None and utm_guard.is_protected_overlap(evidence_dir, home) is not None:
+        raise utm_isolated_env.IsolatedEnvError(
+            'refused writing evidence inside a protected path', returncode=EXIT_PROTECTED_PATH_VIOLATED,
+        )
+
+
+def _write_evidence_json(evidence_dir, filename, payload, *, home):
+    if evidence_dir is None:
+        return None
+    _check_evidence_dir_safe(evidence_dir, home)
+    raw = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    check_output_privacy(raw, payload)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    dest = evidence_dir / filename
+    tmp = evidence_dir / f'.{filename}.{os.getpid()}.tmp'
+    tmp.write_text(raw, encoding='utf-8')
+    os.replace(tmp, dest)
+    return str(dest)
+
+
+def _check_private_token_file(path_str):
+    if not path_str:
+        return False, False
+    path = Path(path_str)
+    if path.is_symlink():
+        return True, False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False, False
+    return True, (stat.S_ISREG(st.st_mode) and st.st_size > 0 and (st.st_mode & 0o077) == 0)
+
+
+def _sanitized_bridge_summary(isolated_root, config_path):
+    params = utm_isolated_env.resolve_host_bridge_params(isolated_root, runtime_config=config_path)
+    tok_exists, tok_private = _check_private_token_file(params['token_file'])
+    mgmt_exists, mgmt_private = _check_private_token_file(params['management_token_file'])
+    return {
+        'store_id': params['store_id'],
+        'service_url': params['service_url'],
+        'control_url': params['control_url'],
+        'instances': params['instances'],
+        'token_file_present': tok_exists,
+        'token_file_private_0600': tok_private,
+        'management_token_file_present': mgmt_exists,
+        'management_token_file_private_0600': mgmt_private,
+    }
+
+
+def _backup_host_hooks(isolated_root, hooks_path):
+    if isolated_root is None or not hooks_path.is_file() or hooks_path.is_symlink():
+        return {}
+    backup_dir = isolated_root / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup_path = backup_dir / 'hooks.json'
+    shutil.copyfile(hooks_path, backup_path)
+    return {str(hooks_path): str(backup_path)}
+
+
+def _error_status(returncode):
+    if returncode == EXIT_ISOLATED_VERSION_MISMATCH:
+        return 'isolated_version_mismatch'
+    if returncode == EXIT_PROTECTED_PATH_VIOLATED:
+        return 'protected_path_violated'
+    if returncode == EXIT_PREFLIGHT_BLOCKED:
+        return 'preflight_env_blocked'
+    return 'failed'
+
+
+def _run_teardown(options):
+    isolated_root = options.isolated_root
+    if options.dry_run:
+        return 0, {
+            'status': 'planned', 'returncode': 0, 'action': 'teardown_isolated', 'scenarios': [],
+            'steps': [
+                'stop --dry-run / --apply --owner-fingerprint (if active)',
+                'verify .service-owner flock released',
+                'restore backed-up host configs' if not options.keep_host_config else 'keep host configs (--keep-host-config)',
+                'utm_guard.safe_remove isolated root with .memlane-utm-isolated.json verification',
+                'HostStateSentinel verify protected login paths intact',
+            ],
+        }
+
+    def stop_daemon(_state):
+        if options.executable is None or not options.config.is_file():
+            return
+        gate = Gate(options)
+        preview = gate.cli('review isolated daemon stop', 'stop', '--dry-run', codes=(0, 10, 40))
+        if preview.returncode == 10:
+            fp = artifact(preview, 'owner_fingerprint')
+            gate.cli('stop isolated daemon', 'stop', '--apply', '--owner-fingerprint', fp)
+
+    try:
+        _check_evidence_dir_safe(getattr(options, 'evidence_dir', None), options.home)
+        result = utm_isolated_env.teardown_isolated_env(
+            isolated_root,
+            home=options.home,
+            keep_host_config=getattr(options, 'keep_host_config', False),
+            stop_fn=stop_daemon,
+            flock_check_fn=flock_held,
+        )
+        report = {'status': result['status'], 'returncode': 0, 'teardown': result, 'sentinel': result['sentinel'],
+                  'scenarios': [], 'summary': {'passed': 1, 'failed': 0}}
+        if options.evidence_dir is not None:
+            _write_evidence_json(options.evidence_dir, 'teardown-report.json', report, home=options.home)
+    except (utm_isolated_env.IsolatedEnvError, VerificationError) as exc:
+        code = exc.returncode if isinstance(exc, utm_isolated_env.IsolatedEnvError) else 1
+        report = {'status': _error_status(code), 'returncode': code, 'error': str(exc), 'scenarios': [],
+                  'summary': {'passed': 0, 'failed': 1}}
+        return code, report
+    return 0, report
+
+
+def _run_level_2a_check(options):
+    env_mode = 'apfs_clone_pool' if options.warm_components_from else 'zero_cache_download'
+    if options.dry_run:
+        return 0, {
+            'status': 'planned', 'returncode': 0, 'level': '2a', 'environment_mode': env_mode, 'scenarios': [],
+            'steps': [
+                'optional APFS CoW clone from --warm-components-from into empty-store sandbox (forbids initialized hot store)',
+                'verify runtime.json, store-identity.json store_id continuity across restart, and 0600 owner token permissions',
+                'verify doctor daemon ready and verify --stage setup exit 0',
+                'emit sanitized level2a-manifest.json if --evidence-dir is set',
+            ],
+        }
+    if getattr(options, 'skip_preflight', False):
+        preflight = {'status': 'skipped', 'ok': True, 'returncode': 0, 'checks': []}
+    else:
+        preflight_code, preflight = _execute_preflight(options)
+        if preflight_code != 0:
+            return EXIT_PREFLIGHT_BLOCKED, {
+                'status': 'preflight_env_blocked', 'returncode': EXIT_PREFLIGHT_BLOCKED, 'level': '2a',
+                'preflight': preflight, 'scenarios': [], 'summary': {'passed': 0, 'failed': 0},
+            }
+
+    default_runtime = (options.home / 'Library' / 'Application Support' / 'Memlane').resolve(strict=False)
+    actual_runtime = options.config.parent.resolve(strict=False)
+    sentinel = utm_guard.HostStateSentinel(options.home, protect_memlane_dir=(actual_runtime != default_runtime))
+    isolated_root = options.isolated_root or options.config.parent
+    gate = Gate(options)
+    clone_info = None
+    try:
+        _check_evidence_dir_safe(getattr(options, 'evidence_dir', None), options.home)
+        candidate = utm_isolated_env.compute_candidate_fingerprint(options.executable)
+        existing_manifest = utm_isolated_env.read_isolated_manifest(isolated_root)
+        if existing_manifest is not None:
+            utm_isolated_env.verify_fingerprint_match(existing_manifest, candidate)
+            if 'clean-install' in (existing_manifest.get('executed_scenarios') or []):
+                raise VerificationError('Level 2a forbids reusing a Level 1 pre-initialized clean-install hot store')
+
+        # Prep mode: empty store + warm component pool before launching GUI 3-step onboarding.
+        if options.warm_components_from is not None and not options.config.is_file():
+            library_dir = isolated_root / 'library'
+            require(not (library_dir.is_dir() and any(library_dir.iterdir())),
+                    'Level 2a prep requires an empty library directory (cannot skip 3-step onboarding)')
+            utm_isolated_env.prepare_isolated_env(
+                isolated_root, options.executable, scenario='level-2a', home=options.home,
+                components_source='apfs_clone_pool', allow_reuse=True,
+            )
+            clone_info = utm_isolated_env.clone_components_apfs(
+                options.warm_components_from, options.component_root, home=options.home, allowed_root=isolated_root,
+            )
+            gate.cli('confirm empty store before 2a onboarding', 'doctor', codes=(10, 40),
+                     validate=lambda res: require(res.payload.get('daemon', {}).get('state') != 'ready',
+                                                  'Level 2a prep expected an uninitialized daemon before onboarding'))
+            sentinel_report = sentinel.verify()
+            if not sentinel_report['ok']:
+                return EXIT_PROTECTED_PATH_VIOLATED, {'status': 'protected_path_violated', 'returncode': EXIT_PROTECTED_PATH_VIOLATED,
+                                                      'level': '2a', 'preflight': preflight, 'sentinel': sentinel_report,
+                                                      'scenarios': [], 'summary': {'passed': 0, 'failed': 1}}
+            report = {
+                'status': 'ready_for_2a_onboarding', 'returncode': 0, 'level': '2a',
+                'environment_mode': 'apfs_clone_pool', 'clone': clone_info, 'candidate': candidate,
+                'preflight': preflight, 'sentinel': sentinel_report,
+                'scenarios': [{'scenario': 'level-2a-prep', 'status': 'passed', 'steps': gate.receipts}],
+                'summary': {'passed': 1, 'failed': 0},
+            }
+            if options.evidence_dir is not None:
+                _write_evidence_json(options.evidence_dir, 'level2a-manifest.json', report, home=options.home)
+            return 0, report
+
+        # Post-onboarding verify mode: confirm store_id, 0600 owner token, setup ready, and restart continuity.
+        summary = gate.check('inspect Level 2a runtime, store_id, and 0600 credentials',
+                             lambda _: _sanitized_bridge_summary(isolated_root, options.config))
+        gate.check('confirm Level 2a store_id and 0600 owner token', lambda _: (
+            require(bool(summary['store_id']), 'missing store_id in store-identity.json'),
+            require(summary['token_file_present'] and summary['token_file_private_0600'],
+                    'owner token file missing or not strictly 0600 private'),
+        ))
+        prev_store_id = (existing_manifest or {}).get('store_id') or ''
+        restart_reused = False
+        if prev_store_id:
+            gate.check('confirm store_id unchanged after restart',
+                       lambda _: require(summary['store_id'] == prev_store_id, 'store_id changed across app restart'))
+            restart_reused = True
+        gate.cli('verify Level 2a daemon ready', 'doctor', codes=(0, 10, 11),
+                 validate=lambda res: require(res.payload.get('daemon', {}).get('state') == 'ready',
+                                              'Level 2a daemon is not ready'))
+        if existing_manifest is not None and gate.app_meta.get('bundled_runtime_hash'):
+            utm_isolated_env.verify_fingerprint_match(
+                existing_manifest,
+                utm_isolated_env.compute_candidate_fingerprint(
+                    options.executable, bundled_runtime_hash=str(gate.app_meta.get('bundled_runtime_hash') or ''),
+                ),
+            )
+        gate.setup_verified()
+        if existing_manifest is not None:
+            executed = list(dict.fromkeys([*(existing_manifest.get('executed_scenarios') or []), 'level-2a']))
+            utm_isolated_env.update_isolated_manifest(
+                isolated_root, store_id=summary['store_id'],
+                bundled_runtime_hash=str(gate.app_meta.get('bundled_runtime_hash') or existing_manifest.get('bundled_runtime_hash') or ''),
+                executed_scenarios=executed,
+            )
+            env_mode = existing_manifest.get('components_source') or env_mode
+        status = 'passed'
+    except utm_isolated_env.IsolatedEnvError as exc:
+        sentinel_report = sentinel.verify()
+        return exc.returncode, {
+            'status': _error_status(exc.returncode), 'returncode': exc.returncode, 'level': '2a',
+            'error': str(exc), 'preflight': preflight, 'sentinel': sentinel_report,
+            'scenarios': [{'scenario': 'level-2a-check', 'status': 'failed', 'steps': gate.receipts}],
+            'summary': {'passed': 0, 'failed': 1},
+        }
+    except VerificationError:
+        summary = {}
+        restart_reused = False
+        status = 'failed'
+
+    sentinel_report = sentinel.verify()
+    if not sentinel_report['ok']:
+        return EXIT_PROTECTED_PATH_VIOLATED, {
+            'status': 'protected_path_violated', 'returncode': EXIT_PROTECTED_PATH_VIOLATED, 'level': '2a',
+            'preflight': preflight, 'sentinel': sentinel_report,
+            'scenarios': [{'scenario': 'level-2a-check', 'status': status, 'steps': gate.receipts}],
+            'summary': {'passed': int(status == 'passed'), 'failed': int(status != 'passed')},
+        }
+    code = int(status != 'passed')
+    report = {
+        'status': status, 'returncode': code, 'level': '2a', 'environment_mode': env_mode,
+        'candidate': utm_isolated_env.compute_candidate_fingerprint(
+            options.executable, bundled_runtime_hash=str(gate.app_meta.get('bundled_runtime_hash') or ''),
+        ),
+        'level2a': {'store_id': summary.get('store_id', ''), 'token_file_private_0600': summary.get('token_file_private_0600', False),
+                    'restart_store_id_reused': restart_reused},
+        'preflight': preflight, 'sentinel': sentinel_report,
+        'scenarios': [{'scenario': 'level-2a-check', 'status': status, 'steps': gate.receipts}],
+        'summary': {'passed': int(code == 0), 'failed': int(code != 0)},
+    }
+    if options.evidence_dir is not None and code == 0:
+        _write_evidence_json(options.evidence_dir, 'level2a-manifest.json', report, home=options.home)
+    return code, report
+
+
+def _run_level_2b_check(options):
+    target_agents = tuple(options.agents or AGENTS)
+    if options.dry_run:
+        return 0, {
+            'status': 'planned', 'returncode': 0, 'level': '2b', 'agents': list(target_agents), 'scenarios': [],
+            'steps': [
+                'preflight P1-P4 including host login / JWT check for target agents',
+                'verify isolated candidate fingerprint match (allows reusing Level 2a or Level 1 --keep-isolated hot daemon)',
+                'verify doctor daemon ready and verify --stage setup exit 0',
+                'verify --stage connection --agent <kind> returns exit 0 (real host session verified) + TRAE 4-event hooks',
+                'emit sanitized level2b-manifest.json and host-session-<agent>.json if --evidence-dir is set',
+            ],
+        }
+    if getattr(options, 'skip_preflight', False):
+        preflight = {'status': 'skipped', 'ok': True, 'returncode': 0, 'checks': []}
+    else:
+        login_req = tuple(options.require_host_login) if options.require_host_login else target_agents
+        preflight_code, preflight = _execute_preflight(options, require_login_override=login_req)
+        if preflight_code != 0:
+            return EXIT_PREFLIGHT_BLOCKED, {
+                'status': 'preflight_env_blocked', 'returncode': EXIT_PREFLIGHT_BLOCKED, 'level': '2b',
+                'preflight': preflight, 'scenarios': [], 'summary': {'passed': 0, 'failed': 0},
+            }
+
+    default_runtime = (options.home / 'Library' / 'Application Support' / 'Memlane').resolve(strict=False)
+    actual_runtime = options.config.parent.resolve(strict=False)
+    sentinel = utm_guard.HostStateSentinel(options.home, protect_memlane_dir=(actual_runtime != default_runtime))
+    isolated_root = options.isolated_root or options.config.parent
+    gate = Gate(options)
+    host_sessions = {}
+    reused_from = 'external'
+    bridge_summary = {}
+    try:
+        _check_evidence_dir_safe(getattr(options, 'evidence_dir', None), options.home)
+        candidate = utm_isolated_env.compute_candidate_fingerprint(options.executable)
+        existing_manifest = utm_isolated_env.read_isolated_manifest(isolated_root)
+        if existing_manifest is not None:
+            utm_isolated_env.verify_fingerprint_match(existing_manifest, candidate)
+            prev_scenarios = set(existing_manifest.get('executed_scenarios') or [])
+            if 'level-2a' in prev_scenarios:
+                reused_from = 'level_2a'
+            elif 'clean-install' in prev_scenarios:
+                reused_from = 'level_1_hot'
+            else:
+                reused_from = 'isolated'
+        gate.cli('verify Level 2b warm daemon ready', 'doctor', codes=(0, 10, 11),
+                 validate=lambda res: require(res.payload.get('daemon', {}).get('state') == 'ready',
+                                              'Level 2b warm daemon is not ready'))
+        if existing_manifest is not None and gate.app_meta.get('bundled_runtime_hash'):
+            utm_isolated_env.verify_fingerprint_match(
+                existing_manifest,
+                utm_isolated_env.compute_candidate_fingerprint(
+                    options.executable, bundled_runtime_hash=str(gate.app_meta.get('bundled_runtime_hash') or ''),
+                ),
+            )
+        gate.setup_verified()
+        if options.config.is_file():
+            bridge_summary = gate.check('resolve sanitized isolated host bridge parameters',
+                                        lambda _: _sanitized_bridge_summary(isolated_root, options.config))
+        for kind in target_agents:
+            res = gate.cli(f'verify {kind} real host session adopted', 'verify', '--stage', 'connection', '--agent', kind, codes=(0,))
+            if kind == 'trae_ide':
+                gate.check('verify four-event TRAE hooks schema',
+                           lambda _: assert_trae_hooks_4_event_schema(options.hooks_path))
+            host_sessions[kind] = {
+                'agent': kind, 'status': 'passed', 'exit_code': res.returncode, 'connection_verified': True,
+                'instance_id': bridge_summary.get('instances', {}).get(kind, ''),
+            }
+        if existing_manifest is not None:
+            executed = list(dict.fromkeys([*(existing_manifest.get('executed_scenarios') or []), 'level-2b']))
+            utm_isolated_env.update_isolated_manifest(isolated_root, executed_scenarios=executed)
+        status = 'passed'
+    except utm_isolated_env.IsolatedEnvError as exc:
+        sentinel_report = sentinel.verify()
+        return exc.returncode, {
+            'status': _error_status(exc.returncode), 'returncode': exc.returncode, 'level': '2b',
+            'error': str(exc), 'preflight': preflight, 'sentinel': sentinel_report,
+            'scenarios': [{'scenario': 'level-2b-check', 'status': 'failed', 'steps': gate.receipts}],
+            'summary': {'passed': 0, 'failed': 1},
+        }
+    except VerificationError:
+        status = 'failed'
+
+    sentinel_report = sentinel.verify()
+    if not sentinel_report['ok']:
+        return EXIT_PROTECTED_PATH_VIOLATED, {
+            'status': 'protected_path_violated', 'returncode': EXIT_PROTECTED_PATH_VIOLATED, 'level': '2b',
+            'preflight': preflight, 'sentinel': sentinel_report,
+            'scenarios': [{'scenario': 'level-2b-check', 'status': status, 'steps': gate.receipts}],
+            'summary': {'passed': int(status == 'passed'), 'failed': int(status != 'passed')},
+        }
+    code = int(status != 'passed')
+    report = {
+        'status': status, 'returncode': code, 'level': '2b', 'reused_from': reused_from,
+        'candidate': utm_isolated_env.compute_candidate_fingerprint(
+            options.executable, bundled_runtime_hash=str(gate.app_meta.get('bundled_runtime_hash') or ''),
+        ),
+        'bridge_summary': bridge_summary, 'host_sessions': host_sessions,
+        'preflight': preflight, 'sentinel': sentinel_report,
+        'scenarios': [{'scenario': 'level-2b-check', 'status': status, 'steps': gate.receipts}],
+        'summary': {'passed': int(code == 0), 'failed': int(code != 0)},
+    }
+    if options.evidence_dir is not None and code == 0:
+        _write_evidence_json(options.evidence_dir, 'level2b-manifest.json', report, home=options.home)
+        for kind, session_receipt in host_sessions.items():
+            _write_evidence_json(options.evidence_dir, f'host-session-{kind}.json', session_receipt, home=options.home)
+    return code, report
 
 
 def run_verification(options):
@@ -841,9 +1229,17 @@ def run_verification(options):
             'scenarios': [],
             'summary': {'passed': 0, 'failed': 0},
         }
+    if getattr(options, 'teardown_isolated', False):
+        return _run_teardown(options)
+    if getattr(options, 'level', '1') == '2a-check':
+        return _run_level_2a_check(options)
+    if getattr(options, 'level', '1') == '2b-check':
+        return _run_level_2b_check(options)
+
     scenarios = tuple(SCENARIOS) if options.scenario == 'all' else (options.scenario,)
+    env_mode = 'apfs_clone_pool' if getattr(options, 'warm_components_from', None) else 'zero_cache_download'
     if options.dry_run:
-        return 0, {'status': 'planned', 'returncode': 0, 'scenarios': [
+        return 0, {'status': 'planned', 'returncode': 0, 'level': '1', 'environment_mode': env_mode, 'scenarios': [
             {'scenario': name, 'snapshots': SCENARIOS[name], 'steps': plan_steps(name, options.run_uninstall_apply)}
             for name in scenarios
         ]}
@@ -860,10 +1256,40 @@ def run_verification(options):
                 'summary': {'passed': 0, 'failed': 0},
             }
 
+    isolated_root = getattr(options, 'isolated_root', None)
+    keep_isolated = getattr(options, 'keep_isolated', False)
+    warm_pool = getattr(options, 'warm_components_from', None)
+    clone_info = None
+    host_backups = {}
+    try:
+        _check_evidence_dir_safe(getattr(options, 'evidence_dir', None), options.home)
+        if keep_isolated or warm_pool is not None or (isolated_root is not None and (isolated_root / utm_isolated_env.MANIFEST_NAME).exists()):
+            target_isolated = isolated_root or options.config.parent
+            utm_isolated_env.prepare_isolated_env(
+                target_isolated, options.executable, scenario=scenarios[0], home=options.home,
+                components_source=env_mode, allow_reuse=False,
+            )
+            if warm_pool is not None:
+                clone_info = utm_isolated_env.clone_components_apfs(
+                    warm_pool, options.component_root, home=options.home, allowed_root=target_isolated,
+                )
+            if keep_isolated:
+                host_backups = _backup_host_hooks(target_isolated, options.hooks_path)
+    except utm_isolated_env.IsolatedEnvError as exc:
+        return exc.returncode, {
+            'status': _error_status(exc.returncode),
+            'returncode': exc.returncode,
+            'error': str(exc),
+            'preflight': preflight,
+            'scenarios': [],
+            'summary': {'passed': 0, 'failed': 1},
+        }
+
     default_runtime = (options.home / 'Library' / 'Application Support' / 'Memlane').resolve(strict=False)
     actual_runtime = options.config.parent.resolve(strict=False)
     sentinel = utm_guard.HostStateSentinel(options.home, protect_memlane_dir=(actual_runtime != default_runtime))
     results = []
+    app_meta = {}
     for name in scenarios:
         gate = Gate(options)
         try:
@@ -872,6 +1298,7 @@ def run_verification(options):
             status = 'failed'
         else:
             status = 'passed'
+        app_meta.update(gate.app_meta)
         results.append({'scenario': name, 'status': status, 'steps': gate.receipts})
     sentinel_report = sentinel.verify()
     passed = sum(item['status'] == 'passed' for item in results)
@@ -885,9 +1312,41 @@ def run_verification(options):
             'summary': {'passed': passed, 'failed': len(results) - passed},
         }
     code = int(passed != len(results))
-    return code, {'status': 'failed' if code else 'passed', 'preflight': preflight, 'sentinel': sentinel_report,
-                  'scenarios': results,
-                  'summary': {'passed': passed, 'failed': len(results) - passed}, 'returncode': code}
+    isolated_info = None
+    if keep_isolated and code == 0:
+        target_isolated = isolated_root or options.config.parent
+        bridge_summary = _sanitized_bridge_summary(target_isolated, options.config) if options.config.is_file() else {}
+        existing = utm_isolated_env.read_isolated_manifest(target_isolated) or {}
+        executed = list(dict.fromkeys([*(existing.get('executed_scenarios') or []), *scenarios]))
+        merged_backups = {**(existing.get('host_config_backups') or {}), **host_backups}
+        utm_isolated_env.update_isolated_manifest(
+            target_isolated,
+            bundled_runtime_hash=str(app_meta.get('bundled_runtime_hash') or existing.get('bundled_runtime_hash') or ''),
+            store_id=str(bridge_summary.get('store_id') or existing.get('store_id') or ''),
+            components_source=env_mode,
+            executed_scenarios=executed,
+            host_config_backups=merged_backups,
+        )
+        isolated_info = {'kept': True, 'environment_mode': env_mode, 'store_id': bridge_summary.get('store_id', ''),
+                         'bridge_summary': bridge_summary, 'clone': clone_info}
+    report = {
+        'status': 'failed' if code else 'passed',
+        'level': '1',
+        'environment_mode': env_mode,
+        'preflight': preflight,
+        'sentinel': sentinel_report,
+        'scenarios': results,
+        'summary': {'passed': passed, 'failed': len(results) - passed},
+        'returncode': code,
+    }
+    if isolated_info is not None:
+        report['isolated_env'] = isolated_info
+    elif clone_info is not None:
+        report['clone'] = clone_info
+    evidence_dir = getattr(options, 'evidence_dir', None)
+    if evidence_dir is not None and code == 0:
+        _write_evidence_json(evidence_dir, 'level1-report.json', report, home=options.home)
+    return code, report
 
 
 def main(argv=None):
@@ -896,6 +1355,8 @@ def main(argv=None):
     if options.json or options.dry_run:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
+        if report.get('error'):
+            print(f"{report['status']} (exit {code}): {report['error']}")
         if report.get('preflight') and not report['preflight'].get('ok', True):
             print(f"preflight [{report['status']}] (exit {code})")
             for check in report['preflight'].get('checks', []):
