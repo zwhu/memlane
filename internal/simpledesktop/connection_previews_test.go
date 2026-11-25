@@ -269,7 +269,7 @@ func TestTraeSetupCaptureChecklistCollapsesWhenHealthy(t *testing.T) {
 			}
 			row.Capture.State = "healthy"
 			tt.Frame()
-			if !tt.HasText("自动采集正常") || tt.HasText(hooks) || tt.HasText("收起步骤：TRAE IDE") {
+			if !tt.HasText("自动采集正常") || tt.HasText(hooks) || tt.HasText("收起步骤：TRAE CN") {
 				t.Fatal("verified capture did not collapse the checklist")
 			}
 		})

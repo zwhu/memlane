@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -52,8 +53,9 @@ func (a *App) inspectOwnerRuntimeStatus(mode ownerInspectMode) {
 		defer cancel()
 		status, err := inspect(ctx, path, root)
 		a.Update(func() {
-			defer func() { s.ownerInspecting = false }()
+			s.ownerInspecting = false
 			if path != a.Config.ConfigFile || s.RestartingStaleDaemon {
+				s.onboardingStartRequested = false
 				return
 			}
 			s.OwnerStatusChecked = err == nil
@@ -65,9 +67,20 @@ func (a *App) inspectOwnerRuntimeStatus(mode ownerInspectMode) {
 				}
 			}
 			if a.initialSetup {
+				if s.onboardingStartRequested {
+					s.onboardingStartRequested = false
+					if err != nil {
+						s.OnboardingRuntimeFailed = false
+						s.Error = "无法核对后台服务版本，请重新检查。"
+					} else {
+						a.continueEnvironment()
+					}
+					return
+				}
 				if mode == ownerInspectStatusOnly {
 					s.FastLaneChecked = true
 					if err != nil {
+						s.OnboardingRuntimeFailed = false
 						s.Error = "无法核对后台服务版本，请重新检查。"
 					} else if !s.staleRuntimeOwner() && !s.RuntimeStarted {
 						s.Error = s.StaleDaemonError
@@ -78,6 +91,7 @@ func (a *App) inspectOwnerRuntimeStatus(mode ownerInspectMode) {
 					return
 				}
 				if err != nil && s.OwnerStatus == nil {
+					s.OnboardingRuntimeFailed = false
 					s.Error = "无法核对后台服务版本，请重新检测。"
 				}
 				a.advanceFirstRuntimeStartup()
@@ -166,9 +180,12 @@ func (a *App) advanceFirstRuntimeStartup() {
 		!s.Loaded || s.Loading || s.ExternalWorkerActive || s.workerInspecting || s.selectedAgentsSaving || s.Busy || a.integrations.Busy || s.RuntimeStarted || s.FastLaneChecked {
 		return
 	}
+	if s.InitialStep <= 1 && !s.staleRuntimeOwner() {
+		return
+	}
 	s.FastLaneChecked = true
 	if !s.Plan.Complete() {
-		if s.InitialStep == 3 {
+		if s.InitialStep == 3 || (s.InitialStep <= 1 && s.staleRuntimeOwner()) {
 			a.setInitialStep(2)
 		}
 		return
@@ -177,7 +194,9 @@ func (a *App) advanceFirstRuntimeStartup() {
 		a.setInitialStep(3)
 		return
 	}
-	a.beginFirstRuntime(3)
+	if s.InitialStep == 3 {
+		a.beginFirstRuntime(3)
+	}
 }
 
 func (a *App) installWorkerInspector() func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
@@ -196,21 +215,35 @@ func (a *App) inspectInstallWorkerAsync() {
 	s.WorkerPollNext = time.Now().Add(time.Second)
 	root := os.Getenv("MEMLANE_BOOTSTRAP_ROOT")
 	inspect := a.installWorkerInspector()
+	wizard, watching := a.initialSetup, a.onboarding.watchWorker
+	wasActive, previous := s.ExternalWorkerActive, s.ExternalWorker
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		worker, active, err := inspect(ctx, root)
+		finished := !active && (wasActive || watching && onboardingWorkerFinished(worker, previous))
+		var lines []onboardingLogLine
+		if wizard && (active || finished) {
+			lines = onboardingWorkerLogLines(worker, previous)
+		}
 		a.Update(func() {
 			s.workerInspecting = false
 			defer a.advanceFirstRuntimeStartup()
-			wasActive := s.ExternalWorkerActive
 			if err != nil && !active {
 				return
 			}
 			s.ExternalWorker, s.ExternalWorkerActive = worker, active
-			if wasActive && !active {
-				if a.initialSetup && a.Config.FirstInstall == nil {
-					a.reloadConfigAfterWorker()
+			if finished {
+				a.onboarding.watchWorker = false
+			}
+			s.appendOnboardingLog(lines)
+			if active && a.initialSetup && a.onboardingPage() < onboardingEnv {
+				s.InitialStep = 2
+				a.onboarding.page = onboardingEnv
+			}
+			if finished {
+				if a.initialSetup && (a.Config.FirstInstall == nil || worker.State == "completed" && worker.StartRuntime) {
+					a.reloadConfigAfterWorker(worker)
 				} else {
 					a.refreshEnvironment()
 				}
@@ -219,25 +252,47 @@ func (a *App) inspectInstallWorkerAsync() {
 	}()
 }
 
-func (a *App) reloadConfigAfterWorker() {
-	path := a.Config.ConfigFile
+func onboardingWorkerFinished(worker, previous bootstrap.InstallWorkerState) bool {
+	switch worker.State {
+	case "completed", "failed", "cancelled", "needs_review":
+		// A prior terminal receipt can still be present while the user is
+		// pasting the takeover command into a new Agent session.
+		return worker.State != previous.State || worker.OperationID != previous.OperationID ||
+			worker.PID != previous.PID || worker.Started != previous.Started
+	default:
+		return false
+	}
+}
+
+func (a *App) reloadConfigAfterWorker(worker bootstrap.InstallWorkerState) {
+	currentPath := a.Config.ConfigFile
 	go func() {
+		path := currentPath
 		var err error
 		if path == "" {
 			path, err = bootstrap.DefaultRuntimeConfig()
 		}
+		runtimeCompleted := worker.State == "completed" && worker.StartRuntime && worker.ConfigPath != "" &&
+			filepath.Clean(worker.ConfigPath) == filepath.Clean(path)
 		var loaded Config
 		if err == nil {
 			loaded, err = LoadConfig(path)
 		}
 		a.Update(func() {
-			if !a.initialSetup || a.Config.FirstInstall != nil || a.environment.Busy {
+			s := &a.environment
+			if !a.initialSetup || currentPath != a.Config.ConfigFile || s.Busy {
 				return
 			}
-			if err == nil && loaded.FirstInstall != nil {
+			if err == nil && loaded.FirstInstall != nil && (a.Config.FirstInstall == nil || runtimeCompleted) {
 				a.Config, a.Client.Config = loaded, loaded
 				a.configError = ""
-				a.environment.FastLaneChecked = false
+				s.FastLaneChecked = false
+				if runtimeCompleted && !s.RuntimeStarted {
+					// The completed receipt selects the resume phase. The owner
+					// and service still need verification before enabling tools.
+					s.InitialStep, a.onboarding.page = 3, onboardingConnect
+					s.OwnerStatusChecked = false
+				}
 				a.inspectOwnerRuntimeStatusAsync()
 			}
 			a.refreshEnvironment()
@@ -252,7 +307,7 @@ func (a *App) restartStaleRuntimeOwner() {
 		return
 	}
 	s.RestartingStaleDaemon, s.StaleDaemonError = true, ""
-	config, selection := a.Config, *s
+	config, selection, wizard := a.Config, *s, a.initialSetup
 	prepared, fingerprint := s.RuntimePreparation, s.OwnerStatus.OwnerFingerprint
 	restart, inspect := a.RestartStaleRuntimeOwnerFn, a.ownerRuntimeInspector()
 	if restart == nil {
@@ -262,6 +317,10 @@ func (a *App) restartStaleRuntimeOwner() {
 		}
 	}
 	go func() {
+		if wizard {
+			lines := makeOnboardingLogLines("[service] 校验组件并切换至新版后台服务", false)
+			a.Update(func() { s.appendOnboardingLog(lines) })
+		}
 		baseCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
 		ctx, releaseStartup := bootstrap.TrackStartupContext(baseCtx)
@@ -293,8 +352,17 @@ func (a *App) restartStaleRuntimeOwner() {
 				err = errors.New("后台仍在运行旧版，请核对服务状态")
 			}
 		}
+		var lines []onboardingLogLine
+		if wizard {
+			if err != nil {
+				lines = makeOnboardingLogLines("[service] "+err.Error(), true)
+			} else {
+				lines = makeOnboardingLogLines("[service] 新版后台服务已启动", false)
+			}
+		}
 		a.Update(func() {
 			s.RestartingStaleDaemon = false
+			s.appendOnboardingLog(lines)
 			if err != nil {
 				s.StaleDaemonError = bootstrap.RedactInstallerText(err.Error())
 				s.OwnerStatusChecked = false

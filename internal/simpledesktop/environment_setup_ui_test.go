@@ -2,9 +2,12 @@ package simpledesktop
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -96,52 +99,234 @@ func environmentTester(a *App) *ui.Tester {
 	return ui.NewTester(a.View, 1200, 820)
 }
 
-func TestEnvironmentInstallRequiresReviewWithConcreteScope(t *testing.T) {
+func TestOnboardingEnvironmentRecordsPageConsentForDisplayedPlan(t *testing.T) {
 	a, _ := environmentFixture()
+	s := &a.environment
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Environment = &bootstrap.Environment{Options: bootstrap.EnvironmentOptions{Root: root}}
+	updates := make(chan func(), 24)
+	a.Update = func(fn func()) { updates <- fn }
+	a.InspectInstallWorkerFn = func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
+		return bootstrap.InstallWorkerState{}, false, nil
+	}
+	wantDigest := s.Plan.Digest()
 	tt := environmentTester(a)
-	if tt.HasText("确认安装") || tt.HasText("准备完成") {
-		t.Fatal("unreviewed missing environment looked complete")
-	}
-	clickProjectUI(t, tt, "安装并继续")
-	if !tt.HasText("确认安装本地记忆组件") || tt.HasText("运行本地记忆引擎") {
-		t.Fatal("review must open with a plain-language summary")
-	}
-	clickProjectUI(t, tt, "查看技术清单")
-	for _, label := range []string{"确认安装本地记忆组件", "运行本地记忆引擎", "下载 10.0 MiB，占用 30.0 MiB", "来源：https://official.example.test/pinned", "位置：/synthetic/components/python", "确认安装", "暂不安装"} {
+	for _, label := range []string{"需下载 10.0 MiB", "下载并安装 · 10.0 MiB", "点击即表示同意安装上方「待下载」的组件"} {
 		if !tt.HasText(label) {
-			t.Fatal("review omitted", label)
+			t.Fatalf("missing consent scope %q: %v", label, tt.Texts())
 		}
 	}
-	if !a.environment.Review || a.environment.Busy {
-		t.Fatal("opening review started installation")
+	if _, err := s.Environment.Installer().Snapshot(); !os.IsNotExist(err) {
+		t.Fatalf("displaying plan recorded consent: %v", err)
+	}
+	clickProjectUI(t, tt, "下载并安装 · 10.0 MiB")
+	if s.Review || tt.HasText("确认安装") || !s.Busy {
+		t.Fatal("the page action did not start installation directly")
+	}
+	drainReading(t, updates, func() bool { return !s.Busy })
+	got, err := s.Environment.Installer().Snapshot()
+	if err != nil || got.ApprovedDigest != wantDigest {
+		t.Fatalf("page consent receipt = %#v, %v, want %s", got, err, wantDigest)
+	}
+	// The synthetic driver fails at the probe. The consent and redacted
+	// failure events are still visible, with the log opened automatically.
+	tt.Frame()
+	if !s.OnboardingLogOpen || !tt.HasText("重试") || !tt.HasText("复制日志") || !strings.Contains(s.onboardingLogText(), wantDigest) {
+		t.Fatalf("failure omitted the live consent and failure log: %v", tt.Texts())
 	}
 }
+
 func TestAvailableEnvironmentContinuesWithoutInstallAction(t *testing.T) {
 	a, _ := environmentFixture()
 	a.environment.Plan.Items[0].Observation.Status = bootstrap.Available
 	tt := environmentTester(a)
-	if !tt.HasText("已就绪") || !tt.HasText("继续") || tt.HasText("安装并继续") || tt.HasText("准备完成") {
-		t.Fatal("compatible environment requires duplicate installation")
+	if !tt.HasText("无需下载") || !tt.HasText("启动服务并继续") || tt.HasText("下载并安装") {
+		t.Fatalf("compatible environment requires duplicate installation: %v", tt.Texts())
 	}
 }
+
+func TestOnboardingEnvironmentStartsAndRetriesAfterOwnerCheck(t *testing.T) {
+	config, _ := beta3SetupRuntimeConfig(t)
+	a, item := environmentFixture()
+	a.Config, a.Client.Config = config, config
+	s := &a.environment
+	item.Observation.Status = bootstrap.Available
+	s.Plan.Items = []bootstrap.Item{item}
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+	var inspections, startups atomic.Int32
+	a.InspectOwnerRuntimeStatusFn = func(context.Context, string, string) (bootstrap.OwnerRuntimeStatus, error) {
+		inspections.Add(1)
+		return bootstrap.OwnerRuntimeStatus{State: "stopped"}, nil
+	}
+	a.PrepareAndStartFirstRuntimeFn = func(context.Context, Config, environmentSetupState) (bootstrap.FirstRuntime, error) {
+		if startups.Add(1) == 1 {
+			return bootstrap.FirstRuntime{}, errors.New("启动失败 API_KEY=secret-value")
+		}
+		return bootstrap.FirstRuntime{ConfigPath: config.ConfigFile}, nil
+	}
+	tt := environmentTester(a)
+
+	a.inspectOwnerRuntimeStatusAsync()
+	drainReading(t, updates, func() bool { return !s.ownerInspecting })
+	if s.Busy || startups.Load() != 0 {
+		t.Fatal("inspection alone started the service")
+	}
+	clickProjectUI(t, tt, "启动服务并继续")
+	drainReading(t, updates, func() bool { return !s.Busy })
+	tt.Frame()
+	if !s.OnboardingRuntimeFailed || !s.OnboardingLogOpen || a.onboardingPage() != onboardingEnv ||
+		strings.Contains(s.onboardingLogText(), "secret-value") || !tt.HasText("重新启动服务") {
+		t.Fatal("startup failure did not remain recoverable with a safe log")
+	}
+
+	// Ownership may be unknown when the runtime configuration has only just
+	// been written by the first startup attempt. One retry must do both jobs.
+	s.OwnerStatusChecked, s.OwnerStatus = false, nil
+	clickProjectUI(t, tt, "重新启动服务")
+	if !s.ownerInspecting || !s.onboardingStartRequested || s.Busy {
+		t.Fatal("retry did not await owner inspection")
+	}
+	drainReading(t, updates, func() bool { return !s.ownerInspecting && !s.onboardingStartRequested && !s.Busy })
+	if inspections.Load() != 2 || startups.Load() != 2 || !s.RuntimeStarted || a.onboardingPage() != onboardingConnect ||
+		a.onboarding.toast != "本地记忆服务已就绪" || !strings.Contains(s.onboardingLogText(), "健康检查") {
+		t.Fatalf("valid recovery did not start and advance exactly once: inspections=%d starts=%d page=%d error=%q", inspections.Load(), startups.Load(), a.onboardingPage(), s.Error)
+	}
+}
+
 func TestInstallationFailureCanCopyDiagnosticsWithoutRuntime(t *testing.T) {
 	a, item := environmentFixture()
 	a.environment.Error = "download failed API_KEY=private-secret"
 	a.environment.Journal = bootstrap.Journal{Operation: "first-install", Plan: a.environment.Plan, Status: bootstrap.Failed, Steps: map[string]bootstrap.Step{item.Requirement.ID: {Status: bootstrap.Failed, Attempts: 1, Error: a.environment.Error}}}
 	tt := environmentTester(a)
-	for _, label := range []string{"准备未完成", "重试", "复制指令交给 Agent 帮我装/修", "环境详情"} {
+	for _, label := range []string{"准备未完成", "下载并安装 · 10.0 MiB", "改用官方源", "复制诊断，交给 Agent 排查"} {
 		if !tt.HasText(label) {
-			t.Fatal("failure action missing", label)
+			t.Fatalf("failure action %q missing: %v", label, tt.Texts())
 		}
 	}
-	clickProjectUI(t, tt, "复制指令交给 Agent 帮我装/修")
-	if tt.Clipboard() != agentTakeoverBeta2RescuePrompt() || strings.Contains(tt.Clipboard(), "private-secret") {
+	clickProjectUI(t, tt, "复制诊断，交给 Agent 排查")
+	if !strings.Contains(tt.Clipboard(), "[已脱敏]") || strings.Contains(tt.Clipboard(), "private-secret") {
 		t.Fatal("copied incomplete or unredacted diagnostics")
 	}
 	if a.environment.Environment != nil || a.environment.Busy {
 		t.Fatal("diagnostics depended on runtime setup")
 	}
 }
+
+func TestOnboardingEnvironmentUpdatesFiveRowsAndRedactsBoundedLog(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dark=%t", dark), func(t *testing.T) {
+			a, item := environmentFixture()
+			s := &a.environment
+			s.Busy = true
+			s.Progress = bootstrap.InstallProgress{Stage: "downloading", Component: item.Requirement.ID, BytesDone: 3 << 20, BytesTotal: 10 << 20}
+			s.appendOnboardingLog(makeOnboardingLogLines("[python] 开始下载", false))
+			tt := environmentTester(a)
+			tt.SetDark(dark)
+			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+			for _, label := range []string{"隔离运行环境", "本地记忆引擎", "本地语义搜索模型", "Agent 接入组件", "启动本地记忆服务", "30%", "安装日志（1 行）"} {
+				if !tt.HasText(label) {
+					t.Fatalf("missing %q while downloading: %v", label, tt.Texts())
+				}
+			}
+			fixtureImage(t, tt, fmt.Sprintf("focused-environment-progress-dark-%t", dark))
+			if s.OnboardingLogOpen || tt.HasText("复制日志") {
+				t.Fatal("log did not default to collapsed")
+			}
+			clickProjectUI(t, tt, "安装日志（1 行）")
+			s.appendOnboardingLog(makeOnboardingLogLines(strings.Repeat("[python] 已下载\n", onboardingLogMaxLines), false))
+			tt.Frame()
+			if s.onboardingLogScroll.Y != s.onboardingLogScroll.MaxY || s.onboardingLogScroll.MaxY <= 0 {
+				t.Fatal("live log did not follow the end")
+			}
+			clickProjectUI(t, tt, "安装日志（500 行）")
+			s.Busy = false
+			s.Error = "下载失败"
+			s.Journal = bootstrap.Journal{Plan: s.Plan, Steps: map[string]bootstrap.Step{item.Requirement.ID: {Status: bootstrap.Failed}}}
+			s.appendOnboardingLog(makeOnboardingLogLines("[python] 失败：API_KEY=private-secret", true))
+			tt.Frame()
+			if !s.OnboardingLogOpen || len(s.OnboardingLog) != onboardingLogMaxLines || !s.OnboardingLog[len(s.OnboardingLog)-1].failed {
+				t.Fatal("failed log outside bounded open log")
+			}
+			tt.Scroll(1150, 620, 0, 550)
+			clickProjectUI(t, tt, "复制日志")
+			if !strings.Contains(tt.Clipboard(), "[已脱敏]") || strings.Contains(tt.Clipboard(), "private-secret") {
+				t.Fatal("log copy exposed the original installer text")
+			}
+			for n, component := range onboardingEnvironmentComponents {
+				row := s.onboardingComponentRow(component, s.Progress)
+				if failed := row.status == bootstrap.Failed; failed != (n == 0) {
+					t.Fatalf("wrong failure status for %s: %s", row.id, row.status)
+				}
+			}
+		})
+	}
+}
+
+func TestOnboardingWorkerCompletionReturnsToTheMatchingRuntime(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		override func(*bootstrap.InstallWorkerState)
+		wantStep int
+	}{
+		{"completed startup", func(*bootstrap.InstallWorkerState) {}, 3},
+		{"components only", func(w *bootstrap.InstallWorkerState) { w.StartRuntime = false }, 2},
+		{"different runtime", func(w *bootstrap.InstallWorkerState) { w.ConfigPath += ".other" }, 2},
+		{"failed startup", func(w *bootstrap.InstallWorkerState) { w.State = "failed" }, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, _ := beta3SetupRuntimeConfig(t)
+			a, _ := environmentFixture()
+			a.Config, a.Client.Config, a.initialSetup = config, config, true
+			s := &a.environment
+			s.InitialStep, s.ExternalWorkerActive = 2, true
+			s.ExternalWorker = bootstrap.InstallWorkerState{State: "running", Stage: "starting_runtime"}
+			worker := bootstrap.InstallWorkerState{State: "completed", Stage: "ready", StartRuntime: true, ConfigPath: config.ConfigFile}
+			tc.override(&worker)
+			a.InspectInstallWorkerFn = func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
+				return worker, false, nil
+			}
+			a.InspectOwnerRuntimeStatusFn = func(context.Context, string, string) (bootstrap.OwnerRuntimeStatus, error) {
+				return bootstrap.OwnerRuntimeStatus{}, errors.New("synthetic owner verification hold")
+			}
+			t.Setenv("MEMLANE_BOOTSTRAP_ROOT", "relative-component-root")
+			updates := make(chan func(), 16)
+			a.Update = func(fn func()) { updates <- fn }
+			a.inspectInstallWorkerAsync()
+			drainReading(t, updates, func() bool { return s.Loading })
+			if s.InitialStep != tc.wantStep || s.RuntimeStarted || s.ExternalWorkerActive {
+				t.Fatalf("unexpected post-worker state: step=%d started=%t active=%t", s.InitialStep, s.RuntimeStarted, s.ExternalWorkerActive)
+			}
+			if !strings.Contains(s.onboardingLogText(), "命令行安装") {
+				t.Fatal("missing redacted CLI receipt log")
+			}
+			drainReading(t, updates, func() bool { return !s.Loading && !s.ownerInspecting })
+		})
+	}
+}
+
+func TestOnboardingSwitchToOfficialRedetectsBeforeConsent(t *testing.T) {
+	a, _ := environmentFixture()
+	s := &a.environment
+	// An invalid relative root lets us assert the detection boundary without
+	// contacting the network or reading any daily configuration.
+	t.Setenv("MEMLANE_BOOTSTRAP_ROOT", "relative-component-root")
+	s.SelectionLoaded = true
+	s.Error = "下载失败"
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	tt := environmentTester(a)
+	clickProjectUI(t, tt, "改用官方源")
+	if s.DownloadSource != bootstrap.DownloadSourceOfficial || !s.Loading || s.Busy {
+		t.Fatal("official retry did not re-detect before installing")
+	}
+	drainReading(t, updates, func() bool { return !s.Loading })
+
+}
+
 func TestRestartedInstallationReceiptNeverPretendsWorkerIsRunning(t *testing.T) {
 	a, item := environmentFixture()
 	j := bootstrap.Journal{Plan: a.environment.Plan, Steps: map[string]bootstrap.Step{item.Requirement.ID: {Status: bootstrap.Installing}}}
@@ -168,27 +353,19 @@ func TestExplicitMissingRuntimeDoesNotBecomeAnotherFirstInstallation(t *testing.
 	}
 }
 
-func TestFirstWizardReusesConnectionsAndGenerationWithoutPrematureCompletion(t *testing.T) {
+func TestFirstWizardKeepsEnvironmentAndConnectionActionsSeparate(t *testing.T) {
 	app, _ := environmentFixture()
 	app.initialSetup = true
 	app.environment.InitialStep = 2
 	app.environment.RuntimeStarted = true
 	app.environment.Plan.Items[0].Observation.Status = bootstrap.Available
-	app.integrations.Loaded, app.integrations.GenerationLoaded = true, true
 	tester := ui.NewTester(app.View, 1200, 820)
-	if tester.HasText("确认接入 Agent 并启用记忆提炼") || !tester.HasText("本地记忆引擎") {
-		t.Fatal("wizard showed connection settings before Step 3")
+	if tester.HasText("验证并启用") || !tester.HasText("本地记忆引擎") {
+		t.Fatal("wizard showed generation UI before environment completed")
 	}
 	clickProjectUI(t, tester, "继续")
-	if app.environment.InitialStep != 3 || !tester.HasText("启用并完成") || !tester.HasText("Agent 接入") || !tester.HasText("记忆提炼") {
-		t.Fatal("generation setup missing")
-	}
-	clickProjectUI(t, tester, "启用并完成")
-	if !app.initialSetup || app.environment.Busy {
-		t.Fatal("unvalidated generation completed initialization")
-	}
-	if tester.HasText("工具图谱") {
-		t.Fatal("unrelated global graph settings entered initialization")
+	if app.environment.InitialStep != 3 || app.onboardingPage() != onboardingConnect || tester.HasText("验证并启用") {
+		t.Fatal("environment did not advance to the separate connection step")
 	}
 }
 
@@ -277,8 +454,8 @@ func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
 			label := "安装缺少的依赖"
 			if tc.initial {
 				tester = environmentTester(app)
-				clickProjectUI(t, tester, "查看技术明细 (1 项)")
-				label = "安装并继续"
+				clickProjectUI(t, tester, "技术清单（版本、校验值与安装位置）")
+				label = "下载并安装 · 20.0 MiB"
 			} else {
 				tester = ui.NewTester(func(c *ui.Context) {
 					ui.Themed(c, homeTheme).Fill().Children(func() { app.environmentSetup(c, false) })
@@ -315,7 +492,6 @@ func TestEnvironmentPolicyUpdateUsesUpdateActionAcrossSetupStates(t *testing.T) 
 	}{
 		{name: "connected", service: "已连接"},
 		{name: "disconnected", service: "未连接"},
-		{name: "first install", initial: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, item := environmentFixture()
@@ -448,5 +624,106 @@ func TestEnvironmentReusesRetainedInstallationOperation(t *testing.T) {
 	journal, err = installer.Snapshot()
 	if err != nil || journal.Operation != operation || journal.ApprovedDigest != s.Plan.Digest() || journal.DeclinedDigest != "" {
 		t.Fatalf("GUI did not approve under retained operation: %+v, %v", journal, err)
+	}
+}
+
+func TestOnboardingRetryRequiresCurrentPlanConsent(t *testing.T) {
+	for _, scenario := range []string{"diagnostic", "changed digest", "approved install failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			a, item := environmentFixture()
+			s := &a.environment
+			s.Environment = &bootstrap.Environment{}
+			s.Journal = bootstrap.Journal{Operation: "first-install", ApprovedDigest: s.Plan.Digest(), Plan: bootstrap.Plan{Items: []bootstrap.Item{item}}}
+			switch scenario {
+			case "diagnostic":
+				a.ChooseDiagnosticPath = func() (string, error) { return "", errors.New("无法导出诊断") }
+				a.exportEnvironmentDiagnostic()
+			default:
+				s.Error = "下载失败"
+				s.Journal.Status = bootstrap.Failed
+				s.onboardingInstallFailureDigest = s.Journal.ApprovedDigest
+				s.Journal.ActiveStep = item.Requirement.ID
+				s.Journal.Steps = map[string]bootstrap.Step{item.Requirement.ID: {Status: bootstrap.Failed, Error: s.Error}}
+				if scenario == "changed digest" {
+					s.Plan.Items[0].Requirement.Digest = "new-digest"
+				}
+			}
+			label, _, action := a.onboardingEnvironmentAction()
+			if scenario == "approved install failure" {
+				if label != "重试" {
+					t.Fatalf("approved installation failed, action = %q", label)
+				}
+				a.Update = func(func()) { t.Error("stale retry tried to start installation") }
+				s.Plan.Items[0].Requirement.Digest = "new-digest"
+				action()
+				if s.Busy {
+					t.Fatal("retry from the old frame accepted a changed plan")
+				}
+			} else if label != "下载并安装 · 10.0 MiB" || a.onboardingEnvironmentHint() != "点击即表示同意安装上方「待下载」的组件" {
+				t.Fatalf("page consent missing: %q, %q", label, a.onboardingEnvironmentHint())
+			}
+		})
+	}
+}
+
+func TestOnboardingStopInstallationUsesNonFailureMessage(t *testing.T) {
+	a, _ := environmentFixture()
+	s := &a.environment
+	s.Environment = &bootstrap.Environment{Options: bootstrap.EnvironmentOptions{Root: t.TempDir()}}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.InspectInstallWorkerFn = func(ctx context.Context, _ string) (bootstrap.InstallWorkerState, bool, error) {
+		<-ctx.Done()
+		return bootstrap.InstallWorkerState{}, false, ctx.Err()
+	}
+	tt := environmentTester(a)
+	clickProjectUI(t, tt, "下载并安装 · 10.0 MiB")
+	clickProjectUI(t, tt, "停止")
+	drainReading(t, updates, func() bool { return !s.Busy })
+	tt.Frame()
+	label, _, _ := a.onboardingEnvironmentAction()
+	if s.Error != "" || tt.HasText("context canceled") || !tt.HasText("已停止，已完成的准备会保留。") || s.OnboardingLogOpen || label != "下载并安装 · 10.0 MiB" {
+		t.Fatalf("Stop entered failure state: %v", tt.Texts())
+	}
+}
+
+func TestOnboardingTerminalWorkerStopsPolling(t *testing.T) {
+	config, _ := beta3SetupRuntimeConfig(t)
+	a, _ := environmentFixture()
+	a.Config, a.Client.Config, a.initialSetup = config, config, true
+	t.Setenv("MEMLANE_BOOTSTRAP_ROOT", "relative-component-root")
+	a.environment.InitialStep = 1
+	a.onboarding.watchWorker = true
+	a.InspectInstallWorkerFn = func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
+		return bootstrap.InstallWorkerState{State: "failed"}, false, nil
+	}
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	a.inspectInstallWorkerAsync()
+	drainReading(t, updates, func() bool { return !a.environment.workerInspecting })
+	if a.onboarding.watchWorker || !strings.Contains(a.environment.onboardingLogText(), "命令行安装失败") {
+		t.Fatal("terminal CLI worker still schedules a poll or lost the result")
+	}
+	drainReading(t, updates, func() bool { return !a.environment.Loading })
+	a.onboarding.watchWorker = true
+	a.inspectInstallWorkerAsync()
+	drainReading(t, updates, func() bool { return !a.environment.workerInspecting })
+	if !a.onboarding.watchWorker {
+		t.Fatal("an old terminal receipt stopped a new takeover watch")
+	}
+}
+
+func TestEnvironmentDiagnosticPrefersNewSettingsLog(t *testing.T) {
+	a, _ := environmentFixture()
+	s := &a.environment
+	a.initialSetup = true
+	s.OnboardingLog = makeOnboardingLogLines("旧向导日志", false)
+	s.Journal = bootstrap.Journal{Operation: "settings-install", ActiveStep: "python", Steps: map[string]bootstrap.Step{"python": {Log: "新设置日志"}}}
+	if got := a.environmentDiagnosticInput().InstallerLog; !strings.Contains(got, "旧向导日志") {
+		t.Fatalf("first install log = %q", got)
+	}
+	a.initialSetup = false
+	if got := a.environmentDiagnosticInput().InstallerLog; got != "新设置日志" {
+		t.Fatalf("settings installation log = %q", got)
 	}
 }

@@ -344,7 +344,7 @@ func connectionName(kind string) string {
 	case "traex":
 		return "TRAE CLI"
 	case "trae_ide":
-		return "TRAE IDE"
+		return "TRAE CN"
 	case "claude_code":
 		return "Claude Code"
 	case "cursor":
@@ -534,7 +534,7 @@ func (a *App) RefreshConnections() {
 			}
 			s.ConnectionsError, s.Error = "", ""
 			s.Loaded, s.ConnectionsLoaded = true, true
-			s.Connections = connections
+			a.acceptConnectionsDirectory(connections)
 			if s.HostVersions == nil {
 				s.HostVersions = map[string]string{}
 			}
@@ -627,7 +627,7 @@ func (a *App) RefreshIntegrations() {
 				a.captureReadFailed()
 			}
 			if connectionsLoaded {
-				s.Connections = connections
+				a.acceptConnectionsDirectory(connections)
 				s.ConnectionsLoaded = true
 				s.Loaded = true
 				if s.HostVersions == nil {
@@ -764,7 +764,7 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 			cancel()
 			a.Update(func() {
 				if readErr == nil {
-					s.Connections = directory
+					a.acceptConnectionsDirectory(directory)
 				}
 				if err != nil {
 					if rejected {
@@ -1153,6 +1153,11 @@ func (a *App) pollGenerationValidationWithTiming(operation string, interval, bud
 					if errors.As(err, &rejected) && rejected.Status == 404 {
 						a.integrations.Validation = GenerationValidation{Status: "result_unknown", ErrorCode: "validation_not_recorded"}
 						a.integrations.Error = "未找到该次验证记录，可能尚未成功提交，可点击「重新验证」重新发起。"
+						if a.initialSetup && a.onboardingPage() == onboardingProcess &&
+							rejected.Code == "generation_validation_not_found" && a.finishGenerationOperation(operation) {
+							a.onboardingGeneration.phase = onboardingValidating
+							a.onboardingGeneration.failure = "服务端未登记这次验证，可以重新验证或修改配置。"
+						}
 					} else {
 						a.integrations.Error = "验证回执暂时不可用，请核对原验证"
 					}

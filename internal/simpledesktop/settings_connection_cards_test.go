@@ -14,6 +14,7 @@ func TestConnectionExpandedDirectoryStaysInsideFirstUseWorkspace(t *testing.T) {
 			a := setupLayoutFixture()
 			a.environment.RuntimeStarted = true
 			a.environment.InitialStep = 3
+			a.environment.SelectedAgents = []string{"traex"}
 			a.integrations = integrationState{Loaded: true, ConnectionBulk: true,
 				EnvironmentOpen: map[string]bool{"traex": true},
 				Connections: ConnectionsDirectory{Connections: []AgentConnection{
@@ -21,11 +22,11 @@ func TestConnectionExpandedDirectoryStaysInsideFirstUseWorkspace(t *testing.T) {
 					{ID: "traex", Kind: "traex", Detected: true, Status: "configured_pending_new_session", HostVersion: "0.215.0", Profile: "/Users/example/" + strings.Repeat("a-long-profile-directory/", 8)},
 				}}}
 			tt := ui.NewTester(a.View, width, 820)
-			if tt.HasText("确认连接（0）") || tt.HasText("已选 0 个") {
+			if tt.HasText("确认连接（0）") || tt.HasText("已选 0 个") || tt.HasText("pi") {
 				t.Fatal("completed selection left an empty bulk action bar")
 			}
 			detail, ok := tt.Find("Agent目录详情：TRAE CLI")
-			if !ok || detail.W <= 0 || detail.X+detail.W > float32(width)-48 {
+			if !ok || detail.W <= 0 || detail.X+detail.W > float32(width+onboardingWidth)/2+2 {
 				t.Fatal("directory detail escaped list inset", detail)
 			}
 			fixtureImage(t, tt, fmt.Sprintf("first-use-expanded-agents-%d", width))
@@ -43,6 +44,7 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 				{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
 				{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},
 				{ID: "traex", Kind: "traex", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
+				{ID: "trae_ide", Kind: "trae_ide", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
 				{ID: "antigravity", Kind: "antigravity", Detected: true, Status: "not_connected"},
 				{ID: "claude", Kind: "claude_code", Detected: true, Status: "not_connected"},
 			}}}
@@ -53,6 +55,9 @@ func TestConnectionCardsUseColumnsAndKeepBatchSelection(t *testing.T) {
 			agy, aOK := tt.Find("Gemini App")
 			if !cOK || !pOK || !tOK || !aOK || codex.X != pi.X || pi.X != traex.X || !(codex.Y < pi.Y && pi.Y < traex.Y && traex.Y < agy.Y) {
 				t.Fatal("Agent connections are not aligned compact rows", codex, pi, traex, agy)
+			}
+			if !tt.HasText("TRAE CN") || tt.HasText("TRAE IDE") {
+				t.Fatal("settings must use the current display name for the TRAE desktop host")
 			}
 			if tt.HasText("Claude Code") {
 				t.Fatal("unreleased Claude Code row should be hidden in beta UI")

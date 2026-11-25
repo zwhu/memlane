@@ -19,6 +19,7 @@ func TestActivateFirstRuntimeReceiptRecovery(t *testing.T) {
 		matching, supersede bool
 	}{
 		{name: "pre-mutation rejection", status: "rejected", phase: "pre_mutation", supersede: true},
+		{name: "check matching pre-mutation rejection", status: "rejected", phase: "pre_mutation", matching: true},
 		{name: "legacy rejection", status: "rejected"},
 		{name: "post-mutation rejection", status: "rejected", phase: "post_mutation"},
 		{name: "approved mismatch", status: "approved"},
@@ -63,6 +64,19 @@ func TestActivateFirstRuntimeReceiptRecovery(t *testing.T) {
 				if !errors.Is(err, supervisor.ErrUpgradeLocked) {
 					t.Fatalf("activation did not proceed to startup: %v", err)
 				}
+			} else if tc.matching && tc.phase == "pre_mutation" {
+				if !errors.Is(err, ErrFirstActivationRejected) {
+					t.Fatalf("matching rejection could not be reconciled: %v", err)
+				}
+				if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("acknowledged pre_mutation rejection should be cleared for same-revision retry, got stat err=%v", statErr)
+				}
+				// Retrying with the exact same (reference, digest, revision) must now create a fresh operation.
+				retryErr := ActivateFirstRuntime(t.Context(), prepared, reference, digest, revision)
+				if !errors.Is(retryErr, supervisor.ErrUpgradeLocked) {
+					t.Fatalf("same-revision retry after pre_mutation rejection did not proceed: %v", retryErr)
+				}
+				return
 			} else if err == nil || err.Error() != "原启用操作尚待核对，未创建另一项操作" {
 				t.Fatalf("activation did not refuse the retained receipt: %v", err)
 			}

@@ -39,19 +39,20 @@ type environmentSetupState struct {
 	RuntimeStartError                              string
 	AutoRuntimeAttempted                           bool
 	RuntimeStage                                   string
+	OnboardingRuntimeFailed                        bool
+	onboardingInstallFailureDigest                 string
+	onboardingStartRequested                       bool
+	OnboardingLogOpen                              bool
+	OnboardingLog                                  []onboardingLogLine
+	onboardingLogScroll                            ui.ScrollState
+	onboardingRedetectRequired                     bool
 	RuntimePreparation                             bootstrap.FirstRuntime
-	setupStepIndY                                  float32
-	setupStepIndH                                  float32
-	setupStepRun                                   uint64
-	setupLastStep                                  int
 
 	Hosts                                     []bootstrap.DetectedHost
 	HostsLoaded, HostsLoading                 bool
 	HostDetectGen                             uint64
 	SelectedAgents                            []string
 	SelectedAgentsExplicit                    bool
-	Step1CLIGuideOpen                         bool
-	InstallPromptCopied                       bool
 	selectedAgentsSaving, selectedAgentsDirty bool
 	pinnedPreviewRequested                    map[string]pinnedPreviewVersion
 	TechDetailsOpen, ReviewTechOpen           bool
@@ -141,14 +142,19 @@ func (a *App) refreshEnvironment() {
 }
 
 func (a *App) detectEnvironment(saveSelection bool) {
+	a.detectEnvironmentThen(saveSelection, nil)
+}
+
+func (a *App) detectEnvironmentThen(saveSelection bool, afterDetection func()) {
 	s := &a.environment
 	if s.Busy || s.Loading || a.Update == nil {
 		return
 	}
 	s.Loading, s.Review, s.ReviewTechOpen, s.Error = true, false, false, ""
+	s.onboardingInstallFailureDigest = ""
 	s.Generation++
 	generation := s.Generation
-	config, selection := a.Config, *s
+	config, selection, initialSetup := a.Config, *s, a.initialSetup
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
@@ -167,6 +173,16 @@ func (a *App) detectEnvironment(saveSelection bool) {
 			plan, err = environment.Detect(ctx)
 			journal, _ = environment.Installer().Snapshot()
 		}
+		var historicalLog []onboardingLogLine
+		if initialSetup && len(selection.OnboardingLog) == 0 && journal.Status == bootstrap.Failed {
+			if step := journal.Steps[journal.ActiveStep]; step.Status == bootstrap.Failed {
+				historicalLog = makeOnboardingLogLines("["+journal.ActiveStep+"] "+step.Error+"\n"+step.Log, true)
+			}
+		}
+		var safeError string
+		if err != nil {
+			safeError = bootstrap.RedactInstallerText(err.Error())
+		}
 		a.Update(func() {
 			if s.Generation != generation {
 				return
@@ -174,20 +190,27 @@ func (a *App) detectEnvironment(saveSelection bool) {
 			s.Loading, s.Loaded = false, true
 			defer a.advanceFirstRuntimeStartup()
 			if optionsErr != nil {
-				s.Error = bootstrap.RedactInstallerText(optionsErr.Error())
+				s.onboardingRedetectRequired = true
+				s.Error = safeError
 				return
 			}
 			a.applyEnvironmentOptions(options)
 			s.Environment, s.Plan, s.Journal = environment, plan, journal
+			s.onboardingRedetectRequired = err != nil
 			if err != nil {
-				s.Error = bootstrap.RedactInstallerText(err.Error())
-			} else if !plan.Complete() {
+				s.Error = safeError
+				return
+			}
+			s.appendOnboardingLog(historicalLog)
+			if afterDetection != nil {
+				afterDetection()
+				return
+			}
+			if !plan.Complete() {
 				for _, item := range plan.Items {
-					if item.Observation.Status == bootstrap.Available {
-						continue
-					}
-					if step, ok := journal.Steps[item.Requirement.ID]; ok && step.Status == bootstrap.Failed {
-						s.Error = bootstrap.RedactInstallerText(step.Error)
+					if journal.Status == bootstrap.Failed && environmentRowStatus(item, journal, false) == bootstrap.Failed {
+						s.Error = bootstrap.RedactInstallerText(journal.Steps[item.Requirement.ID].Error)
+						s.onboardingInstallFailureDigest = journal.ApprovedDigest
 						break
 					}
 				}
@@ -195,6 +218,8 @@ func (a *App) detectEnvironment(saveSelection bool) {
 		})
 	}()
 }
+
+const environmentInstallStopped = "已停止，已完成的准备会保留。"
 
 func (a *App) runEnvironment(approve bool) {
 	s := &a.environment
@@ -206,6 +231,7 @@ func (a *App) runEnvironment(approve bool) {
 		return
 	}
 	environment, plan := s.Environment, s.Plan
+	initialSetup := a.initialSetup
 	journal := s.Journal
 	if !approve && journal.ApprovedDigest != "" && journal.Operation != "" {
 		plan = journal.Plan
@@ -213,6 +239,9 @@ func (a *App) runEnvironment(approve bool) {
 	s.Busy, s.Review, s.Error, s.Message = true, false, "", ""
 	s.RuntimeStage = ""
 	s.Progress = bootstrap.InstallProgress{}
+	s.onboardingRedetectRequired = false
+	s.OnboardingRuntimeFailed = false
+	s.onboardingInstallFailureDigest = ""
 	s.Generation++
 	generation := s.Generation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -226,7 +255,8 @@ func (a *App) runEnvironment(approve bool) {
 		inspectionCtx, endInspection := context.WithTimeout(ctx, 5*time.Second)
 		worker, active, inspectErr := inspectWorker(inspectionCtx, environment.Options.Root)
 		endInspection()
-		if active || inspectErr != nil {
+		if active || inspectErr != nil || ctx.Err() != nil {
+			stopped := errors.Is(ctx.Err(), context.Canceled)
 			a.Update(func() {
 				if s.Generation != generation {
 					return
@@ -235,17 +265,30 @@ func (a *App) runEnvironment(approve bool) {
 				s.ExternalWorker, s.ExternalWorkerActive = worker, active
 				if active {
 					s.Message = "命令行正在后台安装组件，请等待其完成或查看上方实时进度。"
+				} else if stopped {
+					s.Message = environmentInstallStopped
 				} else {
 					s.Error = "无法核对命令行安装进度，请重新检测后再试。"
+					s.onboardingRedetectRequired = true
 				}
 			})
 			return
 		}
 		installer := environment.Installer()
+		running, failureLogged := false, false
 		installer.OnChange = func(j bootstrap.Journal) {
+			var lines []onboardingLogLine
+			if initialSetup && running && j.Status == bootstrap.Failed && !failureLogged {
+				step := j.Steps[j.ActiveStep]
+				if step.Status == bootstrap.Failed {
+					lines = makeOnboardingLogLines("["+j.ActiveStep+"] 失败："+step.Error+"\n"+step.Log, true)
+					failureLogged = true
+				}
+			}
 			a.Update(func() {
 				if s.Generation == generation {
 					s.Journal = j
+					s.appendOnboardingLog(lines)
 				}
 			})
 		}
@@ -259,13 +302,20 @@ func (a *App) runEnvironment(approve bool) {
 			}
 		}
 		if err == nil {
-			runCtx := bootstrap.WithInstallProgress(ctx, func(p bootstrap.InstallProgress) {
+			if initialSetup {
+				line := fmt.Sprintf("[install] 已同意安装计划 · SHA-256 %s · 下载来源：%s", plan.Digest(), onboardingSourceLabel(environment.Options.DownloadSource))
+				if !approve {
+					line = "[install] 恢复已同意的安装计划 · SHA-256 " + plan.Digest()
+				}
+				log := makeOnboardingLogLines(line, false)
 				a.Update(func() {
-					if s.Generation == generation && s.Cancel != nil {
-						s.Progress = p
+					if s.Generation == generation {
+						s.appendOnboardingLog(log)
 					}
 				})
-			})
+			}
+			runCtx := a.trackEnvironmentProgress(ctx, generation, initialSetup, plan)
+			running = true
 			err = installer.Run(runCtx, opID, plan)
 		}
 		var updatedPluginDir string
@@ -288,19 +338,38 @@ func (a *App) runEnvironment(approve bool) {
 		if err == nil {
 			detected, err = environment.Detect(context.Background())
 		}
+		var safeError string
+		var lines []onboardingLogLine
+		cancelled := errors.Is(err, context.Canceled)
+		if cancelled {
+			if initialSetup {
+				lines = makeOnboardingLogLines("[install] "+environmentInstallStopped, false)
+			}
+		} else if err != nil {
+			safeError = bootstrap.RedactInstallerText(err.Error())
+			if initialSetup && !failureLogged {
+				lines = makeOnboardingLogLines("[install] "+safeError, true)
+			}
+		} else if initialSetup {
+			lines = makeOnboardingLogLines("[install] 环境组件已准备完成", false)
+		}
 		a.Update(func() {
 			if s.Generation != generation {
 				return
 			}
 			s.Busy, s.Cancel = false, nil
 			s.Progress = bootstrap.InstallProgress{}
-			if err != nil {
-				s.Error = bootstrap.RedactInstallerText(err.Error())
+			s.appendOnboardingLog(lines)
+			s.onboardingRedetectRequired = errors.Is(err, bootstrap.ErrPlanChanged)
+			if cancelled {
+				s.Message = environmentInstallStopped
+			} else if err != nil {
+				s.Error = safeError
+				if failureLogged {
+					s.onboardingInstallFailureDigest = plan.Digest()
+				}
 				if failedPluginApplyDir != "" {
 					s.PendingPluginApplyDir = failedPluginApplyDir
-				}
-				if errors.Is(err, context.Canceled) {
-					s.Message = "已停止，已完成的准备会保留。"
 				}
 			} else {
 				s.Plan = detected
@@ -372,6 +441,9 @@ func (a *App) environmentDiagnosticInput() bootstrap.DiagnosticInput {
 			}
 		}
 	}
+	if len(s.OnboardingLog) > 0 && (a.initialSetup || input.InstallerLog == "") {
+		input.InstallerLog = s.onboardingLogText()
+	}
 	if s.RuntimeStage != "" {
 		input.Stage = s.RuntimeStage
 		input.Actions = append(input.Actions, "保留首次内容库及后台所有权，等待真实服务回执")
@@ -386,6 +458,8 @@ func (a *App) exportEnvironmentDiagnostic() {
 	}
 	path, err := a.ChooseDiagnosticPath()
 	if err != nil {
+		s.onboardingInstallFailureDigest = ""
+		s.OnboardingRuntimeFailed = false
 		s.Error = bootstrap.RedactInstallerText(err.Error())
 		return
 	}
@@ -399,6 +473,8 @@ func (a *App) exportEnvironmentDiagnostic() {
 		a.Update(func() {
 			s.Exporting = false
 			if err != nil {
+				s.onboardingInstallFailureDigest = ""
+				s.OnboardingRuntimeFailed = false
 				s.Error = bootstrap.RedactInstallerText(err.Error())
 			} else {
 				s.Message = "诊断包已导出"
@@ -563,7 +639,7 @@ func (a *App) applyPendingPluginConfig() {
 
 func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	if initial {
-		a.initialEnvironment(c)
+		a.onboardingEnvironment(c)
 		a.environmentReviewModal(c)
 		a.initialEnvironmentDetails(c)
 		return
@@ -747,13 +823,15 @@ func (a *App) environmentSetup(c *ui.Context, initial bool) {
 	a.environmentPathsDialog(c)
 }
 
-func (a *App) initialEnvironmentPage(c *ui.Context) {
-	a.initialSetupContent(c)
-}
-
 func (a *App) continueEnvironment() {
+	s := &a.environment
 	if a.canEnterConnectionStep() {
 		a.setInitialStep(3)
+		return
+	}
+	if a.Config.FirstInstall != nil && (s.ownerInspecting || !s.OwnerStatusChecked || s.OwnerStatus == nil) {
+		s.onboardingStartRequested = true
+		a.inspectOwnerRuntimeStatusAsync()
 		return
 	}
 	a.beginFirstRuntime(3)

@@ -2,9 +2,9 @@ package simpledesktop
 
 import (
 	"context"
+	"errors"
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane"
 	"github.com/zwhu/memlane/engine"
 	"github.com/zwhu/memlane/internal/bootstrap"
@@ -27,6 +27,8 @@ func (a *App) setInitialStep(step int) {
 	}
 	if a.Config.FirstInstall != nil {
 		if err := bootstrap.SaveFirstWizardState(a.Config.ConfigFile, step, wizardStageForStep(step)); err != nil {
+			s.onboardingInstallFailureDigest = ""
+			s.OnboardingRuntimeFailed = false
 			s.Error = bootstrap.RedactInstallerText(err.Error())
 			return
 		}
@@ -35,6 +37,7 @@ func (a *App) setInitialStep(step int) {
 		s.pinnedPreviewRequested = nil
 	}
 	s.InitialStep = step
+	a.onboarding.page = onboardingAgents + onboardingPage(step-1)
 	if step == 3 && s.RuntimeStarted {
 		a.refreshWizardIntegrations()
 	}
@@ -56,7 +59,8 @@ func (a *App) canActivateFirstRuntimeFromSettings() bool {
 
 func (a *App) canDeferFirstGenerationSetup() bool {
 	s := &a.environment
-	return s.RuntimeStarted && !s.Busy && !s.RestartingStaleDaemon && !s.staleRuntimeOwner() && !a.integrations.Busy
+	return s.RuntimeStarted && !s.Busy && !s.RestartingStaleDaemon && !s.staleRuntimeOwner() &&
+		!a.integrations.Busy && a.onboardingGeneration.activationRef == nil
 }
 
 func (a *App) deferFirstGenerationSetup() {
@@ -66,7 +70,7 @@ func (a *App) deferFirstGenerationSetup() {
 	}
 	if a.Config.FirstInstall != nil && a.Config.ConfigFile != "" {
 		if err := bootstrap.SaveFirstSetupDeferred(a.Config.ConfigFile); err != nil {
-			s.Error = bootstrap.RedactInstallerText(err.Error())
+			s.Error = "无法保存延后配置：" + bootstrap.RedactInstallerText(err.Error())
 			return
 		}
 	}
@@ -89,10 +93,19 @@ func (a *App) beginFirstRuntime(step int) {
 	s.Busy, s.Error, s.RuntimeStage = true, "", "启动记忆服务"
 	s.RuntimeStarted = false
 	config, selection := a.Config, *s
+	wizard := a.initialSetup
+	baseCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	if wizard {
+		s.Cancel = cancel
+		s.OnboardingRuntimeFailed = false
+	}
 	prepareAndStart := a.PrepareAndStartFirstRuntimeFn
 	go func() {
-		baseCtx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 		defer cancel()
+		if wizard {
+			lines := makeOnboardingLogLines("[service] 校验上游源码并启动本机记忆服务", false)
+			a.Update(func() { s.appendOnboardingLog(lines) })
+		}
 		ctx, releaseStartup := bootstrap.TrackStartupContext(baseCtx)
 		defer releaseStartup()
 		configuration := config.ConfigFile
@@ -119,6 +132,7 @@ func (a *App) beginFirstRuntime(step int) {
 				}
 			}
 		}
+		startFailed := err != nil && !errors.Is(err, context.Canceled)
 		loaded, loadError := LoadConfig(configuration)
 		if err == nil {
 			err = loadError
@@ -130,8 +144,23 @@ func (a *App) beginFirstRuntime(step int) {
 		if err == nil && !complete && step >= 1 {
 			err = bootstrap.SaveFirstWizardState(configuration, step, wizardStageForStep(step))
 		}
+		var lines []onboardingLogLine
+		if wizard {
+			if errors.Is(err, context.Canceled) {
+				lines = makeOnboardingLogLines("[service] "+environmentInstallStopped, false)
+			} else if err != nil {
+				lines = makeOnboardingLogLines("[service] "+err.Error(), startFailed)
+			} else {
+				lines = makeOnboardingLogLines("[service] 本地记忆服务已通过健康检查", false)
+			}
+		}
 		a.Update(func() {
 			s.Busy, s.RuntimeStage = false, ""
+			if wizard {
+				s.Cancel = nil
+				s.OnboardingRuntimeFailed = startFailed
+				s.appendOnboardingLog(lines)
+			}
 			if loadError == nil && loaded.FirstInstall != nil {
 				a.Config = loaded
 				a.Client.Config = loaded
@@ -146,6 +175,10 @@ func (a *App) beginFirstRuntime(step int) {
 			}
 			s.RuntimePreparation = prepared
 			if err != nil {
+				if wizard && errors.Is(err, context.Canceled) {
+					s.Message = environmentInstallStopped
+					return
+				}
 				if step == 0 {
 					s.RuntimeStartError = bootstrap.RedactInstallerText(err.Error())
 					a.Start()
@@ -168,15 +201,11 @@ func (a *App) beginFirstRuntime(step int) {
 				return
 			}
 			s.InitialStep = step
+			a.onboarding.page = onboardingConnect
+			a.showOnboardingToast("本地记忆服务已就绪")
 			a.refreshWizardIntegrations()
 		})
 	}()
-}
-
-func (a *App) enableFirstRuntime() {
-	if a.firstGenerationEnableBlocker() == "" {
-		a.activateFirstRuntime(false)
-	}
 }
 
 func (a *App) settingsFirstActivationBlocker() string {
@@ -191,12 +220,9 @@ func (a *App) settingsFirstActivationBlocker() string {
 }
 
 func (a *App) activateFirstRuntimeFromSettings() {
-	if a.canActivateFirstRuntimeFromSettings() && a.settingsFirstActivationBlocker() == "" {
-		a.activateFirstRuntime(true)
+	if !a.canActivateFirstRuntimeFromSettings() || a.settingsFirstActivationBlocker() != "" {
+		return
 	}
-}
-
-func (a *App) activateFirstRuntime(fromSettings bool) {
 	s := &a.environment
 	g := a.integrations.Generation
 	row, ok := g.row(g.Next)
@@ -204,10 +230,6 @@ func (a *App) activateFirstRuntime(fromSettings bool) {
 		return
 	}
 	prepared := s.RuntimePreparation
-	if prepared.ConfigPath == "" && !fromSettings {
-		s.Error = "记忆服务尚未就绪，请先重新检查。"
-		return
-	}
 	config, selection := a.Config, *s
 	activate := a.ActivateFirstRuntimeFn
 	if activate == nil {
@@ -257,26 +279,31 @@ func (a *App) activateFirstRuntime(fromSettings bool) {
 				s.Error = "初始化回执尚未确认，已保留原配置与进度。"
 				return
 			}
-			if clearErr != nil {
-				s.Error = "无法清除延后配置回执：" + bootstrap.RedactInstallerText(clearErr.Error())
-				if fromSettings {
-					a.integrations.Message = s.Error
-				}
-			}
-			a.Config, a.Client.Config = loaded, loaded
-			a.overviewFirstUse = overviewFirstUseState{}
-			a.completion = "尚未检查"
-			a.monitor.Request++
-			a.monitor.Polling = false
-			s.RuntimePreparation = prepared
-			s.RuntimeStarted = true
-			a.initialSetup, a.setupDeferredMode = false, false
-			if !fromSettings {
-				a.page = "总览"
-			}
-			a.Start()
+			a.acceptFirstRuntimeActivation(loaded, prepared, clearErr, true)
 		})
 	}()
+}
+
+func (a *App) acceptFirstRuntimeActivation(loaded Config, prepared bootstrap.FirstRuntime, clearErr error, fromSettings bool) {
+	s := &a.environment
+	if clearErr != nil {
+		s.Error = "无法清除延后配置回执：" + bootstrap.RedactInstallerText(clearErr.Error())
+		if fromSettings {
+			a.integrations.Message = s.Error
+		}
+	}
+	a.Config, a.Client.Config = loaded, loaded
+	a.overviewFirstUse = overviewFirstUseState{}
+	a.completion = "尚未检查"
+	a.monitor.Request++
+	a.monitor.Polling = false
+	s.RuntimePreparation = prepared
+	s.RuntimeStarted = true
+	a.setupDeferredMode = false
+	if fromSettings {
+		a.initialSetup = false
+		a.Start()
+	}
 }
 
 func prepareSettingsFirstRuntime(ctx context.Context, config Config, selection environmentSetupState) (bootstrap.FirstRuntime, error) {
@@ -289,8 +316,4 @@ func prepareSettingsFirstRuntime(ctx context.Context, config Config, selection e
 		return bootstrap.FirstRuntime{}, err
 	}
 	return environment.PrepareFirstRuntime(ctx, config.ConfigFile, memlane.RuntimeAssets)
-}
-
-func (a *App) initialSetupContent(c *ui.Context) {
-	a.initialSetupShell(c)
 }

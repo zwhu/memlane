@@ -249,7 +249,7 @@ func (a *App) reviewHostStateForPendingOperation(o generationUIOperation) {
 				return
 			}
 			if refreshErr == nil {
-				s.Connections = directory
+				a.acceptConnectionsDirectory(directory)
 				s.ConnectionsLoaded = true
 			}
 			s.ConnectionsError = controlUserError(refreshErr)

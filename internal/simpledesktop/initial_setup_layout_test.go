@@ -1,10 +1,6 @@
 package simpledesktop
 
 import (
-	"encoding/json"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,132 +25,105 @@ func setupLayoutFixture() *App {
 	return a
 }
 
-func TestFirstUsePlanKeepsApprovalVisibleAndDoesNotMoveBackground(t *testing.T) {
+func TestFocusedOnboardingStageMappingAndKeyboard(t *testing.T) {
 	a := setupLayoutFixture()
+	s := &a.environment
+	s.InitialStep, s.HostsLoaded = 1, true
 	tt := ui.NewTester(a.View, 1200, 820)
-	before, ok := tt.Find("准备好你的本地记忆环境")
-	if !ok {
-		t.Fatal("first-use title missing")
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	if a.onboardingPage() != onboardingWelcome {
+		t.Fatal("fresh startup must show welcome")
 	}
-	fixtureImage(t, tt, "first-use-a-environment")
-	clickProjectUI(t, tt, "安装并继续")
-	footer, ok := tt.Find("暂不安装")
-	if !ok || footer.Y < 0 || footer.Y+footer.H > 820 {
-		t.Fatal("approval footer escaped the window", footer)
+	tt.Key(0, ui.KeyEnter)
+	if a.onboardingPage() != onboardingAgents || s.InitialStep != 1 {
+		t.Fatal("welcome Enter didn't enter step 1")
 	}
-	if a.environment.Busy {
-		t.Fatal("review started installation")
+	tt.Key(0, ui.KeyEnter)
+	if a.onboardingPage() != onboardingEnv || s.InitialStep != 2 {
+		t.Fatal("step 1 Enter didn't enter step 2")
 	}
-	fixtureImage(t, tt, "first-use-a-plan")
-	clickProjectUI(t, tt, "查看技术清单")
-	footer, _ = tt.Find("暂不安装")
-	first, _ := tt.Find("uv · 0.12.3")
-	tt.Scroll(600, 400, 0, 500)
-	afterScroll, _ := tt.Find("uv · 0.12.3")
-	fixed, _ := tt.Find("暂不安装")
-	if (afterScroll.H > 0 && afterScroll.Y >= first.Y) || fixed != footer {
-		t.Fatal("plan did not scroll independently of approval actions", first, afterScroll, footer, fixed)
+	a.navigateOnboarding(onboardingConnect)
+	if a.onboardingPage() != onboardingEnv {
+		t.Fatal("connection allowed before runtime start")
 	}
-	clickProjectUI(t, tt, "暂不安装")
-	after, ok := tt.Find("准备好你的本地记忆环境")
-	if !ok || before != after || a.environment.Busy || a.environment.Review {
-		t.Fatal("declining plan moved the page or started work")
+	before, ok := tt.Find("准备本地记忆环境")
+	if !ok || before.X != 300 || before.Y < 92 || before.Y > 115 {
+		t.Fatalf("environment content alignment: %+v, found=%v", before, ok)
 	}
-}
-
-func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
-	a := setupLayoutFixture()
-	a.environment.InitialStep = 1
-	a.environment.HostsLoaded = true
-	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "准备环境")
-	if a.environment.InitialStep != 2 {
-		t.Fatal("environment preparation should be reachable before runtime starts")
+	footer, ok := tt.Find("上一步")
+	if !ok || footer.Y < 756 || footer.Y+footer.H > 820 {
+		t.Fatalf("footer alignment: %+v, found=%v", footer, ok)
 	}
-	clickProjectUI(t, tt, "接入与提炼")
-	if a.environment.InitialStep != 2 {
-		t.Fatal("missing runtime allowed connection and generation")
+	clickProjectUI(t, tt, "遇到问题")
+	clickProjectUI(t, tt, "查看环境详情")
+	if !s.Details || !tt.HasText("已检测组件路径") {
+		t.Fatal("help menu did not open environment details")
 	}
-	a.environment.RuntimeStarted = true
+	tt.Key(0, ui.KeyEnter)
+	if s.Busy || a.onboardingPage() != onboardingEnv {
+		t.Fatal("modal Enter escaped into wizard")
+	}
+	tt.Key(0, ui.KeyEscape)
+	if s.Details {
+		t.Fatal("Escape did not close environment details")
+	}
+	s.RuntimeStarted = true
 	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
-	a.integrations.Connections.Connections = []AgentConnection{
-		{ID: "codex", Kind: "codex", Detected: true},
-		{ID: "pi", Kind: "pi", Detected: true},
-		{ID: "traex", Kind: "traex", Detected: true},
-	}
-	a.integrations.Generation.Profiles = map[string][]GenerationRow{}
+	a.navigateOnboarding(onboardingConnect)
 	tt.Frame()
-	clickProjectUI(t, tt, "选择 Agent")
-	fixtureImage(t, tt, "first-use-a-agents")
-	clickProjectUI(t, tt, "接入与提炼")
-	if a.environment.InitialStep != 3 || !tt.HasText("确认接入 Agent 并启用记忆提炼") {
-		t.Fatal("model configuration bypassed validation/activation")
+	if s.InitialStep != 3 || !tt.HasText("暂不接入也可以") {
+		t.Fatalf("zero-agent connect screen missing: %v", tt.Texts())
 	}
-	clickProjectUI(t, tt, "启用并完成")
-	if a.environment.Busy || a.environment.RuntimeStage != "" {
-		t.Fatal("unvalidated configuration started activation")
+	a.showOnboardingProcess()
+	tt.Frame()
+	if s.InitialStep != 3 || !tt.HasText("验证并启用") || tt.HasText("本地语义搜索模型") {
+		t.Fatal("processing did not use its own page over persisted step 3")
 	}
-	fixtureImage(t, tt, "first-use-a-processing")
-	clickProjectUI(t, tt, "准备环境")
-	if !tt.HasText("准备好你的本地记忆环境") || !tt.HasText("本地语义搜索模型") || !tt.HasText("本地记忆引擎") || !tt.HasText("Agent 接入组件") {
-		t.Fatal("return lost environment grouping")
+	clickProjectUI(t, tt, "上一步")
+	if a.onboardingPage() != onboardingConnect {
+		t.Fatal("back did not return to connect")
 	}
 }
 
-func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
-	root := t.TempDir()
-	token := filepath.Join(root, "manager")
-	if err := os.WriteFile(token, []byte(strings.Repeat("a", 40)), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ref := GenerationRef{ID: "pi-setup", Revision: 2}
-	profile := GenerationProfile{Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "selected-model"}
-	directory := GenerationDirectory{Revision: 5, Next: &ref, Profiles: map[string][]GenerationRow{
-		ref.ID: {{Revision: ref.Revision, Digest: "pi-digest", Profile: profile}},
-	}, AgentBridges: map[string]GenerationProfile{"pi": profile}}
-	validated := make(chan GenerationRef, 1)
-	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == "POST" && r.URL.Path == "/v1/generation/validations":
-			var body struct {
-				Revision int64         `json:"expected_revision"`
-				Profile  GenerationRef `json:"profile"`
+func TestFocusedOnboardingDoneMotionAndSummary(t *testing.T) {
+	for _, options := range []struct {
+		name         string
+		dark, reduce bool
+	}{{"light", false, false}, {"dark-reduced", true, true}} {
+		t.Run(options.name, func(t *testing.T) {
+			a := setupLayoutFixture()
+			a.environment.RuntimeStarted = true
+			a.environment.SelectedAgents = []string{"pi"}
+			a.integrations.Connections.Connections = []AgentConnection{{ID: "pi", Kind: "pi", Status: "configured_pending_new_session"}}
+			a.showOnboardingDone("pi · tested-model")
+			show := false
+			tt := ui.NewTester(func(c *ui.Context) {
+				if show {
+					a.View(c)
+				}
+			}, 1200, 820)
+			tt.SetDark(options.dark)
+			tt.SetPreferences(ui.Preferences{ReduceMotion: options.reduce})
+			show = true
+			tt.Frame()
+			if options.reduce && tt.FramePending() {
+				t.Fatal("done animation requested another frame under ReduceMotion")
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Revision != directory.Revision {
-				t.Error("validation did not use the reviewed generation revision")
+			tt.Advance(time.Second)
+			for _, title := range []string{"Memlane 已就绪", "本地记忆服务", "Agent 接入", "pi · tested-model", "1 个待新会话", "下一步：重启已接入的 Agent"} {
+				if !tt.HasText(title) {
+					t.Fatalf("done missing %q: %v", title, tt.Texts())
+				}
 			}
-			validated <- body.Profile
-			w.Write([]byte(`{}`))
-		case r.URL.Path == "/v1/generation":
-			json.NewEncoder(w).Encode(directory)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	a := setupLayoutFixture()
-	a.Config.GenerationFile = filepath.Join(root, "generation.json")
-	a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
-	a.Update = func(func()) {}
-	a.Client.HTTP = &http.Client{Transport: transport}
-	a.environment.RuntimeStarted = true
-	a.environment.InitialStep = 3
-	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
-	a.integrations.Connections.Connections = []AgentConnection{{Kind: "pi", Status: "configured_pending_new_session"}}
-	a.integrations.Generation = directory
-	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "启用并完成")
-	if a.environment.Busy {
-		t.Fatal("activation started without a validation receipt")
-	}
-	tt.Scroll(600, 440, 0, 570)
-	clickProjectUI(t, tt, "验证（会消耗额度）")
-	select {
-	case actual := <-validated:
-		if actual != ref {
-			t.Fatalf("validated profile %+v, want %+v", actual, ref)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("saved Pi candidate did not submit validation")
+			if tt.HasText("遇到问题") || tt.HasText("上一步") || tt.FramePending() {
+				t.Fatal("done retained navigation or animation after settling")
+			}
+			fixtureImage(t, tt, "focused-done-"+options.name)
+			tt.Key(0, ui.KeyEnter)
+			if a.initialSetup || a.page != "总览" {
+				t.Fatal("done Enter did not open overview")
+			}
+		})
 	}
 }
 
@@ -203,84 +172,22 @@ func TestSettingsEnvironmentShowsLadybugInRuntimeSummary(t *testing.T) {
 	}
 }
 
-func TestFirstUseV4StageBannerDetailsDialogAndNoBridgeWording(t *testing.T) {
+func TestOnboardingMascotPausesWhenWindowLosesFocus(t *testing.T) {
 	a := setupLayoutFixture()
-	a.environment.Busy = true
-	a.environment.RuntimeStage = ""
-	cancelled := false
-	a.environment.Cancel = func() { cancelled = true }
-
+	a.environment.InitialStep, a.environment.HostsLoaded = 1, true
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("正在准备本地记忆环境") || !tt.HasText("停止安装") {
-		t.Fatalf("stage banner missing while busy: %v", tt.Texts())
+	tt.Advance(time.Second)
+	if !tt.FramePending() {
+		t.Fatal("focused welcome mascot is not animating")
 	}
-	for _, txt := range tt.Texts() {
-		if strings.Contains(txt, "补全桥") {
-			t.Fatalf("unexpected deprecated wording %q", txt)
-		}
-	}
-	clickProjectUI(t, tt, "停止安装")
-	if !cancelled {
-		t.Fatal("stop install button did not invoke cancel")
-	}
-
-	// Open environment details v4Dialog and verify Esc dismisses it.
-	a.environment.Busy = false
+	a.windowInactive = true
 	tt.Frame()
-	clickProjectUI(t, tt, "环境详情")
-	if !a.environment.Details || !tt.HasText("已检测组件路径") || !tt.HasText("复制诊断材料") {
-		t.Fatalf("environment details v4Dialog did not open: details=%v", a.environment.Details)
+	if tt.FramePending() {
+		t.Fatal("unfocused welcome mascot still requests animation frames")
 	}
-	tt.Key(0, ui.KeyEscape)
-	if a.environment.Details {
-		t.Fatal("Escape did not dismiss environment details v4Dialog")
-	}
-}
-
-func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
-	a := setupLayoutFixture()
-	a.environment.DownloadSource = "china"
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("国内镜像源") || !tt.HasText("国外官方源") || tt.HasText("复制安装命令") {
-		t.Fatalf("unexpected initial download controls: %v", tt.Texts())
-	}
-
-	clickProjectUI(t, tt, "国外官方源")
-	if a.environment.DownloadSource != "official" {
-		t.Fatalf("expected official download source after toggle, got %q", a.environment.DownloadSource)
-	}
-	if !tt.HasText("已切换到国外官方源") {
-		t.Fatalf("expected feedback message after source toggle, got %q", a.environment.Message)
-	}
-
-	clickProjectUI(t, tt, "查看技术明细 (6 项)")
-	clickProjectUI(t, tt, "复制安装命令")
-	if !tt.HasText("已复制终端安装命令，执行后请点击「重新检测」") {
-		t.Fatalf("expected manual script copy message, got %q", a.environment.Message)
-	}
-
-	// Open approval modal with OfficialSource set and check per-item copy button & labels.
-	a.environment.Plan.Items[0].Requirement.OfficialSource = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
+	a.windowInactive = false
 	tt.Frame()
-	clickProjectUI(t, tt, "安装并继续")
-	clickProjectUI(t, tt, "查看技术清单")
-	if !tt.HasText("当前来源：") || !tt.HasText("官方原址：") || !tt.HasText("复制全部安装命令") || !tt.HasText("复制此项安装命令") {
-		t.Fatalf("review modal missing mirror source labels or copy buttons: %v", tt.Texts())
-	}
-}
-
-func TestInitialSetupPolicyUpdateFooterUsesPluginAction(t *testing.T) {
-	a := setupLayoutFixture()
-	a.environment.Plan.Items = []bootstrap.Item{{
-		Requirement: bootstrap.Requirement{ID: "agent-plugin", Name: "Agent 插件"},
-		Observation: bootstrap.Observation{Status: bootstrap.Incompatible, Reason: bootstrap.PluginPolicyUpdateReasonPrefix},
-	}}
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("更新 Agent 插件") || tt.HasText("安装并继续") || tt.HasText("不兼容") {
-		t.Fatalf("unexpected Step 2 action: %v", tt.Texts())
-	}
-	clickProjectUI(t, tt, "更新 Agent 插件")
-	if !tt.HasText("确认更新 Agent 插件") {
-		t.Fatal("Step 2 update did not open the review")
+	if !tt.FramePending() {
+		t.Fatal("welcome mascot did not resume after focus returned")
 	}
 }

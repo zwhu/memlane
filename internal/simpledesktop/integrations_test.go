@@ -241,7 +241,7 @@ func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 		{ID: "cursor", Kind: "cursor"},
 	}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"Codex", "pi", "TRAE CLI", "TRAE IDE", "Gemini App", "其他 Agent（1）", "确认连接 pi", "连接 Gemini App", "等待确认", "等待采集验证"} {
+	for _, label := range []string{"Codex", "pi", "TRAE CLI", "TRAE CN", "Gemini App", "其他 Agent（1）", "确认连接 pi", "连接 Gemini App", "等待确认", "等待采集验证"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing Agent control", label)
 		}

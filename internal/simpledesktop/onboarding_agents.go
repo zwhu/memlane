@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 
@@ -64,7 +65,7 @@ func (a *App) refreshLocalHosts() {
 					}
 				}
 			}
-			if a.initialSetup && s.InitialStep == 3 {
+			if a.initialSetup && s.InitialStep == 3 && s.RuntimeStarted {
 				a.integrations.PinnedAgentKinds = s.SelectedAgents
 				a.preloadPinnedConnectionPreviews()
 			}
@@ -118,128 +119,165 @@ func (a *App) saveSelectedAgentsAsync() {
 	}()
 }
 
-func needsStep1ProcessingCLINotice(hosts []bootstrap.DetectedHost, selected []string) (bool, []string) {
-	if len(selected) == 0 || bootstrap.HasDetectedProcessingCLI(hosts) {
-		return false, nil
-	}
-	var names []string
-	for _, kind := range selected {
-		for _, host := range hosts {
-			if host.Kind != kind {
-				continue
-			}
-			if host.Detected && host.SupportsProcessingCLI && host.Executable != "" {
-				return false, nil
-			}
-			if host.SupportsCapture {
-				names = append(names, host.DisplayName)
-			}
-			break
+func (s *environmentSetupState) detectedOnboardingHosts() []bootstrap.DetectedHost {
+	var detected []bootstrap.DetectedHost
+	for _, host := range s.Hosts {
+		if host.BetaPrimary && host.Detected {
+			detected = append(detected, host)
 		}
 	}
-	return len(names) > 0, names
-}
-
-func (a *App) copyFreshInstallPrompt(c *ui.Context) {
-	s := &a.environment
-	c.WriteClipboard(agentTakeoverFreshInstallPrompt(s.SelectedAgents))
-	s.InstallPromptCopied = true
-	s.Message = "已复制安装指令（零 Skill），请在已选 Agent 的新会话中粘贴执行"
+	return detected
 }
 
 func (a *App) initialSelectAgentStep(c *ui.Context) {
 	s := &a.environment
-	if !s.HostsLoaded && !s.HostsLoading && a.Update != nil {
-		a.refreshLocalHosts()
+	hosts := s.detectedOnboardingHosts()
+	if s.HostsLoaded && len(hosts) == 0 {
+		onboardingHeading(c, onboardingAgents, "还没有检测到支持的 Agent", "安装下面任一 Agent 后点「重新检测」；也可以先跳过，环境准备好后再到「设置 › Agent 与模型」接入。")
+		v4Group(c, "Memlane 支持的 Agent", "", func() {
+			v4GhostButton(c, "重新检测", v4IconRefresh, a.refreshLocalHosts).Disabled(s.HostsLoading)
+		}, func() { a.onboardingSupportRows(c) })
+		return
 	}
-	v4Group(c, "本机已检测的 Agent", "", func() {
-		v4SmallButton(c, "重新检测", v4IconRefresh, a.refreshLocalHosts).Disabled(s.HostsLoading)
-	}, func() {
+	onboardingHeading(c, onboardingAgents, "你在用哪些 Agent？", "选中的 Agent 会接入 Memlane：对话自动采集，新会话自动召回记忆。这一步只记录选择，不会改动任何配置。")
+	summary := "本机已检测到…"
+	if s.HostsLoaded {
+		summary = fmt.Sprintf("本机已检测到 %d 个", len(hosts))
+	}
+	ui.Column(c).FillWidth().Gap(sp2).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Height(28).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+			ui.Text(c, summary).FontSize(fsCaption).TextColor(tok.Text3).FontWeight(600).Grow(1)
+			v4GhostButton(c, "重新检测", v4IconRefresh, a.refreshLocalHosts).Disabled(s.HostsLoading)
+		})
 		if !s.HostsLoaded {
-			v4SkeletonGroup(c, 3, 2, true, true)
+			for range 2 {
+				ui.Row(c).FillWidth().Gap(sp2).Children(func() {
+					for range 2 {
+						ui.Row(c).Grow(1).Height(60).Gap(sp3).Padding(sp3).AlignItems(ui.Center).Border(1, tok.Border).Radius(8).Children(func() {
+							v4SkeletonBar(c, 28, 28, 7)
+							ui.Column(c).Gap(sp2).Children(func() {
+								v4SkeletonBar(c, 100, 10, 4)
+								v4SkeletonBar(c, 70, 8, 4)
+							})
+						})
+					}
+				})
+			}
+			return
 		}
-		for _, host := range s.Hosts {
-			if !host.BetaPrimary {
-				continue
-			}
-			label, state := "未检测到", ""
-			if host.Detected {
-				label, state = "已安装", "ok"
-			}
-			capability := ""
-			if host.Detected && host.SupportsProcessingCLI && host.Executable != "" {
-				capability = "自动采集 · 可用于记忆提炼"
-			} else if host.Detected && host.SupportsCapture {
-				capability = "自动采集 · 提炼需搭配 CLI 或模型 API"
-			}
-			v4Row(c, v4RowOptions{
-				Key: "select-host-" + host.Kind, Title: host.DisplayName,
-				TitleExtra: func() {
-					if host.Version != "" {
-						homeText(c, host.Version, homeMeta).SingleLine()
-					}
-				},
-				Leading: func() {
-					ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-						v4SelectionIndicator(c, slices.Contains(s.SelectedAgents, host.Kind))
-						ui.Image(c, agentOriginalIcon(host.Kind)).Size(20, 20).Fit(ui.Contain)
-					})
-				},
-				Control: func() {
-					if capability != "" {
-						v4Badge(c, capability, "")
-					}
-					v4Badge(c, label, state)
-				},
-				Clickable: true, HideChevron: true, Label: "选择 " + host.DisplayName,
-				OnClick: func() { a.toggleSelectedAgent(host.Kind) },
+		for start := 0; start < len(hosts); start += 2 {
+			ui.Row(c).FillWidth().Gap(sp2).Children(func() {
+				a.onboardingAgentCard(c, hosts[start])
+				if start+1 < len(hosts) {
+					a.onboardingAgentCard(c, hosts[start+1])
+				}
 			})
 		}
 	})
-	if s.HostsLoaded && len(s.SelectedAgents) == 0 {
-		homeText(c, "稍后再连，先准备环境", homeMeta)
-	}
-	if show, names := needsStep1ProcessingCLINotice(s.Hosts, s.SelectedAgents); show {
-		a.step1ProcessingCLINotice(c, names[0])
-	}
-	if s.InstallPromptCopied && a.OpenExistingAgent != nil {
-		for _, host := range s.Hosts {
-			if host.Detected && host.Application != "" && slices.Contains(s.SelectedAgents, host.Kind) {
-				v4SmallButton(c, "打开 "+host.DisplayName, nil, func() {
-					if err := a.OpenExistingAgent(host.Application); err != nil {
-						s.Message = bootstrap.RedactInstallerText(err.Error())
-					}
-				})
-				break
+	if s.HostsLoaded {
+		selected := 0
+		for _, host := range hosts {
+			if slices.Contains(s.SelectedAgents, host.Kind) {
+				selected++
 			}
 		}
+		if selected > 0 {
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, v4IconCheck).FontSize(13).TextColor(tok.OK)
+				ui.Text(c, fmt.Sprintf("已选 %d 个，第 3 步统一确认接入", selected)).FontSize(fsFootnote).TextColor(tok.Text2)
+			})
+		} else {
+			homeText(c, "不选也可以继续，之后在「设置 › Agent 与模型」里接入", homeMeta)
+		}
 	}
+	ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+		homeText(c, "没找到你的 Agent？", homeMeta)
+		v4GhostButton(c, "查看支持列表", nil, func() { a.onboarding.support = true })
+	})
 	if s.Message != "" {
 		homeText(c, s.Message, homeMeta)
 	}
 }
 
-func (a *App) step1ProcessingCLINotice(c *ui.Context, hostName string) {
-	s := &a.environment
-	ui.Column(c.Key("processing-cli-notice")).FillWidth().Gap(sp2).Padding(sp4).
-		Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
-		homeText(c, "提示：把对话自动整理成记忆需要一个后台提炼工具", homeBody).FontWeight(600)
-		homeText(c, "你当前选择的工具只负责自动采集对话。在最后一步启用记忆提炼时，可以搭配一个本地 CLI（复用已有账号额度）或直接填写模型 API / Ollama。", homeMeta)
-		ui.Row(c).FillWidth().Gap(sp2).Children(func() {
-			label := "查看推荐 CLI 安装方式"
-			if s.Step1CLIGuideOpen {
-				label = "收起推荐 CLI"
-			}
-			v4SmallButton(c, label, nil, func() { s.Step1CLIGuideOpen = !s.Step1CLIGuideOpen })
-			v4SmallButton(c, "已装好，重新检测", v4IconRefresh, a.refreshLocalHosts).Disabled(s.HostsLoading)
-			v4SmallButton(c, "复制指令，让 "+hostName+" 帮我安装 CLI", v4IconCopy, func() {
-				c.WriteClipboard(agentTakeoverInstallCLIPrompt(hostName))
-				s.Message = "已复制 CLI 安装指令，请在 Agent 的新会话中粘贴执行"
+func (a *App) onboardingAgentCard(c *ui.Context, host bootstrap.DetectedHost) {
+	selected := slices.Contains(a.environment.SelectedAgents, host.Kind)
+	bg, rim := tok.Bg, tok.Border
+	if selected {
+		bg, rim = tok.AccentSofter, tok.Accent
+	}
+	card := ui.ButtonBase(c.Key(host.Kind)).Role(ui.RoleCheckBox).Label("选择 "+host.DisplayName).Checked(selected).
+		Width((onboardingWidth-sp2)/2).MinHeight(60).Radius(8).Border(1, rim).Padding(sp3).Gap(sp3).
+		AlignItems(ui.Center).Justify(ui.Start).Cursor(ui.CursorPointer).OnClick(func() { a.toggleSelectedAgent(host.Kind) })
+	card.Background(homeHoverColor(card, "agent-card", bg, tok.Hover))
+	v4ButtonPress(card, 0.99)
+	card.Children(func() {
+		ui.Image(c, agentOriginalIcon(host.Kind)).Size(28, 28).Shrink(0).Fit(ui.Contain)
+		ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				homeText(c, host.DisplayName, homeBody).FontWeight(600).SingleLine()
+				if host.Version != "" {
+					ui.Text(c, host.Version).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+				}
 			})
+			capability := "自动采集与召回"
+			if host.SupportsProcessingCLI && host.Executable != "" {
+				capability = "也可用于提炼记忆"
+			}
+			ui.Text(c, capability).FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 		})
-		if !s.Step1CLIGuideOpen {
-			return
+		onboardingSelectionCheck(c.Key(selected), selected, 4)
+	})
+}
+
+func (a *App) onboardingSupportRows(c *ui.Context) {
+	for _, host := range a.environment.Hosts {
+		if !host.BetaPrimary {
+			continue
 		}
-		a.recommendedProcessingCLIRows(c, &s.Message)
+		desc := "自动采集与召回"
+		if host.SupportsProcessingCLI {
+			desc += " · 也可用于提炼记忆"
+		}
+		v4Row(c, v4RowOptions{
+			Key: "supported-" + host.Kind, Title: host.DisplayName, Desc: desc,
+			Leading: func() { ui.Image(c, agentOriginalIcon(host.Kind)).Size(22, 22).Fit(ui.Contain) },
+			DescExtra: func() {
+				if !host.Detected && host.InstallCommand != "" {
+					ui.Text(c, host.InstallCommand).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3)
+				}
+			},
+			Control: func() {
+				switch {
+				case host.Detected:
+					v4Badge(c, "已检测到", "ok")
+				case host.InstallCommand != "":
+					v4SmallButton(c, "复制安装命令", v4IconCopy, func() {
+						c.WriteClipboard(host.InstallCommand)
+						a.showOnboardingToast("已复制 " + host.DisplayName + " 安装命令")
+					}).Label("复制安装命令 " + host.DisplayName)
+				case host.DocsURL != "":
+					v4SmallButton(c, "下载 "+host.DisplayName, nil, func() {
+						if a.OpenExternalURL == nil {
+							c.OpenURL(host.DocsURL)
+						} else if err := a.OpenExternalURL(host.DocsURL); err != nil {
+							a.showOnboardingToast(bootstrap.RedactInstallerText(err.Error()))
+						}
+					})
+				}
+			},
+		})
+	}
+}
+
+func (a *App) onboardingSupportDialog(c *ui.Context) {
+	v4Dialog(c, &a.onboarding.support, v4DialogOptions{
+		Key: "onboarding-support-list", Title: "Memlane 支持的 Agent", Width: v4DialogSmall, ScrollBody: true,
+		Hint: "安装完成后回到这里点「重新检测」", CancelText: "关闭", ConfirmText: "重新检测",
+		ConfirmDisabled: a.environment.HostsLoading,
+		OnConfirm:       a.refreshLocalHosts,
+		Body: func() {
+			homeText(c, "公测阶段重点支持以下 Agent。检测依据是本机能找到对应程序（命令行工具或 /Applications 中的应用）。", homeMeta)
+			a.onboardingSupportRows(c)
+		},
 	})
 }

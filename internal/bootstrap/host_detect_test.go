@@ -158,9 +158,13 @@ func TestHostProcessingCapabilities(t *testing.T) {
 	for _, host := range hosts {
 		kinds = append(kinds, host.Kind)
 		cli, supported := processing[host.Kind]
+		docsURL := cli.DocsURL
+		if host.Kind == "trae_ide" {
+			docsURL = "https://www.trae.cn/"
+		}
 		if !host.SupportsCapture || host.SupportsProcessingCLI != supported ||
 			host.BundlesProcessingCLI != cli.BundlesProcessingCLI || host.InstallCommand != cli.InstallCommand ||
-			host.DocsURL != cli.DocsURL || host.LoginHint != cli.LoginHint {
+			host.DocsURL != docsURL || host.LoginHint != cli.LoginHint {
 			t.Errorf("unexpected capabilities for %s: %+v", host.Kind, host)
 		}
 	}

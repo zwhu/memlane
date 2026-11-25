@@ -79,6 +79,9 @@ type App struct {
 	userProfiles                userProfilesState
 	environment                 environmentSetupState
 	initialSetup                bool
+	onboarding                  onboardingState
+	onboardingConnection        onboardingConnectionState
+	onboardingGeneration        onboardingGenerationState
 	setupDeferredMode           bool
 	setupDeferredToastDismissed bool
 
@@ -248,6 +251,9 @@ func (s *deferredStartupState) stopAllTimers() {
 
 func (a *App) Start() {
 	if a.initialSetup {
+		if a.onboardingPage() == onboardingDone {
+			return
+		}
 		a.refreshLocalHosts()
 		a.inspectInstallWorkerAsync()
 		if a.Config.FirstInstall != nil {
@@ -1075,7 +1081,11 @@ func button(c *ui.Context, label string, fn func()) {
 func (a *App) View(c *ui.Context) {
 	applyAppearance(a.effectiveDark(c.Theme().Dark))
 	if a.initialSetup {
-		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.initialEnvironmentPage(c) })
+		if c.Preferences().ReduceMotion {
+			c.DisableAnimations()
+		}
+		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.initialSetupShell(c) })
+		a.onboardingShortcuts(c)
 		return
 	}
 	if a.Config.GenerationSetupOnly && !a.setupDeferredMode {

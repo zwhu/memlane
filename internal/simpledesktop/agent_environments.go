@@ -51,7 +51,7 @@ func (a *App) refreshAgentReceiptsIfDue(now time.Time) {
 			if s.Error == agentReceiptCheckError {
 				s.Error = ""
 			}
-			s.Connections = result
+			a.acceptConnectionsDirectory(result)
 		})
 	}()
 }
@@ -82,10 +82,14 @@ func (a *App) selectAgentEnvironment(row AgentConnection, profile string) {
 				s.Error = "环境选择结果未确认，请重新检测核对；不会重复提交。"
 				return
 			}
-			s.Connections = result
+			a.acceptConnectionsDirectory(result)
 			s.Selected = map[string]bool{}
 			s.EnvironmentOpen = map[string]bool{}
 			s.Message = "已选择连接环境，请连接该环境并在 Agent 中新建会话。"
+			if a.initialSetup {
+				a.environment.pinnedPreviewRequested = nil
+				a.preloadPinnedConnectionPreviews()
+			}
 		})
 	}()
 }

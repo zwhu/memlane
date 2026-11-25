@@ -90,8 +90,8 @@ func TestSessionIdentityAndRecentAgentIcon(t *testing.T) {
 		},
 		{
 			id:       "trae_ide-1234567890abcdef",
-			identity: "TRAE IDE 会话 · trae_ide…90abcdef",
-			agent:    "TRAE IDE",
+			identity: "TRAE CN 会话 · trae_ide…90abcdef",
+			agent:    "TRAE CN",
 			icon:     agentBrandIcon("trae_ide"),
 			notCodex: true,
 		},
@@ -279,5 +279,22 @@ func TestTraeXIconUsesMonochromeCurrentColorInLightAndDarkAppearances(t *testing
 				t.Fatalf("expected inner background cutout pixels matching tok.Bg (%+v) within icon bbox (%d,%d)-(%d,%d)", tok.Bg, minX, minY, maxX, maxY)
 			}
 		})
+	}
+}
+
+func TestTraeCNIconAcceptsHistoricalNames(t *testing.T) {
+	icon := agentBrandIcon("trae_ide")
+	for _, name := range []string{"TRAE CN", "traecn", "TRAE IDE", "本机 TRAE IDE"} {
+		if agentBrandIconFor("", name) != icon {
+			t.Errorf("display name %q did not resolve to TRAE CN", name)
+		}
+	}
+	for _, key := range []string{"trae_ide", "TRAE CN", "traecn", "TRAE IDE"} {
+		if agentOriginalIcon(key) != icon {
+			t.Errorf("host key %q did not resolve to TRAE CN", key)
+		}
+	}
+	if agentDisplayName("本机 TRAE IDE") != "TRAE CN" {
+		t.Fatal("historical registered name did not use the current display name")
 	}
 }

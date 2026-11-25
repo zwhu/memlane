@@ -64,7 +64,7 @@ var localHostSpecs = []localHostSpec{
 	{
 		kind: "trae_ide", name: "TRAE CN", primary: true,
 		apps: []string{"Trae CN.app", "TRAE CN.app"}, bundleExecutable: "Contents/MacOS/Electron",
-		profile: ".trae-cn", supportsCapture: true,
+		profile: ".trae-cn", supportsCapture: true, docsURL: "https://www.trae.cn/",
 	},
 	{
 		kind: "codex", name: "Codex", primary: true,

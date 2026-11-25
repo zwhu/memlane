@@ -36,11 +36,7 @@ func (a *App) preloadPinnedConnectionPreviews() {
 	}
 	var ids []string
 	for _, row := range s.Connections.Connections {
-		if row.ID == "" || !slices.Contains(s.PinnedAgentKinds, row.Kind) || s.pendingConnection(row.ID) != nil || needsTraeHooksRepair(row) {
-			continue
-		}
-		if !connectionActionAllowed(row, "prepare") && row.Status != "prepared" {
-			delete(s.ConnectionPreviews, row.ID)
+		if row.ID == "" || !slices.Contains(s.PinnedAgentKinds, row.Kind) {
 			continue
 		}
 		version := pinnedPreviewVersion{status: row.Status, revision: s.Connections.Revision}
@@ -105,73 +101,110 @@ func previewEligibleForConfirm(preview controlplane.ConnectionPreview) bool {
 func (a *App) confirmPrepareAndActivateConnection(id, previewSHA string) {
 	s := &a.integrations
 	preview, present := s.ConnectionPreviews[id]
-	client, ok := a.accessClient()
-	if !ok || !present || !previewEligibleForConfirm(preview) || !preview.OK || preview.NeedsHookRepair || preview.InstanceID != id || preview.EffectiveProposedSHA() != previewSHA ||
-		s.pendingConnection(id) != nil || s.Busy || s.Loading || a.Update == nil {
+	if !present || !previewEligibleForConfirm(preview) || !preview.OK || preview.NeedsHookRepair ||
+		preview.InstanceID != id || preview.EffectiveProposedSHA() != previewSHA || s.pendingConnection(id) != nil {
 		return
 	}
-	delete(s.ConnectionPreviews, id)
+	a.startReviewedConnectionMutation(preview, false)
+}
+
+func (a *App) startReviewedConnectionMutation(preview controlplane.ConnectionPreview, refresh bool) {
+	s := &a.integrations
+	client, ok := a.accessClient()
+	if !ok || s.Busy || s.Loading || a.Update == nil {
+		return
+	}
+	if refresh {
+		a.onboardingConnection.Writing = preview.InstanceID
+	} else {
+		delete(s.ConnectionPreviews, preview.InstanceID)
+	}
 	s.Busy = true
 	s.Error, s.Message = "", ""
 	root := a.generationOperationsDir()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		type actionResult struct {
-			Revision   int64           `json:"revision"`
-			Connection AgentConnection `json:"connection"`
+		var checked *controlplane.ConnectionPreview
+		if refresh {
+			current, err := refreshReviewedOnboardingPreview(ctx, client, preview)
+			if current.InstanceID == preview.InstanceID {
+				checked = &current
+			}
+			if err != nil {
+				a.updateConnectionMutation(client, root, "", "", checked, err)
+				return
+			}
+			preview = current
 		}
-		run := func(action string, revision int64, sha string) (actionResult, error) {
-			o := generationUIOperation{Operation: integrationOperation(), Kind: "connection_" + action, Profile: id, Revision: revision}
-			var result actionResult
-			if _, err := recordGenerationOperationAt(root, o); err != nil {
-				return result, err
-			}
-			payload := map[string]any{"operation_id": o.Operation, "expected_revision": revision}
-			if action == "activate" {
-				payload["proposed_sha256"] = sha
-			}
-			err := client.request(ctx, http.MethodPost, connectionActionPath(id, action), payload, &result)
-			complete := err == nil && result.Connection.ID == id
-			if complete || client.confirmedConnectionRejection(ctx, o, err) {
-				if finishErr := controlplane.FinishUIOperation(root, o.Operation); finishErr != nil {
-					return result, fmt.Errorf("原回执已确认，但操作记录尚未清理，请重新核对")
-				}
-			} else if err == nil {
-				err = fmt.Errorf("Agent 原操作回执未确认，请核对")
-			}
+		nextPreviewID, latest, err := applyReviewedConnection(ctx, client, root, preview)
+		// Keep the latest reviewed target available even if the following read
+		// finds a connection error. A changed preparation supplies its own preview.
+		if latest == nil {
+			latest = checked
+		}
+		a.updateConnectionMutation(client, root, "", nextPreviewID, latest, err)
+	}()
+}
+
+// applyReviewedConnection preserves the same digest and durable operation receipt
+// checks for individual confirmations and the ordered onboarding batch.
+func applyReviewedConnection(ctx context.Context, client ProjectControlClient, root string, preview controlplane.ConnectionPreview) (string, *controlplane.ConnectionPreview, error) {
+	id, previewSHA := preview.InstanceID, preview.EffectiveProposedSHA()
+	type actionResult struct {
+		Revision   int64           `json:"revision"`
+		Connection AgentConnection `json:"connection"`
+	}
+	run := func(action string, revision int64, sha string) (actionResult, error) {
+		o := generationUIOperation{Operation: integrationOperation(), Kind: "connection_" + action, Profile: id, Revision: revision}
+		var result actionResult
+		if _, err := recordGenerationOperationAt(root, o); err != nil {
 			return result, err
 		}
-		var err error
-		var nextPreviewID string
-		var refreshedPreview *controlplane.ConnectionPreview
-		if preview.Status == "prepared" {
-			if previewSHA == "" {
-				err = fmt.Errorf("接入预览缺少确认信息，请重新预览")
-			} else {
-				_, err = run("activate", preview.Revision, previewSHA)
+		payload := map[string]any{"operation_id": o.Operation, "expected_revision": revision}
+		if action == "activate" {
+			payload["proposed_sha256"] = sha
+		}
+		err := client.request(ctx, http.MethodPost, connectionActionPath(id, action), payload, &result)
+		complete := err == nil && result.Connection.ID == id
+		if complete || client.confirmedConnectionRejection(ctx, o, err) {
+			if finishErr := controlplane.FinishUIOperation(root, o.Operation); finishErr != nil {
+				return result, fmt.Errorf("原回执已确认，但操作记录尚未清理，请重新核对")
 			}
+		} else if err == nil {
+			err = fmt.Errorf("Agent 原操作回执未确认，请核对")
+		}
+		return result, err
+	}
+	var err error
+	var nextPreviewID string
+	var refreshedPreview *controlplane.ConnectionPreview
+	if preview.Status == "prepared" {
+		if previewSHA == "" {
+			err = fmt.Errorf("接入预览缺少确认信息，请重新预览")
 		} else {
-			var prepared actionResult
-			prepared, err = run("prepare", preview.Revision, "")
-			if err == nil {
-				switch {
-				case previewSHA == "" || preview.Kind == "opencode":
-					nextPreviewID = id
-				case prepared.Connection.Status != "prepared" || prepared.Connection.Preview == nil || prepared.Connection.Preview.ProposedSHA != previewSHA ||
-					prepared.Connection.Preview.BaselineSHA256 != preview.BaselineSHA256:
-					refreshed, readErr := client.controlPlaneClient().PreviewConnection(ctx, id)
-					if readErr == nil && refreshed.InstanceID == id {
-						refreshedPreview = &refreshed
-					}
-					err = fmt.Errorf("准备后的接入配置或宿主文件已变化，请重新确认连接")
-				default:
-					_, err = run("activate", prepared.Revision, previewSHA)
+			_, err = run("activate", preview.Revision, previewSHA)
+		}
+	} else {
+		var prepared actionResult
+		prepared, err = run("prepare", preview.Revision, "")
+		if err == nil {
+			switch {
+			case previewSHA == "" || preview.Kind == "opencode":
+				nextPreviewID = id
+			case prepared.Connection.Status != "prepared" || prepared.Connection.Preview == nil || prepared.Connection.Preview.ProposedSHA != previewSHA ||
+				prepared.Connection.Preview.BaselineSHA256 != preview.BaselineSHA256:
+				refreshed, readErr := client.controlPlaneClient().PreviewConnection(ctx, id)
+				if readErr == nil && refreshed.InstanceID == id {
+					refreshedPreview = &refreshed
 				}
+				err = fmt.Errorf("准备后的接入配置或宿主文件已变化，请重新确认连接")
+			default:
+				_, err = run("activate", prepared.Revision, previewSHA)
 			}
 		}
-		a.updateConnectionMutation(client, root, "", nextPreviewID, refreshedPreview, err)
-	}()
+	}
+	return nextPreviewID, refreshedPreview, err
 }
 
 // Refresh both the journal and the connection rows even after an uncertain result.
@@ -184,6 +217,7 @@ func (a *App) updateConnectionMutation(client ProjectControlClient, root, messag
 	a.Update(func() {
 		s := &a.integrations
 		s.Busy = false
+		a.onboardingConnection.Writing = ""
 		s.Message = message
 		if refreshedPreview != nil {
 			if s.ConnectionPreviews == nil {
@@ -193,7 +227,7 @@ func (a *App) updateConnectionMutation(client ProjectControlClient, root, messag
 		}
 		s.ConnectionsError = controlUserError(readErr)
 		if readErr == nil {
-			s.Connections = directory
+			a.acceptConnectionsDirectory(directory)
 		}
 		if journalErr == nil {
 			s.PendingOperations = pending

@@ -304,12 +304,15 @@ func TestBeta3UnconfiguredProcessingCLIGuide(t *testing.T) {
 				t.Fatal("successful generation response should detect only Codex")
 			}
 			s.Generation.DetectedProcessingCLIs = append(s.Generation.DetectedProcessingCLIs, "pi", "traex")
+			a.onboarding.page = onboardingProcess
 			wizard := ui.NewTester(a.View, 1200, 820)
-			wizard.Advance(time.Second)
-			wizard.Scroll(600, 440, 0, 800)
-			beta3RequireWindowLabels(t, wizard, heading, setupDesc, "已登录，重新检测", "暂不配置提炼，先进入 Memlane")
+			wizard.SetPreferences(ui.Preferences{ReduceMotion: true})
+			beta3RequireWindowLabels(t, wizard, "用哪个 Agent 提炼", "Codex", "重新检测", "稍后配置，先进入 Memlane")
+			if !wizard.HasText("尚未登录") {
+				t.Fatalf("wizard did not show CLI login status: %v", wizard.Texts())
+			}
 
-			clickProjectUI(t, wizard, "暂不配置提炼，先进入 Memlane")
+			clickProjectUI(t, wizard, "稍后配置，先进入 Memlane")
 			if a.initialSetup || a.page != "总览" {
 				t.Fatal("unconfigured CLI blocked the user from deferring setup")
 			}
@@ -395,15 +398,15 @@ func TestBeta3SkipAndReopenOverview(t *testing.T) {
 		t.Fatal("test requires a fresh Step 3")
 	}
 	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
-	a.chooseGenerationSource("agent_bridge")
+	a.onboarding.page = onboardingProcess
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("未检测到可用于记忆提炼的本地 CLI 工具") ||
-		!tt.HasText("也可以点击「暂不配置提炼，先进入 Memlane」，稍后再配置。") ||
-		a.firstGenerationEnableBlocker() != "请先安装或重新检测本机 CLI，或先进入 Memlane 稍后配置。" {
-		t.Fatalf("missing CLI did not offer installation and defer guidance: %v", tt.Texts())
+	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+	clickProjectUI(t, tt, "用已连接的 Agent")
+	if !tt.HasText("未检测到可用于提炼的本机 CLI") || !tt.HasText("改用模型 API") {
+		t.Fatalf("missing CLI did not offer installation and alternative model source: %v", tt.Texts())
 	}
 	a.setupDeferredToastDismissed = true
-	clickProjectUI(t, tt, "暂不配置提炼，先进入 Memlane")
+	clickProjectUI(t, tt, "稍后配置，先进入 Memlane")
 	if a.initialSetup || !a.setupDeferredMode || a.page != "总览" {
 		t.Fatal("Skip did not open the main Overview")
 	}

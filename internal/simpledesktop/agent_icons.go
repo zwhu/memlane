@@ -35,6 +35,8 @@ var agentBrandIcons = func() map[string]*ui.SVG {
 
 func normalizeAgentIconKind(kind string) string {
 	switch key := strings.ToLower(strings.TrimSpace(kind)); key {
+	case "traecn", "trae cn", "trae ide":
+		return "trae_ide"
 	case "agy":
 		return "antigravity"
 	default:
@@ -61,7 +63,7 @@ func agentBrandIconFor(kind, name string) *ui.SVG {
 		key = "claude_code"
 	case "trae", "traecli":
 		key = "traex"
-	case "traeide":
+	case "traeide", "traecn":
 		key = "trae_ide"
 	case "agy", "agycli", "antigravitycli", "geminiapp":
 		key = "antigravity"
@@ -121,6 +123,7 @@ func recentAgentIcon(item Item) *ui.SVG {
 		"Codex":       "codex",
 		"TRAE CLI":    "traex",
 		"TRAE IDE":    "trae_ide",
+		"TRAE CN":     "trae_ide",
 		"pi":          "pi",
 		"Claude Code": "claude_code",
 		"opencode":    "opencode",

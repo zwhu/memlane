@@ -30,7 +30,7 @@ func TestBeta3AgentSelectionPersistsEmptyAndMultipleChoices(t *testing.T) {
 	cfg := Config{ConfigFile: filepath.Join(root, "runtime.json"), FirstInstallDefault: true}
 	hosts := []bootstrap.DetectedHost{
 		{Kind: "trae_ide", DisplayName: "TRAE CN", BetaPrimary: true, Detected: true, Version: "1.2.3", SupportsCapture: true},
-		{Kind: "pi", DisplayName: "pi", BetaPrimary: true, SupportsCapture: true, SupportsProcessingCLI: true},
+		{Kind: "pi", DisplayName: "pi", BetaPrimary: true, Detected: true, Executable: "/test/bin/pi", SupportsCapture: true, SupportsProcessingCLI: true},
 	}
 	openWizard := func() (*App, chan func(), *ui.Tester) {
 		a := New(cfg, os.ErrNotExist)
@@ -42,123 +42,115 @@ func TestBeta3AgentSelectionPersistsEmptyAndMultipleChoices(t *testing.T) {
 		}
 		updates := make(chan func(), 8)
 		a.Update = func(fn func()) { updates <- fn }
+		a.refreshLocalHosts()
 		tt := ui.NewTester(a.View, 1200, 820)
 		drainReading(t, updates, func() bool { return a.environment.HostsLoaded })
 		tt.Frame()
 		return a, updates, tt
 	}
-	// beta.2 stored environment options before Agent selection existed.
+	// A beta.2 selection file may have component options but no explicit Agent selection.
 	if err := bootstrap.SaveSelections(bootstrap.EnvironmentOptions{Root: os.Getenv("MEMLANE_BOOTSTRAP_ROOT")}, cfg.ConfigFile); err != nil {
 		t.Fatal(err)
 	}
 	a, updates, tt := openWizard()
-	if a.environment.InitialStep != 1 || !slices.Equal(a.environment.SelectedAgents, []string{"trae_ide"}) ||
-		a.environment.SelectedAgentsExplicit || !tt.HasText("已安装") || !tt.HasText("未检测到") ||
-		tt.HasText("自动采集 · 可用于记忆提炼") || !tt.HasText("自动采集 · 提炼需搭配 CLI 或模型 API") {
-		t.Fatalf("detected hosts or default selections missing: %v", tt.Texts())
+	if a.environment.InitialStep != 1 || a.onboardingPage() != onboardingWelcome ||
+		!slices.Equal(a.environment.SelectedAgents, []string{"trae_ide", "pi"}) || a.environment.SelectedAgentsExplicit {
+		t.Fatalf("default selections or first page incorrect: %v", a.environment.SelectedAgents)
 	}
+	a.environment.Loaded = true
+	clickProjectUI(t, tt, "开始设置")
 	clickProjectUI(t, tt, "选择 pi")
-	waitSaved := func() {
-		drainReading(t, updates, func() bool { return !a.environment.selectedAgentsSaving })
-	}
-	waitSaved()
+	drainReading(t, updates, func() bool { return !a.environment.selectedAgentsSaving })
 	a, updates, tt = openWizard()
-	if !tt.HasText("查看推荐 CLI 安装方式") {
-		t.Fatal("an undetected selected CLI hid the processing guide")
+	if !slices.Equal(a.environment.SelectedAgents, []string{"trae_ide"}) || !a.environment.SelectedAgentsExplicit {
+		t.Fatalf("selection did not reload: %v", a.environment.SelectedAgents)
 	}
-	if !slices.Equal(a.environment.SelectedAgents, []string{"trae_ide", "pi"}) || !a.environment.SelectedAgentsExplicit {
-		t.Fatalf("multiple selections did not reload: %v", a.environment.SelectedAgents)
-	}
-	clickProjectUI(t, tt, "选择 pi")
+	a.environment.Loaded = true
+	clickProjectUI(t, tt, "开始设置")
 	clickProjectUI(t, tt, "选择 TRAE CN")
-	if !tt.HasText("稍后再连，先准备环境") {
-		t.Fatal("zero selection did not offer a way to continue")
-	}
-	waitSaved()
+	drainReading(t, updates, func() bool { return !a.environment.selectedAgentsSaving })
 	a, updates, tt = openWizard()
 	if len(a.environment.SelectedAgents) != 0 || !a.environment.SelectedAgentsExplicit {
-		t.Fatalf("zero selection reselected a detected host: %v", a.environment.SelectedAgents)
+		t.Fatalf("saved empty selection was lost: %v", a.environment.SelectedAgents)
 	}
-	// Use a preloaded plan so advancing only exercises local selection persistence.
 	a.environment.Loaded = true
-	clickProjectUI(t, tt, "继续准备环境")
-	waitSaved()
-	if a.environment.InitialStep != 2 {
-		t.Fatal("zero selection blocked environment preparation")
+	clickProjectUI(t, tt, "开始设置")
+	clickProjectUI(t, tt, "继续")
+	drainReading(t, updates, func() bool { return !a.environment.selectedAgentsSaving })
+	if a.environment.InitialStep != 2 || a.onboardingPage() != onboardingEnv {
+		t.Fatal("empty selection blocked preparing the environment")
 	}
 }
 
-func TestBeta3StepOneCLIGuideAndTakeoverClipboard(t *testing.T) {
-	a := New(Config{}, os.ErrNotExist)
-	s := &a.environment
-	s.HostsLoaded, s.SelectedAgents = true, []string{"trae_ide"}
-	s.Hosts = []bootstrap.DetectedHost{
-		{Kind: "trae_ide", DisplayName: "TRAE CN", BetaPrimary: true, Detected: true, Application: "/test/Trae CN.app", SupportsCapture: true},
-		{Kind: "codex", DisplayName: "Codex", BetaPrimary: true, SupportsProcessingCLI: true},
-	}
-	var docs, application string
-	a.OpenExternalURL = func(url string) error { docs = url; return nil }
-	a.OpenExistingAgent = func(path string) error { application = path; return nil }
-	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("把对话自动整理成记忆需要一个后台提炼工具") || tt.HasText("npm i -g") || tt.HasText("知识") ||
-		tt.HasText("自动采集 · 可用于记忆提炼") {
-		t.Fatalf("unexpected upfront guidance: %v", tt.Texts())
-	}
-	tt.Advance(700 * time.Millisecond)
-	fixtureImage(t, tt, "beta3-setup-agents")
-	clickProjectUI(t, tt, "复制指令，让 TRAE CN 帮我安装 CLI")
-	if tt.Clipboard() != agentTakeoverInstallCLIPrompt("TRAE CN") || !strings.Contains(tt.Clipboard(), "记忆") {
-		t.Fatal("CLI takeover did not copy the selected host's prompt")
-	}
-	clickProjectUI(t, tt, "查看推荐 CLI 安装方式")
-	for _, cli := range bootstrap.RecommendedProcessingCLIs() {
-		if !tt.HasText(cli.LoginHint) {
-			t.Errorf("recommendation missing for %s", cli.DisplayName)
-		}
-	}
-	clickProjectUI(t, tt, "复制命令 Codex")
-	if tt.Clipboard() != "npm i -g @openai/codex" {
-		t.Fatal("command was not copied verbatim")
-	}
-	clickProjectUI(t, tt, "查看文档 Codex")
-	if docs != "https://developers.openai.com/codex/cli" {
-		t.Fatal("CLI documentation hook was not called")
-	}
-	clickProjectUI(t, tt, "收起推荐 CLI")
-	clickProjectUI(t, tt, "交给已选 Agent 自动安装")
-	const expected = `帮我完成本机 Memlane 的首次安装与配置（无需安装 Skill）：
-1. 先只读运行：/Applications/Memlane.app/Contents/MacOS/Memlane doctor --json
-2. 按 next_actions 顺序推进：所有 requires=explicit_confirmation 的 --apply 操作，先给我看 --plan / --dry-run 预览并等我确认；若返回退出码 20，按 retry_after_ms 用 doctor --operation-id <id> --json 轮询进度直到完成。
-3. 严禁读取或输出任何 token/密钥/.local/聊天内容，严禁手动修改 hooks.json/Cognee 源码。若返回退出码 11 或同一问题重试 3 次仍失败，立刻停止并把 human_steps 交给我。
-（我计划优先接入的 Agent：TRAE CN）`
-	if tt.Clipboard() != expected || !tt.HasText("已复制安装指令（零 Skill）") {
-		t.Fatal("fresh-install prompt or feedback differs")
-	}
-	clickProjectUI(t, tt, "打开 TRAE CN")
-	if application != s.Hosts[0].Application {
-		t.Fatal("selected detected Agent was not opened")
-	}
-	if show, names := needsStep1ProcessingCLINotice(s.Hosts, []string{"trae_ide", "codex"}); !show || !slices.Equal(names, []string{"TRAE CN"}) {
-		t.Fatal("selecting an undetected CLI hid capture-only guidance")
-	}
-	s.Hosts[1].Detected = true
-	tt.Frame()
-	if show, _ := needsStep1ProcessingCLINotice(s.Hosts, []string{"trae_ide", "codex"}); !show ||
-		tt.HasText("自动采集 · 可用于记忆提炼") || !tt.HasText("查看推荐 CLI 安装方式") {
-		t.Fatal("detected host without an executable was treated as a usable CLI")
-	}
-	s.Hosts[1].Executable = "/test/bin/codex"
-	tt.Frame()
-	if tt.HasText("查看推荐 CLI 安装方式") {
-		t.Fatal("detected usable CLI did not hide guidance")
-	}
-	for _, prompt := range []string{expected, agentTakeoverBeta2RescuePrompt(), agentTakeoverConnectionTroubleshootPrompt("trae_ide"), agentTakeoverInstallCLIPrompt("TRAE CN")} {
-		if strings.Contains(prompt, "xattr") || strings.Contains(prompt, "知识") {
-			t.Fatal("takeover prompt violates terminology")
-		}
-	}
-	if !strings.Contains(agentTakeoverConnectionTroubleshootPrompt("unknown ; argument"), "--agent <kind> --json") {
-		t.Fatal("unrecognized argument was interpolated into troubleshooting command")
+func TestBeta3FocusedOnboardingWelcomeAndSupport(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		t.Run(map[bool]string{false: "light", true: "dark"}[dark], func(t *testing.T) {
+			a := New(Config{}, os.ErrNotExist)
+			s := &a.environment
+			s.HostsLoaded, s.Loaded, s.SelectedAgents = true, true, []string{"trae_ide", "pi"}
+			s.Hosts = []bootstrap.DetectedHost{
+				{Kind: "trae_ide", DisplayName: "TRAE CN", BetaPrimary: true, Detected: true},
+				{Kind: "pi", DisplayName: "pi", BetaPrimary: true, Detected: true, Executable: "/test/bin/pi", SupportsProcessingCLI: true},
+				{Kind: "codex", DisplayName: "Codex", BetaPrimary: true, InstallCommand: "npm i -g @openai/codex", SupportsProcessingCLI: true},
+			}
+			show := false
+			tt := ui.NewTester(func(c *ui.Context) {
+				if show {
+					a.View(c)
+				}
+			}, 1200, 820)
+			tt.SetDark(dark)
+			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+			show = true
+			tt.Frame()
+			if !tt.HasText("换个 Agent，接着做。") || !tt.HasText("已检测到 2 个 Agent") || tt.HasText("上一步") || tt.FramePending() {
+				t.Fatalf("unexpected welcome: %v", tt.Texts())
+			}
+			fixtureImage(t, tt, "focused-welcome-"+t.Name()[strings.LastIndex(t.Name(), "/")+1:])
+			clickProjectUI(t, tt, "让 Agent 代我安装")
+			if !tt.HasText("每次要改动前先给你看预览") || tt.HasText("human_steps") {
+				t.Fatal("takeover dialog must show plain language before revealing the prompt")
+			}
+			clickProjectUI(t, tt, "查看完整指令")
+			if !tt.HasText("human_steps") {
+				t.Fatal("full takeover prompt not visible")
+			}
+			tt.Key(0, ui.KeyEscape)
+			if a.onboarding.takeover || a.onboardingPage() != onboardingWelcome {
+				t.Fatal("Escape failed to dismiss takeover")
+			}
+			clickProjectUI(t, tt, "让 Agent 代我安装")
+			clickProjectUI(t, tt, "复制指令")
+			expected := agentTakeoverFreshInstallPrompt([]string{"trae_ide", "pi"})
+			if tt.Clipboard() != expected || a.onboarding.takeover {
+				t.Fatal("copy did not include both detected Agents")
+			}
+			clickProjectUI(t, tt, "开始设置")
+			first, ok1 := tt.Find("选择 TRAE CN")
+			second, ok2 := tt.Find("选择 pi")
+			if !ok1 || !ok2 || first.Y != second.Y || second.X <= first.X || tt.HasText("Codex") || tt.HasText("已安装") ||
+				!tt.HasText("也可用于提炼记忆") || !tt.HasText("自动采集与召回") {
+				t.Fatalf("unexpected Agent grid: %v", tt.Texts())
+			}
+			clickProjectUI(t, tt, "查看支持列表")
+			if !tt.HasText("已检测到") || !tt.HasText("Codex") || !tt.HasText("npm i -g @openai/codex") {
+				t.Fatalf("support list incomplete: %v", tt.Texts())
+			}
+			clickProjectUI(t, tt, "复制安装命令 Codex")
+			if tt.Clipboard() != "npm i -g @openai/codex" {
+				t.Fatal("support list did not copy install command")
+			}
+			tt.Key(0, ui.KeyEscape)
+			s.Hosts[0].Detected, s.Hosts[1].Detected = false, false
+			tt.Frame()
+			if !tt.HasText("还没有检测到支持的 Agent") || !tt.HasText("Memlane 支持的 Agent") || !tt.HasText("先跳过，继续准备环境") {
+				t.Fatalf("zero detected state is incomplete: %v", tt.Texts())
+			}
+			clickProjectUI(t, tt, "上一步")
+			if tt.HasText("让 Agent 代我安装") {
+				t.Fatal("takeover shown without a detected Agent")
+			}
+		})
 	}
 }
 
@@ -167,57 +159,38 @@ func TestBeta3EnvironmentTechnicalDisclosureAndProgress(t *testing.T) {
 	s := &a.environment
 	s.Plan.Items[4].Requirement.Version = "BAAI/bge-small-zh-v1.5"
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"本地记忆引擎", "本地语义搜索模型", "Agent 接入组件", environmentSafetyPromise} {
+	for _, label := range []string{"隔离运行环境", "本地记忆引擎", "本地语义搜索模型", "Agent 接入组件", "启动本地记忆服务"} {
 		if !tt.HasText(label) {
-			t.Errorf("missing capability or safety promise %q", label)
+			t.Errorf("missing capability %q", label)
 		}
 	}
-	for _, label := range []string{"uv", "3.12.12", "Cognee", "BAAI/bge-small-zh-v1.5", "知识"} {
-		if tt.HasText(label) {
-			t.Errorf("plain-language view exposed %q", label)
-		}
+	if tt.HasText("BAAI/bge-small-zh-v1.5") {
+		t.Fatal("technical detail shown before disclosure")
 	}
 	tt.Advance(700 * time.Millisecond)
 	fixtureImage(t, tt, "beta3-setup-environment")
-	clickProjectUI(t, tt, "查看技术明细 (6 项)")
-	for _, label := range []string{"uv", "3.12.12", "Cognee", "BAAI/bge-small-zh-v1.5", "LanceDB", "Agent 插件", "SHA-256 fixed", "指定已有环境", "复制安装命令"} {
-		if !tt.HasText(label) {
-			t.Errorf("missing technical detail %q", label)
-		}
+	clickProjectUI(t, tt, "技术清单（版本、校验值与安装位置）")
+	if !tt.HasText("BAAI/bge-small-zh-v1.5") {
+		t.Fatal("technical disclosure omitted model version")
 	}
-	clickProjectUI(t, tt, "收起技术明细")
-	clickProjectUI(t, tt, "安装并继续")
-	if !tt.HasText("查看技术清单") || !tt.HasText("预计下载 60.0 MiB") || tt.HasText("uv · 0.12.3") || s.Busy {
-		t.Fatal("review did not lead with estimates and expandable scope")
-	}
-	clickProjectUI(t, tt, "查看技术清单")
-	if !tt.HasText("uv · 0.12.3") || !tt.HasText("SHA-256 fixed") || s.Busy {
-		t.Fatal("expanding the approved scope hid details or started installation")
-	}
-	clickProjectUI(t, tt, "暂不安装")
-
+	clickProjectUI(t, tt, "技术清单（版本、校验值与安装位置）")
 	s.Busy = true
 	s.Progress = bootstrap.InstallProgress{
 		Component: "embedding", Stage: "downloading", BytesDone: 42 << 20, BytesTotal: 96 << 20,
 		BytesPerSec: 12.4 * (1 << 20), Mirror: "mirror.example.test", FallbackAttempt: 2, FallbackTotal: 3, Elapsed: 68 * time.Second,
 	}
 	tt.Frame()
-	for _, label := range []string{"正在下载 · 本地语义搜索模型", "进度 44%", "42.0 / 96.0 MiB", "12.4 MiB/s", "来源：mirror.example.test", "已自动切换备用镜像（第 2/3 个）", "已用时 1m 08s"} {
+	for _, label := range []string{"正在下载", "42.0 / 96.0 MiB", "12.4 MiB/s", "mirror.example.test"} {
 		if !tt.HasText(label) {
-			t.Errorf("missing progress metric %q", label)
+			t.Errorf("missing progress metric %q, texts %v", label, tt.Texts())
 		}
 	}
 	fixtureImage(t, tt, "beta3-setup-progress")
 	s.Busy, s.ExternalWorkerActive = false, true
 	s.ExternalWorker = bootstrap.InstallWorkerState{Stage: "downloading", Component: "agent-plugin", Indeterminate: true, BytesDone: 2 << 20, ElapsedMs: 14000, FallbackAttempt: 2, FallbackTotal: 4}
 	tt.Frame()
-	if !tt.HasText("进度未定") || !tt.HasText("命令行安装进行中（只读进度）") || !tt.HasText("已下载 2.0 MiB") ||
-		!tt.HasText("已用时 14s") || !tt.HasText("已自动切换备用镜像（第 2/4 个）") || tt.HasText("停止安装") {
-		t.Fatalf("external indeterminate progress missing: %v", tt.Texts())
-	}
-	clickProjectUI(t, tt, "安装并继续")
-	if s.Review {
-		t.Fatal("opened approval while external worker was active")
+	if !tt.HasText("命令行安装进行中") || tt.HasText("停止") {
+		t.Fatalf("external worker not displayed as read-only: %v", tt.Texts())
 	}
 	a.runEnvironment(true)
 	if s.Busy || !strings.Contains(s.Message, "命令行正在后台安装组件") {
@@ -373,7 +346,7 @@ func TestBeta3StepThreePinsAndPreviewsSelectedAgentsInBothThemes(t *testing.T) {
 				case "/v1/connections/pi/preview":
 					previews.Add(1)
 					json.NewEncoder(w).Encode(controlplane.ConnectionPreview{
-						OK: true, InstanceID: "pi", Kind: "pi", Target: "/test/pi/settings.json", ProposedSHA256: "reviewed", Revision: 8,
+						OK: true, InstanceID: "pi", Kind: "pi", Target: "/test/pi/settings.json", Status: "not_connected", ProposedSHA256: "reviewed", Revision: 8,
 					})
 				default:
 					t.Errorf("unexpected request %s", r.URL.Path)
@@ -384,12 +357,9 @@ func TestBeta3StepThreePinsAndPreviewsSelectedAgentsInBothThemes(t *testing.T) {
 			tt := ui.NewTester(a.View, 1200, 820)
 			tt.SetDark(theme.dark)
 			tt.Advance(700 * time.Millisecond)
-			pi, piOK := tt.Find("pi 版本：1.0.0")
-			codex, codexOK := tt.Find("Codex 版本：2.0.0")
-			if !piOK || !codexOK || pi.Y >= codex.Y || !tt.HasText("已选") ||
-				!tt.HasText("一键确认接入") || !tt.HasText("Agent 接入") || !tt.HasText("记忆提炼") ||
-				!tt.HasText("启用并完成") || previews.Load() != 1 || mutations.Load() != 0 {
-				t.Fatalf("invalid step 3 (%s): pi=%+v (%v), Codex=%+v (%v), previews=%d, mutations=%d, texts=%v", theme.name, pi, piOK, codex, codexOK, previews.Load(), mutations.Load(), tt.Texts())
+			if !tt.HasText("/test/pi/settings.json") || tt.HasText("Codex") ||
+				!tt.HasText("全部接入（1）") || previews.Load() != 1 || mutations.Load() != 0 {
+				t.Fatalf("invalid step 3 (%s): previews=%d, mutations=%d, texts=%v", theme.name, previews.Load(), mutations.Load(), tt.Texts())
 			}
 			fixtureImage(t, tt, "beta3-setup-connect-"+theme.name)
 		})
