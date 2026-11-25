@@ -1,89 +1,84 @@
-/** Managed pi lifecycle adapter; no SDK, MCP server or transcript scanning. */
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+/** Managed pi lifecycle adapter. */
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { registerTools, type MemoryCall } from "./tools.js";
 
 const customType = "memlane-cognee-context";
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const binding = JSON.parse(readFileSync(resolve(root, "host-binding.json"), "utf8")) as { python: string };
+const processing = () => process.env.MEMLANE_PROCESSING_SESSION === "1";
 const text = (content: unknown): string => typeof content === "string" ? content :
   Array.isArray(content) ? content.filter(b => b?.type === "text").map(b => b.text).join("\n") : "";
-const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const call: MemoryCall = async (path, payload, signal) => {
+  if (processing()) return { status: "skipped_processing_session" };
+  try {
+    let binding: { gateway_url?: string; token_file?: string } = {};
+    const { MEMLANE_GATEWAY_URL, MEMLANE_AGENT_KEY_FILE } = process.env;
+    if (!MEMLANE_GATEWAY_URL || !MEMLANE_AGENT_KEY_FILE) {
+      binding = JSON.parse(readFileSync(new URL("../host-binding.json", import.meta.url), "utf8"));
+    }
+    const url = MEMLANE_GATEWAY_URL || binding.gateway_url || "";
+    const tokenFile = MEMLANE_AGENT_KEY_FILE || binding.token_file;
+    const port = /^http:\/\/(?:127\.0\.0\.1|localhost):([0-9]{1,5})\/?$/.exec(url)?.[1];
+    if (!port || +port < 1 || +port > 65535 || !tokenFile) return { status: "unavailable" };
+    const token = readFileSync(tokenFile, "utf8").trim();
+    if (!token) return { status: "unavailable" };
+    const timeout = AbortSignal.timeout(5000);
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: "POST", redirect: "error", signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      headers: { "Content-Type": "application/json", "X-Api-Key": token }, body: JSON.stringify(payload),
+    });
+    if (res.ok) return await res.json();
+    await res.body?.cancel();
+  } catch {
+    return { status: "unavailable" };
+  }
+  return { status: "unavailable" };
+};
 
 export default function (pi: ExtensionAPI) {
   let prompt = "", turn = "", promptTime = "";
   const inputs = new Map<string, unknown>();
-  const call: MemoryCall = (ctx, operation, payload = {}, signal) => new Promise((done) => {
-    if (process.env.MEMLANE_PROCESSING_SESSION === "1") {
-      done({ status: "skipped_processing_session" }); return;
-    }
-    const child = spawn(binding.python, [resolve(root, "scripts/agent_memory_adapter.py")], {
-      stdio: ["pipe", "pipe", "ignore"],
-      // Use pi's own resolved directory, including its default and overrides.
-      // A helper's HOME alone does not prove which host profile loaded us.
-      env: { ...process.env, PI_CODING_AGENT_DIR: getAgentDir() },
-    });
-    let output = "", finished = false;
-    const finish = (value: Record<string, unknown>) => {
-      if (finished) return;
-      finished = true; clearTimeout(timer); signal?.removeEventListener("abort", abort); done(value);
-    };
-    const abort = () => { child.kill("SIGTERM"); finish({ status: "result_unconfirmed" }); };
-    const timer = setTimeout(abort, 20000);
-    signal?.addEventListener("abort", abort, { once: true });
-    child.on("error", () => finish({ status: "unavailable" }));
-    child.stdin.on("error", () => finish({ status: "result_unconfirmed" }));
-    child.stdout.on("data", chunk => {
-      output += chunk.toString();
-      if (output.length > 128 * 1024) abort();
-    });
-    child.on("close", code => {
-      try { finish(code === 0 ? JSON.parse(output) : { status: "result_unconfirmed" }); }
-      catch { finish({ status: "result_unconfirmed" }); }
-    });
-    child.stdin.end(JSON.stringify({ ...payload, operation, session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd }));
-    if (signal?.aborted) abort();
-  });
-  const reset = async (ctx: ExtensionContext) => {
-    prompt = ""; turn = ""; inputs.clear(); await call(ctx, "resolve");
-  };
-  pi.on("session_start", async (_event, ctx) => reset(ctx));
-  pi.on("before_agent_start", async (event, ctx) => {
-    prompt = event.prompt; turn = randomUUID(); promptTime = new Date().toISOString();
-    await call(ctx, "resolve", { event_id: turn });
+  const reset = () => { prompt = ""; turn = ""; promptTime = ""; inputs.clear(); };
+  pi.on("session_start", async () => reset());
+  pi.on("session_shutdown", async () => reset());
+  pi.on("agent_end", async () => reset());
+  pi.on("before_agent_start", async event => {
+    if (processing()) return;
+    prompt = event.prompt.trim(); turn = randomUUID(); promptTime = new Date().toISOString();
   });
   pi.on("context", async (event, ctx) => {
-    // Remove persisted blocks from this extension before every provider call,
-    // then insert only a fresh, authorized block (including common knowledge).
     const messages = event.messages.filter(m => !(m.role === "custom" && m.customType === customType));
-    const result = await call(ctx, "recall", { query: prompt });
-    if (typeof result.context === "string" && result.context) messages.push({
-      role: "custom", customType, content: result.context, display: false, timestamp: Date.now(),
+    if (!prompt || processing()) return { messages };
+    const session = ctx.sessionManager.getSessionId(), activeTurn = turn;
+    const { hits } = await call("/recall", {
+      workspace: ctx.cwd, session_id: session, query: [...prompt].slice(0, 16000).join(""), channel: "automatic", limit: 10,
     });
+    const content = Array.isArray(hits) && hits.map(hit => [hit?.title, hit?.snippet]
+      .filter(part => typeof part === "string" && part.trim()).map(part => part.trim()).join(": "))
+      .filter(Boolean).map(line => "- " + line).join("\n");
+    if (content && turn === activeTurn && session === ctx.sessionManager.getSessionId()) {
+      messages.push({ role: "custom", customType, content, display: false, timestamp: Date.now() });
+    }
     return { messages };
   });
-  pi.on("message_end", async (event, ctx) => {
-    if (event.message.role !== "assistant" || event.message.stopReason !== "stop" || !turn) return;
-    const answer = text(event.message.content);
+  pi.on("message_end", async ({ message }, ctx) => {
+    if (processing() || message.role !== "assistant" || message.stopReason !== "stop" || !turn || !prompt) return;
+    const answer = text(message.content).trim();
     if (!answer) return;
-    const entry = { type: "qa", question: prompt, answer, prompt_time: promptTime, time: new Date().toISOString() };
-    await call(ctx, "capture", { event_id: turn + ":answer:" + hash(event.message), turn_event_id: turn, entry });
+    await call("/ingest", { kind: "capture_qa", workspace: ctx.cwd, session_id: ctx.sessionManager.getSessionId(),
+      message_id: turn, content: { question: prompt, answer, prompt_time: promptTime, time: new Date().toISOString() } });
   });
-  pi.on("tool_execution_start", async event => { inputs.set(event.toolCallId, event.args); });
+  pi.on("tool_execution_start", async event => {
+    if (!processing()) inputs.set(event.toolCallId, event.args);
+  });
   pi.on("tool_execution_end", async (event, ctx) => {
-    const args = inputs.get(event.toolCallId); inputs.delete(event.toolCallId);
-    // Do not capture this extension's own memory output into itself.
-    if (event.toolName.startsWith("cognee_")) return;
-    await call(ctx, "capture", { event_id: "tool:" + event.toolCallId, turn_event_id: turn, entry: {
-      type: "trace", origin_function: event.toolName, method_params: args ?? {},
-      method_return_value: event.result, status: event.isError ? "error" : "success", time: new Date().toISOString(),
-    } });
+    const args = inputs.get(event.toolCallId);
+    inputs.delete(event.toolCallId);
+    if (processing() || /^(cognee|memlane)_/.test(event.toolName)) return;
+    await call("/ingest", { kind: "capture_trace", workspace: ctx.cwd, session_id: ctx.sessionManager.getSessionId(),
+      message_id: "tool:" + event.toolCallId, content: { origin_function: event.toolName, method_params: args && typeof args === "object" && !Array.isArray(args) ? args : args === undefined ? {} : { input: args },
+        method_return_value: event.result, status: event.isError ? "error" : "success", time: new Date().toISOString() } });
   });
-  pi.on("agent_end", async (_event, ctx) => { await call(ctx, "flush"); });
-  pi.on("session_shutdown", async (_event, ctx) => { await call(ctx, "flush", { final: true }); });
   registerTools(pi, call);
 }
