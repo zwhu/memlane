@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	kitui "github.com/zwhu/memlane/kit/ui"
 )
 
 func TestRawRecordsColdStartAndSessionOpenPerformanceBudget(t *testing.T) {
@@ -395,9 +396,9 @@ func TestRawRecordsLargeDocumentVirtualizationAndPerfBudget(t *testing.T) {
 			}
 
 			a.InvalidateReading("ds-main")
-			if len(a.detailChunks.entries) != 0 || len(s.DetailLists) != 0 {
+			if a.detailChunks.Len() != 0 || len(s.DetailLists) != 0 {
 				t.Fatalf("[%s] InvalidateReading failed to clear chunk cache (%d) or detail lists (%d)",
-					appearance, len(a.detailChunks.entries), len(s.DetailLists))
+					appearance, a.detailChunks.Len(), len(s.DetailLists))
 			}
 		})
 	}
@@ -405,7 +406,7 @@ func TestRawRecordsLargeDocumentVirtualizationAndPerfBudget(t *testing.T) {
 
 func TestDetailChunkCacheHitSessionQATraceAndByteEviction(t *testing.T) {
 	// 1. Direct cache hit & byte-budget eviction (oldest-stamp evicted first, oversize uncached).
-	cache := &detailChunkCache{maxEntries: 16, maxBytes: 300}
+	cache := kitui.NewChunkCacheWithLimits(16, 300)
 	var splits int
 	makeChunk := func(ch string, n int) func() []string {
 		return func() []string {
@@ -413,32 +414,32 @@ func TestDetailChunkCacheHitSessionQATraceAndByteEviction(t *testing.T) {
 			return []string{strings.Repeat(ch, n)}
 		}
 	}
-	c1 := cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
-	c1Again := cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	c1 := cache.GetOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	c1Again := cache.GetOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
 	if splits != 1 || len(c1) != 1 || c1[0] != c1Again[0] {
 		t.Fatalf("expected cache hit with 1 split, got splits=%d", splits)
 	}
 	// Insert s2 (120B, total 240B), then touch s1 so s2 becomes oldest, then insert s3 (120B -> evicts s2).
-	cache.getOrSplit("ds", "id1", "s2", markdownContentKey("b"), makeChunk("b", 120))
-	cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
-	cache.getOrSplit("ds", "id1", "s3", markdownContentKey("c"), makeChunk("c", 120))
-	if cache.totalBytes > cache.maxBytes || len(cache.entries) != 2 {
-		t.Fatalf("byte eviction violated cap: entries=%d totalBytes=%d maxBytes=%d", len(cache.entries), cache.totalBytes, cache.maxBytes)
+	cache.GetOrSplit("ds", "id1", "s2", markdownContentKey("b"), makeChunk("b", 120))
+	cache.GetOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	cache.GetOrSplit("ds", "id1", "s3", markdownContentKey("c"), makeChunk("c", 120))
+	if cache.TotalBytes() > cache.MaxBytes() || cache.Len() != 2 {
+		t.Fatalf("byte eviction violated cap: entries=%d totalBytes=%d maxBytes=%d", cache.Len(), cache.TotalBytes(), cache.MaxBytes())
 	}
 	// s1 should still hit (was refreshed); s2 should have been evicted.
 	before := splits
-	cache.getOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
+	cache.GetOrSplit("ds", "id1", "s1", markdownContentKey("a"), makeChunk("a", 120))
 	if splits != before {
 		t.Fatalf("recently used entry s1 was evicted prematurely (splits %d->%d)", before, splits)
 	}
 	// Oversize entry (> maxBytes) must be returned without exceeding cap or being stored.
-	oversize := cache.getOrSplit("ds", "id1", "big", markdownContentKey("big"), makeChunk("z", 500))
-	if len(oversize) != 1 || len(oversize[0]) != 500 || cache.totalBytes > cache.maxBytes {
-		t.Fatalf("oversize entry broke cache bounds: totalBytes=%d maxBytes=%d", cache.totalBytes, cache.maxBytes)
+	oversize := cache.GetOrSplit("ds", "id1", "big", markdownContentKey("big"), makeChunk("z", 500))
+	if len(oversize) != 1 || len(oversize[0]) != 500 || cache.TotalBytes() > cache.MaxBytes() {
+		t.Fatalf("oversize entry broke cache bounds: totalBytes=%d maxBytes=%d", cache.TotalBytes(), cache.MaxBytes())
 	}
 	cache.InvalidateObject("ds", "id1")
-	if len(cache.entries) != 0 || cache.totalBytes != 0 {
-		t.Fatalf("InvalidateObject left entries=%d totalBytes=%d", len(cache.entries), cache.totalBytes)
+	if cache.Len() != 0 || cache.TotalBytes() != 0 {
+		t.Fatalf("InvalidateObject left entries=%d totalBytes=%d", cache.Len(), cache.TotalBytes())
 	}
 
 	// 2. Session with 12 large QAs (24 slots) + 4 expanded traces fits without thrashing; short QAs stay uncached.
@@ -483,16 +484,16 @@ func TestDetailChunkCacheHitSessionQATraceAndByteEviction(t *testing.T) {
 	if len(rows1) == 0 {
 		t.Fatal("expected session detail rows")
 	}
-	if len(a.detailChunks.entries) != 28 {
-		t.Fatalf("expected 28 cached slots (24 large QA + 4 expanded traces, excluding short QA), got %d", len(a.detailChunks.entries))
+	if a.detailChunks.Len() != 28 {
+		t.Fatalf("expected 28 cached slots (24 large QA + 4 expanded traces, excluding short QA), got %d", a.detailChunks.Len())
 	}
-	clockBefore := a.detailChunks.clock
+	clockBefore := a.detailChunks.Clock()
 	rows2 := buildSessionDetailRows(a, s, item, false)
-	if len(rows2) != len(rows1) || len(a.detailChunks.entries) != 28 {
-		t.Fatalf("second build altered row/cache count: rows %d->%d entries=%d", len(rows1), len(rows2), len(a.detailChunks.entries))
+	if len(rows2) != len(rows1) || a.detailChunks.Len() != 28 {
+		t.Fatalf("second build altered row/cache count: rows %d->%d entries=%d", len(rows1), len(rows2), a.detailChunks.Len())
 	}
-	if a.detailChunks.clock != clockBefore+28 {
-		t.Fatalf("expected 28 pure cache hits advancing clock by 28, got %d->%d", clockBefore, a.detailChunks.clock)
+	if a.detailChunks.Clock() != clockBefore+28 {
+		t.Fatalf("expected 28 pure cache hits advancing clock by 28, got %d->%d", clockBefore, a.detailChunks.Clock())
 	}
 	// Mutating trace Error must invalidate that trace's content key and update output.
 	item.Detail.Traces[0].Error = "trace error changed"

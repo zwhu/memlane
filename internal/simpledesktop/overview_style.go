@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"github.com/egoist/mygo/ui"
+	kitui "github.com/zwhu/memlane/kit/ui"
 )
 
 const (
@@ -27,25 +28,25 @@ var homeIconInk = lightPalette.Text2
 var homeLinkInk = lightPalette.Accent
 var homeBackground = lightPalette.Bg
 
-type homeTextRole uint8
+type homeTextRole = kitui.TextRole
 
 const (
-	homeBody homeTextRole = iota
-	homeBrand
-	homeWelcome
-	homeEyebrow
-	homeStatValue
-	homeStatUnit
-	homeStatLabel
-	homeHeading
-	homePanelHeading
-	homeTitle
-	homeMeta
-	homeAction
-	homeActivityTitle
-	homePath
-	homeTopTitle
-	homeReadableMeta
+	homeBody          = kitui.RoleBody
+	homeBrand         = kitui.RoleBrand
+	homeWelcome       = kitui.RoleWelcome
+	homeEyebrow       = kitui.RoleEyebrow
+	homeStatValue     = kitui.RoleStatValue
+	homeStatUnit      = kitui.RoleStatUnit
+	homeStatLabel     = kitui.RoleStatLabel
+	homeHeading       = kitui.RoleHeading
+	homePanelHeading  = kitui.RolePanelHeading
+	homeTitle         = kitui.RoleTitle
+	homeMeta          = kitui.RoleMeta
+	homeAction        = kitui.RoleAction
+	homeActivityTitle = kitui.RoleActivityTitle
+	homePath          = kitui.RolePath
+	homeTopTitle      = kitui.RoleTopTitle
+	homeReadableMeta  = kitui.RoleReadableMeta
 )
 
 type homeTypography struct {
@@ -59,11 +60,7 @@ var homeType = buildTypography()
 
 func homeText(c *ui.Context, text string, role homeTextRole) ui.Element {
 	t := homeType[role]
-	e := ui.Text(c, text).Font("system-ui").FontSize(t.size).FontWeight(t.weight).TextColor(t.color).LineHeight(t.lineHeight).LetterSpacing(t.tracking)
-	if role == homeStatValue {
-		e.FontFeatures("tnum")
-	}
-	return e
+	return (kitui.Typography{Size: t.size, Weight: t.weight, Color: t.color, LineHeight: t.lineHeight, Tracking: t.tracking}).Render(c, text, role)
 }
 
 // homeTheme and sidebarTheme follow the window appearance; applyAppearance
@@ -72,27 +69,10 @@ var homeTheme = buildHomeTheme(false)
 
 var sidebarTheme = buildSidebarTheme()
 
-func sidebarSelection(item ui.Element, selected bool, indicatorActive bool) ui.Element {
-	item.Cursor(ui.CursorPointer).Font("system-ui").FontSize(fsBody).FontWeight(400).LetterSpacing(0).Radius(radius).TextColor(tok.Text1)
-	v4ButtonPress(item, 0.98)
-	if selected {
-		bg := tok.AccentSoft
-		if indicatorActive {
-			bg = ui.Transparent
-		}
-		item.Background(bg).TextColor(tok.Accent).FontWeight(500)
-	}
-	return item
-}
-
-func homeSVG(paths string) *ui.SVG {
-	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">` + paths + `</svg>`))
-}
-
 var homeDocument = v4IconDoc
 var homeCommon = v4IconCommon
 var homeArrow = v4IconChev
-var homeRefresh = homeSVG(`<path d="M20 9a8 8 0 1 0 0 6M20 3v6h-6"/>`)
+var homeRefresh = kitui.IconRefresh24
 var homeSearch = v4IconSearch
 var homeSettings = v4IconSettings
 
@@ -100,23 +80,22 @@ func homeLink(c *ui.Context, title string, fn func()) ui.Element {
 	return textButton(c, title, fn)
 }
 
+func sidebarSelection(item ui.Element, selected bool, indicatorActive bool) ui.Element {
+	return kitui.SidebarSelection(item, &tok.Tokens, selected, indicatorActive)
+}
+
+func homeSVG(paths string) *ui.SVG {
+	return kitui.HomeSVG(paths)
+}
+
 func homeHoverColor(b ui.Element, key string, normal, hover ui.Color) ui.Color {
-	target := normal
-	if b.Hovered() {
-		target = hover
-	}
-	return b.AnimateColor(key, target, v4Fast)
+	return kitui.HoverColor(b, key, normal, hover)
 }
 
 func homeNavSurface(b ui.Element, active bool) ui.Element {
-	if active {
-		return b.Background(tok.AccentSoft)
-	}
-	return b.Background(homeHoverColor(b, "nav-surface", ui.Transparent, tok.Hover))
+	return kitui.NavSurface(b, &tok.Tokens, active)
 }
 
 func homeIconButton(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
-	b := ui.Button(c, "").Cursor(ui.CursorPointer).Label(label).Tooltip(label).Radius(radius).Children(func() { ui.Icon(c, icon).FontSize(14).TextColor(tok.Text2) }).OnClick(fn)
-	v4ButtonPress(b, 0.96)
-	return b
+	return kitui.IconButton(c, &tok.Tokens, label, icon, fn)
 }

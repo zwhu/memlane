@@ -2838,9 +2838,8 @@ def main():
             for line, code, message in check_source(path.read_text(encoding='utf-8'), path):
                 print('{}:{}: {} {}'.format(path.relative_to(ROOT), line, code, message))
                 failures += 1
-    go_dir = ROOT / 'internal/simpledesktop'
-    if go_dir.is_dir():
-        for path in sorted(go_dir.glob('*.go')):
+    for go_dir in (ROOT / 'internal/simpledesktop', ROOT / 'kit/ui'):
+        for path in sorted(go_dir.rglob('*.go')):
             if path.name.endswith('_test.go'):
                 continue
             for line, code, message in check_go_source(path.read_text(encoding='utf-8'), path):

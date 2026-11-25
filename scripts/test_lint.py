@@ -552,6 +552,38 @@ def unrelated(env):
                 bad_go.write_text('package simpledesktop\n')
                 self.assertFalse(lint.main())
 
+    def test_main_checks_kit_ui_performance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'engine/python').mkdir(parents=True)
+            ui_dir = root / 'kit/ui'
+            nested_dir = ui_dir / 'nested'
+            nested_dir.mkdir(parents=True)
+            bad_sources = {
+                ui_dir / 'controls.go': (
+                    'func f(c *mygoui.Context) { c.AnimationFrame() }\n'
+                    'func poll(c *mygoui.Context) { c.After(time.Millisecond, callback) }\n'
+                ),
+                ui_dir / 'motion_tokens.go': 'func spin(c *mygoui.Context) { c.AnimationFrame() }\n',
+                nested_dir / 'draw.go': (
+                    'func f(el mygoui.Element) { el.Draw(func(p *mygoui.Painter, r mygoui.Rect) { time.Sleep(1) }) }\n'
+                ),
+            }
+            for path, source in bad_sources.items():
+                path.write_text('package ui\n' + source)
+            (ui_dir / 'ui_test.go').write_text('package ui\n' + bad_sources[ui_dir / 'controls.go'])
+            output = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main())
+            for diagnostic in (
+                'kit/ui/controls.go:2: ML008',
+                'kit/ui/controls.go:3: ML009',
+                'kit/ui/motion_tokens.go:2: ML008',
+                'kit/ui/nested/draw.go:2: ML010',
+            ):
+                self.assertIn(diagnostic, output.getvalue())
+            self.assertNotIn('kit/ui/ui_test.go', output.getvalue())
+
     def test_hardened_ml013_to_ml017_coverage(self):
         self.assertIn('ML013', self.codes("import asyncio\nasync def loop():\n    while 1:\n        await asyncio.sleep(delay=1)"))
         self.assertIn('ML013', self.codes("import asyncio\nPOLL = 0.5\nasync def loop():\n    while True:\n        await asyncio.sleep(POLL)"))

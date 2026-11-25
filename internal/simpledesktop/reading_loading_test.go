@@ -802,7 +802,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	for _, item := range []Item{first, second} {
 		a.titles.cache[readingKey{Dataset: item.Dataset, ID: item.ID}] = readingCacheEntry{item: item}
 		a.titles.bytes += len(item.Body)
-		a.detailChunks.getOrSplit(item.Dataset, item.ID, "body", detailContentKey{}, func() []string { return []string{item.Body} })
+		a.detailChunks.GetOrSplit(item.Dataset, item.ID, "body", detailContentKey{}, func() []string { return []string{item.Body} })
 	}
 	ev1 := overviewEvent{Key: "first", Record: activityRow{Dataset: first.Dataset}}
 	ev2 := overviewEvent{Key: "second", Record: activityRow{Dataset: second.Dataset}}
@@ -847,7 +847,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 		t.Fatal("scoped invalidation changed unrelated search/graph content or left graphLoading stuck")
 	}
 	if len(a.titles.cache) != 1 || a.titles.cache[readingKey{Dataset: second.Dataset, ID: second.ID}].item.Body != second.Body ||
-		len(a.detailChunks.entries) != 1 || a.detailChunks.entries[0].dataset != second.Dataset ||
+		a.detailChunks.Len() != 1 || !a.detailChunks.HasDataset(second.Dataset) ||
 		a.recentScope != "" || a.recentCancel != nil || a.recentRequest != 1 || len(a.recent) != 1 {
 		t.Fatal("scoped invalidation did not preserve unrelated cached reading state")
 	}
@@ -904,7 +904,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	if a.commonEdit.Open || a.commonEdit.Existing != nil || a.userProfiles.Body != "" || a.userProfiles.ReadGeneration != 2 ||
 		a.searchOrigin != nil || a.searchAnchor != nil || a.searchPane != nil || a.searchUI.Rows != nil ||
 		a.graph.epoch != 1 || a.graphSelection != "" || a.graphLoading || a.graphLoadRequest != 2 ||
-		len(a.titles.cache) != 0 || len(a.detailChunks.entries) != 0 || a.recent != nil || a.recentRequest != 2 {
+		len(a.titles.cache) != 0 || a.detailChunks.Len() != 0 || a.recent != nil || a.recentRequest != 2 {
 		t.Fatal("global invalidation retained controller state")
 	}
 	if p1.request != 2 || p1.readRequest != 2 || p1.titleRequest != 2 ||
