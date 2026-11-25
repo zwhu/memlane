@@ -17,6 +17,7 @@ type dayBucket struct {
 }
 
 type overviewSnapshot struct {
+	Generation       int64                `json:"generation"`
 	LocalTZName      string               `json:"local_tz_name"`
 	TotalKnowledge   int                  `json:"total_knowledge_count"`
 	TotalRaw         int                  `json:"total_raw_count"`
@@ -56,7 +57,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	recent := parseLimit(q.Get("recent_limit"), 20, 50)
 	recall := parseLimit(q.Get("recall_limit"), 20, 50)
 	now := time.Now()
-	out := overviewSnapshot{LocalTZName: localZone(now), Searches: s.searches.recent(parseLimit(q.Get("search_limit"), 20, 50))}
+	out := overviewSnapshot{Generation: catalogGeneration, LocalTZName: localZone(now), Searches: s.searches.recent(parseLimit(q.Get("search_limit"), 20, 50))}
 	err := snapshot(ctx, s.cfg.Store, func(tx *sql.Tx) error {
 		refs, err := datasetRefs(ctx, tx, readingIdentity(r))
 		if err != nil {
@@ -224,4 +225,63 @@ func (s *Server) overviewDay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.knowledgePage(w, r, "knowledge", day)
+}
+
+func (s *Server) recallEvents(w http.ResponseWriter, r *http.Request) {
+	var out overviewSnapshot
+	ctx := r.Context()
+	err := snapshot(ctx, s.cfg.Store, func(tx *sql.Tx) error {
+		return out.loadRecall(ctx, tx, parseLimit(r.URL.Query().Get("limit"), 20, 100))
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": out.RecallEvents, "more": out.RecallEventsMore})
+}
+
+func (s *Server) knowledgeRecalls(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	dataset, doc := q.Get("dataset_id"), q.Get("document_id")
+	if err := s.managedDataset(ctx, dataset); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	type count struct {
+		DocumentID string `json:"document_id"`
+		Count      int64  `json:"count"`
+		Last       string `json:"last_recalled_at"`
+	}
+	var since string
+	var items []count
+	err := snapshot(ctx, s.cfg.Store, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MIN(received_at),'') FROM recall_events`).Scan(&since); err != nil {
+			return err
+		}
+		var err error
+		items, err = readRows(ctx, tx, `SELECT document_id,total_hits,COALESCE(last_recalled_at,'') FROM recall_doc_counts
+   WHERE dataset_id=? AND (?='' OR document_id=?) ORDER BY document_id`, []any{dataset, doc, doc}, func(row rowScanner) (count, error) {
+			var c count
+			err := row.Scan(&c.DocumentID, &c.Count, &c.Last)
+			return c, err
+		})
+		return err
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if r.Pattern == "GET /v1/knowledge/recall-counts" {
+		writeJSON(w, 200, map[string]any{"started_at": since, "items": items})
+		return
+	}
+	result := count{DocumentID: doc}
+	if len(items) == 1 {
+		result = items[0]
+	}
+	writeJSON(w, 200, struct {
+		count
+		StartedAt string `json:"started_at"`
+	}{result, since})
 }

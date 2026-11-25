@@ -1,6 +1,11 @@
 package settings
 
-import "github.com/zwhu/memlane/internal/bootstrap"
+import (
+	"encoding/json"
+
+	"github.com/zwhu/memlane/app/api"
+	"github.com/zwhu/memlane/internal/bootstrap"
+)
 
 type GenerationRef struct {
 	ID       string `json:"id"`
@@ -8,16 +13,17 @@ type GenerationRef struct {
 }
 
 type GenerationProfile struct {
-	Mode                 string   `json:"mode"`
-	Provider             string   `json:"provider,omitempty"`
-	BridgeKind           string   `json:"bridge_kind,omitempty"`
-	BridgeProvider       string   `json:"bridge_provider,omitempty"`
-	Model                string   `json:"model"`
-	Endpoint             string   `json:"endpoint,omitempty"`
-	Temperature          *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens      *int     `json:"max_output_tokens,omitempty"`
-	CredentialVersion    string   `json:"credential_version,omitempty"`
-	CredentialConfigured bool     `json:"credential_configured,omitempty"`
+	Mode                  string   `json:"mode"`
+	Provider              string   `json:"provider,omitempty"`
+	BridgeKind            string   `json:"bridge_kind,omitempty"`
+	BridgeProvider        string   `json:"bridge_provider,omitempty"`
+	Model                 string   `json:"model"`
+	Endpoint              string   `json:"endpoint,omitempty"`
+	Temperature           *float64 `json:"temperature,omitempty"`
+	MaxConcurrentRequests *int     `json:"max_concurrent_requests,omitempty"`
+	MaxOutputTokens       *int     `json:"max_output_tokens,omitempty"`
+	CredentialVersion     string   `json:"credential_version,omitempty"`
+	CredentialConfigured  bool     `json:"credential_configured,omitempty"`
 }
 
 type GenerationRow struct {
@@ -62,6 +68,8 @@ type AgentModelDefaults struct {
 }
 
 type GenerationDirectory struct {
+	OutputLanguage         string                        `json:"output_language"`
+	ModelStatus            *api.ModelStatus              `json:"model_status"`
 	DetectedProcessingCLIs []string                      `json:"detected_processing_clis,omitempty"`
 	AgentDefaults          map[string]AgentModelDefaults `json:"agent_defaults"`
 	AgentBridges           map[string]GenerationProfile  `json:"agent_bridges"`
@@ -74,6 +82,57 @@ type GenerationDirectory struct {
 	Validations      map[string]GenerationValidation `json:"validations"`
 	NextError        string                          `json:"next_error"`
 	StartupError     string                          `json:"startup_error"`
+}
+
+func (g *GenerationDirectory) UnmarshalJSON(data []byte) error {
+	type desktopDirectory GenerationDirectory
+	var envelope struct {
+		*desktopDirectory
+		State    *api.GenerationState `json:"state"`
+		Profiles json.RawMessage      `json:"profiles"`
+	}
+	var result GenerationDirectory
+	envelope.desktopDirectory = (*desktopDirectory)(&result)
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if envelope.State == nil {
+		if len(envelope.Profiles) > 0 {
+			if err := json.Unmarshal(envelope.Profiles, &result.Profiles); err != nil {
+				return err
+			}
+		}
+	} else {
+		var profiles []struct {
+			GenerationProfile
+			ProfileID string `json:"profile_id"`
+			Revision  int64  `json:"revision"`
+			Digest    string `json:"digest"`
+			Removed   bool   `json:"removed"`
+		}
+		if err := json.Unmarshal(envelope.Profiles, &profiles); err != nil {
+			return err
+		}
+		result.Profiles = make(map[string][]GenerationRow)
+		for _, p := range profiles {
+			if !p.Removed {
+				result.Profiles[p.ProfileID] = append(result.Profiles[p.ProfileID], GenerationRow{p.Revision, p.Digest, p.GenerationProfile})
+			}
+		}
+		state := envelope.State
+		result.Revision, result.StartupError = int64(state.Revision), state.StartupError
+		if state.ActiveProfileID != "" && state.ActiveRevision > 0 {
+			result.Active = &GenerationRef{state.ActiveProfileID, int64(state.ActiveRevision)}
+		}
+		if state.NextProfileID != "" && state.NextRevision > 0 {
+			result.Next = &GenerationRef{state.NextProfileID, int64(state.NextRevision)}
+		}
+		if result.OutputLanguage == "" && result.ModelStatus != nil {
+			result.OutputLanguage = result.ModelStatus.OutputLanguage
+		}
+	}
+	*g = result
+	return nil
 }
 
 func isProcessingCLIKind(kind string) bool {

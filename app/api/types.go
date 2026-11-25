@@ -91,14 +91,16 @@ type ACLOverride struct {
 
 type ProjectView struct {
 	ProjectSummary
-	ID            string        `json:"id"`
-	DatasetName   string        `json:"dataset_name"`
-	CodeDatasetID string        `json:"code_dataset_id"`
-	CodeEnabled   bool          `json:"code_enabled"`
-	Status        string        `json:"status"`
-	Aliases       []string      `json:"aliases"`
-	Overrides     []ACLOverride `json:"overrides"`
-	Inbox         InboxSummary  `json:"inbox"`
+	ID              string                 `json:"id"`
+	DatasetName     string                 `json:"dataset_name"`
+	CodeDatasetID   string                 `json:"code_dataset_id"`
+	CodeEnabled     bool                   `json:"code_enabled"`
+	Status          string                 `json:"status"`
+	Aliases         []string               `json:"aliases"`
+	Overrides       map[string]ACLOverride `json:"overrides"`
+	Inbox           InboxSummary           `json:"inbox"`
+	DesiredRevision int64                  `json:"desired_revision"`
+	Applied         map[string]AppliedACL  `json:"applied"`
 }
 
 type CreateProjectRequest struct {
@@ -123,8 +125,21 @@ type UpdateProjectRequest struct {
 	CodeDatasetID *string   `json:"code_dataset_id,omitempty"`
 }
 
+type ProjectPolicy struct {
+	Access      AccessLevel `json:"access"`
+	Capture     bool        `json:"capture"`
+	AutoProcess bool        `json:"auto_process"`
+}
+type AppliedACL struct {
+	Status   string `json:"status"`
+	Revision int64  `json:"revision"`
+}
 type ListProjectsResponse struct {
 	Projects []ProjectView `json:"projects"`
+	Agents   []AgentView   `json:"agents"`
+	Common   *ProjectView  `json:"common"`
+	Revision int64         `json:"revision"`
+	Defaults ProjectPolicy `json:"defaults"`
 }
 
 type RetryProjectResponse struct {
@@ -143,6 +158,7 @@ type DayBucket struct {
 }
 
 type OverviewSnapshot struct {
+	Generation       int64                `json:"generation"`
 	LocalTZName      string               `json:"local_tz_name"`
 	TotalKnowledge   int                  `json:"total_knowledge_count"`
 	TotalRaw         int                  `json:"total_raw_count"`

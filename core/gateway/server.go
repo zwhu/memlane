@@ -141,6 +141,7 @@ func (s *Server) routes() http.Handler {
 	both("GET", "/overview/bootstrap", s.overview)
 	both("GET", "/overview/day", s.overviewDay)
 	both("GET", "/projects", s.listProjects)
+	both("PUT", "/defaults", s.updateDefaults)
 	both("POST", "/projects", s.createProject)
 	both("GET", "/projects/{id}", s.getProject)
 	both("PATCH", "/projects/{id}", s.updateProject)
@@ -154,6 +155,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /v1/projects/{id}/overrides", s.projectACL)
 	mux.HandleFunc("DELETE /api/projects/{id}/acl/{agent_id}", s.projectACL)
 	mux.HandleFunc("GET /api/knowledge", s.knowledge)
+	mux.HandleFunc("GET /v1/knowledge/recall-events", s.recallEvents)
+	mux.HandleFunc("GET /v1/knowledge/recalls", s.knowledgeRecalls)
+	mux.HandleFunc("GET /v1/knowledge/recall-counts", s.knowledgeRecalls)
 	both("GET", "/projects/{id}/knowledge", s.knowledge)
 	mux.HandleFunc("GET /api/knowledge/{ds}/{doc}", s.document)
 	mux.HandleFunc("GET /api/knowledge/{ds}/{doc}/body", s.document)
@@ -187,9 +191,15 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/generation/profiles/{id}/delete", s.removeProfile)
 	mux.HandleFunc("POST /api/generation/validate", s.validateProfile)
 	mux.HandleFunc("POST /v1/generation/validations", s.validateProfile)
+	mux.HandleFunc("GET /v1/generation/validations/{op}", s.generationValidation)
+	mux.HandleFunc("GET /v1/generation/operations/{op}", s.generationOperation)
+	mux.HandleFunc("GET /v1/generation/handoffs", s.serveHandoffs)
+	mux.HandleFunc("GET /v1/generation/handoffs/{op}", s.serveHandoffs)
+	mux.HandleFunc("POST /v1/generation/handoffs", s.activateProfile)
 	mux.HandleFunc("POST /api/generation/activate", s.activateProfile)
 	both("PUT", "/generation/next", s.activateProfile)
 	both("GET", "/agents", s.listAgents)
+	both("GET", "/connections", s.listConnections)
 	both("POST", "/agents", s.connectAgent)
 	both("POST", "/agents/{id}/retire", s.retireAgent)
 	mux.HandleFunc("GET /api/agents/conflicts", s.agentConflicts)
@@ -426,4 +436,12 @@ func (s *Server) shutdown(ctx context.Context, l *loopback) error {
 	s.listener = nil
 	s.mu.Unlock()
 	return l.err
+}
+
+// SyncCatalog projects the official catalog before the gateway starts serving.
+func (s *Server) SyncCatalog(ctx context.Context) (*engine.SyncStats, error) {
+	if s.cfg.Projector == nil {
+		return &engine.SyncStats{}, nil
+	}
+	return s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
 }

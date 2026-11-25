@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -175,12 +177,25 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		if err != nil {
 			return fmt.Errorf("completion token: %w", err)
 		}
+	} else {
+		dir, tempErr := os.MkdirTemp("", "memlane-completion-")
+		if tempErr != nil {
+			return tempErr
+		}
+		defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
+		var secret [32]byte
+		if _, err := rand.Read(secret[:]); err != nil {
+			return err
+		}
+		completionToken = hex.EncodeToString(secret[:])
+		cfg.CompletionTokenFile = filepath.Join(dir, "completion.token")
+		if err := os.WriteFile(cfg.CompletionTokenFile, []byte(completionToken), 0o600); err != nil {
+			return err
+		}
 	}
 	stackCfg := StackConfig{ManagementToken: management, CompletionToken: completionToken,
-		BridgeTokenFile: cfg.CompletionTokenFile, OutputLanguage: cfg.OutputLanguage}
-	if cfg.CompletionTokenFile != "" {
-		stackCfg.BridgeEndpoint = cfg.GatewayURL
-	}
+		BridgeTokenFile: cfg.CompletionTokenFile, OutputLanguage: cfg.OutputLanguage,
+		BridgeEndpoint: strings.TrimRight(cfg.GatewayURL, "/") + "/v1"}
 	if resources := os.Getenv("MEMLANE_RUNTIME_RESOURCES"); resources != "" {
 		if !filepath.IsAbs(resources) {
 			return errors.New("runtime resource directory must be absolute")
@@ -214,10 +229,9 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		specs = append(specs, spec)
 	}
 	stackCfg.Engine = cognee.Config{Endpoint: cfg.EngineURL, TokenFile: cfg.EngineTokenFile,
-		StorePath: cfg.OfficialData, PythonBin: cfg.Python, WorkDir: cfg.EngineWorkDir}
+		StorePath: firstNonempty(cfg.OfficialData, cfg.StoreRoot), PythonBin: cfg.Python, WorkDir: cfg.EngineWorkDir}
 	endpoints := []string{cfg.GatewayURL}
 	if !attach {
-		stackCfg.Engine.StorePath = firstNonempty(cfg.OfficialData, cfg.StoreRoot)
 		endpoints = append(endpoints, cfg.EngineURL)
 	}
 	daemonConfig, err := daemonOwnerConfig(cfg, endpoints)
@@ -256,6 +270,10 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		defer cancel()
 		err = errors.Join(err, stack.Gateway.Shutdown(stop), stack.Profiles.Close(stop))
 	}()
+	if err := prepareGatewayStartup(ctx, stack.Gateway); err != nil {
+		return err
+	}
+
 	address, err := loopbackAddress(cfg.GatewayURL)
 	if err != nil {
 		return err
@@ -264,6 +282,22 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		return err
 	}
 	return stack.Gateway.ListenAndServeLoopback(ctx, address)
+}
+
+func prepareGatewayStartup(ctx context.Context, server *gateway.Server) error {
+	if err := server.ApplyActiveGeneration(ctx); err != nil {
+		log.Printf("generation startup: %s", err)
+	}
+	started := time.Now()
+	stats, err := server.SyncCatalog(ctx)
+	if errors.Is(err, os.ErrNotExist) {
+		stats = &engine.SyncStats{}
+	} else if err != nil {
+		return errors.New("initial catalog projection failed")
+	}
+	log.Printf("catalog startup: datasets=%d docs=%d sessions=%d duration=%s",
+		stats.Datasets, stats.DocsProjected, stats.SessionsProjected, time.Since(started).Round(time.Millisecond))
+	return nil
 }
 
 // daemonOwnerConfig keeps first-install owners visible to bootstrap across process boundaries.
@@ -391,6 +425,9 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		raw[key] = encoded
 	}
 	delete(raw, "port")
+	// The Go store owns startup generation. Applying in the child would reuse
+	// the same operation ID before the migrated profile and bridge are available.
+	delete(raw, "generation_config")
 	out, err := json.Marshal(raw)
 	if err != nil {
 		return fail(err)

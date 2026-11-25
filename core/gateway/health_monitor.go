@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zwhu/memlane/core/engine"
+	daemonkit "github.com/zwhu/memlane/kit/daemon"
 )
 
 type engineHealth struct {
@@ -66,5 +67,39 @@ func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.DaemonStatus != nil {
 		maps.Copy(daemon, s.cfg.DaemonStatus(ctx))
 	}
-	writeJSON(w, 200, map[string]any{"daemon": daemon, "engine": s.engineHealth(ctx), "inbox": inbox})
+	started := time.Now()
+	health := s.engineHealth(ctx)
+	latency := float64(time.Since(started).Microseconds()) / 1000
+	state := "degraded"
+	var lastOK float64
+	checked := float64(time.Now().UnixMilli()) / 1000
+	if health.OK {
+		state, lastOK = "ready", checked
+	}
+	processes := map[string]any{"control": map[string]any{"pid": os.Getpid(), "alive": true}}
+	if services, ok := daemon["services"].([]daemonkit.ServiceStatus); ok {
+		for _, service := range services {
+			if service.Role != "cognee-engine" {
+				continue
+			}
+			alive := service.ExitedAt == nil
+			processes["official"] = map[string]any{"pid": service.PID, "alive": alive}
+			if !alive {
+				state = "exited"
+			}
+		}
+	}
+	owner := daemon["owner_pid"]
+	if owner == nil {
+		owner = os.Getpid()
+	}
+	var projects int
+	if err := s.cfg.Store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM projects").Scan(&projects); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"daemon": daemon, "engine": health, "inbox": inbox,
+		"state": state, "owner_pid": owner, "owner_phase": daemon["phase"], "processes": processes,
+		"checked_at": checked, "last_ok_at": lastOK, "latency_ms": latency, "last_error": health.Error,
+		"summary": map[string]any{"projects_count": projects}})
 }

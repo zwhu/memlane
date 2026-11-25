@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ from fastapi import FastAPI
 import uvicorn
 from engines.cognee.engine_api import install_engine_api
 from engines.cognee.handoff import ModelHandoffController
+from engines.cognee.runner import SetupOnlyMiddleware
 
 class Backend:
     def __init__(self):
@@ -46,6 +48,7 @@ class Backend:
         return {'entry_id': doc, 'document_id': doc}
 
     async def extract(self, payload):
+        assert handoff.status_reads > 0
         for doc in payload.doc_ids:
             self.items[payload.scope.dataset_id][doc]['ready'] = True
         return {'touched_doc_ids': payload.doc_ids}
@@ -70,8 +73,23 @@ class Backend:
     async def graph(self, dataset_id, filter_text):
         return {'nodes': [], 'edges': []}
 
-handoff = ModelHandoffController(background=lambda: [])
-handoff.mode, handoff.active_digest = 'ready', 'e2e-engine-digest'
+class HarnessHandoff(ModelHandoffController):
+    status_reads = 0
+
+    def status(self):
+        self.status_reads += 1
+        return super().status()
+
+    async def apply(self, operation_id, generation_config, *, output_language=None):
+        key = generation_config.get('api_key', '')
+        assert len(key) == 64 and all(c in '0123456789abcdef' for c in key)
+        assert generation_config['endpoint'] == sys.argv[3] + '/v1'
+        assert 'temperature' not in generation_config
+        assert 'max_output_tokens' not in generation_config
+        assert output_language == 'zh-CN' and operation_id == 'startup'
+        return await super().apply(operation_id, generation_config, output_language=output_language)
+
+handoff = HarnessHandoff(background=lambda: [], factory=lambda env: env)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -81,6 +99,7 @@ async def lifespan(app):
         await handoff.close()
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(SetupOnlyMiddleware, is_setup_only=lambda: handoff.mode == 'setup_ready')
 install_engine_api(app, handoff=handoff, store_path=sys.argv[2], token_file=sys.argv[1], backend=Backend())
 uvicorn.run(app, fd=3, access_log=False, log_level='warning')
 `
@@ -100,25 +119,91 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		require(t, err)
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	engineURL, engineKey := launchPythonHarness(t, ctx, client, python, root)
-	storage := t.TempDir()
-	db, err := domain.OpenStore(filepath.Join(storage, "memlane.sqlite3"))
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	require(t, err)
-	t.Cleanup(func() { require(t, db.Close()) })
+	base := "http://" + listener.Addr().String()
+	require(t, listener.Close())
+	engineURL, engineKey := launchPythonHarness(t, ctx, client, python, root, base)
+	storage := t.TempDir()
+	official := filepath.Join(storage, "official-store")
+	const dataset = "11111111-1111-4111-8111-111111111111"
+	workspace := t.TempDir()
+	seedOfficialCatalog(t, official, dataset)
+	registry, err := json.Marshal(map[string]any{"schema_version": 2, "projects": map[string]any{
+		"project": map[string]any{"name": "Live Project", "dataset_id": dataset, "aliases": []string{workspace}, "auto_capture": true},
+	}})
+	require(t, err)
+	require(t, os.WriteFile(filepath.Join(storage, "project-registry.json"), registry, 0o600))
+	require(t, os.WriteFile(filepath.Join(storage, "generation.json"), []byte(`{
+  "schema_version":2,"revision":3,"active":{"id":"bridge","revision":1},"startup_error":"old_failure",
+  "profiles":{"bridge":[{"revision":1,"digest":"legacy-digest","profile":{"mode":"agent_bridge","bridge_kind":"codex",
+   "model":"test-model"}}]}
+ }`), 0o600))
 	const management = "management-token-for-loopback-e2e"
 	const agentKey = "private-agent-token-for-loopback-e2e"
 	agentFile := filepath.Join(storage, "agent.key")
+	managementFile := filepath.Join(storage, "management.key")
 	require(t, os.WriteFile(agentFile, []byte(agentKey+"\n"), 0o600))
-	stack, err := MountGatewayStack(StackConfig{Store: db, Engine: cognee.Config{Endpoint: engineURL, TokenFile: engineKey}, ManagementToken: management})
+	require(t, os.WriteFile(managementFile, []byte(management+"\n"), 0o600))
+	rawEngineKey, err := os.ReadFile(engineKey)
 	require(t, err)
-	t.Cleanup(func() {
-		stop, done := context.WithTimeout(context.Background(), 5*time.Second)
-		defer done()
-		require(t, errors.Join(stack.Gateway.Shutdown(stop), stack.Profiles.Close(stop)))
-	})
-	addr, err := stack.Gateway.StartLoopback("127.0.0.1:0")
+	internal := func(method, path string, payload any, status int) map[string]any {
+		return liveRequest(t, ctx, client, engineURL, method, "/internal/v1"+path, "Authorization", "Bearer "+strings.TrimSpace(string(rawEngineKey)), payload, status)
+	}
+	if h := internal("GET", "/health", nil, 200); h["mode"] != "setup_ready" {
+		t.Fatal(h)
+	}
+	internal("POST", "/search", map[string]any{}, 503)
+	daemonCtx, stop := context.WithCancel(ctx)
+	finished := make(chan error, 1)
+	go func() {
+		finished <- serveDaemon(daemonCtx, runtimeConfig{Path: filepath.Join(storage, "runtime.json"), StoreRoot: storage, OfficialData: official, EngineURL: engineURL,
+			EngineTokenFile: engineKey, ManagementTokenFile: managementFile, GatewayURL: base, raw: []byte("{}")}, true, io.Discard)
+	}()
+	stopped := false
+	defer func() {
+		stop()
+		if stopped {
+			return
+		}
+		select {
+		case err := <-finished:
+			require(t, err)
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not shut down")
+		}
+	}()
+	for {
+		req, err := http.NewRequestWithContext(ctx, "GET", base+"/api/health", nil)
+		require(t, err)
+		req.Header.Set("Authorization", "Bearer "+management)
+		if res, err := client.Do(req); err == nil {
+			require(t, res.Body.Close())
+			if res.StatusCode == 200 {
+				break
+			}
+		}
+		select {
+		case err := <-finished:
+			stopped = true
+			t.Fatalf("daemon stopped during startup: %v", err)
+		case <-ctx.Done():
+			t.Fatal("daemon did not begin serving")
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	db, err := domain.OpenStore(filepath.Join(storage, "memlane.sqlite3"))
 	require(t, err)
-	base := "http://" + addr
+	defer func() { require(t, db.Close()) }()
+	state, err := db.GetGenerationState(ctx)
+	require(t, err)
+	model := internal("GET", "/health", nil, 200)
+	digest, _ := model["model_digest"].(string)
+	if state.ActiveProfileID != "bridge" || state.StartupError != "" || model["mode"] != "ready" ||
+		digest == "" || digest == "legacy-digest" {
+		t.Fatalf("startup model restore: state=%+v model=%+v", state, model)
+	}
+
 	manage := func(method, path string, body any, status int) map[string]any {
 		return liveRequest(t, ctx, client, base, method, path, "Authorization", "Bearer "+management, body, status)
 	}
@@ -138,12 +223,12 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		}
 	}
 	health()
-	workspace := t.TempDir()
-	project := manage("POST", "/api/projects", map[string]any{"id": "project", "name": "Live Project", "aliases": []string{workspace}}, 201)
-	dataset, ok := project["dataset_id"].(string)
-	if !ok || dataset == "" {
-		t.Fatal(project)
+	initial := manage("GET", "/api/overview/bootstrap", nil, 200)
+	projected := asObject(t, initial["projects"].([]any)[0])
+	if initial["total_knowledge_count"] != float64(1) || projected["knowledge_count"] != float64(1) || projected["session_count"] != float64(1) {
+		t.Fatal(initial)
 	}
+
 	const common = "common-dataset"
 	require(t, db.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "common", Name: "Common", DatasetID: common, DatasetName: "Common"}))
 	manage("POST", "/api/agents", map[string]any{"id": "agent", "kind": "codex", "name": "Test Codex", "key_file": agentFile}, 201)
@@ -180,6 +265,9 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		t.Fatal(overview)
 	}
 	health()
+	if model := internal("GET", "/model/status", nil, 200); model["output_language"] != "zh-CN" || model["model_digest"] != digest {
+		t.Fatal(model)
+	}
 	recall := agent("/recall", map[string]any{"workspace": workspace, "session_id": "session", "query": "needle", "channel": "automatic", "limit": 10}, 200)
 	hits, ok := recall["hits"].([]any)
 	if !ok || recall["common_included"] != true || len(hits) != 2 {
@@ -241,7 +329,60 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	}
 }
 
-func launchPythonHarness(t *testing.T, ctx context.Context, client *http.Client, python, root string) (string, string) {
+func TestStartupCatalogProjection(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	require(t, err)
+	defer func() { require(t, db.Close()) }()
+	const dataset = "11111111-1111-4111-8111-111111111111"
+	require(t, db.UpsertProject(ctx, domain.Project{ID: "project", Name: "Project", DatasetID: dataset}))
+	official := filepath.Join(dir, "official-store")
+	engineKey := filepath.Join(dir, "engine.token")
+	require(t, os.WriteFile(engineKey, []byte("projector-test-private-token"), 0o600))
+	stack, err := MountGatewayStack(StackConfig{Store: db, ManagementToken: "projector-startup-test-management-token",
+		Engine: cognee.Config{Endpoint: "http://127.0.0.1:12345", TokenFile: engineKey, StorePath: official}})
+	require(t, err)
+	defer func() { require(t, stack.Profiles.Close(ctx)) }()
+
+	// A managed dataset can be registered before the official DB exists.
+	require(t, prepareGatewayStartup(ctx, stack.Gateway))
+	seedOfficialCatalog(t, official, dataset)
+	require(t, prepareGatewayStartup(ctx, stack.Gateway))
+	docs, err := db.ListCatalogDocs(ctx, dataset, "knowledge", 10)
+	require(t, err)
+	sessions, err := db.ListCatalogSessions(ctx, dataset, 10)
+	require(t, err)
+	if len(docs) != 1 || len(sessions) != 1 || sessions[0].SessionID != "imported-session" {
+		t.Fatalf("initial projection has %d knowledge documents and %d sessions", len(docs), len(sessions))
+	}
+}
+
+func seedOfficialCatalog(t *testing.T, official, dataset string) {
+	t.Helper()
+	name := filepath.Join(official, "system", "databases", "cognee_db")
+	require(t, os.MkdirAll(filepath.Dir(name), 0o700))
+	data, err := sql.Open("sqlite", name)
+	require(t, err)
+	defer func() { require(t, data.Close()) }()
+	_, err = data.Exec(`
+  CREATE TABLE datasets(id TEXT,name TEXT);
+  CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT,system_metadata TEXT,external_metadata TEXT,node_set TEXT,
+   pipeline_status TEXT,created_at DATETIME,updated_at DATETIME);
+  CREATE TABLE session_records(dataset_id TEXT,session_id TEXT,user_id TEXT,status TEXT,started_at DATETIME,last_activity_at DATETIME);
+ `)
+	require(t, err)
+	_, err = data.Exec("INSERT INTO datasets VALUES(?, 'project')", dataset)
+	require(t, err)
+	_, err = data.Exec(`INSERT INTO data VALUES('55555555-5555-4555-8555-555555555555',?,
+  'Imported knowledge','{"lesson_type":"state","state_key":"initial"}','{}','["session_learnings"]','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, dataset)
+	require(t, err)
+	_, err = data.Exec(`INSERT INTO session_records VALUES(?, 'imported-session','77777777-7777-4777-8777-777777777777',
+  'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, dataset)
+	require(t, err)
+}
+
+func launchPythonHarness(t *testing.T, ctx context.Context, client *http.Client, python, root, gatewayURL string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	script, key, logPath := filepath.Join(dir, "engine.py"), filepath.Join(dir, "engine.key"), filepath.Join(dir, "engine.log")
@@ -255,9 +396,9 @@ func launchPythonHarness(t *testing.T, ctx context.Context, client *http.Client,
 	require(t, errors.Join(err, listener.Close()))
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0o600)
 	require(t, err)
-	cmd := exec.Command(python, script, key, dir)
+	cmd := exec.Command(python, script, key, dir, gatewayURL)
 	cmd.Dir = root
-	cmd.Env = append(cmd.Environ(), "PYTHONPATH="+root, "PYTHONDONTWRITEBYTECODE=1")
+	cmd.Env = append(cmd.Environ(), "PYTHONPATH="+root, "PYTHONDONTWRITEBYTECODE=1", "LITELLM_LOCAL_MODEL_COST_MAP=true", "TELEMETRY_DISABLED=true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.ExtraFiles = []*os.File{fd}
 	cmd.Stdout, cmd.Stderr = log, log

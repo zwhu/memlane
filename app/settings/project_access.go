@@ -105,6 +105,7 @@ func (p AccessProject) AgentPolicyUnconfirmed(agentID string) bool {
 type AccessAgent struct {
 	ID           string             `json:"id"`
 	Name         string             `json:"name"`
+	Kind         string             `json:"kind"`
 	Installation *AgentInstallation `json:"installation"`
 }
 

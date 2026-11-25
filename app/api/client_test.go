@@ -182,7 +182,7 @@ func TestRoutes(t *testing.T) {
 			``, `{"day":"2026-01-01","total_filtered":1}`,
 			func(c *Client) (any, error) { return c.OverviewDay(ctx, "2026-01-01", KnowledgePageOptions{Limit: 10}) }},
 		{"GET", "/api/projects", 200,
-			``, `{"projects":[{"id":"p","inbox_failed":1,"last_error":"failed"}]}`,
+			``, `{"projects":[{"id":"p","overrides":{"agent":{"agent_id":"agent","access":"read"}},"inbox_failed":1,"last_error":"failed"}]}`,
 			func(c *Client) (any, error) { return c.ListProjects(ctx) }},
 		{"GET", "/api/projects/%E6%B5%8B%20%2F%3F%23%25", 200,
 			``, `{"auto_capture":true}`,

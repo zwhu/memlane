@@ -14,6 +14,8 @@ import (
 	"github.com/zwhu/memlane/core/engine"
 )
 
+const catalogGeneration int64 = 1
+
 type catalogItem struct {
 	ProjectID      string `json:"project_id,omitempty"`
 	DatasetID      string `json:"dataset_id"`
@@ -226,7 +228,7 @@ func (s *Server) queryKnowledge(ctx context.Context, db sqlRead, r *http.Request
 			return nil, err
 		}
 	}
-	return map[string]any{"project_id": in.project, "dataset_id": dataset, "sort": in.sort, "day": in.day,
+	return map[string]any{"generation": catalogGeneration, "common_category": in.category, "project_id": in.project, "dataset_id": dataset, "sort": in.sort, "day": in.day,
 		"items": result.Items, "next_cursor": result.NextCursor, "prev_cursor": result.PrevCursor,
 		"has_more": result.HasMore, "has_prev": result.HasPrev, "total_filtered": total, "total_count": total,
 		"category_counts": counts, "unread_count": unread, "unread_state_rev": revision, "catalog_version": version}, nil
@@ -277,14 +279,22 @@ func (s *Server) serveDocument(w http.ResponseWriter, r *http.Request, ds, doc s
 		return
 	}
 	if strings.HasSuffix(r.Pattern, "/body") {
-		writeJSON(w, 200, map[string]any{"dataset_id": ds, "document_id": doc, "content": content, "mime_type": mime})
+		writeJSON(w, 200, map[string]any{"dataset_id": ds, "document_id": doc, "content": content, "mime_type": mime,
+			"id": doc, "body": content, "content_hash": item.ContentHash, "bytes_total": len(content), "truncated": false})
 		return
 	}
 	writeJSON(w, 200, struct {
 		catalogItem
 		Content  string `json:"content"`
 		MimeType string `json:"mime_type"`
-	}{item, content, mime})
+		ID       string `json:"id"`
+		Dataset  string `json:"datasetId"`
+		Name     string `json:"name"`
+		Label    string `json:"label"`
+		Created  string `json:"createdAt"`
+		Updated  string `json:"updatedAt"`
+		Hash     string `json:"contentHash"`
+	}{item, content, mime, doc, ds, item.DocName, item.DocLabel, item.CreatedAt, item.UpdatedAt, item.ContentHash})
 }
 
 func (s *Server) document(w http.ResponseWriter, r *http.Request) {

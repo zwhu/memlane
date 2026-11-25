@@ -289,6 +289,27 @@ func scanACL(row scanner) (ACLOverride, error) {
 }
 
 func (s *Store) SetACLOverride(ctx context.Context, a ACLOverride) error {
+	return writeACLOverride(ctx, s.db, a)
+}
+
+func (s *Store) UpdateACLOverride(ctx context.Context, a ACLOverride, expected *int) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE defaults SET revision=revision+1 WHERE singleton=1 AND (? IS NULL OR revision=?)`, expected, expected)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed == 0 {
+			return ErrConflict
+		}
+		return writeACLOverride(ctx, tx, a)
+	})
+}
+
+func writeACLOverride(ctx context.Context, db sqlExecer, a ACLOverride) error {
 	if a.TargetKind != "project" && a.TargetKind != "common" {
 		return ErrInvalidArgument
 	}
@@ -300,7 +321,7 @@ func (s *Store) SetACLOverride(ctx context.Context, a ACLOverride) error {
 			return err
 		}
 	}
-	return execSQL(ctx, s.db, `INSERT INTO project_acl_overrides (`+aclColumns+`) VALUES(?,?,?,?,?,?)
+	return execSQL(ctx, db, `INSERT INTO project_acl_overrides (`+aclColumns+`) VALUES(?,?,?,?,?,?)
 		ON CONFLICT(target_kind,target_id,agent_id) DO UPDATE SET access=excluded.access,capture=excluded.capture,
 		auto_process=excluded.auto_process`, a.TargetKind, a.TargetID, a.AgentID, a.Access, a.Capture, a.AutoProcess)
 }

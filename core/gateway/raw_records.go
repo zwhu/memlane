@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"net/http"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/zwhu/memlane/core/domain"
 )
@@ -19,6 +21,8 @@ type rawItem struct {
 	UserID          string `json:"user_id,omitempty"`
 	AgentID         string `json:"agent_id,omitempty"`
 	Title           string `json:"title"`
+	Label           string `json:"label,omitempty"`
+	IsSubagent      bool   `json:"is_subagent,omitempty"`
 	DocName         string `json:"doc_name,omitempty"`
 	DocLabel        string `json:"doc_label,omitempty"`
 	Status          string `json:"status,omitempty"`
@@ -30,6 +34,7 @@ type rawItem struct {
 	NestingDepth    int    `json:"nesting_depth,omitempty"`
 	IsTopLevel      bool   `json:"is_top_level"`
 	ChildCount      int    `json:"child_count"`
+	ChildrenHasMore bool   `json:"children_has_more"`
 	EffectiveDate   string `json:"effective_date,omitempty"`
 	CreatedAt       string `json:"created_at,omitempty"`
 	UpdatedAt       string `json:"updated_at,omitempty"`
@@ -52,6 +57,9 @@ func scanRaw(row rowScanner) (pageRow[rawItem], error) {
 		&i.Title, &i.DocName, &i.DocLabel, &i.Status, &i.StartedAt, &i.LastActivityAt, &i.ParentSessionID, &i.RootSessionID,
 		&i.SubagentRole, &i.NestingDepth, &i.IsTopLevel, &i.ChildCount, &i.EffectiveDate, &i.CreatedAt, &i.UpdatedAt,
 		&k.first, &k.second, &k.dataset, &k.id)
+	i.Label = i.Title
+	i.ChildrenHasMore = i.ChildCount > 0
+	i.IsSubagent = i.Kind == "session" && !i.IsTopLevel
 	return pageRow[rawItem]{i, k}, err
 }
 
@@ -73,12 +81,13 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	var out pageResult[rawItem]
+	var dataset string
+	var total int
 	err := snapshot(ctx, s.cfg.Store, func(tx *sql.Tx) error {
 		args := []any{}
 		var cursorDatasets []string
 		scope := ` JOIN (SELECT dataset_id,id AS project_id FROM projects WHERE dataset_id<>''`
 		if project != "" {
-			var dataset string
 			if err := tx.QueryRowContext(ctx, "SELECT dataset_id FROM projects WHERE id=?", project).Scan(&dataset); err != nil {
 				return err
 			}
@@ -124,6 +133,11 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if parent != "" {
+			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM ("+source+")", args...).Scan(&total); err != nil {
+				return err
+			}
+		}
 		out, err = page(ctx, tx, s.cursors, opts, source, args, scanRaw)
 		return err
 	})
@@ -131,7 +145,55 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, 200, out)
+	if !strings.HasPrefix(r.URL.Path, "/v1/") {
+		writeJSON(w, 200, out)
+		return
+	}
+	if parent != "" {
+		writeJSON(w, 200, struct {
+			pageResult[rawItem]
+			ProjectID string `json:"project_id"`
+			DatasetID string `json:"dataset_id"`
+			Parent    string `json:"parent_session_id"`
+			Total     int    `json:"total_count"`
+		}{out, project, dataset, parent, total})
+		return
+	}
+	type desktopEntry struct {
+		rawItem
+		ItemKind string         `json:"item_kind"`
+		SortTS   int64          `json:"sort_ts_ns"`
+		Session  *rawItem       `json:"session,omitempty"`
+		Document map[string]any `json:"document,omitempty"`
+	}
+	entries := make([]desktopEntry, 0, len(out.Items))
+	for _, item := range out.Items {
+		entry := desktopEntry{rawItem: item, ItemKind: item.Kind}
+		timestamp := item.LastActivityAt
+		if item.Kind == "session" {
+			entry.Session = &item
+		} else {
+			timestamp = item.UpdatedAt
+			if timestamp == "" {
+				timestamp = item.CreatedAt
+			}
+			entry.Document = map[string]any{"id": item.DocID, "datasetId": item.DatasetID, "label": item.DocLabel,
+				"name": item.DocName, "createdAt": item.CreatedAt, "updatedAt": item.UpdatedAt}
+		}
+		if at, err := time.Parse(time.RFC3339Nano, timestamp); err == nil {
+			entry.SortTS = at.UnixNano()
+		}
+		entries = append(entries, entry)
+	}
+	var ready bool
+	if dataset != "" {
+		if err := s.cfg.Store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM catalog_sync_state WHERE dataset_id=?)", dataset).Scan(&ready); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"project_id": project, "dataset_id": dataset, "kind": kind, "cache_ready": ready,
+		"items": entries, "next_cursor": out.NextCursor, "has_more": out.HasMore})
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {

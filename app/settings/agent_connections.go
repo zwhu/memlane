@@ -69,6 +69,8 @@ func connectionStatus(row AgentConnection) string {
 		}
 	}
 	switch row.Status {
+	case "registered":
+		return "已登记"
 	case "verification_environment":
 		return "需要更换配置目录"
 	case "environment_ambiguous":

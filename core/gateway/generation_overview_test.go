@@ -203,7 +203,7 @@ func TestOverviewSnapshotParityAndLatency(t *testing.T) {
 	_, err = store.EnqueueInboxItem(ctx, domain.CaptureInboxItem{ProjectID: "p", DatasetID: "ds", AgentID: "agent",
 		SessionID: "s", MessageID: "m2", Kind: "capture_qa", PayloadJSON: `{}`})
 	must(t, err)
-	manage(t, s, "GET", "/api/search?q=snap&limit=2", "", 200)
+	manage(t, s, "POST", "/api/search", `{"q":"snap","limit":2}`, 200)
 	before := overviewTableCounts(t, store)
 	var changesBefore, changesAfter int
 	must(t, store.DB().QueryRow("SELECT total_changes()").Scan(&changesBefore))
@@ -307,5 +307,53 @@ func copyDailyFile(t *testing.T, source, dest string) {
 	must(t, errors.Join(copyErr, statErr, in.Close(), out.Close()))
 	if n != info.Size() || !os.SameFile(info, after) || !info.ModTime().Equal(after.ModTime()) {
 		t.Fatalf("daily source %s changed during read-only copy", filepath.Base(source))
+	}
+}
+
+func TestApplyActiveGenerationStartup(t *testing.T) {
+	s, store, fake := testServer(t, nil)
+	ctx := context.Background()
+	must(t, s.ApplyActiveGeneration(ctx))
+	if len(fake.apply) != 0 {
+		t.Fatal("unselected generation was applied")
+	}
+
+	const secret = "private-startup-provider-key"
+	saved := decodeResponse[generationView](t, manage(t, s, "PUT", "/api/generation/profiles/active",
+		fmt.Sprintf(`{"mode":"provider","provider":"anthropic","model":"sample","endpoint":"https://provider.invalid","api_key":%q,"temperature":0,"max_output_tokens":42}`, secret), 200))
+	must(t, store.SetActiveGeneration(ctx, saved.ProfileID, saved.Revision))
+	fake.applyErr = errors.New("adapter failure " + secret)
+	if err := s.ApplyActiveGeneration(ctx); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatal("expected a sanitized startup error")
+	}
+	state, err := store.GetGenerationState(ctx)
+	must(t, err)
+	if state.StartupError != "startup_model_apply_failed" {
+		t.Fatal("expected a sanitized persisted error code")
+	}
+	fake.applyErr = nil
+	must(t, s.ApplyActiveGeneration(ctx))
+	state, err = store.GetGenerationState(ctx)
+	must(t, err)
+	if state.StartupError != "" || state.ActiveRevision != saved.Revision {
+		t.Fatal(state)
+	}
+	request := fake.apply[1]
+	if request.OperationID != "startup" || request.OutputLanguage != "zh-CN" ||
+		request.GenerationConfig["temperature"] != float64(0) || request.GenerationConfig["max_output_tokens"] != 42 ||
+		request.GenerationConfig["max_concurrent_requests"] != nil || request.GenerationConfig["api_key"] != secret {
+		t.Fatal("startup request does not match the selected revision")
+	}
+
+	ollama, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{ProfileID: "ollama", Mode: "provider",
+		Provider: "ollama", Model: "model", Endpoint: "http://localhost:11434"})
+	must(t, err)
+	must(t, store.RecordGenerationValidation(ctx, domain.GenerationValidation{OperationID: "legacy", Digest: ollama.Digest, Status: "passed",
+		RegisteredRevision: 1, PayloadJSON: `{"native_schema_evidence":{"status":"verified"}}`}))
+	must(t, store.SetActiveGeneration(ctx, ollama.ProfileID, ollama.Revision))
+	must(t, s.ApplyActiveGeneration(ctx))
+	evidence, ok := fake.apply[2].GenerationConfig["ollama_schema_evidence"].(map[string]string)
+	if !ok || evidence["status"] != "verified" {
+		t.Fatal("missing imported Ollama evidence")
 	}
 }

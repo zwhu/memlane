@@ -208,6 +208,11 @@ func scanGenerationProfile(row scanner) (GenerationProfile, error) {
 }
 
 func (s *Store) PutGenerationProfile(ctx context.Context, p GenerationProfile) (GenerationProfile, error) {
+	return s.SaveGenerationProfile(ctx, p, "")
+}
+
+// SaveGenerationProfile records the save receipt with its immutable revision.
+func (s *Store) SaveGenerationProfile(ctx context.Context, p GenerationProfile, operation string) (GenerationProfile, error) {
 	if !generationIdentifier.MatchString(p.ProfileID) || p.Revision < 0 {
 		return GenerationProfile{}, fmt.Errorf("invalid generation profile identity: %w", ErrInvalidArgument)
 	}
@@ -235,9 +240,13 @@ func (s *Store) PutGenerationProfile(ctx context.Context, p GenerationProfile) (
 				return err
 			}
 		}
-		return insertError(execSQL(ctx, tx, `INSERT INTO generation_profiles (`+generationProfileColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		err := insertError(execSQL(ctx, tx, `INSERT INTO generation_profiles (`+generationProfileColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			p.ProfileID, p.Revision, p.Digest, p.Mode, p.Provider, p.BridgeKind, p.BridgeProvider, p.Model, p.Endpoint, p.CredentialRef,
 			p.CredentialVersion, p.Temperature, p.MaxOutputTokens, p.MaxConcurrentRequests, boolToInt(p.Removed), p.CreatedAt))
+		if err != nil {
+			return err
+		}
+		return RecordGenerationOperation(ctx, tx, operation, map[string]any{"id": p.ProfileID, "revision": p.Revision, "digest": p.Digest})
 	})
 	if err != nil {
 		return GenerationProfile{}, err
@@ -299,6 +308,46 @@ func (s *Store) SetActiveGeneration(ctx context.Context, profileID string, revis
 		return execSQL(ctx, tx, `UPDATE generation_state SET active_profile_id=?,active_revision=?,revision=revision+1,updated_at=?
 			WHERE singleton=1 AND (active_profile_id<>? OR active_revision<>?)`, profileID, revision, NowUTCMicro(), profileID, revision)
 	})
+}
+
+func (s *Store) GetGenerationOperation(ctx context.Context, id string) (json.RawMessage, error) {
+	var value json.RawMessage
+	var raw string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM generation_state, json_each(operations_json)
+  WHERE singleton=1 AND key=? AND type='object'`, id).Scan(&raw)
+	if err == nil {
+		value = json.RawMessage(raw)
+	}
+	return value, rowError(err)
+}
+
+func RecordGenerationOperation(ctx context.Context, tx *sql.Tx, id string, result any) error {
+	if id == "" {
+		return nil
+	}
+	if !generationIdentifier.MatchString(id) {
+		return ErrInvalidArgument
+	}
+	record, err := json.Marshal(map[string]any{id: map[string]any{"recorded": true, "result": result}})
+	if err != nil {
+		return err
+	}
+	update, err := tx.ExecContext(ctx, `UPDATE generation_state
+  SET operations_json=json_patch(operations_json,?)
+  WHERE singleton=1 AND NOT EXISTS(SELECT 1 FROM json_each(operations_json) WHERE key=?)`, string(record), id)
+	if err != nil {
+		return err
+	}
+	changed, err := update.RowsAffected()
+	if err == nil && changed != 1 {
+		return ErrConflict
+	}
+	return err
+}
+
+func (s *Store) SetGenerationStartupError(ctx context.Context, code string) error {
+	return execSQL(ctx, s.db, `UPDATE generation_state SET startup_error=?,updated_at=?
+  WHERE singleton=1 AND startup_error<>?`, code, NowUTCMicro(), code)
 }
 
 func validateGenerationPayload(payload string) error {
@@ -372,6 +421,10 @@ func (s *Store) UpsertGenerationHandoff(ctx context.Context, p GenerationHandoff
 		p.OperationID, p.ProfileID, p.ProfileRevision, p.Digest, p.PreviousProfileID, p.PreviousRevision, p.Status,
 		p.Reason, p.StartedAt, p.EndedAt, boolToInt(p.ActiveCommitted), p.CancelledSessions, p.PendingSessions, p.UnconfirmedSessions,
 		defaultText(p.PayloadJSON, "{}"), defaultText(p.RuntimePayloadJSON, "{}"))
+}
+
+func (s *Store) GetGenerationHandoff(ctx context.Context, op string) (GenerationHandoff, error) {
+	return scanGenerationHandoff(s.db.QueryRowContext(ctx, `SELECT `+generationHandoffColumns+` FROM generation_handoffs WHERE operation_id=?`, op))
 }
 
 func (s *Store) ListGenerationHandoffs(ctx context.Context) ([]GenerationHandoff, error) {

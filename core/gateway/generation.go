@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/kit/agents"
 	"github.com/zwhu/memlane/kit/daemon"
 )
 
@@ -24,7 +26,8 @@ var languageTag = regexp.MustCompile(`^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$`)
 
 type generationView struct {
 	domain.GenerationProfile
-	HasCredential bool `json:"has_credential"`
+	HasCredential        bool `json:"has_credential"`
+	CredentialConfigured bool `json:"credential_configured"`
 }
 
 func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
@@ -47,12 +50,27 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 		if has {
 			credentials = append(credentials, key)
 		}
-		out = append(out, generationView{p, has})
+		out = append(out, generationView{p, has, has})
 	}
 	if key, err := s.secrets.read(s.cfg.BridgeTokenFile); err == nil {
 		credentials = append(credentials, key)
 	}
+	validations, err := s.generationValidations(ctx, credentials)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	processing := []string{}
+	for _, host := range agents.DetectHosts(s.cfg.DiscoveryOptions) {
+		if host.Detected && host.SupportsProcessingCLI && host.Executable != "" {
+			processing = append(processing, host.Kind)
+		}
+	}
 	var model any
+	outputLanguage := s.cfg.OutputLanguage
+	if !languageTag.MatchString(outputLanguage) || containsCredential(outputLanguage, credentials) {
+		outputLanguage = ""
+	}
 	if s.cfg.Models != nil {
 		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -66,6 +84,9 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 				status.OutputLanguage = ""
 			}
 			status.ModelDigest = safeModelDigest(status.ModelDigest, credentials...)
+			if status.OutputLanguage != "" {
+				outputLanguage = status.OutputLanguage
+			}
 			model = status
 		}
 	}
@@ -75,18 +96,105 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"state": map[string]any{"active_profile_id": state.ActiveProfileID,
 		"active_revision": state.ActiveRevision, "next_profile_id": state.NextProfileID, "next_revision": state.NextRevision,
-		"revision": state.Revision, "startup_error": startup}, "profiles": out, "model_status": model})
+		"revision": state.Revision, "startup_error": startup}, "profiles": out, "model_status": model, "validations": validations,
+		"handoff_available": s.cfg.Models != nil, "output_language": outputLanguage, "detected_processing_clis": processing})
+}
+
+type validationView struct {
+	OperationID        string `json:"-"`
+	Digest             string `json:"digest"`
+	RegisteredRevision int    `json:"registered_revision"`
+	Status             string `json:"status"`
+	PlainPassed        bool   `json:"plain_passed"`
+	SchemaPassed       bool   `json:"schema_passed"`
+	QualityPassed      bool   `json:"quality_passed"`
+	StructuredMode     string `json:"structured_mode"`
+	ErrorCode          string `json:"error_code"`
+	Reference          struct {
+		ID       string `json:"id"`
+		Revision int    `json:"revision"`
+	} `json:"reference"`
+}
+
+func (s *Server) generationValidations(ctx context.Context, secrets []string) (map[string]validationView, error) {
+	rows, err := readRows(ctx, s.cfg.Store.DB(), `SELECT operation_id,profile_id,profile_revision,digest,registered_revision,
+  status,plain_passed,schema_passed,quality_passed,structured_mode,error_code FROM generation_validations`, nil,
+		func(row rowScanner) (validationView, error) {
+			var v validationView
+			err := row.Scan(&v.OperationID, &v.Reference.ID, &v.Reference.Revision, &v.Digest, &v.RegisteredRevision,
+				&v.Status, &v.PlainPassed, &v.SchemaPassed, &v.QualityPassed, &v.StructuredMode, &v.ErrorCode)
+			return v, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]validationView, len(rows))
+	for _, v := range rows {
+		op := safeModelDigest(v.OperationID, secrets...)
+		if op == "" {
+			continue
+		}
+		v.Digest = safeModelDigest(v.Digest, secrets...)
+		v.Reference.ID = safeModelDigest(v.Reference.ID, secrets...)
+		v.Status = cleanReceipt(v.Status, secrets...)
+		v.StructuredMode = cleanReceipt(v.StructuredMode, secrets...)
+		v.ErrorCode = cleanReceipt(v.ErrorCode, secrets...)
+		out[op] = v
+	}
+	return out, nil
+}
+
+func (s *Server) generationValidation(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	profiles, err := s.cfg.Store.ListGenerationProfiles(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	secrets := []string{}
+	for _, p := range profiles {
+		if key, err := s.generationCredential(p); err == nil && key != "" {
+			secrets = append(secrets, key)
+		}
+	}
+	if key, err := s.secrets.read(s.cfg.BridgeTokenFile); err == nil {
+		secrets = append(secrets, key)
+	}
+	validations, err := s.generationValidations(ctx, secrets)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	validation, ok := validations[r.PathValue("op")]
+	if !ok {
+		writeError(w, 404, "generation_validation_not_found", "validation not found")
+		return
+	}
+	writeJSON(w, 200, validation)
+}
+
+func checkGenerationRevision(state domain.GenerationState, expected *int) error {
+	if expected != nil && state.Revision != *expected {
+		return domain.ErrConflict
+	}
+	return nil
 }
 
 func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		domain.GenerationProfile
-		APIKey *string `json:"api_key"`
+		APIKey           *string                   `json:"api_key"`
+		Profile          *domain.GenerationProfile `json:"profile"`
+		ExpectedRevision *int                      `json:"expected_revision"`
+		OperationID      string                    `json:"operation_id"`
 	}
 	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
 		return
 	}
 	p := in.GenerationProfile
+	if in.Profile != nil {
+		p = *in.Profile
+	}
 	if id := r.PathValue("id"); id != "" {
 		p.ProfileID = id
 	}
@@ -100,6 +208,30 @@ func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
 	p.Revision, p.Digest, p.CreatedAt, p.Removed = 0, "", "", false
 	s.generationMu.Lock()
 	defer s.generationMu.Unlock()
+	if in.ExpectedRevision != nil {
+		state, err := s.cfg.Store.GetGenerationState(r.Context())
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if err := checkGenerationRevision(state, in.ExpectedRevision); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+	}
+	if in.Profile != nil && in.APIKey == nil && p.CredentialVersion != "" {
+		prior, err := s.cfg.Store.ListGenerationProfiles(r.Context())
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		for _, v := range prior {
+			if v.ProfileID == p.ProfileID && !v.Removed && v.CredentialVersion == p.CredentialVersion {
+				p.CredentialRef = v.CredentialRef
+				break
+			}
+		}
+	}
 	var key string
 	if in.APIKey != nil {
 		key = strings.TrimSpace(*in.APIKey)
@@ -131,7 +263,11 @@ func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p, err := s.cfg.Store.PutGenerationProfile(r.Context(), p)
+	if in.OperationID != "" && (!profileID.MatchString(in.OperationID) || containsCredential(in.OperationID, []string{key})) {
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return
+	}
+	p, err := s.cfg.Store.SaveGenerationProfile(r.Context(), p, in.OperationID)
 	if err != nil {
 		writeDomainError(w, err)
 		return
@@ -140,49 +276,126 @@ func (s *Server) saveProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		status = 201
 	}
-	writeJSON(w, status, generationView{p, key != ""})
+	view := generationView{p, key != "", key != ""}
+	if in.Profile != nil {
+		writeJSON(w, status, struct {
+			generationView
+			Result map[string]any `json:"result"`
+		}{view, map[string]any{"id": p.ProfileID, "revision": p.Revision, "digest": p.Digest}})
+		return
+	}
+	writeJSON(w, status, view)
 }
 
 func (s *Server) removeProfile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := r.PathValue("id")
+	var in struct {
+		ExpectedRevision *int   `json:"expected_revision"`
+		OperationID      string `json:"operation_id"`
+		ProfileRevision  int    `json:"profile_revision"`
+	}
+	settingsRequest := r.Method == http.MethodPost && r.ContentLength != 0
+	if settingsRequest && !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
+		return
+	}
 	s.generationMu.Lock()
 	defer s.generationMu.Unlock()
-	err := s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		var active string
-		if err := tx.QueryRowContext(ctx, "SELECT active_profile_id FROM generation_state WHERE singleton=1").Scan(&active); err != nil {
-			return err
-		}
-		if active == id {
-			return domain.ErrConflict
+	state, err := s.cfg.Store.GetGenerationState(ctx)
+	if err == nil {
+		err = checkGenerationRevision(state, in.ExpectedRevision)
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if state.ActiveProfileID == id || state.NextProfileID == id {
+		writeError(w, 409, "active_profile_cannot_be_removed", "selected generation profile cannot be removed")
+		return
+	}
+	receipt := map[string]any{"id": id, "deleted": true}
+	err = s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		if in.ProfileRevision > 0 {
+			var latest int
+			if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(revision),0) FROM generation_profiles WHERE profile_id=? AND removed=0", id).Scan(&latest); err != nil {
+				return err
+			}
+			if latest != in.ProfileRevision {
+				return domain.ErrConflict
+			}
 		}
 		result, err := tx.ExecContext(ctx, "UPDATE generation_profiles SET removed=1 WHERE profile_id=?", id)
 		if err != nil {
 			return err
 		}
 		count, err := result.RowsAffected()
-		if err == nil && count == 0 {
+		if err != nil {
+			return err
+		}
+		if count == 0 {
 			return domain.ErrNotFound
 		}
-		return err
+		return domain.RecordGenerationOperation(ctx, tx, in.OperationID, receipt)
 	})
-	if errors.Is(err, domain.ErrConflict) {
-		writeError(w, 409, "active_profile_cannot_be_removed", "active generation profile cannot be removed")
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if settingsRequest {
+		writeJSON(w, 200, map[string]any{"result": receipt})
+		return
+	}
+	w.WriteHeader(204)
+}
+
+func (s *Server) generationOperation(w http.ResponseWriter, r *http.Request) {
+	// Return only fields written by the Go gateway. Imported operation payloads
+	// can have backend diagnostics that are not part of this public receipt.
+	raw, err := s.cfg.Store.GetGenerationOperation(r.Context(), r.PathValue("op"))
+	if errors.Is(err, domain.ErrNotFound) {
+		writeJSON(w, 200, map[string]bool{"recorded": false})
 		return
 	}
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	w.WriteHeader(204)
+	var record struct {
+		Recorded bool `json:"recorded"`
+		Result   struct {
+			ID       string         `json:"id,omitempty"`
+			Revision int            `json:"revision,omitempty"`
+			Digest   string         `json:"digest,omitempty"`
+			Deleted  bool           `json:"deleted,omitempty"`
+			Next     *generationRef `json:"next,omitempty"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &record); err != nil || !record.Recorded ||
+		(!profileID.MatchString(record.Result.ID) && (record.Result.Next == nil || !profileID.MatchString(record.Result.Next.ID) || record.Result.Next.Revision <= 0)) {
+		writeJSON(w, 200, map[string]bool{"recorded": false})
+		return
+	}
+	record.Result.Digest = safeModelDigest(record.Result.Digest)
+	writeJSON(w, 200, record)
+}
+
+type generationRef struct {
+	ID       string `json:"id"`
+	Revision int    `json:"revision"`
 }
 
 type profileSelection struct {
-	ProfileID string `json:"profile_id"`
-	Revision  int    `json:"revision"`
+	ProfileID        string         `json:"profile_id"`
+	Revision         int            `json:"revision"`
+	Profile          *generationRef `json:"profile"`
+	OperationID      string         `json:"operation_id"`
+	ExpectedRevision *int           `json:"expected_revision"`
 }
 
 func (s *Server) selectedProfile(ctx context.Context, in profileSelection) (domain.GenerationProfile, error) {
+	if in.Profile != nil {
+		in.ProfileID, in.Revision = in.Profile.ID, in.Profile.Revision
+	}
 	if !profileID.MatchString(in.ProfileID) || in.Revision < 0 {
 		return domain.GenerationProfile{}, domain.ErrInvalidArgument
 	}
@@ -235,6 +448,29 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	s.generationMu.Lock()
 	defer s.generationMu.Unlock()
+	state, err := s.cfg.Store.GetGenerationState(ctx)
+	if err == nil {
+		err = checkGenerationRevision(state, in.ExpectedRevision)
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if in.OperationID != "" {
+		if !profileID.MatchString(in.OperationID) {
+			writeDomainError(w, domain.ErrInvalidArgument)
+			return
+		}
+		var exists bool
+		if err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM generation_validations WHERE operation_id=?)`, in.OperationID).Scan(&exists); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if exists {
+			writeError(w, 409, "operation_id_conflict", "validation operation already recorded")
+			return
+		}
+	}
 	p, err := s.selectedProfile(ctx, in)
 	if err != nil {
 		writeDomainError(w, err)
@@ -286,7 +522,13 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	op := rand.Text()
+	op := in.OperationID
+	if op == "" {
+		op = rand.Text()
+	} else if !modelDigest.MatchString(op) || containsCredential(op, []string{key}) {
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return
+	}
 	record := domain.GenerationValidation{OperationID: op, ProfileID: p.ProfileID, ProfileRevision: p.Revision, Digest: p.Digest, RegisteredRevision: rev,
 		Status: res.Status, PlainPassed: res.PlainPassed, SchemaPassed: res.SchemaPassed, QualityPassed: res.QualityPassed,
 		StructuredMode: res.StructuredMode, ErrorCode: res.ErrorCode, PayloadJSON: payload}
@@ -296,14 +538,18 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, struct {
 		engine.ProbeResult
-		OperationID string `json:"operation_id"`
-	}{res, op})
+		OperationID string            `json:"operation_id"`
+		Result      map[string]string `json:"result"`
+	}{res, op, map[string]string{"operation_id": op}})
 }
 
 func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (map[string]any, string, error) {
 	_, endpoint, key, err := s.modelConnection(p)
 	if err != nil {
 		return nil, "", err
+	}
+	if p.Mode == "provider" && p.Provider != "ollama" && key == "" {
+		return nil, "", domain.ErrForbidden
 	}
 	cfg := map[string]any{"mode": p.Mode, "model": p.Model}
 	for name, value := range map[string]string{"provider": p.Provider, "endpoint": endpoint, "bridge_kind": p.BridgeKind,
@@ -329,16 +575,99 @@ func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (m
 			return nil, "", err
 		}
 		var payload struct {
-			Evidence map[string]string `json:"ollama_schema_evidence"`
+			Evidence       map[string]string `json:"ollama_schema_evidence"`
+			LegacyEvidence map[string]string `json:"native_schema_evidence"`
 		}
 		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 			return nil, "", err
+		}
+		if payload.Evidence == nil {
+			payload.Evidence = payload.LegacyEvidence
 		}
 		if payload.Evidence != nil {
 			cfg["ollama_schema_evidence"] = payload.Evidence
 		}
 	}
 	return cfg, key, nil
+}
+
+func (s *Server) serveHandoffs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	inbox, err := s.inbox.Summary(ctx, "")
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	var result any
+	if op := r.PathValue("op"); op != "" {
+		var row domain.GenerationHandoff
+		row, err = s.cfg.Store.GetGenerationHandoff(ctx, op)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		result = publicHandoff(row)
+	}
+	writeJSON(w, 200, map[string]any{"handoff": result, "pending_sessions": inbox.Pending, "running_sessions": inbox.Processing})
+}
+
+func publicHandoff(v domain.GenerationHandoff) map[string]any {
+	status := cleanReceipt(v.Status)
+	switch status {
+	case "failed":
+		status = "not_applied"
+	case "result_unknown":
+		status = "unknown"
+	}
+	reason := ""
+	switch v.Reason {
+	case "model_apply_failed", "operation_receipt_mismatch", "active_commit_failed":
+		reason = v.Reason
+	}
+	return map[string]any{"operation_id": safeModelDigest(v.OperationID), "status": status, "reason": reason,
+		"reference": map[string]any{"id": safeModelDigest(v.ProfileID), "revision": v.ProfileRevision}, "cancelled_sessions": v.CancelledSessions}
+}
+
+func (s *Server) selectNextGeneration(w http.ResponseWriter, r *http.Request, in profileSelection) {
+	ctx := r.Context()
+	s.generationMu.Lock()
+	defer s.generationMu.Unlock()
+	state, err := s.cfg.Store.GetGenerationState(ctx)
+	if err == nil {
+		err = checkGenerationRevision(state, in.ExpectedRevision)
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	p, err := s.selectedProfile(ctx, in)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	valid, err := s.cfg.Store.IsGenerationDigestValidated(ctx, p.Digest)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if !valid {
+		writeError(w, 409, "validation_required", "validate this revision before selecting it")
+		return
+	}
+	receipt := map[string]any{"next": generationRef{p.ProfileID, p.Revision}}
+	err = s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE generation_state SET next_profile_id=?,next_revision=?,revision=revision+1,updated_at=?
+   WHERE singleton=1 AND (next_profile_id<>? OR next_revision<>?)`, p.ProfileID, p.Revision, domain.NowUTCMicro(), p.ProfileID, p.Revision)
+		if err != nil {
+			return err
+		}
+		return domain.RecordGenerationOperation(ctx, tx, in.OperationID, receipt)
+	})
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"result": receipt})
 }
 
 func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
@@ -348,6 +677,10 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	var in profileSelection
 	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
+		return
+	}
+	if in.Profile != nil && r.Pattern == "PUT /v1/generation/next" {
+		s.selectNextGeneration(w, r, in)
 		return
 	}
 	ctx := r.Context()
@@ -377,7 +710,33 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	op := rand.Text()
+	if err := checkGenerationRevision(prior, in.ExpectedRevision); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	op := in.OperationID
+	if op == "" {
+		op = rand.Text()
+	} else if !profileID.MatchString(op) || containsCredential(op, []string{key}) {
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return
+	}
+	if r.Pattern == "POST /v1/generation/handoffs" {
+		existing, err := s.cfg.Store.GetGenerationHandoff(ctx, op)
+		if err == nil {
+			if existing.ProfileID != p.ProfileID || existing.ProfileRevision != p.Revision {
+				writeError(w, 409, "operation_id_conflict", "handoff operation already recorded")
+				return
+			}
+			writeJSON(w, 200, map[string]any{"handoff": publicHandoff(existing)})
+			return
+		}
+		if !errors.Is(err, domain.ErrNotFound) {
+			writeDomainError(w, err)
+			return
+		}
+	}
+
 	receipt := domain.GenerationHandoff{OperationID: op, ProfileID: p.ProfileID, ProfileRevision: p.Revision, Digest: p.Digest,
 		PreviousProfileID: prior.ActiveProfileID, PreviousRevision: prior.ActiveRevision, Status: "applying",
 		StartedAt: float64(time.Now().UnixMilli()) / 1000}
@@ -406,10 +765,58 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	if r.Pattern == "POST /v1/generation/handoffs" {
+		writeJSON(w, 200, map[string]any{"handoff": publicHandoff(receipt)})
+		return
+	}
 	if !receipt.ActiveCommitted {
 		writeError(w, 502, "model_apply_failed", "engine did not confirm activation")
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "applied": true, "active_committed": true, "operation_id": op,
 		"profile_id": p.ProfileID, "revision": p.Revision, "model_digest": safeModelDigest(res.ModelDigest, key)})
+}
+
+// ApplyActiveGeneration restores the selected profile without changing its selection.
+func (s *Server) ApplyActiveGeneration(ctx context.Context) error {
+	s.generationMu.Lock()
+	defer s.generationMu.Unlock()
+	state, err := s.cfg.Store.GetGenerationState(ctx)
+	if err != nil {
+		return errors.New("could not read active generation selection")
+	}
+	if state.ActiveProfileID == "" || state.ActiveRevision <= 0 {
+		return nil
+	}
+	p, err := s.cfg.Store.GetGenerationProfile(ctx, state.ActiveProfileID, state.ActiveRevision)
+	var reason string
+	switch {
+	case err != nil:
+		reason = "startup_profile_unavailable"
+	case p.Removed:
+		return nil
+	case s.cfg.Models == nil:
+		reason = "startup_model_controller_unavailable"
+	default:
+		config, _, configErr := s.applyConfig(ctx, p)
+		if configErr != nil {
+			reason = "startup_model_configuration_unavailable"
+		} else {
+			res, applyErr := s.cfg.Models.ApplyModel(ctx, engine.ApplyModelRequest{
+				GenerationConfig: config, OutputLanguage: s.cfg.OutputLanguage, OperationID: "startup",
+			})
+			if applyErr != nil || !res.OK || !res.Applied || (res.OperationID != "" && res.OperationID != "startup") {
+				reason = "startup_model_apply_failed"
+			}
+		}
+	}
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := s.cfg.Store.SetGenerationStartupError(persist, reason); err != nil {
+		return fmt.Errorf("could not persist startup generation status (%s)", reason)
+	}
+	if reason != "" {
+		return errors.New(reason)
+	}
+	return nil
 }

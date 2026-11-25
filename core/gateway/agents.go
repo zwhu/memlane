@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"net/http"
 	"strings"
@@ -141,4 +142,66 @@ func (s *Server) agentConflicts(w http.ResponseWriter, r *http.Request) {
 		blocked = blocked || report.Blocked
 	}
 	writeJSON(w, 200, map[string]any{"managed_legacy": managed, "third_party_conflicts": thirdParty, "unrelated_count": total, "blocked": blocked})
+}
+
+type accessAgent struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+func (s *Server) activeAgents(ctx context.Context) ([]accessAgent, error) {
+	registered, err := s.cfg.Store.ListAgents(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]accessAgent, 0, len(registered))
+	for _, a := range registered {
+		if strings.TrimSpace(a.RetiredAt) == "" {
+			out = append(out, accessAgent{a.ID, a.Name, a.Kind})
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	registered, err := s.activeAgents(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	defaults, err := s.cfg.Store.GetRegistryDefaults(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	type connection struct {
+		ID         string `json:"instance_id"`
+		Kind       string `json:"kind"`
+		Status     string `json:"status"`
+		Detected   bool   `json:"detected"`
+		Registered bool   `json:"agent_registered"`
+		Version    string `json:"host_version,omitempty"`
+	}
+	hosts := agents.DetectHosts(s.cfg.DiscoveryOptions)
+	out := make([]connection, 0, len(hosts)+len(registered))
+	seen := map[string]bool{}
+	for _, a := range registered {
+		row := connection{ID: a.ID, Kind: a.Kind, Status: "registered", Registered: true}
+		for _, host := range hosts {
+			if a.Kind == host.Kind {
+				row.Detected, row.Version = host.Detected, host.Version
+				break
+			}
+		}
+		seen[a.Kind] = true
+		out = append(out, row)
+	}
+	for _, host := range hosts {
+		if !seen[host.Kind] {
+			out = append(out, connection{ID: host.Kind, Kind: host.Kind, Status: "not_connected", Detected: host.Detected, Version: host.Version})
+		}
+	}
+	writeJSON(w, 200, map[string]any{"revision": defaults.Revision, "connections": out})
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -40,21 +41,68 @@ type aclBody struct {
 
 type projectView struct {
 	projectSummary
-	ID            string       `json:"id"`
-	DatasetName   string       `json:"dataset_name"`
-	CodeDatasetID string       `json:"code_dataset_id"`
-	CodeEnabled   bool         `json:"code_enabled"`
-	Status        string       `json:"status"`
-	Aliases       []string     `json:"aliases"`
-	Overrides     []aclBody    `json:"overrides"`
-	Inbox         InboxSummary `json:"inbox"`
+	ID                   string                    `json:"id"`
+	DatasetName          string                    `json:"dataset_name"`
+	CodeDatasetID        string                    `json:"code_dataset_id"`
+	CodeEnabled          bool                      `json:"code_enabled"`
+	Status               string                    `json:"status"`
+	Aliases              []string                  `json:"aliases"`
+	Overrides            map[string]aclBody        `json:"overrides"`
+	DesiredRevision      int64                     `json:"desired_revision"`
+	Applied              map[string]projectApplied `json:"applied"`
+	AutoCaptureUpdatedAt string                    `json:"auto_capture_updated_at"`
+	CodeConfigured       bool                      `json:"code_configured"`
+	Inbox                InboxSummary              `json:"inbox"`
+}
+
+type projectApplied struct {
+	Status   string `json:"status"`
+	Revision int64  `json:"revision"`
+}
+
+func (s *Server) populateProjectAccess(ctx context.Context, view *projectView, kind, appliedJSON string) error {
+	view.Overrides = map[string]aclBody{}
+	overrides, err := s.cfg.Store.ListACLOverrides(ctx, kind, view.ID)
+	if err != nil {
+		return err
+	}
+	for _, a := range overrides {
+		view.Overrides[a.AgentID] = aclBody{a.AgentID, a.Access, a.Capture, a.AutoProcess}
+	}
+	view.Applied = map[string]projectApplied{}
+	if view.DatasetID == "" {
+		return nil
+	}
+	if view.Status == "" {
+		view.Status = "verified"
+	}
+	var previous map[string]projectApplied
+	if view.Status != "verified" && appliedJSON != "" {
+		if err := json.Unmarshal([]byte(appliedJSON), &previous); err != nil {
+			return err
+		}
+	}
+	agents, err := s.activeAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, a := range agents {
+		if view.Status == "verified" {
+			view.Applied[a.ID] = projectApplied{view.Status, view.DesiredRevision}
+		} else if value, ok := previous[a.ID]; ok {
+			view.Applied[a.ID] = value
+		} else {
+			view.Applied[a.ID] = projectApplied{view.Status, view.DesiredRevision}
+		}
+	}
+	return nil
 }
 
 func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView, error) {
 	view := projectView{projectSummary: projectSummary{ProjectID: p.ID, Name: p.Name, DatasetID: p.DatasetID,
 		AutoCapture: p.AutoCapture, AutoCaptureVersion: p.AutoCaptureVersion}, ID: p.ID, DatasetName: p.DatasetName,
 		CodeDatasetID: p.CodeDatasetID, CodeEnabled: p.CodeEnabled, Status: p.Status, Aliases: append([]string{}, p.Aliases...),
-		Overrides: []aclBody{}}
+		DesiredRevision: int64(p.DesiredRevision), AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt, CodeConfigured: p.CodeConfigured}
 	err := catalogCounts(ctx, s.cfg.Store.DB(), p.DatasetID, &view.projectSummary)
 	if err != nil {
 		return view, err
@@ -67,10 +115,7 @@ func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView
 	if len(view.Inbox.RecentFailures) > 0 {
 		view.LastError = view.Inbox.RecentFailures[0].LastError
 	}
-	overrides, err := s.cfg.Store.ListACLOverrides(ctx, "project", p.ID)
-	for _, a := range overrides {
-		view.Overrides = append(view.Overrides, aclBody{a.AgentID, a.Access, a.Capture, a.AutoProcess})
-	}
+	err = s.populateProjectAccess(ctx, &view, "project", p.AppliedJSON)
 	return view, err
 }
 
@@ -88,6 +133,11 @@ func catalogCounts(ctx context.Context, db sqlRead, ds string, out *projectSumma
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	defaults, err := s.cfg.Store.GetRegistryDefaults(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	projects, err := s.cfg.Store.ListProjects(ctx)
 	if err != nil {
 		writeDomainError(w, err)
@@ -102,7 +152,63 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		views = append(views, view)
 	}
-	writeJSON(w, 200, map[string]any{"projects": views})
+	agents, err := s.activeAgents(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	var common *projectView
+	c, err := s.commonConfig(ctx)
+	if err == nil {
+		common = &projectView{projectSummary: projectSummary{ProjectID: c.ID, Name: c.Name, DatasetID: c.DatasetID},
+			ID: c.ID, DatasetName: c.DatasetName, Status: c.Status, Aliases: []string{}, DesiredRevision: int64(c.DesiredRevision)}
+		err = catalogCounts(ctx, s.cfg.Store.DB(), c.DatasetID, &common.projectSummary)
+		if err == nil {
+			err = s.populateProjectAccess(ctx, common, "common", c.AppliedJSON)
+		}
+	} else if errors.Is(err, domain.ErrNotFound) {
+		err = nil
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"projects": views, "agents": agents, "common": common,
+		"defaults": map[string]any{"access": domain.AccessNone, "capture": false, "auto_process": false}, "revision": defaults.Revision})
+}
+
+func (s *Server) updateDefaults(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		ExpectedRevision *int    `json:"expected_revision"`
+		Fields           aclBody `json:"fields"`
+	}
+	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
+		return
+	}
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	if err := s.checkRegistryRevision(r.Context(), in.ExpectedRevision); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	// The Go gateway only supports explicit, per-agent grants.
+	if in.Fields.Access != nil && *in.Fields.Access != domain.AccessNone ||
+		in.Fields.Capture != nil && *in.Fields.Capture || in.Fields.AutoProcess != nil && *in.Fields.AutoProcess {
+		writeDomainError(w, domain.ErrForbidden)
+		return
+	}
+	s.listProjects(w, r)
+}
+
+func (s *Server) checkRegistryRevision(ctx context.Context, expected *int) error {
+	if expected == nil {
+		return nil
+	}
+	d, err := s.cfg.Store.GetRegistryDefaults(ctx)
+	if err == nil && d.Revision != *expected {
+		return domain.ErrConflict
+	}
+	return err
 }
 
 func (s *Server) respondProject(w http.ResponseWriter, r *http.Request, p domain.Project, status int) {
@@ -131,6 +237,7 @@ type projectInput struct {
 	DatasetName   string    `json:"dataset_name"`
 	AutoCapture   *bool     `json:"auto_capture"`
 	Aliases       *[]string `json:"aliases"`
+	Workspace     string    `json:"workspace"`
 	Status        *string   `json:"status"`
 	CodeEnabled   *bool     `json:"code_enabled"`
 	CodeDatasetID *string   `json:"code_dataset_id"`
@@ -212,6 +319,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		p.DatasetID = fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 	}
 	in.apply(&p)
+	if in.Workspace != "" {
+		p.Aliases = append(p.Aliases, in.Workspace)
+	}
 	if p.DatasetName == "" {
 		p.DatasetName = p.Name
 	}
@@ -341,17 +451,35 @@ func (s *Server) activeAgent(ctx context.Context, id string) error {
 }
 
 func (s *Server) projectACL(w http.ResponseWriter, r *http.Request) {
-	var in aclBody
-	if r.Method != http.MethodDelete && !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
+	var request struct {
+		aclBody
+		ExpectedRevision *int     `json:"expected_revision"`
+		Fields           *aclBody `json:"fields"`
+	}
+	if r.Method != http.MethodDelete && !decodeJSON(w, r, s.cfg.MaxBodyBytes, &request) {
 		return
 	}
+	in := request.aclBody
 	ctx := r.Context()
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
 	id := r.PathValue("id")
+	targetKind := "project"
+	directory := r.Pattern == "PUT /v1/projects/{id}/overrides"
 	if _, err := s.cfg.Store.GetProject(ctx, id); err != nil {
-		writeDomainError(w, err)
-		return
+		if !directory || !errors.Is(err, domain.ErrNotFound) {
+			writeDomainError(w, err)
+			return
+		}
+		common, err := s.commonConfig(ctx)
+		if err == nil && common.ID != id {
+			err = domain.ErrNotFound
+		}
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		targetKind = "common"
 	}
 	agentID := r.PathValue("agent_id")
 	if r.Method == http.MethodDelete {
@@ -369,13 +497,36 @@ func (s *Server) projectACL(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	if in.Access == nil {
+	if request.Fields != nil {
+		if err := s.checkRegistryRevision(ctx, request.ExpectedRevision); err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		previous, err := s.cfg.Store.GetACLOverride(ctx, targetKind, id, in.AgentID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			writeDomainError(w, err)
+			return
+		}
+		in.Access = cmp.Or(request.Fields.Access, previous.Access)
+		in.Capture = cmp.Or(request.Fields.Capture, previous.Capture)
+		in.AutoProcess = cmp.Or(request.Fields.AutoProcess, previous.AutoProcess)
+	}
+	if request.Fields == nil && in.Access == nil {
 		writeDomainError(w, domain.ErrInvalidArgument)
 		return
 	}
-	if err := s.cfg.Store.SetACLOverride(ctx, domain.ACLOverride{TargetKind: "project", TargetID: id, AgentID: in.AgentID,
-		Access: in.Access, Capture: in.Capture, AutoProcess: in.AutoProcess}); err != nil {
+	if targetKind == "common" && (in.Access == nil ||
+		(*in.Access != domain.AccessNone && *in.Access != domain.AccessRead)) {
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return
+	}
+	if err := s.cfg.Store.UpdateACLOverride(ctx, domain.ACLOverride{TargetKind: targetKind, TargetID: id, AgentID: in.AgentID,
+		Access: in.Access, Capture: in.Capture, AutoProcess: in.AutoProcess}, request.ExpectedRevision); err != nil {
 		writeDomainError(w, err)
+		return
+	}
+	if directory {
+		s.listProjects(w, r)
 		return
 	}
 	writeJSON(w, 200, in)

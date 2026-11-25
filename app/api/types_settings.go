@@ -28,6 +28,7 @@ type GenerationProfile struct {
 	MaxConcurrentRequests *int     `json:"max_concurrent_requests,omitempty"`
 	Removed               bool     `json:"removed,omitempty"`
 	CreatedAt             string   `json:"created_at,omitempty"`
+	CredentialConfigured  bool     `json:"credential_configured,omitempty"`
 	HasCredential         bool     `json:"has_credential,omitempty"`
 }
 
@@ -46,9 +47,13 @@ type ModelStatus struct {
 }
 
 type GenerationOverviewResponse struct {
-	State       GenerationState     `json:"state"`
-	Profiles    []GenerationProfile `json:"profiles"`
-	ModelStatus *ModelStatus        `json:"model_status"`
+	State                  GenerationState                 `json:"state"`
+	Profiles               []GenerationProfile             `json:"profiles"`
+	ModelStatus            *ModelStatus                    `json:"model_status"`
+	Validations            map[string]GenerationValidation `json:"validations"`
+	HandoffAvailable       bool                            `json:"handoff_available"`
+	DetectedProcessingCLIs []string                        `json:"detected_processing_clis"`
+	OutputLanguage         string                          `json:"output_language"`
 }
 
 type ProfileSelection struct {
@@ -176,4 +181,14 @@ type ProfileCancelResponse struct {
 
 type ProfileDeleteResponse struct {
 	Deleted bool `json:"deleted"`
+}
+
+type GenerationValidation struct {
+	ProbeResult
+	Digest             string `json:"digest"`
+	RegisteredRevision int64  `json:"registered_revision"`
+	Reference          struct {
+		ID       string `json:"id"`
+		Revision int64  `json:"revision"`
+	} `json:"reference"`
 }

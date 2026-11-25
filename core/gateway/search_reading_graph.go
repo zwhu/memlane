@@ -44,6 +44,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		in.Limit = 30
 	}
 	in.Limit = min(in.Limit, 50)
+	metadata := r.URL.Path == "/v1/search/metadata"
 	ctx := r.Context()
 	var items []catalogItem
 	var sessions []rawItem
@@ -70,7 +71,11 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 				return false
 			}
 		})
-		items, sessions, err = catalogSearch(ctx, tx, in, refs)
+		query := in
+		if metadata {
+			query.Limit++
+		}
+		items, sessions, err = catalogSearch(ctx, tx, query, refs)
 		return err
 	})
 	if err != nil {
@@ -104,7 +109,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.searches.add(searchEntry{in.Query, in.Filter, in.ProjectID, in.DatasetID, len(items) + len(sessions) + len(hits), domain.NowUTCNS()})
+	if r.Method == http.MethodPost {
+		s.searches.add(searchEntry{in.Query, in.Filter, in.ProjectID, in.DatasetID, len(items) + len(sessions) + len(hits), domain.NowUTCNS()})
+	}
 	combined := make([]any, 0, len(items)+len(sessions))
 	for _, item := range items {
 		combined = append(combined, item)
@@ -112,7 +119,9 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	for _, session := range sessions {
 		combined = append(combined, session)
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "query": in.Query, "filter": in.Filter, "items": combined, "semantic_hits": hits})
+	hasMore := len(combined) > in.Limit
+	writeJSON(w, 200, map[string]any{"ok": true, "query": in.Query, "filter": in.Filter,
+		"items": combined[:min(len(combined), in.Limit)], "semantic_hits": hits, "generation": catalogGeneration, "has_more": hasMore})
 }
 
 func (s *Server) filterSemanticHits(ctx context.Context, filter string, hits []engine.SearchHit) ([]engine.SearchHit, error) {
@@ -186,19 +195,36 @@ func (s *Server) searchRecent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	limit := parseLimit(r.URL.Query().Get("limit"), 20, 50)
 	var items []catalogItem
+	var sessions []rawItem
 	err := snapshot(ctx, s.cfg.Store, func(tx *sql.Tx) error {
 		refs, err := datasetRefs(ctx, tx, readingIdentity(r))
 		if err != nil {
 			return err
 		}
+		q := r.URL.Query()
+		project, dataset := q.Get("project_id"), q.Get("dataset_id")
+		refs = slices.DeleteFunc(refs, func(ref datasetRef) bool {
+			return project != "" && ref.ProjectID != project || dataset != "" && ref.ID != dataset
+		})
 		items, err = recentKnowledge(ctx, tx, refs, limit)
+		if err != nil {
+			return err
+		}
+		raw, err := json.Marshal(refs)
+		if err != nil {
+			return err
+		}
+		sessions, err = rawSessionSearch(ctx, tx, ` JOIN (
+   SELECT json_extract(value,'$.project') AS project_id,json_extract(value,'$.id') AS dataset_id
+   FROM json_each(?) WHERE json_extract(value,'$.kind')='project'
+  ) p ON p.dataset_id=x.dataset_id WHERE x.is_top_level=1`, []any{string(raw)}, limit)
 		return err
 	})
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"recent_searches": s.searches.recent(limit), "recent_items": items})
+	writeJSON(w, 200, map[string]any{"recent_searches": s.searches.recent(limit), "recent_items": items, "generation": catalogGeneration, "knowledge_items": items, "session_items": sessions})
 }
 
 type readingStateView struct {

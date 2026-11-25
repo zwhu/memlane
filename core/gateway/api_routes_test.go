@@ -161,7 +161,19 @@ func TestProjectsAndZeroDefaultGrant(t *testing.T) {
 		t.Fatal(withWorkspace)
 	}
 	for _, access := range []domain.AccessLevel{domain.AccessNone, domain.AccessRead, domain.AccessMaintain} {
-		manage(t, s, "PUT", "/v1/projects/test/overrides", fmt.Sprintf(`{"agent_id":"agent","access":%q,"capture":false}`, access), 200)
+		out := decodeResponse[struct {
+			Projects []projectView `json:"projects"`
+		}](t, manage(t, s, "PUT", "/v1/projects/test/overrides", fmt.Sprintf(`{"agent_id":"agent","access":%q,"capture":false}`, access), 200))
+		found := false
+		for _, p := range out.Projects {
+			if p.ID == "test" {
+				override, ok := p.Overrides["agent"]
+				found = ok && override.Access != nil && *override.Access == access
+			}
+		}
+		if !found {
+			t.Fatal("override missing from access directory")
+		}
 		got, err := store.EvaluateProjectACL(ctx, "test", "agent")
 		must(t, err)
 		if got.Access != access || got.CanCapture {
@@ -328,7 +340,7 @@ func TestRawRecordsCommonAndSearch(t *testing.T) {
 		Items    []catalogItem `json:"recent_items"`
 	}](
 		t, manage(t, s, "GET", "/api/search/recent", "", 200))
-	if len(history.Searches) != 3 || history.Searches[0].Filter != "raw" || len(history.Items) != 2 {
+	if len(history.Searches) != 1 || history.Searches[0].Filter != "all" || len(history.Items) != 2 {
 		t.Fatal(history)
 	}
 	for _, table := range []string{"recall_events", "recall_doc_counts", "recall_query_stats"} {
