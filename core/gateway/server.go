@@ -204,8 +204,11 @@ func (s *Server) routes() http.Handler {
 		mux.Handle("/mcp/", s.cfg.MCPHandler)
 	}
 	if s.cfg.ProfilesHandler != nil {
+		mux.Handle("/api/profiles", s.cfg.ProfilesHandler)
 		mux.Handle("/api/profiles/", s.cfg.ProfilesHandler)
-		mux.Handle("/v1/profiles/", s.cfg.ProfilesHandler)
+		profiles := http.StripPrefix("/v1/profiles", s.cfg.ProfilesHandler)
+		mux.Handle("/v1/profiles", profiles)
+		mux.Handle("/v1/profiles/", profiles)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, origin := range r.Header.Values("Origin") {

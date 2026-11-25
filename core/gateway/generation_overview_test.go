@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/zwhu/memlane/core/domain"
+	"github.com/zwhu/memlane/core/engine"
 )
 
 func TestGenerationValidationAndActivation(t *testing.T) {
@@ -116,6 +118,37 @@ func TestGenerationValidationAndActivation(t *testing.T) {
 	manage(t, s, "PUT", "/api/generation/profiles/p2", `{"mode":"agent_bridge","bridge_kind":"codex","model":"bridge-model"}`, 200)
 	manage(t, s, "POST", "/v1/generation/profiles/p2/delete", "", 204)
 	manage(t, s, "POST", "/api/generation/validate", `{"profile_id":"p2"}`, 403)
+}
+
+func TestGenerationModelStatusOutputLanguage(t *testing.T) {
+	const secret, bridgeToken = "abc123", "def456"
+	bridgeTokenFile := filepath.Join(t.TempDir(), "bridge-token")
+	must(t, os.WriteFile(bridgeTokenFile, []byte(bridgeToken), 0o600))
+	s, _, fake := testServer(t, func(c *Config) {
+		c.BridgeEndpoint = "http://127.0.0.1:12345"
+		c.BridgeTokenFile = bridgeTokenFile
+	})
+	profile := fmt.Sprintf(`{"mode":"provider","provider":"openai","model":"model","endpoint":"https://provider.invalid/v1","api_key":%q}`, secret)
+	manage(t, s, "PUT", "/api/generation/profiles/p1", profile, 200)
+	for _, tc := range []struct{ name, language, want string }{
+		{"valid tag", "zh-CN", "zh-CN"},
+		{"invalid tag", "zh_CN", ""},
+		{"tag containing a credential", "zh-CN-" + secret, ""},
+		{"tag containing the bridge token", "zh-CN-" + bridgeToken, ""},
+		{"credential-shaped tag", "sk-abcdef12-xyz", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake.outputLanguage = tc.language
+			res := manage(t, s, "GET", "/api/generation", "", http.StatusOK)
+			got := decodeResponse[struct {
+				ModelStatus engine.ModelStatusResult `json:"model_status"`
+			}](t, res).ModelStatus
+			body := res.Body.String()
+			if !got.OK || got.OutputLanguage != tc.want || strings.Contains(body, secret) || strings.Contains(body, bridgeToken) {
+				t.Fatalf("unexpected model status for %s", tc.name)
+			}
+		})
+	}
 }
 
 func TestOverviewSnapshotParityAndLatency(t *testing.T) {

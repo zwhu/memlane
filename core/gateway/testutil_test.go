@@ -35,7 +35,7 @@ type fakeEngine struct {
 	hits                                                []engine.SearchHit
 	probeReply                                          engine.ProbeResult
 	ingestErr, extractErr, syncErr, applyErr, searchErr error
-	modelDigest                                         string
+	modelDigest, outputLanguage                         string
 	documents                                           map[string]engine.Item
 	common                                              map[string]domain.CatalogDoc
 	deleted                                             map[string]string
@@ -139,7 +139,7 @@ func (f *fakeEngine) ApplyModel(_ context.Context, in engine.ApplyModelRequest) 
 func (f *fakeEngine) ModelStatus(context.Context) (engine.ModelStatusResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return engine.ModelStatusResult{OK: true, ModelDigest: f.modelDigest}, nil
+	return engine.ModelStatusResult{OK: true, ModelDigest: f.modelDigest, OutputLanguage: f.outputLanguage}, nil
 }
 
 func (f *fakeEngine) ProbeModel(_ context.Context, in engine.ProbeRequest) (engine.ProbeResult, error) {

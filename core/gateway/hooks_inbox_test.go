@@ -168,6 +168,41 @@ func TestRecallScopesAndMetrics(t *testing.T) {
 	}
 }
 
+func TestCaptureQAContextDate(t *testing.T) {
+	s, _, fake := testServer(t, nil)
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+	for _, tc := range []struct {
+		name, content, sourceDate, want string
+	}{
+		{"context object", `{"context":{"date":"2026-01-15"},"prompt_time":"2026-03-10T12:00:00Z","time":"2026-04-05T12:00:00Z"}`, "", "2026-01-15"},
+		{"encoded context", `{"context":"{\"date\":\"2026-02-20\"}"}`, "", "2026-02-20"},
+		{"prompt time", `{"context":{"date":"invalid"},"prompt_time":"2026-03-10T12:00:00Z","time":"2026-04-05T12:00:00Z"}`, " ", domain.LocalCalendarDate("2026-03-10T12:00:00Z", time.Local)},
+		{"time", `{"time":"2026-04-05T12:00:00Z"}`, "", domain.LocalCalendarDate("2026-04-05T12:00:00Z", time.Local)},
+		{"explicit source date", `{"context":{"date":"2026-01-15"}}`, "2026-05-01", "2026-05-01"},
+		{"missing dates", `{"question":"q","answer":"a"}`, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := time.Now().Format(time.DateOnly)
+			body := fmt.Sprintf(`{"project_id":"p","content":%s,"source_meta":{"context_date":%q}}`, tc.content, tc.sourceDate)
+			agentRequest(t, s, "/ingest", body, http.StatusAccepted)
+			after := time.Now().Format(time.DateOnly)
+			worked, err := s.Inbox().ProcessOnce(context.Background())
+			must(t, err)
+			if !worked {
+				t.Fatal("no pending capture claimed")
+			}
+			got := fake.ingest[len(fake.ingest)-1].SourceMeta.ContextDate
+			if tc.want == "" {
+				if got != before && got != after {
+					t.Fatalf("context date = %q, want today's local date (%q or %q)", got, before, after)
+				}
+			} else if got != tc.want {
+				t.Fatalf("context date = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInboxFailureAndRetry(t *testing.T) {
 	s, store, fake := testServer(t, func(c *Config) { c.OutputLanguage = "fr" })
 	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
@@ -196,9 +231,6 @@ func TestInboxFailureAndRetry(t *testing.T) {
 	}
 	if d := fake.extract[0]; d.OutputLanguage != "fr" || d.ExpectedModelDigest != "live-digest" || len(d.DocIDs) != 1 {
 		t.Fatal(d)
-	}
-	if fake.ingest[0].SourceMeta.ContextDate != time.Now().Format(time.DateOnly) {
-		t.Fatal(fake.ingest[0])
 	}
 	fake.syncErr = nil
 	if got := decodeResponse[map[string]any](t, manage(t, s, "POST", "/api/projects/p/retry", "", 200)); got["retried_count"] != float64(1) {

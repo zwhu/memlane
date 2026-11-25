@@ -56,9 +56,19 @@ func TestHealthMonitorAndDelegates(t *testing.T) {
 		requireCode(t, request(t, s, "GET", path, "", nil, 401), "unauthorized")
 	}
 	manage(t, s, "GET", "//api/projects", "", http.StatusTemporaryRedirect)
-	for _, path := range []string{"/api/profiles/status", "/v1/profiles/status"} {
-		request(t, s, "GET", path, "", nil, 401)
-		manage(t, s, "GET", path, "", 200)
+	for _, tc := range []struct{ path, want string }{
+		{"/api/profiles", "/api/profiles"},
+		{"/api/profiles/", "/api/profiles/"},
+		{"/api/profiles/codex", "/api/profiles/codex"},
+		{"/v1/profiles", ""},
+		{"/v1/profiles/", "/"},
+		{"/v1/profiles/codex", "/codex"},
+	} {
+		request(t, s, "GET", tc.path, "", nil, http.StatusUnauthorized)
+		res := manage(t, s, "GET", tc.path, "", http.StatusOK)
+		if got := decodeResponse[map[string]string](t, res)["path"]; got != tc.want {
+			t.Errorf("GET %s delegated path = %q, want %q", tc.path, got, tc.want)
+		}
 	}
 	if _, err := s.StartLoopback("0.0.0.0:0"); err == nil {
 		t.Fatal("non-loopback accepted")

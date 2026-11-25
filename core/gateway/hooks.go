@@ -60,6 +60,24 @@ type captureRequest struct {
 	CaptureKey string            `json:"capture_key"`
 }
 
+func captureQAContextDate(content any) string {
+	fields, _ := content.(map[string]any)
+	contextFields, _ := fields["context"].(map[string]any)
+	if encoded, ok := fields["context"].(string); ok {
+		if err := json.Unmarshal([]byte(encoded), &contextFields); err != nil {
+			contextFields = nil
+		}
+	}
+	for _, value := range []any{contextFields["date"], fields["prompt_time"], fields["time"]} {
+		if raw, ok := value.(string); ok {
+			if day := domain.LocalCalendarDate(raw, time.Local); day != "" {
+				return day
+			}
+		}
+	}
+	return time.Now().Format(time.DateOnly)
+}
+
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Agent) {
 	var req captureRequest
 	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &req) {
@@ -159,7 +177,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 		captureKey = tupleDigest(agent.ID, project.DatasetID, requestKey)
 	}
 	if req.Kind == engine.IngestKindCaptureQA && strings.TrimSpace(req.SourceMeta.ContextDate) == "" {
-		req.SourceMeta.ContextDate = time.Now().Format(time.DateOnly)
+		req.SourceMeta.ContextDate = captureQAContextDate(content)
 	}
 	req.IdempotencyKey = tupleDigest(agent.ID, project.DatasetID, captureKey)
 	encoded, err := json.Marshal(req.inboxPayload)

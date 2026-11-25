@@ -14,11 +14,13 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/kit/daemon"
 )
 
 var profileID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 var receiptCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 var modelDigest = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var languageTag = regexp.MustCompile(`^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$`)
 
 type generationView struct {
 	domain.GenerationProfile
@@ -47,6 +49,9 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, generationView{p, has})
 	}
+	if key, err := s.secrets.read(s.cfg.BridgeTokenFile); err == nil {
+		credentials = append(credentials, key)
+	}
 	var model any
 	if s.cfg.Models != nil {
 		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -56,7 +61,10 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 			model = map[string]any{"ok": false, "error": "model_status_unavailable"}
 		} else {
 			status.Mode = cleanReceipt(status.Mode, credentials...)
-			status.OutputLanguage = cleanReceipt(status.OutputLanguage, credentials...)
+			language := status.OutputLanguage
+			if !languageTag.MatchString(language) || containsCredential(language, credentials) || daemon.RedactLogLine(language) != language {
+				status.OutputLanguage = ""
+			}
 			status.ModelDigest = safeModelDigest(status.ModelDigest, credentials...)
 			model = status
 		}
@@ -199,13 +207,17 @@ func cleanReceipt(value string, secrets ...string) string {
 	return safeModelDigest(value, secrets...)
 }
 
-func safeModelDigest(value string, secrets ...string) string {
+func containsCredential(value string, secrets []string) bool {
 	for _, secret := range secrets {
 		if secret != "" && strings.Contains(value, secret) {
-			return ""
+			return true
 		}
 	}
-	if modelDigest.MatchString(value) {
+	return false
+}
+
+func safeModelDigest(value string, secrets ...string) string {
+	if modelDigest.MatchString(value) && !containsCredential(value, secrets) {
 		return sanitizeError(errors.New(value))
 	}
 	return ""
