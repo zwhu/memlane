@@ -41,7 +41,7 @@
 | **7. 官方插件 `agent-plugin`**（`a176248`） | `20 MiB` / `60 MiB` | **`6.74 MiB`**（`7,070,055 B`） | **`9.32 MiB`**（`integrations-upstream/service.tar.gz` `6.74` + `source/` `1.35` + 最终 `plugin/` `1.23`） | [plugin.go](../../internal/bootstrap/plugin.go#L315-L347) 构建完 `plugin/` 后**保留整个 `integrations-upstream/`**（`8.09 MiB`），而 `VerifyPlugin` 仅核验 `plugin/` | 可复用已验证插件目录 |
 | **合计（首次净室安装）** | **下载 ~`2.34 GiB` / 落盘 ~`4.57 GiB`** | **官方 `550.58 MiB`（`577.3 MB`）**<br>**国内 `551.28 MiB`（`578.1 MB`）** | **无 `.pyc`/缓存：`1,328.84 MiB`（`1.30 GiB`）**<br>**含 `.pyc`：`1,426.10 MiB`（`1.39 GiB` 逻辑 / `1.50 GiB` 块）**<br>**含 `<runtime>/cache`（估算）：`1.8–2.4 GiB` 表观 / `1.45–1.85 GiB` 物理** | — | 若复用宿主 `python`+`uv`，净室下载降至 **`516.86 MiB`** |
 
-> **附：`Memlane.app` 本体**：按 [build_release.py](../../scripts/build_release.py) 与 [公测发版方案](../product/release-v0.1.0-beta.1-20261121.md) 实测，DMG 约 `6.0 MB`，解压后 `Memlane.app` 约 `22.3 MB`（含内嵌 `web/official-graph/dist/*` 与 `engine/python/` 脚本），不是体积瓶颈。
+> **附：`Memlane.app` 本体**：按 [build_release.py](../../scripts/build_release.py) 与 [公测发版方案](../archive/release-v0.1.0-beta.1-20261121.md) 实测，DMG 约 `6.0 MB`，解压后 `Memlane.app` 约 `22.3 MB`（含内嵌 `web/official-graph/dist/*` 与 `engine/python/` 脚本），不是体积瓶颈。
 
 ### 2.2 `runtime` 171 个锁定依赖 Top 30 体积大户明细（全量实测）
 
@@ -362,6 +362,6 @@ print(f"ALL {len(targets)} CORE MODULES IMPORTED CLEANLY")
 ## 关联文档
 
 - [Docker 部署架构调研](docker-deployment-architecture-20261125.md)
-- [单人记忆库部署方向评估](../product/deployment-options-20261117.md)
-- [公测发版方案与国内镜像源调研](../product/release-v0.1.0-beta.1-20261121.md)
+- [单人记忆库部署方向评估（历史归档）](../archive/deployment-options-20261117.md)
+- [公测发版方案与国内镜像源调研（历史归档）](../archive/release-v0.1.0-beta.1-20261121.md)
 - [系统架构总览](../architecture/overview.md) · [本地开发与配置说明](../architecture/development.md) · [工程规范](../engineering/workflow.md)

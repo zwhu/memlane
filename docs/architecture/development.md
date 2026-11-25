@@ -1,10 +1,10 @@
-# 本地开发
+# 本地开发与运维说明
+
+面向 Memlane 源码开发与本地日常运维，系统三组件与链路术语统一以 [CONTEXT.md](../../CONTEXT.md) 为准：**记忆引擎（Cognee）**、**接入网关**、**Agent 模型代理（`agent_bridge`）**，业务动作区分**自动采集**与**记忆提炼**。
 
 ## 启动与运维
 
-从仓库根目录，用 `runtime.json` 中 `python` 字段指定的受管 Python 3.12 运行 `scripts/dev.py`；下方示例使用日常配置对应的 `.local/cognee-python/bin/python`，省略 `--config` 时默认读取 `.local/daily/runtime.json`。
-
-启动预检由 `scripts/dev.py` 自己执行，先于服务子进程启动。裸 `python3` 可能选中 Python 3.9，读取 Codex 配置时会缺少 `tomllib`；直接用受管 Python 启动，预检与服务子进程使用同一个环境。
+从仓库根目录使用 `runtime.json` 中 `python` 字段指定的受管 Python 3.12 运行 `scripts/dev.py`（默认配置文件为 `.local/daily/runtime.json`）。`scripts/dev.py` 在自身进程先执行启动预检，再拉起子进程；裸 `python3` 若解析到 Python 3.9，读取 Codex 配置时会因缺少 `tomllib` 失败。首次运行 `prepare` 时受管环境尚未创建，可用宿主 `python3` 执行。
 
 ```sh
 # 启动后台服务与桌面窗口
@@ -13,185 +13,188 @@
 # 仅启动后台服务（不拉起窗口）
 .local/cognee-python/bin/python scripts/dev.py start --no-ui --config /绝对路径/runtime.json
 
-# 状态 / 重开窗口 / 停止 / 异常恢复
+# 状态 / 重开窗口 / 附着前台 UI watcher / 停止 / 异常恢复
 .local/cognee-python/bin/python scripts/dev.py {status|open|stop|recover} --config /绝对路径/runtime.json
-```
+.local/cognee-python/bin/python scripts/dev.py open --watch-ui --config /绝对路径/runtime.json
 
-| 动作 | 行为 |
-| --- | --- |
-| `start` | 获取日常数据单实例锁，依次启动 completion、官方 Cognee、`project_control_server` 与桌面端；已有实例运行时不重复启动。 |
-| `status` | 校验数据锁、启动器 PID、进程启动时间与配置路径并输出状态摘要。 |
-| `open` | 重开桌面窗口，不重启后台服务。 |
-| `stop` | 校验实例身份，停止所属进程组及子进程并释放日常数据锁。 |
-| `recover` | 异常退出后确认进程组与端口已释放，再安全归档遗留锁记录。 |
+# 尚无 active 提炼配置时启动最小配置服务
+.local/cognee-python/bin/python scripts/dev.py setup --config /绝对路径/runtime.json
 
-运行边界：
-
-- 实际运行配置、token、服务环境变量与本机 Agent 配置保存在 Git 跟踪范围之外的 `.local/`（`0600` 权限），不要提交密钥、真实记忆库、聊天记录或本机 Agent 配置。
-- 受管开发任务经 `scripts/task.py` 执行，至少保留 `50 GiB` 可用磁盘空间（运行中低于 `55 GiB` 自动停止）。
-- 首次提交前执行 `sh scripts/install-hooks.sh`，启用仓库钩子与提交身份守卫。
-
-## 静态检查
-
-```sh
-python3 scripts/task.py -- python3 scripts/lint.py
-python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py
-```
-
-此入口不加载引擎、不调用模型，现行静态规则覆盖 `ML001`–`ML003` 与 `ML006`–`ML017`（测试夹具不参与，且由 `sh scripts/go.sh test ./...` 经 `lint_gate_test.go` 自动联动强制执行）：
-- **模型与画像边界**：`ML001` 限制原生模型配置只能通过共享构造入口（`native_llm_configuration`）；`ML002` 禁止在模型配置和请求中注入字面量采样／输出值；`ML003` 禁止通过 `or` / `get` / `setdefault` 补模型参数回退值（用户明确配置的 `0` 必须保留）；`ML006` 禁止用户画像生成（`user_profiles/runner.py`）使用固定总时长超时中断（`wait_for` / `timeout` / `timeout_at`）。
-- **环境隔离与 UI 性能**：`ML007` 禁止在非白名单模块修改全局 `os.environ`；`ML008`–`ML012` 守卫 MyGo 桌面端动效 `ReduceMotion`、禁止 `<500ms` 高频重绘、禁止 `Draw`/`App.View` 渲染热路径同步磁盘 I/O 或网络调用、禁止桌面端落盘首页 SWR 缓存并强制首页冷启动经 `overviewBootstrap` 聚合及延迟 `RefreshIntegrations`。
-- **运行时资源门禁**：`ML013`–`ML017` 守卫异步高频轮询、异步函数内阻塞子进程、二进制/大归档全量 `read_bytes()` 哈希与 worker 清理（**`ML015` 扩展覆盖 `scripts/*.py`**）、SQLite WAL 必须显式配置 `PRAGMA journal_size_limit`，以及默认启动禁止无条件 `mygo dev` 热重载与磁盘清理回执轮转淘汰。
-
-输出文件、行号和规则编号，违规以非零退出码阻断检查。这项静态检查针对已知危险写法；参数真实传递和旧环境隔离仍须通过模型参数及协议回归测试。
-
-> **术语说明（2026-11-21 起）**：下文保留历史日期记录原貌；当前规范术语统一以 [CONTEXT.md](../../CONTEXT.md) 为准——系统三组件称为「记忆引擎（Cognee）」「接入网关」「Agent 模型代理（`agent_bridge`）」，业务动作区分「自动采集」与「记忆提炼」。
-
-2026-11-17：新增显式引擎组件准备入口（dev）：
-
-```sh
+# 开发态显式准备引擎组件（仅准备受管 Python/venv/依赖与上游源码，不建库或写 runtime.json）
 python3 scripts/dev.py prepare --component-root /绝对路径/私有引擎组件目录
 ```
 
-此入口使用已安装的 `uv`（可通过 `--uv /绝对路径/uv` 指定）下载受管 Python 3.12.12、创建独立 venv、按现有哈希锁安装依赖，并校验／解包固定官方源码。不会使用或修改宿主 Python 环境；进度与失败步骤保存在组件目录的 `status.json`，正常完成状态为 `components_ready`。再次执行重新校验各阶段，保留已完成组件；不接管已有未知目录，不覆盖改变了固定输入的旧环境。
+| 动作 | 行为与边界 |
+| --- | --- |
+| `start` | 获取日常数据单实例锁，依次启动 Agent 模型代理（桥模式）、记忆引擎（Cognee）、接入网关（`project_control_server`）与桌面端；Provider 模式不启动模型代理。已有实例运行时不重复启动，健康检查就绪不代表真实模型推理已验证。 |
+| `status` | 校验数据锁、启动器 PID、进程启动时间与配置路径并输出状态摘要；未启动、配置不匹配或残留锁需先核实，不得删锁或盲杀未知进程。 |
+| `open` | 向现有启动器发送重开窗口请求，不启动第二套服务；关闭桌面窗口不会停止后台服务。 |
+| `open --watch-ui` | 旧启动器后台健康、原 UI watcher 已退出时，在当前终端附着单个前台 MyGo watcher 供开发热重载；退出仅收尾 UI 进程组，不停止后台。 |
+| `stop` | 核对数据锁、启动器 PID、内核启动时间与配置路径，收尾所属进程组及模型子进程并释放日常数据锁；等待 `Owned service groups exited; daily store released.` 后再重启。 |
+| `recover` | 异常退出后持有同库锁，确认原进程与进程组全部消失、端口空闲、登记与配置锁已释放后安全归档遗留 owner 记录；不终止任何进程，PID 复用或未知监听一律拒绝。 |
+| `setup` | 尚无 `active` 提炼配置时，仅拉起受管理 token 认证的配置服务并复用桌面端「记忆提炼」表单；拒绝已存在 `active` 的账本，完成后 `stop` 再正常 `start`。 |
+| `prepare` | 开发态组件准备入口，使用 `uv`（支持 `--uv` 指定）准备受管 Python 3.12.12、独立 venv、哈希锁依赖与上游源码，进度写入 `status.json`（就绪为 `components_ready`）；独立 `.app` 终端用户首装由 `internal/bootstrap` 与内置 Setup CLI 托管。 |
 
-**它目前只准备组件，不创建数据库、owner、API key 或 runtime 配置，也不安装 Agent 插件／启动服务。** 不能将该命令成功视为首次安装完成。现有日常库不经此入口迁移或替换，正常 `start` 的缺库保护保留。App 托管安装器、embedding 准备、首次存储初始化与界面接入仍待完成。实施与证据见本地准备续作。
+### 开发态运维约束
 
-2026-11-15：日常启动拒绝本项目已知验收Agent目录；stop/status保留恢复入口。环境优先级为管理侧明确选择、运行配置、宿主环境变量、默认目录；冲突需明确选择。不要将验收profile复制成日常接入，也不要为修复连接补采旧会话。真实目录修复及安全重启边界见交付记录。
+- **单一日常库与重启边界**：日常运行、Native 界面与真机验证统一使用同一 `.local/daily/official-store`，不静默新建空库，日常启动拒绝已知验收 Agent 目录；服务源码、模型或配置变更时先用原配置 `stop`，再修改并 `start`。电脑重启后手动启动，开发态不注册 helper，不恢复历史业务任务。
+- **首日持久化**：总览的首次初始化完成日期保存在 `runtime.json` 同目录的 `client-state.json`（可用 `client_state_file` 显式指定），重启、重开或重配不会覆盖；损坏或写入失败保留错误，不用当天日期覆盖。
+- **磁盘门禁与仓库钩子**：受管开发任务经 `scripts/task.py` 执行，至少保留 `50 GiB` 可用磁盘空间（运行中低于 `55 GiB` 自动停止；独立 `.app` 安装态监控阈值为最低 `2 GiB` / 告警线 `5 GiB`）。首次提交前执行 `sh scripts/install-hooks.sh` 启用局部 `.githooks` 与仓库级提交身份守卫（不改全局 `~/.gitconfig`）。除非用户明确要求，开发阶段不执行 DMG 打包、签名、公证、更新或 helper 安装。
+- **MyGo 字体抗锯齿补丁**：首页字体抗锯齿通过 `scripts/patches/mygo-antialiased.json` 固定 MyGo 0.7.4 两个源文件及其 SHA，`scripts/go.sh` 与 `scripts/dev.py` 经 `scripts/mygo_sdk.py` 在 `.local/mygo-sdk/` 准备私有 SDK 并通过 `-modfile` 编译（不改模块缓存与 `go.mod`/`go.sum`）；升级 MyGo 前需先评审该补丁，上游支持等价主题标志后移除。
+- **代码图谱配置**：使用根目录 `mcp-arch.yaml` 的官方 Enola 配置，保留除 `manifests` 外全部默认源码解析器（停用 `manifests` 以防绕过忽略规则扫描 `build/`），更改索引配置后在项目图谱页手动更新，不启动文件监听。
 
-2026-11-14用户最新要求：当前只使用一套日常库，不另建或切换隔离测试库。统一配置为`.local/daily/runtime.json`，Native、服务和已接入Agent使用同一Cognee官方存储，项目仍各自分组。原本轮两库已合并，旧隔离根只保留在回滚备份；规则与真实核验见单一日常库记录。下文旧隔离验收配置仅保留历史事实，不作为后续运行入口。
-
-2026-11-18 Agent 模型代理（原称「处理桥」）更新：当前开发链支持 Codex、Antigravity（Gemini App，`agy`）、pi、TraeX 四种 `agent_bridge`，覆盖下文旧 Codex-only 描述。`bridge_kind` 分别为 `codex` / `antigravity` / `pi` / `traex`；pi 另需 `bridge_provider` 为已有 `deepseek` 或 `ollama`，模型仍明确保存在不可变 profile 中。优先使用 `agent_hosts.<kind>.executable/profile`，保留原 Codex 兼容字段；未明确路径时检查 PATH 及标准用户 bin（Antigravity 同时检查 `Gemini.app/Contents/Helpers/agy`），明确但无效的路径不回退。复用 Agent 已有登录，pi 不复制密钥到 Provider；隔离提炼会话不加载日常 skills/hooks、历史或项目工具。启动与热切换统一经 `agent_bridge_runtime.require_bridge_startup` 核验：通过已连接 Agent 选择（`connected_agent_selections`）或既有已 `applied` 热切换授权的修订在重启时核对运行环境与有效模型后放行；未授权的新 `pi` / `TraeX` / `Antigravity` 显式验证仍绑定可执行身份、配置与扩展摘要，依赖漂移须重新验证。本地与净室证据、版本及限制见处理配置接续，不改变开发阶段不 release、日常服务所有权和同库规则。
-
-2026-11-14多Agent／Provider增补已进入dev实施，覆盖下文旧“唯一Codex生成通道”的相应说明。当前支持、真实证据与未完成项见支持矩阵。现有日常runtime／插件不自动迁移，仍以各自交付记录为准。
-
-2026-11-13 PA项目权限增补已完成dev自验，范围及实际日常接入见项目权限交付，详细证据见执行记录。原D01–D09的共用owner和只读通用知识规则是此前交付事实；当前受管PA使用独立Agent主体、官方dataset ACL与本机项目控制进程。经用户明确交接已切换本机Codex，新CLI与普通Desktop问答均已验证；既有会话及材料未自动迁移、补采或重放。
-
-PA配置模板新增可选 `project_control`：显式loopback `url`、私有 `registry_file`、独立 `management_token_file`、安装实例 `agent_control_token_files` 以及固定 `plugin_dir`。启用后启动器一并管理控制进程，关窗保持，明确stop才收尾。未配置时保留原启动流程；模板路径仍是占位符。受管插件在独立目录重放 `engine/patches/project_access.py`，启动器核对 `engine/managed-project-plugin.json` 的全部摘要；禁止手改日常插件缓存。项目权限源码、真实隔离Agent及Native验证边界见 `docs/engineering/project-access-execution-20261113.md`；本机Codex准备、启用及实际加载分别记录，不用准备成功代替日常接入。
-
-2026-11-13 起，精简版唯一开发入口为 `scripts/dev.py`。本轮接管与验收已完成，实际范围和限制见交付记录，阶段证据见执行记录。配置模板为 [`config/daily-runtime.example.json`](../../config/daily-runtime.example.json)，其中路径均为占位符，不能直接启动。
-
-从仓库根目录执行，所有日常服务操作使用同一个私有配置文件的绝对路径，并用该文件 `python` 字段指定的受管 Python 3.12。以下示例使用日常配置对应的 `.local/cognee-python/bin/python`。自定义虚拟环境时，将命令开头换成配置中的虚拟环境入口。
-
-`scripts/dev.py` 在自身进程里预检当前模型代理，然后才启动服务子进程。配置中的 `python` 字段用于启动子进程，无法改变当前启动器的解释器。裸 `python3` 若解析到 Python 3.9，Codex 配置预检会因缺少 `tomllib` 提前失败。首次运行上文的 `prepare` 时，受管环境可能尚未创建，因此该入口仍从宿主 Python 执行。
-
-先在一个终端启动并保持前台。
+## 统一门禁与静态检查
 
 ```sh
-.local/cognee-python/bin/python scripts/dev.py start --config /绝对路径/runtime.json
+# 统一改动感知 / 冻结 / 发版门禁（开发与审改用 --changed / --staged；源码冻结后单一节点用 --full；候选发版用 --release）
+python3 scripts/task.py -- python3 scripts/check.py {--changed|--staged|--full|--release}
+
+# Go 全量测试（自动联动 perf_budget_test.go 与 lint_gate_test.go）与静态分析
+sh scripts/go.sh test ./...
+sh scripts/go.sh vet ./...
+
+# 零依赖静态检查与规则自测（不加载引擎、不调用模型）
+python3 scripts/task.py -- python3 scripts/lint.py
+python3 scripts/task.py -- python3 -m unittest discover -s scripts -p test_lint.py
+
+# 模型路径改动必跑的参数 / 探针 / 切换 / 启动回归
+python3 scripts/task.py -- .local/cognee-python/bin/python -m unittest \
+  discover -s engine/python -p "test_generation_*.py"
 ```
 
-服务就绪后，在另一个终端按需查看状态、重开窗口或停止：
+现行 `scripts/lint.py` 规则覆盖 `ML001`–`ML003` 与 `ML006`–`ML022`（测试夹具不参与，且由 `sh scripts/go.sh test ./...` 经 `lint_gate_test.go` 强制联动）：
+- **模型与画像边界（`ML001`–`ML003`、`ML006`）**：原生模型配置须经共享 `native_llm_configuration`，禁止字面量默认值与 `or`/`get`/`setdefault` 回退（保留显式 `0`）；禁止用户画像生成（`user_profiles/runner.py`）使用固定总时长超时中断。
+- **环境隔离与 UI 性能（`ML007`–`ML012`）**：禁止非白名单模块修改全局 `os.environ`；守卫 MyGo 动效 `ReduceMotion`、禁止 `<500ms` 高频重绘、禁止 `Draw`/`App.View` 热路径同步磁盘或网络 I/O、禁止桌面端落盘首页 SWR 缓存并强制首页冷启动经 `overviewBootstrap` 聚合及延迟 `RefreshIntegrations`。
+- **运行时资源与文档隔离（`ML013`–`ML018`）**：守卫异步高频轮询、异步内阻塞子进程、大文件/二进制全量 `read_bytes()` 哈希与临时 worker 清理（`ML015` 覆盖 `scripts/*.py`）、SQLite WAL `PRAGMA journal_size_limit`、禁止无条件 `mygo dev` 热重载与清理回执轮转；`ML018` 拦截正式文档引用本地忽略的过程产物目录。
+- **扩展架构与只读存储门禁（`ML019`–`ML022`）**：禁止 Go 桌面端新增全量拉表调用；强制 `/v1` 列表接口游标上限（`<=50`）、UTF-8 JSON 响应与字节预算裁剪；限定只读访问官方库走 `sqlite_ro.open_official_sqlite_ro` 并禁用 `immutable=1`；守卫 `catalog_index.py` 仅保留 5 张轻量元数据白名单表/列。
 
-```sh
-.local/cognee-python/bin/python scripts/dev.py status --config /绝对路径/runtime.json
-.local/cognee-python/bin/python scripts/dev.py open --config /绝对路径/runtime.json
-.local/cognee-python/bin/python scripts/dev.py stop --config /绝对路径/runtime.json
-```
+完整任务分级、双审收敛与发版验收门禁见 [工程规范](../engineering/workflow.md)。
 
-启动器在官方服务及当前模式所需端点健康检查通过后启动MyGo dev；桥模式启动completion，Provider模式不启动它。健康检查就绪不代表真实模型推理已验证。先只运行后台时，使用 `.local/cognee-python/bin/python scripts/dev.py start --no-ui --config /绝对路径/runtime.json`，随后仍可用 `open` 打开窗口。
+## `runtime.json` 与凭据隔离
 
-关闭桌面窗口或 MyGo 源码重载不会停止这两个端点，也不要再次执行 `start` 来重开窗口。`open` 向现有启动器发送重开请求，停止其已有 MyGo watcher（若有），再启动一个 watcher；它不会启动第二套服务，也不代表窗口已完成显示。UI 源码由 MyGo dev 增量编译、重载。
-
-启动终端中的 Ctrl+C 等同明确停止；另一终端的 `stop` 会核对数据锁、启动器 PID、内核启动时间和配置路径，通知启动器收尾所属进程组及已跟踪的模型子进程。等待 `Owned service groups exited; daily store released.` 或前台启动器正常退出后再启动。服务源码、模型或运行配置变更时，先用原配置停止，再修改并执行 `start`；不要在运行中改掉用于识别所有者的配置路径或数据位置。电脑重启后手动启动，不注册 helper，不恢复业务任务。
-
-`status` 检查启动器所有权并输出运行记录，不是模型推理或全部子进程健康检查。未启动、配置不匹配、端口占用、数据锁被占用或残留所有权记录都应先核实；不要删除锁／运行记录或直接杀掉未知进程来绕过检查。停止未确认时保留记录，不把失败当作已停止。
-
-2026-11-19 增加异常退出后的显式恢复：`.local/cognee-python/bin/python scripts/dev.py recover --config /绝对路径/runtime.json`。该命令持有同库锁，核对原配置、记录中的进程及进程组全部消失、服务端口空闲、项目登记及处理配置锁已释放后，原样归档 owner 记录，再允许正常 `start`。不终止任何进程；PID 被复用、未知监听、活跃锁或身份不匹配均拒绝。Cognee、模型桥和 project_control 统一监测父进程丢失并退出。记录和实际验证见本轮可靠性修复。
-
-旧启动器仍拥有健康服务、但其 MyGo watcher 已退出时，可通过 `.local/cognee-python/bin/python scripts/dev.py open --watch-ui --config /绝对路径/runtime.json` 在当前终端附着一个前台 UI watcher。该入口先核对现有服务所有者和就绪状态，拒绝第二个活跃 watcher；退出此 watcher 只收尾它自己的界面进程组，不停止官方服务。普通 `open` 检测到该附着锁时不再通知旧启动器另开 watcher。此方式用于开发调试，不替代日常服务的 `start`／`stop`。
-
-总览的首次初始化完成日期由启动器在必要配置、带认证官方内容检查及当前模式所需健康检查通过后保存。状态默认位于 `runtime.json` 同目录的 `client-state.json`；可用可选绝对路径字段 `client_state_file` 指定同一持久文件。启动、重开、模型或项目重配不会覆盖已有首日，单次运行清理不得删除该文件；损坏或写入失败保持错误，不用当前日期覆盖。实际知识与活动仍读取官方服务，不保存在此文件中。
-
-实际配置使用已有官方日常数据和组件，路径填写绝对路径；不静默新建空库。省略 `--config` 时默认读取仓库 `.local/daily/runtime.json`，显式指定路径更便于保证启动、停止与重开使用同一配置。
+配置模板见 [`config/daily-runtime.example.json`](../../config/daily-runtime.example.json)（含 Agent 模型代理兼容字段）与 [`config/provider-runtime.example.json`](../../config/provider-runtime.example.json)（纯直连 Provider 形态），其中路径均为占位符、不能直接启动。真实运行配置、凭据与日常记忆库全部放在 Git 跟踪之外的 `.local/`（私钥/凭据文件 `0600`、目录 `0700`），严禁写入模板、命令行参数、日志或文档。
 
 | 模板字段 | 配置含义 |
 | --- | --- |
-| `official_data` | 已有官方日常存储根目录，必须含 `system/`、`data/`；规范路径持有单实例锁，跨源码目录或符号链接也不能启动第二个写者。日常库须使用持久目录，不得沿用 `TMPDIR`／`memlane-task-*` 验收临时目录；本机已迁至 `.local/daily/official-store`，恢复记录见 `engineering/vector-fragment-missing-20261118.md`。 |
-| `official_source`、`official_archive`、`service_commit` | 固定上游源码目录、原始归档与提交。提交须匹配 `engine/coding-memory-components.json`；启动时校验归档摘要及官方包源码，不使用修改后的上游副本。 |
-| `python` | 已有 Python 3.12 虚拟环境的 Python 入口，保留 venv 路径，不替换成符号链接最终指向的基础 Python。复用已有依赖。 |
-| `service_url` | 桌面与官方插件共同访问的官方 Cognee API origin。 |
-| `completion_url` | Codex桥模式所需的本机completion origin，使用带明确端口的 `http://127.0.0.1:端口`，不含业务路径；服务侧追加 `/v1`。Provider模式可省略。 |
-| `token_file` | 存放官方 Cognee 正式 API key 的私有纯文本文件路径，桌面读取并去除首尾空白后发送 `X-Api-Key`。 |
-| `completion_token_file` | Codex桥模式所需的独立本机completion Bearer凭据文件；Provider模式可省略。 |
-| `service_environment_file` | 私有 JSON 对象文件路径，提供官方服务已有的 embedding 配置／凭据、默认用户和认证 secret 等允许项；不是 shell `.env` 文件。启动脚本拒绝允许列表之外的键，LLM 端点与凭据由运行配置生成。 |
-| `codex_executable`、`auth_home`、`model` | 原Codex桥配置及旧runtime首个profile的来源。原生二进制、登录home目录和模型分别配置，不能把auth文件填成home。已有Provider active配置时可省略；Agent的Codex安装发现另用 `agent_hosts.codex`。 |
-| `generation_file` | 私有schema2生成配置文件的绝对路径，保存不可变修订、active／next及验证回执；凭据只存私有引用。省略时沿旧runtime同目录生成。已有配置不能复制模板内容覆盖。 |
-| `agent_hosts`、`agent_host_home` | 各类型选定profile与原生executable；`agent_host_home`为安装器使用的已存在绝对HOME目录。Agent安装不依赖知识处理模型或对应订阅登录。 |
-| `graph_assets` | 已准备的官方图谱 Web 静态产物目录，供桌面图谱页加载。 |
-| `projects` | 项目关联数组，条目使用 `id`、`name`、`path`、官方 `dataset_id`，以及按需提供的 `code_dataset_id`、`code_enabled`。dataset ID 来自同一官方身份下的真实数据，不以项目显示名代替。 |
-| `common_datasets` | 旧显式通用文档关联数组，条目结构不变。PA管理侧另有专用通用知识数据组与独立ACL；空数组不迁移已有内容。 |
+| `official_data` | 已有官方日常存储根目录（须含 `system/`、`data/`），规范路径持有单实例锁；必须为持久目录（如 `.local/daily/official-store`），严禁沿用 `$TMPDIR` / `memlane-task-*` 临时目录。 |
+| `official_source`、`official_archive`、`service_commit` | 固定上游 Cognee 源码目录、原始归档与提交哈希（须匹配 [`engine/coding-memory-components.json`](../../engine/coding-memory-components.json)）；启动前经 `verify_source` v2 校验，禁止修改上游源码或在源码目录留 `.pyc`/`.pyo`。 |
+| `python` | 受管 Python 3.12 虚拟环境入口，保留 venv 路径，不替换为符号链接指向的基础解释器。 |
+| `service_url` | 桌面端与受管插件共同访问的记忆引擎（Cognee）loopback API origin。 |
+| `completion_url` | Agent 模型代理模式所需的本机 origin（`http://127.0.0.1:<端口>`，不含业务路径，服务侧追加 `/v1`）；纯 Provider 模式可省略。 |
+| `token_file` | 记忆引擎（Cognee）日常 owner 正式 API key 纯文本文件（`0600`），桌面端去首尾空白后经 `X-Api-Key` 发送。 |
+| `completion_token_file` | Agent 模型代理专用 Bearer 凭据文件（`0600`）；纯 Provider 模式可省略。 |
+| `service_environment_file` | 私有 JSON 对象文件（`0600`，非 shell `.env`），提供允许列表内的 embedding 配置、默认用户与认证 secret；拒绝未授权键，LLM 端点与凭据由运行配置动态生成。 |
+| `project_control` | 接入网关配置：显式 loopback `url`、私有 `registry_file`、独立 `management_token_file`、实例 `agent_control_token_files` 与受管 `plugin_dir`；启动器校验 `engine/managed-project-plugin.json` 摘要，禁止手改插件缓存。 |
+| `generation_file` | 私有 schema2 提炼配置账本路径，记录不可变修订、`active`/`next` 与验证回执；凭据仅存私有引用，不可用模板覆盖或手改 `passed`。 |
+| `codex_executable`、`auth_home`、`model` | 旧 Codex 代理兼容字段（原生二进制、登录 home 目录与模型分设，不可把 auth 文件填成 home）；已有 Provider `active` 时可省略。 |
+| `agent_hosts`、`agent_host_home` | 各宿主选定 profile 与原生可执行路径，及安装器使用的已存在绝对 `HOME` 目录；Agent 接入不依赖提炼模型配置。 |
+| `graph_assets` | 官方图谱 Web 静态资产目录，供桌面端沙箱 `mygo.WebView` 加载。 |
+| `projects`、`common_datasets` | 项目绑定（`id`、`name`、`path`、`dataset_id` 及可选 `code_dataset_id`/`code_enabled`）与旧显式通用文档关联；dataset ID 须来自同一官方身份真实数据。 |
+| `opencode_*`（顶层，开发兼容） | OpenCode 离线插件组件路径 `opencode_plugin_dir`、清单摘要 `opencode_manifest_sha256` 与 `opencode_node_executable`（Node `>= 20`），位于顶层而非 `project_control` 内。 |
 
-`token_file`、`service_environment_file` 及桥模式的 `completion_token_file` 必须已存在且为私有文件（0600）；实际配置与凭据保存在 Git 之外的私有位置，不写进模板、命令行或日志。不要将真实 token、环境文件或登录文件内容贴进文档。
+各条连接的凭据严格分域，不得混填（如将 owner 登录 JWT、代理 Bearer 或订阅登录混用为 `X-Api-Key`）：
 
-各条连接的凭据分别用于不同端点：
-
-| 连接 | 凭据与发送方式 |
+| 连接路径 | 凭据来源与发送方式 |
 | --- | --- |
-| 桌面 → 官方 Cognee | `token_file` 中由目标官方服务签发、属于日常 owner 的正式 API key；请求头为 `X-Api-Key`，无 Bearer 回退。 |
-| 受管官方插件 → 官方 Cognee | 使用该Agent实例独立官方子主体的key，`COGNEE_BASE_URL`对齐 `service_url`；安装绑定定位私有环境，不复制桌面owner凭据。 |
-| 官方 Cognee → 本机 completion | 服务读取 `completion_token_file` 并设置为 `LLM_API_KEY`，通过 `Authorization: Bearer …` 调用 `completion_url` 下的 `/v1` 接口；端点校验同一份凭据。它不是 Cognee API key。 |
-| completion → Codex 订阅推理 | 从 `auth_home` 仅复制必要订阅登录状态到每次请求的临时隔离 Codex home；使用独立工作目录和配置，不复制日常插件、历史或项目上下文。它不是上述两种端点 token。 |
+| 桌面端 → 记忆引擎（Cognee） | `token_file` 中由目标服务签发的日常 owner 正式 API key，通过 `X-Api-Key` 发送（无 Bearer 回退）。 |
+| 受管插件 → 接入网关 `/cognee/*` | 该 Agent 实例独立官方子主体的 `X-Api-Key`（固定设置 `COGNEE_PLUGIN_IDENTITY=false`、`COGNEE_MANAGED_ENDPOINT=true`），不复制桌面 owner 凭据。 |
+| 记忆引擎 → Agent 模型代理 | 服务读取 `completion_token_file` 注入 `LLM_API_KEY`，经 `Authorization: Bearer ...` 调用 `completion_url/v1`。 |
+| Agent 模型代理 → 本机 Agent CLI | 仅从目标登录目录提取必要认证状态到单次隔离临时目录，不加载日常插件、skills/hooks、历史或项目工具。 |
 
-保持同一官方服务与数据归属，需要对齐服务、实例子主体及受管dataset。固定受管产物设置 `COGNEE_PLUGIN_IDENTITY=false` 和 `COGNEE_MANAGED_ENDPOINT=true`，不另建身份或启动fallback；项目解析和权限由管理侧既有PA协议及官方有效ACL决定。`dev.py`本身不代装插件或改写宿主配置；准备／启用经设置中的连接管理API执行。
+系统不启动旧 `memlaned`、私有内容 IPC、独立全文库或第二套索引；日常内容唯一真相始终为 `.local/daily/official-store`。
 
-已解决的接入问题是把 owner 登录 JWT 放进 `X-Api-Key` 导致官方 hook 返回 401；修复为同 owner 正式 API key，桌面也统一使用 `X-Api-Key`，详见接管与认证记录。不要将登录 JWT、completion Bearer 凭据或 Codex 订阅登录混填为插件／桌面 API key。出现 401 时先核对目标端点和凭据类型，不通过新建身份、另起服务或空库来规避。
+## 多 Agent 与模型调试
 
-不启动旧memlaned、私有内容IPC、独立开发全文库或第二套索引。固定官方原始源码通过当前Codex桥或Provider配置推理，embedding复用已有组件。源码及轻量调试容器可隔离，日常内容只有一份官方存储。
+### 1. Agent 模型代理与直连 Provider / Ollama
 
-## 多Agent与Provider配置（dev）
+- **Agent 模型代理（`agent_bridge`）**：支持 `codex`、`antigravity`（Gemini App `agy`，额外检查 `Gemini.app/Contents/Helpers/agy`）、`pi`（需指定已有 `bridge_provider` 为 `deepseek` 或 `ollama`，不复制密钥到 Provider）与 `traex`（TRAE CLI）。优先读取 `agent_hosts.<kind>.executable/profile`，显式配置但无效时不回退。启动与热切换统一经 `agent_bridge_runtime.require_bridge_startup` 核验运行环境、有效模型及摘要，依赖漂移须重新验证（详见 [有效模型契约](agent-effective-model-contract-20261118.md)）。
+- **直连 LLM Provider**：协议支持 `openai`、`anthropic`、`gemini`、`custom`（DeepSeek 等 OpenAI 兼容端点选 `custom`），endpoint/model/key 均由用户显式填写，拒绝 HTTP 重定向、凭据不回填界面。
+- **本机 Ollama**：在「设置 › 记忆提炼 › 添加 Provider」选「Ollama（本机接口）」，填本机根地址（如 `http://127.0.0.1:11434`）与实际模型 ID，无需 API Key；账本 profile 形如 `{"mode":"provider","provider":"ollama","model":"llama3.2:3b","endpoint":"http://127.0.0.1:11434"}`，经 `ollama_chat/` 路由调用，不回退其他代理或端口，不自动下载模型或拉起服务。
+- **保存 / 验证 / 激活分离**：保存草稿与点击验证（消耗对应额度）均不改变运行期唯一 `active`；需选择「下次启动使用」或确认热切换回执后生效。首个候选失败则清理并停止，已存在 `active` 时候选失败仅在资源确认退出后回退原配置一次；状态 `unknown` 时仅只读核对，不新建编号重发。
 
-设置“服务与连接”按类型多选准备、显式启用，再由实际宿主完成信任／重载与新会话；安装摘要不代表采集通过。选择目标profile，不读取其历史会话，不把其他类型的权限覆盖复制过来。无工具回合的Cursor当轮注入限制及尚未验证的宿主见支持矩阵。
+### 2. 宿主连接调试说明
 
-Cursor准备官方派生插件的不可变目录，显式启用时将其加载入口写入目标profile的`hooks.json`之`workspaceOpen`，通过官方`pluginPaths`返回目录。其他hook配置保持，旧代际目录不清理；重新打开工作区／重载窗口后才验证实际加载。检测到旧local Cognee插件或Claude重复导入时停止并保留原物，不自动迁移。当前仅管理器及配置切换验证通过，真实Cursor宿主仍待验。
+- **5 个主线支持宿主**：Codex、Antigravity（Gemini App）、pi、TraeX（TRAE CLI）、TRAE CN（IDE）；电脑级零项目授权与接入细节见 [电脑级接入契约](agent-connection-contract.md)。`dev.py` 本身不代装插件或改写宿主配置，准备/预览/启用/核对统一经接入网关 API 执行。
+- **本机 Codex 调试要点**：控制进程使用受管 Python 内的 `tomlkit` 原子改写配置并保留注释与第三方插件；同一 `auth_home` 下的 CLI 与 Desktop 共享独立子主体，需分别验证真实 hook 与 `cwd`。遇到冲突/超时/中断走只读「核对原接入操作」，不覆盖或删除旧 buffer。
+- **保留兼容的实验宿主（Cursor / OpenCode）**：界面暂未开放，后端保留既有兼容与单测入口。
+  - Cursor 生成不可变派生插件目录并经 `hooks.json` 的 `workspaceOpen` 返回 `pluginPaths`，检测旧插件冲突时拒绝自动迁移。
+  - OpenCode 需本机 Node `>= 20`，可通过固定 npm 缓存离线构建独立插件组件并验证（缺缓存自动 skip）：
+    ```sh
+    python3 scripts/task.py -- .local/cognee-python/bin/python scripts/build_opencode_plugin.py \
+      --output /绝对路径/新组件目录 --npm-cache /绝对路径/固定npm缓存
 
-OpenCode第二批开发使用`engine/agents/opencode/managed-control.ts`访问既有控制协议；新增`GET /v1/project/binding?host_session_key=...`仅按独立Agent控制token读取原映射，不发现／创建项目，供unknown解析结果核对。配套服务尚未正常加载新路由时保持未知，不重发解析或回退。当前控制客户端／HTTP／outbox局部检查已通过，实际OpenCode受管安装与回调未接通，不能按源码存在启用日常入口；进度见第二批记录。
+    python3 scripts/task.py -- env PYTHONPATH=engine/python \
+      MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 \
+      .local/cognee-python/bin/python -m unittest test_opencode_installation
+    ```
 
-设置“知识处理”分别保存配置、验证（消耗所选账号额度）、选择“下次启动使用”；当前配置持续服务原任务。正常stop/start后，launcher确认实际配置摘要和健康才改active；候选失败仅在所属资源确认退出后恢复原配置一次，清理未知或原配置失败则停止。原操作缺失或unknown时只核对，不新建编号重发安装或模型请求。
+## 国内镜像源与手工终端兜底
 
-Provider协议值为 `openai`、`anthropic`、`gemini`、`custom`；DeepSeek等明确OpenAI兼容端点选 `custom`。endpoint/model/key均由用户明确配置，不猜供应商或错误后换模型。凭据0600、目录0700，不回填Native；HTTP重定向拒绝。验证记录实际adapter请求模式，不能当作远端严格Schema保证。
+本节沉淀自 `v0.1.0-beta.1` 首次安装依赖镜像实测（原历史发版方案已归档至 [release-v0.1.0-beta.1-20261121.md](../archive/release-v0.1.0-beta.1-20261121.md)）。**实际净室下载量与磁盘占用以 [安装依赖包瘦身调研](../research/install-dependency-slimming-20261125.md) 实测为准**（全部 7 项合计官方源实测下载 **`550.58 MiB`**、国内源 **`551.28 MiB`**，解压落盘约 **`1.30–1.50 GiB`**；早期 `environment.go` 预估 `~2.34 GiB / 4.57 GiB` 含保守空间余量）。
 
-模板 [`daily-runtime.example.json`](../../config/daily-runtime.example.json) 保留旧 Codex 代理兼容字段；[`provider-runtime.example.json`](../../config/provider-runtime.example.json) 展示不含 Agent 代理认证输入的 API 运行配置。两者都需已准备的官方环境／数据及私有凭据；本入口不创建或替换内容库。已有 active 时正常 `start`。尚无生成配置时，先执行 `.local/cognee-python/bin/python scripts/dev.py setup --config /绝对路径/runtime.json`：只启动受管理 token 认证的本机配置服务，并复用 Native“记忆提炼”表单，不启动官方引擎、接入 Agent 或写初始化完成标记。
+### 1. 7 项首次安装依赖下载源与已证实避坑
 
-首次配置依次保存 Provider、点击会消耗额度的验证、选择“下次启动使用”；保存或验证不会制造 active。完成后通过 `.local/cognee-python/bin/python scripts/dev.py stop --config /绝对路径/runtime.json` 停止配置服务，再正常 `start`。启动器只有在已验证候选的健康及完整摘要匹配后才写首个 active；首个候选失败时清理并停止，不恢复不存在的旧配置。没有已验证 next 时不启动引擎。`setup` 拒绝已存在 active 的账本；已有日常配置继续在正常设置页编辑。不得手写 passed、复制验收账本或修改活动修订绕过验证。
+| 依赖项（ID） | 实测下载量（原预算） | 国外官方源 | 推荐国内镜像源（实测可用） | 校验方式与已证实避坑 |
+| --- | --- | --- | --- | --- |
+| **引擎运行库**（`runtime`） | `339.61 MiB`（预算 `2 GiB`） | `https://pypi.org/simple/` | 主：`https://pypi.tuna.tsinghua.edu.cn/simple/`（清华 TUNA）<br>备：`https://mirrors.aliyun.com/pypi/simple/`、`https://mirrors.ustc.edu.cn/pypi/simple/` | `uv pip sync --default-index <mirror> --require-hashes --build-constraints requirements.lock`，强制保留 [`requirements.lock`](../../engine/python/requirements.lock) 全部 171 包哈希校验 |
+| **本地向量模型**（`embedding`） | `91.23 MiB`（`95.66 MB`，7 文件） | `https://huggingface.co/Qdrant/bge-small-zh-v1.5/resolve/46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59/<file>` 与 `https://huggingface.co/BAAI/bge-small-zh-v1.5/resolve/7999e1d3359715c523056ef9478215996d62a620/<file>` | **魔搭社区 ModelScope**：<br>`https://modelscope.cn/models/Qdrant/bge-small-zh-v1.5/resolve/master/<file>` 与 `https://modelscope.cn/models/BAAI/bge-small-zh-v1.5/resolve/master/<file>` | 7 文件（`Qdrant` 下 `model_optimized.onnx` 94,781,076 B + `config.json` + `tokenizer.json` + `tokenizer_config.json` + `special_tokens_map.json`；`BAAI` 下 `tokenizer.json` + `tokenizer_config.json`）与 [`embedding-components.json`](../../engine/embedding-components.json) 逐字节 SHA256 一致。<br>**避坑**：`hf-mirror.com` 会将 `model_optimized.onnx` 302 重定向至海外 `cas-bridge.xethub.hf.co`，不作国内主源 |
+| **Python 3.12.12**（`python`） | `16.85 MiB`（`17.7 MB`） | `https://github.com/astral-sh/python-build-standalone/releases/download/20260211/cpython-3.12.12%2B20260211-aarch64-apple-darwin-install_only_stripped.tar.gz` | **阿里云 npmmirror**：<br>`https://registry.npmmirror.com/-/binary/python-build-standalone/20260211/cpython-3.12.12%2B20260211-aarch64-apple-darwin-install_only_stripped.tar.gz` | 字节数 `17,667,661` 与 [`first-install-components.json`](../../engine/first-install-components.json) 一致，复用同一 SHA256 `22625dea...`。<br>**避坑**：南京大学镜像站（NJU）该构建返回 HTTP 404 |
+| **安装工具 `uv` 0.12.3**（`uv`） | 官方 `16.87 MiB` / 国内 whl `17.57 MiB` | `https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz`（`17,686,637 B`，SHA256 `546f7f8a...`） | **主（大厂 PyPI CDN wheel）**：清华 TUNA / 阿里云：<br>`https://pypi.tuna.tsinghua.edu.cn/packages/e4/66/ba257c91d69921d773f523c9e4c3ffb04e233694c415517f5ef797403a4f/uv-0.12.3-py3-none-macosx_11_0_arm64.whl`（阿里云 `/pypi/packages/...` 同路径）<br>**备（tar.gz）**：`https://gh-proxy.org/<official_url>` 或 `https://gh-proxy.com/<official_url>` | wheel 为 `18,426,262 B`（SHA256 `7c99f2524fe4b11d74dec85cef9b4d8b725d142dec04cd237f1c06fbdae1ee54`），经 Go `archive/zip` 解出 `uv-0.12.3.data/scripts/uv`。<br>**避坑**：`npmmirror`、`NJU` 均无 `uv`（404）；`ghfast.top` 返回 HTTP 403 |
+| **OpenSSL 3.5.9**（`native_openssl_arm64`） | `10.33 MiB`（`10.8 MB`） | `https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25`（需匿名头 `Authorization: Bearer QQ==`） | 主：**中科大 USTC**：`https://mirrors.ustc.edu.cn/homebrew-bottles/v2/homebrew/core/openssl/3/blobs/sha256:82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25`<br>备：**清华 TUNA**：`https://mirrors.tuna.tsinghua.edu.cn/homebrew-bottles/openssl%403-3.5.9.arm64_sequoia.bottle.tar.gz` | 两者均 `10,829,301 B`，复用同一 SHA256 `82b33ce1...`。<br>**避坑**：TUNA 与阿里云的 `/v2/.../blobs/sha256:...` 返回 404，须按站点区分 URL；请求国内镜像时**不得**附带 `Authorization` 头 |
+| **Cognee 上游源码**（`cognee-source`） | `68.95 MiB`（预算 `150 MiB`） | `https://codeload.github.com/topoteretes/cognee/tar.gz/ec6f40859e5f2df9e7862dde27d580ac3268ed43` | 公测主：`https://gh-proxy.org/<codeload_url>`<br>公测备：`https://gh-proxy.com/<codeload_url>` | 强制核对 [`coding-memory-components.json`](../../engine/coding-memory-components.json) 固定 SHA256 `6e11047e...`。<br>**避坑与红线**：`ghfast.top` 对 `codeload` TLS 超时已排除；严禁向第三方反代发送账号/Token，严禁重打包改变归档哈希 |
+| **官方插件源码**（`agent-plugin`） | `6.74 MiB`（预算 `20 MiB`） | `https://codeload.github.com/topoteretes/cognee-integrations/tar.gz/a176248914fdb32a78354854b300174203b15a5c` | 公测主：`https://gh-proxy.org/<codeload_url>`<br>公测备：`https://gh-proxy.com/<codeload_url>` | 强制核对固定 SHA256 `a896399a...`；后续发版建议将两份上游原样归档迁移至自维护国内只读静态源，公益反代降为备选 |
 
-开发阶段不运行完整打包、DMG、签名、公证、更新或 helper 安装。Go/MyGo 固定版本和仓库内工具链继续复用。2026-11-17 用户将开发态磁盘门禁调整为至少保留 50 GiB，运行中低于 55 GiB 停止受管任务（独立 `.app` 安装态监控阈值为最低 `2 GiB` / 告警线 `5 GiB`）；`dev.py` 与其他检查均通过既有 `scripts/task.py`，Go 检查使用 `sh scripts/go.sh`。新阈值对新启动的包装器生效，已运行的旧包装器不会自动重载；正常收尾／重启须遵守现有运行资源交接规则。
+### 2. 下载器、代理与「重新检测」契约
 
-首页A的字体需要与稿件的`-webkit-font-smoothing: antialiased`一致。MyGo0.7.4只在自绘字形公开此能力，当前以`scripts/patches/mygo-antialiased.json`固定两个SDK源文件及其SHA，补充主题内的可选`Antialiased`绘制标志；仅首页主题启用，其他页面默认绘制不变。`go.sh`及`dev.py`通过`scripts/mygo_sdk.py`准备一份约24 MiB的私有SDK及临时`-modfile`，路径在`.local/mygo-sdk/`，不会改模块缓存、仓库`go.mod/go.sum`或系统字体偏好。Go不允许用`-overlay`替换模块缓存中的文件，因此不采用该方式。
+- **系统代理兼容**：[source.go](../../internal/bootstrap/source.go) 与 [runtime.go](../../internal/bootstrap/runtime.go) 读取 macOS 系统代理（`scutil --proxy`）并兼容 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`，避免双击 `.app` 启动丢失代理；代理地址与凭据严禁写入日志或诊断导出包。
+- **不降级安全基线**：切换国内镜像源与国外官方源只改变 URL 与回退顺序，不降低任何 SHA256、TLS HTTPS 或路径归属校验；仅在 host 为 `ghcr.io` 且路径前缀 `/v2/homebrew/core/` 时附带匿名头 `Authorization: Bearer QQ==`。`uv` wheel 经 [tools.go](../../internal/bootstrap/tools.go) 整包校验后由 Go `archive/zip` 解包。
+- **统一「重新检测」**：无论自动下载、失败重试或终端手工准备完成，点击「重新检测」均执行完整 SHA256 校验与离线能力探针，全部通过后放行。
 
-命令入口不变；SDK原始SHA、项目版本或已准备补丁副本不符会停止构建，升级MyGo时先评审这份补丁，不能静默覆盖。现有UI watcher在启用这项构建环境前需由其所有者退出，再用`open --watch-ui`附着，健康后台继续复用。私有SDK是当前watcher的编译依赖，运行期间保留；上游提供等价主题接口后应移除此补丁和准备步骤，不扩展为长期SDK分叉。
+### 3. 官网 `curl` / CLI 手工终端兜底命令
 
-历史完整包、helper与旧索引验收命令已从当前开发说明退役。历史证据保留于对应文档及开发前tag；不得用旧脚本重启被删除链路。
+当企业内网或个别镜像节点临时异常时，可在个人终端（继承个人代理）执行以下兜底命令，随后回到 Memlane 点击「重新检测」自动接管校验（界面内「复制安装命令」按钮会自动填入本机目标路径并随源切换更新）：
 
-代码图谱使用根目录 `mcp-arch.yaml` 的官方 Enola 配置：保留除 `manifests` 外全部默认源码解析器，并排除本项目生成目录。固定版的 `manifests` 扫描器绕过 ignore、会带入 `build/` 历史依赖清单，因此当前停用该扫描器；不提供它派生的依赖清单事实。语言源码的符号、调用与导入解析继续保留。更改索引配置后在项目图谱中手动更新，不启动文件监听。
-
-
-## 本机 Codex 接入（PA 开发）
-
-在设置的「Agent 连接」中准备本机Codex接入。控制进程按实际 `auth_home` 固定安装实例，为它创建／核对独立官方主体，再用已配置原生 `codex_executable` 的插件管理器，在私有临时Codex home内安装固定受管marketplace。准备不复制OAuth、不调用模型、不修改日常配置。
-
-预览保存原配置摘要、拟启用配置摘要及待停用的Cognee入口；模型、登录和其他插件保留。共享同一Codex home的CLI／Desktop共用此主体，不提供session级权限隔离。已有项目配置若单独启用旧Cognee插件，需要先核对；旧采集watcher未交接时不允许启用。不要为了过门禁擅自结束编码会话或删除旧buffer。
-
-明确启用时再核对配置摘要与缓存全部文件，先写未知journal，再将新代次缓存放入独立目录、原子保存配置。冲突、超时或中断先「核对原接入操作」，该入口只查原配置／原缓存，不重复安装或恢复owner回退。启用成功仍显示等待新会话，直至有实际接入回执；宿主的插件加载／信任提示需按其正常流程处理，不能全局关闭信任检查。CLI与Desktop的真实hook及cwd需分别验证。
-
-控制进程复用官方Python环境中已有的 `tomlkit`，用于保留Codex配置中的注释及无关设置。本机环境已确认可用；不使用系统Python或修改用户默认工具链。接入预览、配置备份及安装日志含本机信息，保存在私有运行目录，不入Git。
-
-### Ollama 本机知识处理（dev）
-
-“设置 → 知识处理 → 添加 Provider”选择“Ollama（本机接口）”，填写本机根地址（例如`http://127.0.0.1:11434`）及实际模型ID，无需填写API Key。模型和服务由用户现有Ollama管理；页面不自动下载模型或启动服务。保存不切换当前配置，通过同一普通输出／嵌套Schema／事实质量验证后才能选择“下次启动使用”。实际启动仍沿正常dev停止／启动流程。
-
-配置账本中的profile示例为`{"mode":"provider","provider":"ollama","model":"llama3.2:3b","endpoint":"http://127.0.0.1:11434"}`，没有credential字段。此例不表示该模型已在用户电脑安装或通过完整知识质量验收。编译器将其交给固定官方adapter的`ollama_chat/`路由，同时固定模型元数据查询地址；不回退Codex、远端Provider或其他本机端口。缺模型返回明确验证失败，不能据“已保存”认定可用。
-
-### OpenCode 第二批插件组件（dev）
-
-管理侧待发处置需要本机Node>=20；运行JSON顶层可用`opencode_node_executable`指定绝对路径，默认解析`node`。prepare在创建主体和写binding之前检查运行时，并将规范路径、SHA和worker摘要保存在installation元数据；Node升级后需重新准备／核对。管理token只由桌面运行配置传入本地worker，不写入Agent binding。实际worker验收及Native窗口未验边界见检查点四十一。
-
-当前可离线构造独立插件组件，并接现有Connections的准备／启用／核对；不是完整运行包，日常配置尚未切换。使用固定上游lock预先填充的npm缓存，不读取已安装node_modules作为可信源码，不在宿主启动时联网安装。每次输出必须是新目录，保留CLI返回的manifest SHA用于prepare，不能仅信产物自报摘要。
-
-```sh
-python3 scripts/task.py -- .local/cognee-python/bin/python scripts/build_opencode_plugin.py --output /绝对路径/新组件目录 --npm-cache /绝对路径/固定npm缓存
-```
-
-安装检查入口：`python3 scripts/task.py -- env PYTHONPATH=engine/python MEMLANE_OPENCODE_TEST_NPM_CACHE=/绝对路径/固定npm缓存 .local/cognee-python/bin/python -m unittest test_opencode_installation`。缺缓存明确skip，不算完整通过。构造临时依赖自动清理，已保留组件的消费者与实际范围见第二批账本。
-
-OpenCode组件配置使用运行JSON的**顶层**`opencode_plugin_dir`与`opencode_manifest_sha256`（后者必须替换为CLI的实际输出），不放入`project_control`。`agent_hosts.opencode.profile`是电脑级配置目录，默认`$XDG_CONFIG_HOME/opencode`或`~/.config/opencode`；`executable`明确时不fallback。见[配置示例](../../config/daily-runtime.example.json)。组件缺失保留开发中；按管理身份prepare／activate后，由宿主重载和新会话事实确认，不能据prepare成功宣称知识生成。当前真实1.3.5空会话协议通过，真实内容链及Native增量边界见第二批账本。
+- **安装工具 `uv`**（[environment.go](../../internal/bootstrap/environment.go) 自动发现 `PATH`、`/opt/homebrew/bin/uv`、`/usr/local/bin/uv`、`~/.local/bin/uv`、`~/.cargo/bin/uv`）：
+  ```sh
+  # 官网一键脚本（默认安装至 ~/.local/bin/uv）
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  # 或 Homebrew
+  brew install uv
+  ```
+- **Python 3.12**（[probe.go](../../internal/bootstrap/probe.go) 自动扫描 `~/.local/share/uv/python/cpython-3.12*/bin/python3.12` 与 `/opt/homebrew/bin/python3.12`）：
+  ```sh
+  # 国内镜像源推荐
+  UV_PYTHON_INSTALL_MIRROR="https://registry.npmmirror.com/-/binary/python-build-standalone/" uv python install 3.12.12
+  # 国外官方源（或 brew install python@3.12）
+  uv python install 3.12.12
+  ```
+- **Cognee 上游源码（`ec6f408`）与官方插件源码（`a176248`）**（[source.go](../../internal/bootstrap/source.go) 原生复用 SHA256 匹配的已有归档，`agent-plugin` 替换对应 URL 与目标目录）：
+  ```sh
+  # 国外官方直链
+  curl -fL --create-dirs -o "<cognee目录>/service.tar.gz" \
+    "https://codeload.github.com/topoteretes/cognee/tar.gz/ec6f40859e5f2df9e7862dde27d580ac3268ed43"
+  # 国内镜像直链
+  curl -fL --create-dirs -o "<cognee目录>/service.tar.gz" \
+    "https://gh-proxy.org/https://codeload.github.com/topoteretes/cognee/tar.gz/ec6f40859e5f2df9e7862dde27d580ac3268ed43"
+  ```
+- **OpenSSL 3.5.9 原生库（`arm64`）**：
+  ```sh
+  # 国内 USTC
+  curl -fL --create-dirs -o "<runtime目录>/native/artifact.tar.gz" \
+    "https://mirrors.ustc.edu.cn/homebrew-bottles/v2/homebrew/core/openssl/3/blobs/sha256:82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25"
+  # 国外官方 ghcr.io
+  curl -fL --create-dirs -H "Authorization: Bearer QQ==" -o "<runtime目录>/native/artifact.tar.gz" \
+    "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:82b33ce156b289eaf95657b9ec16e8f49cb49c882cdeaeaf57e3e7d67fa85e25"
+  ```
+- **本地向量模型（`BAAI/bge-small-zh-v1.5`，7 文件）**：按 HuggingFace 快照布局（`hub/models--Qdrant--bge-small-zh-v1.5/snapshots/46fbe35fd4374a00fee7de77dfddaeb6dd6a2c59/` 及 `hub/models--BAAI--bge-small-zh-v1.5/snapshots/7999e1d3359715c523056ef9478215996d62a620/`）使用 `curl -fL --create-dirs` 从 ModelScope 或 HuggingFace 拉取全部 7 文件至 `<组件目录>/embedding-<摘要>/`（或在界面指定已有 `ModelCache` 路径），由 [model.go](../../internal/bootstrap/model.go) `VerifyModelFiles` 逐文件校验 SHA256 并执行离线编码探针。
+- **引擎运行库（`runtime`）**：
+  ```sh
+  uv venv --python "<python3.12>" "<runtime目录>/venv"
+  # 国内清华源锁定同步（含全量哈希校验）
+  uv pip sync --python "<runtime目录>/venv/bin/python" \
+    --default-index https://pypi.tuna.tsinghua.edu.cn/simple/ \
+    --require-hashes --build-constraints "<lock路径>" "<lock路径>"
+  # 国外官方源锁定同步
+  uv pip sync --python "<runtime目录>/venv/bin/python" \
+    --require-hashes --build-constraints "<lock路径>" "<lock路径>"
+  ```

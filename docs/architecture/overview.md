@@ -8,7 +8,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，坚持 **Cognee 上游源�
 
 | 层级 | 核心职责 | 关键源码入口 |
 | --- | --- | --- |
-| **宿主 Coding Agents** | 电脑级受管接入（Codex、Antigravity / Gemini App、pi、OpenCode、TraeX、Claude Code & Cursor），各自持有独立官方子主体与 `X-Api-Key`（电脑级准备不授任何项目/通用记忆/画像权限） | [agent_connections.py](../../engine/python/agent_connections.py)、[antigravity_connection.py](../../engine/python/antigravity_connection.py)、[engine/agents/](../../engine/agents/)、[engine/patches/project_access.py](../../engine/patches/project_access.py) |
+| **宿主 Coding Agents** | 电脑级受管接入（Codex、Antigravity / Gemini App、pi、TRAE CLI / TraeX、TRAE CN（IDE），以及保留兼容的 OpenCode、Claude Code & Cursor），各自持有独立官方子主体与 `X-Api-Key`（电脑级准备不授任何项目/通用记忆/画像权限） | [agent_connections.py](../../engine/python/agent_connections.py)、[antigravity_connection.py](../../engine/python/antigravity_connection.py)、[engine/agents/](../../engine/agents/)、[engine/patches/project_access.py](../../engine/patches/project_access.py) |
 | **MyGo 原生桌面端** | `1200×820` 客户端，主界面与状态栏托盘弹层为纯 MyGo 原生自绘，仅图谱画布使用沙箱 `mygo.WebView` 加载受控内嵌官方图谱静态资产（无凭据/无直连网络）；分为总览、阅读、搜索、图谱四大控制器，通过统一 HTTP 客户端直连本地服务（不缓存正文副本） | [main.go](../../cmd/memlane-app/main.go)、[app_controllers.go](../../internal/simpledesktop/app_controllers.go)、[tray_flyout.go](../../internal/simpledesktop/tray_flyout.go)、[graph.go](../../internal/simpledesktop/graph.go)、[http_transport.go](../../internal/simpledesktop/http_transport.go) |
 | **引导与进程守护** | `.service-owner` flock 单实例独占锁、`Setsid` 独立进程组、20 MiB 活 inode 日志截尾及 `.previous` 凭证脱敏与防抖健康检查；落实 M1 保活/退出策略（附着态与首次启动在途句柄受控停服，统一停止超时预算）；磁盘阈值区分安装态 `2 GiB / 5 GiB` 与开发态 `50 GiB / 55 GiB` | [quit_policy.go](../../cmd/memlane-app/quit_policy.go)、[first_runtime.go](../../internal/bootstrap/first_runtime.go)、[supervisor.go](../../internal/supervisor/supervisor.go)、[owner.go](../../internal/supervisor/owner.go)、[dev.py](../../scripts/dev.py) |
 | **接入网关（控制面与外置 `/cognee/*` 网关）** | Loopback 接入治理面负责项目注册表、连接编排、采集/提炼队列与工具图谱调度、热切换、三层监控（`/v1/runtime/monitor`）及 `/v1` 游标读取与只读 SQLite 目录投影；挂载 `/cognee/*` 外置网关执行 ACL 门禁、召回合并通用记忆、Diff/日期注入与召回打点 | [project_control_server.py](../../engine/python/project_control_server.py)、[cognee_extension_gateway.py](../../engine/python/cognee_extension_gateway.py)、[service_monitor.py](../../engine/python/service_monitor.py)、[读取路由](../../engine/python/v2_api.py)、[目录投影](../../engine/python/catalog_index.py)、[会话历史读取](../../engine/python/raw_records_read.py) |
@@ -27,7 +27,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，坚持 **Cognee 上游源�
 ## 延伸阅读
 
 - [本地开发与配置说明](development.md)
-- [架构四阶段改造记录（2026-11-20）](architecture-refactor-20261120.md)
 - [电脑级配置与 Agent 接入契约](agent-connection-contract.md)
 - [Agent 有效模型读取与调用契约](agent-effective-model-contract-20261118.md)
-- [采集与提炼队列异常范围与隔离契约](queue-isolation-20261119.md)
+- [采集与提炼队列异常隔离契约](queue-isolation-20261119.md)
+- 历史归档：[架构四阶段改造记录（2026-11-20）](../archive/architecture-refactor-20261120.md) · [环境准备可靠性报告（2026-11-17）](../archive/environment-readiness-reliability-20261117.html)

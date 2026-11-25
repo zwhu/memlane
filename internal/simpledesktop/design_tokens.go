@@ -8,7 +8,7 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 )
 
-// Visual V4 design tokens (docs/ui-redesign/visual-standards-v4-20261120.md).
+// Visual V4 design tokens (docs/design/visual-standards-v4-20261120.md).
 // Pages read colors from the active palette instead of writing ui.Hex
 // directly, so the light and dark appearances stay in one place.
 type palette struct {

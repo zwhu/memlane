@@ -1,6 +1,6 @@
 """Real numbered drain over the official temporary buffer, with HTTP controlled.
 
-Scenario mapping (docs/engineering/queue-isolation-20261119.md):
+Scenario mapping (docs/architecture/queue-isolation-20261119.md):
 * message rejection / retry isolation: QI01 and original-ID unknown boundary;
 * non-finite JSON before transport: QI03;
 * authorization, filtering, lease, stop, legacy unknown and trim: retained

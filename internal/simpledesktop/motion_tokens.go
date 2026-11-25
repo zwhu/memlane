@@ -7,7 +7,7 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Visual V4 motion tokens (docs/ui-redesign/visual-standards-v4-20261120.md#6-动效).
+// Visual V4 motion tokens (docs/design/visual-standards-v4-20261120.md#6-动效).
 // Motion always reads real state; animations never announce task completion.
 var (
 	v4Smooth    = ui.Animation{Spring: ui.SpringOptions{Duration: 350 * time.Millisecond, Bounce: 0}}

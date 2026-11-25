@@ -6,12 +6,9 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [product.md](product/product.md) | Memlane 产品定位、用户场景、核心页面与功能约束（含依赖复用与排查原则） |
-| [content-model.md](product/content-model.md) | 通用记忆、项目记忆、原始记录与用户画像的内容分层与读写归属 |
-| [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录 |
-| [deployment-options-20261117.md](product/deployment-options-20261117.md) | 单人记忆库在本地、Docker 与远程部署的演进方向与兼容评估 |
-| [release-v0.1.0-beta.1-20261121.md](product/release-v0.1.0-beta.1-20261121.md) | v0.1.0-beta.1 小范围公测发版边界、国内镜像源实测调研与 M1–M4 实施清单 |
-| [beta-install-guide.md](product/beta-install-guide.md) | v0.1.0-beta.2 内测安装、SHA256 校验、Gatekeeper 放行、首次下载源与安全卸载指南 |
+| [product.md](product/product.md) | Memlane 产品定位、内容分层与唯一真相、核心页面交互与依赖复用原则（已合并原 `content-model.md`） |
+| [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录（含 2026-11-25 首次启动向导专注式重设计与 `v1.0` 正式版增量） |
+| [beta-install-guide.md](product/beta-install-guide.md) | `v0.1.0-beta.3` 内测安装、Gatekeeper 放行、零 Skill Setup CLI、首次下载源与安全卸载指南 |
 | [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) | 第三方开源组件、本地运行依赖与向量模型许可说明 |
 
 ## 2. 系统架构与技术契约 (`architecture/`)
@@ -19,21 +16,17 @@
 | 文档 | 说明 |
 | --- | --- |
 | [overview.md](architecture/overview.md) | 当前系统分层、源码模块映射、核心数据流与架构全景图 |
-| [development.md](architecture/development.md) | 日常开发入口 `scripts/dev.py`、运行配置字段、凭据隔离与多 Agent/Provider 调试说明 |
-| [architecture-refactor-20261120.md](architecture/architecture-refactor-20261120.md) | 零侵入外置网关、三层服务监控、模块收口与 Go 原生 Supervisor 四阶段改造记录 |
-| [agent-connection-contract.md](architecture/agent-connection-contract.md) | 电脑级宿主发现、官方插件优先接入与项目隔离规则 |
+| [development.md](architecture/development.md) | 日常开发入口 `scripts/dev.py`、统一门禁、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
+| [agent-connection-contract.md](architecture/agent-connection-contract.md) | 电脑级 5 宿主发现、官方插件优先接入与零项目授权契约 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
-| [queue-isolation-20261119.md](architecture/queue-isolation-20261119.md) | 单条拒收、回执未知隔离与保存队列阻塞排查契约 |
-| [environment-readiness-reliability-20261117.html](architecture/environment-readiness-reliability-20261117.html) | 环境依赖检测、先复用后安装确认及 Agent 辅助排查技术报告 |
+| [queue-isolation-20261119.md](architecture/queue-isolation-20261119.md) | QI01–QI06 异常隔离规则、per-entry buffer 兼容契约与回归边界 |
 
 ## 3. 界面、视觉与动效设计 (`design/`)
 
 | 文档 | 说明 |
 | --- | --- |
-| [design.md](design/design.md) | 桌面端交互约束、页面结构与历次界面修订裁决 |
-| [visual-standards-v4-20261120.md](design/visual-standards-v4-20261120.md) | 现行 V4 视觉规范（浅/深双外观令牌、字体层级、三栏布局与动效参数） |
+| [visual-standards-v4-20261120.md](design/visual-standards-v4-20261120.md) | 现行 V4 视觉与核心交互规范（浅/深双外观令牌、字体层级、三栏布局、动效参数、§7.7 首次启动专注式向导及交互不变量；已合并原 `design.md`） |
 | [motion-implementation.md](design/motion-implementation.md) | MyGo 原生 UI 动效实施与复用契约（减少动态效果、帧率与内存守护） |
-| [visual-v4-implementation-20261120.md](design/visual-v4-implementation-20261120.md) | 视觉 V4 在 Native 客户端的分阶段实施账本与证据 |
 | [visual-v4-prototype/](design/visual-v4-prototype/) | V4 可交互 HTML 原型与自查截图脚本 |
 | [onboarding-prototype/](design/onboarding-prototype/) | 首次启动向导（2026-11-25 专注式重设计）可交互 HTML 原型与截图脚本 |
 
@@ -56,6 +49,7 @@
 | [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
 | [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
+| [defect-postmortems.md](engineering/defect-postmortems.md) | 近期关键缺陷复盘汇总（登录启动窗、画像文档误入项目队列、Codex 重试通知） |
 | [runtime-package-cleanup-incident-20261111.md](engineering/runtime-package-cleanup-incident-20261111.md) | 运行中后台所属运行包被误清理复盘与依赖保护规则 |
 | [task-brief-template.md](engineering/templates/task-brief-template.md) | 跨模块任务影响范围与验证说明填写模板 |
 | [testcase-template.md](engineering/templates/testcase-template.md) | 连续主流程集成/验收用例模板 |
@@ -69,12 +63,17 @@
 
 ## 7. 历史归档 (`archive/`)
 
-已被 V4 或新工程流程取代的历史设计稿、旧规范及退役执行说明，仅供追溯，不作为新改动依据：
+已被 V4、合并后的当前基准或新工程流程取代的历史设计稿、旧规范、阶段改造记录及退役执行说明，仅供追溯，不作为新改动依据：
 
 - [memlane-design-spec-v3.html](archive/memlane-design-spec-v3.html)
 - [visual-standards-20261113.md](archive/visual-standards-20261113.md)
 - [scenario-runner.md](archive/scenario-runner.md)
 - [client-simplification-20261112/](archive/client-simplification-20261112/)
+- [deployment-options-20261117.md](archive/deployment-options-20261117.md)（核心边界已并入 `research/docker-deployment-architecture-20261125.md`）
+- [release-v0.1.0-beta.1-20261121.md](archive/release-v0.1.0-beta.1-20261121.md)（国内镜像源实测与终端兜底已并入 `architecture/development.md`，`v1.0` 增量已并入 `product/roadmap.md`）
+- [architecture-refactor-20261120.md](archive/architecture-refactor-20261120.md)（四阶段架构改造阶段记录）
+- [environment-readiness-reliability-20261117.html](archive/environment-readiness-reliability-20261117.html)（早期环境准备调研报告）
+- [visual-v4-implementation-20261120.md](archive/visual-v4-implementation-20261120.md)（视觉 V4 实施账本）
 
 ## 8. 过程文档与验收媒体 (`process/`)
 

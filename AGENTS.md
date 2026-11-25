@@ -6,7 +6,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 
 全景图与详细分层见 [架构总览](docs/architecture/overview.md)（[架构图 SVG](docs/images/memlane-architecture-20261120.svg)）：
 
-- **宿主 Coding Agents（接入层）**：Codex、Antigravity / Gemini App、pi、OpenCode、TraeX、Claude Code & Cursor；按电脑级受管主体接入，各自持有独立官方身份与 `X-Api-Key`（电脑级准备不授任何项目权）。
+- **宿主 Coding Agents（接入层）**：Codex、Antigravity / Gemini App、pi、TRAE CLI / TraeX、TRAE CN（IDE），以及保留兼容的 OpenCode、Claude Code & Cursor；按电脑级受管主体接入，各自持有独立官方身份与 `X-Api-Key`（电脑级准备不授任何项目权）。
 - **MyGo 原生桌面端（`cmd/memlane-app/`、`internal/simpledesktop/`）**：`1200×820` 客户端，主界面与托盘弹层（`tray_flyout.go`）为纯 MyGo 原生自绘，仅图谱画布使用沙箱 `mygo.WebView` 加载受控内嵌官方图谱静态资产（无凭据/无直连网络）；划分为 `overview` / `reading` / `search` / `graph` 四个控制器，通过 `http_transport.go` 直连本地服务，不本地缓存正文副本。
 - **引导与原生守护（`internal/bootstrap/`、`internal/supervisor/`、`cmd/memlane-app/quit_policy.go`、`scripts/dev.py`）**：持有 `.service-owner` flock 单实例独占锁、以 `Setsid` 管理独立进程组、20 MiB 活 inode 日志截尾及 `.previous` 凭证脱敏与防抖健康检查；遵循 M1 保活/退出策略（含附着态与首次启动在途受控停服），崩溃不静默自启。
 - **接入网关（`engine/python/project_control_server.py`、`cognee_extension_gateway.py`）**：Loopback 接入治理面管理项目注册表、连接编排、采集/提炼队列调度、热切换、三层监控（`/v1/runtime/monitor`）及`/v1` 游标读取与只读 SQLite 目录投影（`v2_api.py` / `catalog_index.py` / `raw_records_read.py`）；`/cognee/*` 零侵入外置网关统一执行 ACL 门禁、召回合并通用记忆、Diff/日期注入与召回打点。
@@ -38,13 +38,13 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **MyGo Native 桌�
 
 | 任务领域 | 查阅文档 |
 | --- | --- |
-| **产品定位、内容分层与演进** | [产品定义](docs/product/product.md)、[内容分层](docs/product/content-model.md)、[Roadmap](docs/product/roadmap.md)、[部署方向](docs/product/deployment-options-20261117.md)、[公测发版方案](docs/product/release-v0.1.0-beta.1-20261121.md) |
-| **系统架构、开发运维与改造记录** | [架构总览](docs/architecture/overview.md)、[开发说明](docs/architecture/development.md)、[架构改造记录](docs/architecture/architecture-refactor-20261120.md)、[环境准备报告](docs/architecture/environment-readiness-reliability-20261117.html) |
-| **Agent 接入、模型契约与队列隔离** | [电脑级接入契约](docs/architecture/agent-connection-contract.md)、[有效模型契约](docs/architecture/agent-effective-model-contract-20261118.md)、[队列隔离记录](docs/architecture/queue-isolation-20261119.md) |
-| **界面交互、V4 视觉与动效** | [设计决策](docs/design/design.md)、[视觉规范 V4](docs/design/visual-standards-v4-20261120.md)、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 可交互原型](docs/design/visual-v4-prototype/)、[V4 实施账本](docs/design/visual-v4-implementation-20261120.md) |
+| **产品定位、内容分层与演进** | [产品定义](docs/product/product.md)（含内容分层）、[Roadmap](docs/product/roadmap.md)、[内测安装指南](docs/product/beta-install-guide.md)（`v0.1.0-beta.3`） |
+| **系统架构与开发运维** | [架构总览](docs/architecture/overview.md)、[开发说明](docs/architecture/development.md)（含国内镜像源与手工终端兜底） |
+| **Agent 接入、模型契约与队列隔离** | [电脑级接入契约](docs/architecture/agent-connection-contract.md)、[有效模型契约](docs/architecture/agent-effective-model-contract-20261118.md)、[队列隔离契约](docs/architecture/queue-isolation-20261119.md) |
+| **界面交互、V4 视觉与动效** | [视觉与交互规范 V4](docs/design/visual-standards-v4-20261120.md)、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 可交互原型](docs/design/visual-v4-prototype/)、[首次启动向导原型](docs/design/onboarding-prototype/) |
 | **专题技术调研** | [安装依赖瘦身调研](docs/research/install-dependency-slimming-20261125.md)、[Docker 部署架构调研](docs/research/docker-deployment-architecture-20261125.md)、[首屏 20× 性能调研](docs/research/native-first-screen-performance-20261122.md)、[多 Agent 驱动协议](docs/research/agent-driving-protocols-20261118.md)、[Hindsight 审计](docs/research/hindsight-vs-memlane-20261117.md)、[macOS 更新调研](docs/research/macos-updater-20261119.md)、[TRAE IDE 整理调研](docs/research/trae-ide-memory-processing-20261119.md) |
-| **工程规范、复盘与模板** | [工程规范](docs/engineering/workflow.md)、[多 Agent 耗时复盘](docs/engineering/agent-workflow-efficiency-retrospective-20261125.md)、[运行包误清理复盘](docs/engineering/runtime-package-cleanup-incident-20261111.md)、[任务说明模板](docs/engineering/templates/task-brief-template.md)、[用例模板](docs/engineering/templates/testcase-template.md)、[双审与契约例外账本模板](docs/engineering/templates/review-ledger-template.md)、[复盘模板](docs/engineering/templates/incident-template.md) |
-| **历史归档（仅供追溯）** | [归档目录](docs/archive/)（含 V3 设计稿、旧视觉规范与已退役脚本说明，不作新改动依据） |
+| **工程规范、复盘与模板** | [工程规范](docs/engineering/workflow.md)、[Beta 安装问题库](docs/engineering/beta-install-issues.md)、[缺陷复盘汇总](docs/engineering/defect-postmortems.md)、[多 Agent 耗时复盘](docs/engineering/agent-workflow-efficiency-retrospective-20261125.md)、[运行包误清理复盘](docs/engineering/runtime-package-cleanup-incident-20261111.md)、[任务说明模板](docs/engineering/templates/task-brief-template.md)、[用例模板](docs/engineering/templates/testcase-template.md)、[双审与契约例外账本模板](docs/engineering/templates/review-ledger-template.md)、[复盘模板](docs/engineering/templates/incident-template.md) |
+| **历史归档（仅供追溯）** | [归档目录](docs/archive/)（含 V3 设计稿、V4 实施账本、旧视觉规范、beta.1 发版方案、四阶段架构改造记录、部署方向旧稿与已退役说明，不作新改动依据） |
 | **过程文档与验收媒体（本地忽略）** | [过程产物目录](docs/process/README.md)（独立存放截图、录屏视频、草稿与验收过程文件，已配置 `.gitignore` 不入库） |
 
 ## 4. 设计原则

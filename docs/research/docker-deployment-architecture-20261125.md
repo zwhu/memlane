@@ -2,9 +2,9 @@
 
 2026-11-25，源码基线 `6b005c2`（含 Beta.3 Agent-First 首装、`internal/setupcli/`、`internal/controlplane/` 与 TRAE CN 4 事件 Hook 迁移）。本文针对 macOS 本机运行环境，系统评估 Memlane 容器化边界、宿主机与容器网络穿透安全、宿主机依赖瘦身、单一日常库持久化与锁风险、多架构镜像与国内分发，以及面向远期「远程 Docker Cognee」的双轨共存与分阶段落地路线。
 
-全文严格遵守 `AGENTS.md` 中的 **Cognee 零侵入红线**（严禁修改上游 Cognee `1.6.7` `ec6f408` 源码、严禁绕过 `official_service_dev.verify_source` v2 逐文件 SHA-256 与源码目录无 `.pyc`/`.pyo` 门禁、全部扩展落在外置网关/外置存储/LLM 出口/插件层）及 **「单人 Agent 记忆库、单一日常库、不做多租户」** 产品定位，并在各节显式区分 **【代码已核实事实】** 与 **【方案设计建议】**。
+全文严格遵守 `AGENTS.md` 中的 **Cognee 零侵入红线**（严禁修改上游 Cognee `1.6.7` `ec6f408` 源码、严禁绕过 `official_service_dev.verify_source` v2 逐文件 SHA-256 与源码目录无 `.pyc`/`.pyo` 门禁、全部扩展落在外置网关/外置存储/LLM 出口/插件层）与既定产品边界：**定位为单人 Agent 记忆库、不做多租户或多人协作；每次仅由单一运行方式承载单一日常库，切换本地/Docker/远程时保留原本地库，不自动合并、不设计自动双向数据库同步，也不在断线后静默回退；WebDAV 仅作为备份/导出同步的远期候选，不作为远程 Cognee 的主访问或模型调用通道**。各节均显式区分 **【代码已核实事实】** 与 **【方案设计建议】**。
 
-关联文档：[部署方向评估](../product/deployment-options-20261117.md) · [安装依赖包瘦身调研](install-dependency-slimming-20261125.md) · [系统架构总览](../architecture/overview.md) · [电脑级接入契约](../architecture/agent-connection-contract.md) · [有效模型契约](../architecture/agent-effective-model-contract-20261118.md) · [公测发版方案](../product/release-v0.1.0-beta.1-20261121.md)
+关联文档：[部署方向评估（历史归档）](../archive/deployment-options-20261117.md) · [安装依赖包瘦身调研](install-dependency-slimming-20261125.md) · [系统架构总览](../architecture/overview.md) · [电脑级接入契约](../architecture/agent-connection-contract.md) · [有效模型契约](../architecture/agent-effective-model-contract-20261118.md) · [公测发版方案（历史归档）](../archive/release-v0.1.0-beta.1-20261121.md)
 
 ---
 
@@ -119,7 +119,7 @@ flowchart LR
 为确保安全边界与低改造成本，macOS 宿主机保留一个轻量本地入口（可并入宿主控制守护进程或 Go 编排层），**严格只接收以下 6 类显式类型化业务动作**，**严禁透传任意 shell 命令或任意文件路径**，全部调用必须携带 `operation_id`、`expected_revision`、目标 `agent_kind` 与独立鉴权凭据，且跨边界等待期间容器侧 **不持有 `Registry` 文件锁**：
 
 1. `workspace.resolve`：输入用户选定目录（或来自 Hook 的本机 `cwd`），在宿主机执行 `realpath` + `git rev-parse --show-toplevel` + 安全路径核验，返回标准化逻辑工作区标识与仓库指纹；由容器侧 `Registry` 唯一决定项目绑定与授权。
-2. `agent.host_ops`（`discover` / `preview` / `apply` / `verify` / `migrate`）：宿主探测本地 App/CLI/Profile（含 `detected_processing_clis`），生成或核对插件制品代次、宿主配置文件变更及 TRAE CN 6→4 Hook 原子迁移（保留 `preserved_third_party_groups`）；遵循既有电脑级接入契约（[agent-connection-contract.md](../architecture/agent-connection-contract.md#L25)），仅创建/校验独立身份与本地配置，所有身份记录与项目 ACL 仍由容器 `Registry` 单点提交。
+2. `agent.host_ops`（`discover` / `preview` / `apply` / `verify` / `migrate`）：宿主探测本地 App/CLI/Profile（含 `detected_processing_clis`），生成或核对插件制品代次、宿主配置文件变更及 TRAE CN 6→4 Hook 原子迁移（保留 `preserved_third_party_groups`）；遵循既有电脑级接入契约（[agent-connection-contract.md](../architecture/agent-connection-contract.md#2-电脑级连接与零项目授权红线)），仅创建/校验独立身份与本地配置，所有身份记录与项目 ACL 仍由容器 `Registry` 单点提交。
 3. `agent.trae_dispatch`：保留在宿主机的本地入口，供 TRAE IDE Hook 触发，按本机 `hooks.json` 校验并在宿主 `cwd` 执行 `trae_ide_hook.py`，出站经宿主机转发到容器 `/cognee/*`。
 4. `backlog.drain`：宿主侧扫描 `~/.cognee-plugin/*` 待发缓冲，向容器 `/cognee/*` 补发，并以容器侧 `capture-receipts` 回执作为幂等提交依据。
 5. `profile.run_cli` & `session.scan_host_relations`：画像生成 CLI（`codex`/`agy`/`pi`/`traex`）与宿主 Agent 会话库只读扫描留宿主机执行，生成结果交回容器侧 `ProfileDocuments` 持久化与读回确认（保留现有保存阶段不可取消与单所有权语义）。
@@ -213,7 +213,7 @@ flowchart LR
 
 #### A. 本机实测现役宿主机重型依赖体量（与依赖瘦身调研口径统一）
 
-结合 [安装依赖包瘦身调研](install-dependency-slimming-20261125.md) 对 `requirements.lock` 全部 171 个 `darwin/arm64` 包的精确统计及本机受管环境只读测量（对照 [公测发版方案](../product/release-v0.1.0-beta.1-20261121.md#L27) 首装预算）：
+结合 [安装依赖包瘦身调研](install-dependency-slimming-20261125.md) 对 `requirements.lock` 全部 171 个 `darwin/arm64` 包的精确统计及本机受管环境只读测量（对照 [公测发版方案](../archive/release-v0.1.0-beta.1-20261121.md#L27) 首装预算）：
 - **引擎 venv 体积口径澄清**：[environment.go](../../internal/bootstrap/environment.go#L165)（L165–170）的 **`2 GiB` 下载 / `4 GiB` 展开空间是硬编码安装预算**；实测 `requirements.lock` 全部 171 个 wheel 精确下载量仅 **`339.61 MiB`**，受管引擎 venv 无 `.pyc` 的 `RECORD` 逻辑解压体积为 **`979.02 MiB`**，含 `.pyc` 后为 **`1,076.31 MiB`（`1.05 GiB`，APFS 块占用 `1,165.52 MiB` / `1.14 GiB`，`du -sh` 约 `1.1 GiB`）**。
 - 其中 `site-packages`（含 `.pyc` 的 `du` 口径，不含 `bin/enola` `51.11 MiB`）Top 16 重包几乎全部属于**纯引擎侧依赖**：
   - `lance`（`174 MB`）、`lancedb`（`145 MB`）、`litellm`（`131 MB`）、`pyarrow`（`127 MB`）、`onnxruntime`（`77 MB`）、`pandas`（`49 MB`）、`cognee`（`48 MB`）、`cognee_db_workers`（`34 MB`）、`botocore`（`27 MB`）、`numpy`（`25 MB`）、`openai`（`21 MB`）、`sqlalchemy`（`18 MB`）、`networkx`（`14 MB`）、`ladybug`（`14 MB`）、`PIL`（`13 MB`）、`cryptography`（`12 MB`）。
@@ -498,7 +498,7 @@ Docker 镜像并非「把完整未裁剪 venv 原样打包」——[安装依赖
 
 #### D. 为远期「远程 Docker Cognee」预留的最小接口边界
 
-遵循 [部署方向评估](../product/deployment-options-20261117.md#L57) 单人跨设备共享单一权威库方向，B-Split 架构天然只需预留 **2 条最小边界**：
+遵循 [部署方向评估](../archive/deployment-options-20261117.md#L57) 单人跨设备共享单一权威库方向，B-Split 架构天然只需预留 **2 条最小边界**：
 1. **记忆与控制 API 边界**：
    - 将 [controlplane/client.go](../../internal/controlplane/client.go#L74) 与 [project_access.go](../../internal/simpledesktop/project_access.go#L345) 的 origin 校验从硬编码 `127.0.0.1` 抽象为 `LocalLoopback | VerifiedHTTPSRemote`；引入按设备签发、服务端可即时撤销的独立 Device Token；服务端继续掌握 dataset ACL；宿主机独立保存「本机工作区路径 → 远端 `project_id`/`dataset_id`」映射表（同一单人在多台 Mac 上可有不同绝对路径）。
    - 现有全部 loopback-only Agent Hook **保持零修改**，继续连接本机 `127.0.0.1` 宿主执行器入口，由本机入口统一完成远端 HTTPS 认证、转发、断网本地缓冲与回执对账。

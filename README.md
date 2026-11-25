@@ -43,7 +43,8 @@ Memlane 把这些项目知识沉淀在你自己的 Mac 上，供所有接入的 
 | Codex | ✅ 已支持 |
 | Antigravity（Gemini App） | ✅ 已支持（目前覆盖任务 / CodeMode 新会话） |
 | pi | ✅ 已支持 |
-| TraeX | ✅ 已支持 |
+| TraeX（TRAE CLI） | ✅ 已支持 |
+| TRAE CN（IDE） | ✅ 已支持（4 事件 Hook 自动采集与召回；记忆提炼配合本机 CLI 或模型 API） |
 | Claude Code、Cursor、OpenCode | 🚧 规划中 |
 
 ## 安装
@@ -53,8 +54,9 @@ Memlane 把这些项目知识沉淀在你自己的 Mac 上，供所有接入的 
 1. 从 [GitHub Releases](https://github.com/zwhu/memlane/releases) 下载最新的 `.dmg`，把 Memlane 拖入「应用程序」。
 2. 内测版使用 ad-hoc 签名、尚未经 Apple 公证，首次打开会被系统拦截：前往 **系统设置 → 隐私与安全性**，点击「仍要打开」。
 3. 按首次启动引导准备运行环境（支持国内镜像源 / 国外官方源，所有下载均校验固定 SHA256），然后在设置中接入你的 Agent。
+4. **零 Skill Setup CLI**：`Memlane.app` 内置只读诊断与受控安装命令行（`/Applications/Memlane.app/Contents/MacOS/Memlane {doctor|install|connect|verify|repair} --json`），可直接让本机 Coding Agent 按预览确认流程协助完成首装、升级自救或接入排障，无需安装 Skill。
 
-完整步骤、已知限制与卸载方法见 [内测安装指南](docs/product/beta-install-guide.md)。
+完整步骤、Agent 协助模板、已知限制与卸载方法见 [内测安装指南](docs/product/beta-install-guide.md)。
 
 ## 工作原理
 
@@ -95,9 +97,9 @@ Memlane 目前处于**公开内测**阶段（`v0.1.0-beta`），功能与数据�
 
 | 面向 | 文档 |
 | --- | --- |
-| 用户 | [内测安装指南](docs/product/beta-install-guide.md) · [产品定义](docs/product/product.md) · [内容分层](docs/product/content-model.md) |
+| 用户 | [内测安装指南](docs/product/beta-install-guide.md) · [产品定义与内容分层](docs/product/product.md) · [Roadmap](docs/product/roadmap.md) |
 | 开发者 | [架构总览](docs/architecture/overview.md) · [开发说明](docs/architecture/development.md) · [Agent 接入契约](docs/architecture/agent-connection-contract.md) · [工程规范](docs/engineering/workflow.md) |
-| 设计 | [设计决策](docs/design/design.md) · [视觉规范 V4](docs/design/visual-standards-v4-20261120.md) |
+| 设计 | [视觉与交互规范 V4](docs/design/visual-standards-v4-20261120.md) · [MyGo 动效契约](docs/design/motion-implementation.md) |
 
 全部文档索引见 [docs/README.md](docs/README.md)，领域术语见 [CONTEXT.md](CONTEXT.md)。
 

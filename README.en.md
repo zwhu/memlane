@@ -46,7 +46,8 @@ Memlane keeps that project knowledge on your own Mac, lets every connected agent
 | Codex | ✅ Supported |
 | Antigravity (Gemini App) | ✅ Supported (task / CodeMode sessions) |
 | pi | ✅ Supported |
-| TraeX | ✅ Supported |
+| TraeX (TRAE CLI) | ✅ Supported |
+| TRAE CN (IDE) | ✅ Supported (4-event hooks for capture & recall; distillation uses a local CLI or LLM API) |
 | Claude Code, Cursor, OpenCode | 🚧 Planned |
 
 ## Installation
@@ -56,8 +57,9 @@ Memlane keeps that project knowledge on your own Mac, lets every connected agent
 1. Download the latest `.dmg` from [GitHub Releases](https://github.com/zwhu/memlane/releases) and drag Memlane into Applications.
 2. Beta builds are ad-hoc signed and not yet notarized, so macOS blocks the first launch. Open **System Settings → Privacy & Security** and click **Open Anyway**.
 3. Follow the first-run setup to prepare the runtime (China mirrors or official sources; every download is verified against a pinned SHA-256), then connect your agents in Settings.
+4. **Zero-skill Setup CLI:** `Memlane.app` bundles a JSON-first CLI (`/Applications/Memlane.app/Contents/MacOS/Memlane {doctor|install|connect|verify|repair} --json`) so any local coding agent can run read-only diagnostics, preview changes, and assist with first-time setup, upgrade recovery, or troubleshooting without installing a skill.
 
-See the [beta installation guide](docs/product/beta-install-guide.md) (Chinese) for full steps, known limitations, and uninstallation.
+See the [beta installation guide](docs/product/beta-install-guide.md) (Chinese) for full steps, agent prompt templates, known limitations, and uninstallation.
 
 ## How it works
 
