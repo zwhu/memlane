@@ -501,16 +501,14 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		}
 	})
 
-	// 3. Legacy overview + activity queued callbacks are dropped after dataset invalidation.
-	t.Run("legacy_and_activity_callbacks_dropped_after_invalidation", func(t *testing.T) {
+	// 3. Bootstrap and activity queued callbacks are dropped after dataset invalidation.
+	t.Run("bootstrap_and_activity_callbacks_dropped_after_invalidation", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
-			case strings.Contains(r.URL.Path, "/data"):
-				_ = json.NewEncoder(w).Encode([]Document{{ID: "doc-secret", Dataset: "ds1", Created: "2026-11-21T10:00:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}})
-			case strings.HasSuffix(r.URL.Path, "/raw"):
-				_, _ = fmt.Fprint(w, "SECRET_REVOKED_PREVIEW: legacy body")
-			case strings.Contains(r.URL.Path, "/sessions"):
-				_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}, "has_more": false})
+			case r.URL.Path == "/v1/capabilities":
+				json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			case r.URL.Path == "/v1/overview/bootstrap":
+				json.NewEncoder(w).Encode(bootstrapResp)
 			case strings.Contains(r.URL.Path, "/pipeline-runs"):
 				_ = json.NewEncoder(w).Encode(bootstrapResp.PipelineRuns)
 			default:
@@ -520,9 +518,10 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		defer server.Close()
 
 		a := New(Config{
-			ServiceURL: server.URL,
-			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL),
+			Projects: []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
 		}, nil)
+		a.access.Loaded = true
 		updates := make(chan func(), 20)
 		a.Update = func(fn func()) { updates <- fn }
 
@@ -531,12 +530,13 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		select {
 		case cb1 = <-updates:
 		case <-time.After(2 * time.Second):
-			t.Fatal("first legacy overview callback not queued")
+			t.Fatal("bootstrap callback not queued")
 		}
+		a.startOverviewActivity()
 		select {
 		case cb2 = <-updates:
 		case <-time.After(2 * time.Second):
-			t.Fatal("second legacy overview callback not queued")
+			t.Fatal("activity callback not queued")
 		}
 
 		a.InvalidateReading("ds1")
@@ -544,7 +544,7 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		cb2()
 
 		if a.overviewState.Loaded || len(a.overviewState.Snapshot.Knowledge) != 0 || len(a.overviewState.Events) != 0 {
-			t.Fatalf("stale legacy/activity callbacks repopulated overview after InvalidateReading: loaded=%v knowledge=%d events=%d",
+			t.Fatalf("stale bootstrap/activity callbacks repopulated overview after InvalidateReading: loaded=%v knowledge=%d events=%d",
 				a.overviewState.Loaded, len(a.overviewState.Snapshot.Knowledge), len(a.overviewState.Events))
 		}
 	})
@@ -646,17 +646,17 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 				a.overviewState.Error, a.overviewState.ActivityError)
 		}
 
-		// 5b. Legacy overview + activity timeouts both clear loading and record errors.
+		// 5b. Missing control plane settles both loading states with an explicit error.
 		b := New(Config{
-			ServiceURL: server.URL,
-			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ServiceURL: server.URL, ProjectControl: &ProjectControlConfig{},
+			Projects: []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
 		}, nil)
 		updatesB := make(chan func(), 20)
 		b.Update = func(fn func()) { updatesB <- fn }
 		b.loadOverview()
 		drainReading(t, updatesB, func() bool { return !b.overviewState.Loading && !b.overviewState.ActivityLoading })
-		if b.overviewState.Error == "" || b.overviewState.ActivityError == "" {
-			t.Fatalf("legacy/activity timeout cleared loading without recording error: err=%q actErr=%q",
+		if !strings.Contains(b.overviewState.Error, "控制面服务不可用") || b.overviewState.ActivityError != b.overviewState.Error {
+			t.Fatalf("missing control plane did not settle the overview: err=%q actErr=%q",
 				b.overviewState.Error, b.overviewState.ActivityError)
 		}
 	})
@@ -665,15 +665,20 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 	t.Run("http_401_preserves_scope_and_prevents_per_frame_storm", func(t *testing.T) {
 		var calls atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/capabilities" {
+				json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+				return
+			}
 			calls.Add(1)
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer server.Close()
 
 		a := New(Config{
-			ServiceURL: server.URL,
-			Projects:   []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
+			ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL),
+			Projects: []Project{{ID: "p1", Name: "P1", Dataset: "ds1"}},
 		}, nil)
+		a.access.Loaded = true
 		a.page = "总览"
 		a.overviewState.scope = a.overviewScope()
 		a.overviewState.Loaded = true
@@ -685,6 +690,9 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 		a.loadOverview()
 		drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
 
+		if calls.Load() != 1 {
+			t.Fatal("bootstrap did not observe the HTTP 401")
+		}
 		if a.overviewState.scope != a.overviewScope() {
 			t.Fatalf("401 cleared overview scope: got %q want %q", a.overviewState.scope, a.overviewScope())
 		}

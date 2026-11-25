@@ -2,8 +2,8 @@ package simpledesktop
 
 import (
 	"context"
+	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -190,7 +190,7 @@ func (a *App) runUnifiedSearch(retry bool) {
 					return
 				}
 				if query == "" {
-					s.Error = "最近内容读取失败"
+					s.Error = "最近内容读取失败：" + controlUserError(err)
 					if done {
 						s.Loading = false
 					}
@@ -251,14 +251,11 @@ func (a *App) runUnifiedSearch(retry bool) {
 			return
 		}
 		if query == "" {
-			if hasControl {
-				rows, usedV2, err := recentSearchItemsV2(ctx, control, projects, scope, readingID, recallStartedAt)
-				if usedV2 {
-					publishRows(1, searchLaneResult{}, rows, err, true)
-					return
-				}
+			if !hasControl {
+				publishRows(1, searchLaneResult{}, nil, fmt.Errorf("控制面服务不可用，无法加载最近记忆"), true)
+				return
 			}
-			rows, err := a.recentSearchItems(ctx, client, projects, signature)
+			rows, err := searchRecentItemsV2(ctx, control, projects, scope, readingID, recallStartedAt)
 			publishRows(1, searchLaneResult{}, rows, err, true)
 			return
 		}
@@ -543,9 +540,9 @@ func searchRowText(i Item) (string, string) {
 	}
 	return title, preview
 }
-func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, projects []Project, scope, readingID, recallStartedAt string) ([]Item, bool, error) {
+func searchRecentItemsV2(ctx context.Context, control ProjectControlClient, projects []Project, scope, readingID, recallStartedAt string) ([]Item, error) {
 	if len(projects) == 0 {
-		return []Item{}, true, nil
+		return []Item{}, nil
 	}
 	projectID := ""
 	datasetID := ""
@@ -600,76 +597,7 @@ func recentSearchItemsV2(ctx context.Context, control ProjectControlClient, proj
 				break
 			}
 		}
-		return result, true, nil
+		return result, nil
 	}
-	return nil, true, err
-}
-
-func (a *App) recentSearchItems(ctx context.Context, client Client, projects []Project, generation string) ([]Item, error) {
-	if len(projects) == 0 {
-		return []Item{}, nil
-	}
-	rows := []Item{}
-	for _, p := range projects {
-		docs, err := client.overviewDocuments(ctx, p)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range docs {
-			if d.knowledge() {
-				copy := d
-				rows = append(rows, Item{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Source: d.session(), Document: &copy})
-			}
-		}
-		records, _, err := client.projectRecords(ctx, p, 0, "原始记录")
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, records...)
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		a := dateOrder(rows[i].Date)
-		b := dateOrder(rows[j].Date)
-		if a.Equal(b) {
-			return rows[i].key() < rows[j].key()
-		}
-		return a.After(b)
-	})
-	result := []Item{}
-	seen := map[string]bool{}
-	counts := map[bool]int{}
-	for _, i := range rows {
-		knowledge := strings.Contains(i.Kind, "知识")
-		if counts[knowledge] >= 3 || seen[i.key()] {
-			continue
-		}
-		seen[i.key()] = true
-		counts[knowledge]++
-		result = append(result, i)
-	}
-	var workers sync.WaitGroup
-	failures := make([]error, len(result))
-	for n := range result {
-		if result[n].Document != nil && readableDocumentTitle(*result[n].Document) != "" {
-			continue
-		}
-		workers.Add(1)
-		go func(n int) {
-			defer workers.Done()
-			i, err := a.titles.read(ctx, client, result[n], generation, false, true)
-			if err == nil {
-				result[n] = i
-			} else {
-				result[n].ReadingState = "failed"
-				failures[n] = err
-			}
-		}(n)
-	}
-	workers.Wait()
-	for _, err := range failures {
-		if readingUnavailable(err) {
-			return nil, err
-		}
-	}
-	return result, nil
+	return nil, err
 }

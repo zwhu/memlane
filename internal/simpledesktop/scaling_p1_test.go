@@ -571,7 +571,7 @@ func TestScalingP1CommonKnowledgeCursorV2AndO1DeleteVerify(t *testing.T) {
 	a.load(s)
 	drainReading(t, updates, func() bool { return !s.Loading && len(s.Items) == 1 && s.Items[0].ID == "c-2" })
 
-	// O(1) delete verification must use /v1/datasets/ds-common/documents/c-1 (0 overviewDocuments calls).
+	// O(1) delete verification must use /v1/datasets/ds-common/documents/c-1 (0 full-catalog calls).
 	deleted = true
 	a.commonEdit.DeleteSubmitted = true
 	a.commonEdit.Delete = &Document{ID: "c-1", Dataset: "ds-common"}
@@ -579,7 +579,7 @@ func TestScalingP1CommonKnowledgeCursorV2AndO1DeleteVerify(t *testing.T) {
 	a.confirmCommonDeletion()
 	drainReading(t, updates, func() bool { return !a.commonEdit.Busy })
 	if lookupCalls.Load() != 1 || overviewDocsCalls.Load() != 0 {
-		t.Fatalf("expected O(1) lookup=1 and overviewDocuments=0, got lookup=%d overview=%d", lookupCalls.Load(), overviewDocsCalls.Load())
+		t.Fatalf("expected O(1) lookup=1 and full-catalog=0, got lookup=%d overview=%d", lookupCalls.Load(), overviewDocsCalls.Load())
 	}
 	if a.commonEdit.Delete != nil || !strings.Contains(a.commonEdit.Message, "已核对") {
 		t.Fatalf("expected confirmed deletion, got msg=%q delete=%v", a.commonEdit.Message, a.commonEdit.Delete)
@@ -663,7 +663,7 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 	defer cognee.Close()
 
 	a, updates := p1TestApp(t, cognee.URL, control.URL, token)
-	// 1. Empty query hits /v1/search/recent (0 overviewDocuments calls).
+	// 1. Empty query hits /v1/search/recent (0 full-catalog calls).
 	a.openUnifiedSearch(false)
 	drainReading(t, updates, func() bool { return !a.searchUI.Loading && a.searchUI.Loaded })
 	if recentV2Calls.Load() != 1 || overviewDocsCalls.Load() != 0 || len(a.visibleSearchRows()) != 2 {

@@ -785,54 +785,6 @@ class ScalingGuardrailLintTests(unittest.TestCase):
     def go_codes(self, source, name):
         return {code for _, code, _ in lint.check_go_source(source, name)}
 
-    def test_ml019_binds_exact_path_and_enclosing_function(self):
-        # New file calling overviewDocuments / overviewSessions / /v1/overview/bootstrap must fail ML019.
-        self.assertIn('ML019', self.go_codes('func f(c Client) { c.overviewDocuments(ctx, p) }', 'internal/simpledesktop/new_feature.go'))
-        self.assertIn('ML019', self.go_codes('func f(c Client) { c.overviewSessions(ctx, ps) }', 'internal/simpledesktop/new_feature.go'))
-        self.assertIn('ML019', self.go_codes('func f() { _ = "/v1/overview/bootstrap" }', 'internal/simpledesktop/new_feature.go'))
-        # Comments mentioning /v1/overview/bootstrap do not trigger ML019.
-        self.assertEqual(self.go_codes('// fallback for /v1/overview/bootstrap\nfunc f() {}', 'internal/simpledesktop/new_feature.go'), set())
-
-        # Exact allowed path + exact allowed function (including nested goroutine closure) passes once.
-        allowed_search = 'func (a *App) recentSearchItems(ctx context.Context) { client.overviewDocuments(ctx, p) }'
-        self.assertEqual(self.go_codes(allowed_search, 'internal/simpledesktop/unified_search.go'), set())
-        allowed_overview = (
-            'func (c Client) overview(ctx context.Context) {\n'
-            '\tgo func() { c.overviewDocuments(ctx, p) }()\n'
-            '\tgo func() { c.overviewSessions(ctx, ps) }()\n'
-            '}\n'
-        )
-        self.assertEqual(self.go_codes(allowed_overview, 'internal/simpledesktop/overview.go'), set())
-        allowed_bootstrap = 'func (c ProjectControlClient) overviewBootstrap() { _ = "/v1/overview/bootstrap" }'
-        self.assertEqual(self.go_codes(allowed_bootstrap, 'internal/simpledesktop/v2_client.go'), set())
-
-        # Wrong function in an allowlisted file must fail even if total call count is 1.
-        wrong_fn_search = 'func (a *App) newSearchPath(ctx context.Context) { client.overviewDocuments(ctx, p) }'
-        self.assertIn('ML019', self.go_codes(wrong_fn_search, 'internal/simpledesktop/unified_search.go'))
-        wrong_fn_sessions = 'func (c Client) extraSessions() { c.overviewSessions(ctx, ps) }'
-        self.assertIn('ML019', self.go_codes(wrong_fn_sessions, 'internal/simpledesktop/overview.go'))
-        wrong_fn_bootstrap = 'func other() { _ = "/v1/overview/bootstrap" }'
-        self.assertIn('ML019', self.go_codes(wrong_fn_bootstrap, 'internal/simpledesktop/overview_bootstrap.go'))
-
-        # Wrong path (basename-only or other directory) must fail even with matching function name.
-        self.assertIn('ML019', self.go_codes(allowed_search, 'unified_search.go'))
-        self.assertIn('ML019', self.go_codes(allowed_search, 'internal/other/unified_search.go'))
-
-        # Second call inside the same allowed function must fail ML019.
-        two_in_allowed = (
-            'func (a *App) recentSearchItems(ctx context.Context) {\n'
-            '\tclient.overviewDocuments(ctx, p1)\n'
-            '\tclient.overviewDocuments(ctx, p2)\n'
-            '}\n'
-        )
-        self.assertIn('ML019', self.go_codes(two_in_allowed, 'internal/simpledesktop/unified_search.go'))
-
-        # Method value alias or package-level call must fail ML019.
-        alias_call = 'func (a *App) other() { fn := client.overviewDocuments; fn(ctx, p) }'
-        self.assertIn('ML019', self.go_codes(alias_call, 'internal/simpledesktop/unified_search.go'))
-        pkg_level = 'var _ = client.overviewDocuments(ctx, p)'
-        self.assertIn('ML019', self.go_codes(pkg_level, 'internal/simpledesktop/unified_search.go'))
-
     def test_ml020_enforces_v2_list_limit_byte_budget_and_utf8_exit(self):
         bad_missing_budget = """_MAX_PAGE_LIMIT = 50
 def attach(app):

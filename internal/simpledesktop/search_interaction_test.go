@@ -80,23 +80,34 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 			json.NewEncoder(w).Encode([]any{})
 			return
 		}
-		if r.URL.Path == "/api/v1/sessions" {
-			json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}, "has_more": false})
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/api/v1/datasets/ds/data") {
-			docs := []Document{}
-			for n := 0; n < 8; n++ {
-				docs = append(docs, Document{ID: fmt.Sprintf("k%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent knowledge %d", n), Created: fmt.Sprintf("2026-11-%02dT10:00:00Z", n+1), Metadata: map[string]any{"node_set": []any{"session_learnings"}, "session_date": fmt.Sprintf("2026-11-%02d", n+1)}}, Document{ID: fmt.Sprintf("r%d", n), Dataset: "ds", Name: fmt.Sprintf("Recent record %d", n), Created: fmt.Sprintf("2026-11-%02dT11:00:00Z", n+1)})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/search/recent":
+			if r.URL.Query().Get("limit") != "20" {
+				t.Error("recent search must request a bounded list")
 			}
-			json.NewEncoder(w).Encode(docs)
-			return
+			var resp v2SearchRecentResponse
+			for n := 7; n >= 5; n-- {
+				resp.KnowledgeItems = append(resp.KnowledgeItems, v2KnowledgeItem{DocID: fmt.Sprintf("k%d", n), DatasetID: "ds", Title: fmt.Sprintf("Recent knowledge %d", n)})
+				resp.SessionItems = append(resp.SessionItems, v2SearchSessionItem{SessionID: fmt.Sprintf("r%d", n), DatasetID: "ds", Label: fmt.Sprintf("Recent record %d", n)})
+			}
+			resp.KnowledgeItems = append(resp.KnowledgeItems, v2KnowledgeItem{DocID: "foreign", DatasetID: "unrelated"}, resp.KnowledgeItems[0])
+			resp.SessionItems = append(resp.SessionItems, v2SearchSessionItem{SessionID: "foreign", DatasetID: "unrelated"}, resp.SessionItems[0])
+			json.NewEncoder(w).Encode(resp)
+		case "/v1/search/metadata":
+			json.NewEncoder(w).Encode(v2SearchMetadataResponse{})
+		case "/v1/projects/p/session-drift", "/v1/knowledge/recalls":
+			http.NotFound(w, r)
+		default:
+			t.Error("unexpected search request", r.URL.Path)
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode([]Document{})
 	}))
 	defer server.Close()
 	a := projectUIFixture()
 	a.Config.ServiceURL = server.URL
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Config.ClientStateFile = filepath.Join(t.TempDir(), "client.json")
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
@@ -149,23 +160,28 @@ func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 }
 func TestSearchSourceDocumentUsesNormalThreePaneReader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
-			fmt.Fprint(w, "Full official document body.")
-			return
+		doc := Document{ID: "document", Dataset: "ds", Name: "Official source.md", Created: "2026-11-12T10:00:00Z"}
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/datasets/ds/documents/document/body":
+			body := "Full official document body."
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: doc.ID, DatasetID: doc.Dataset, Body: &body})
+		case "/v1/datasets/ds/documents/document":
+			json.NewEncoder(w).Encode(documentLookupV2Response{Document: doc})
+		case "/v1/projects/p/raw-records":
+			json.NewEncoder(w).Encode(v2RawRecordsResponse{DatasetID: "ds", CacheReady: true,
+				Items: []v2RawRecordItem{{ItemKind: "document", Document: &doc}}})
+		case "/v1/search/recent":
+			json.NewEncoder(w).Encode(v2SearchRecentResponse{KnowledgeItems: []v2KnowledgeItem{{DocID: "k", DatasetID: "ds", Title: "Readable title"}}})
+		default:
+			http.NotFound(w, r)
 		}
-		if r.URL.Path == "/api/v1/sessions" {
-			json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}, "has_more": false})
-			return
-		}
-		if strings.Contains(r.URL.Path, "/datasets/ds/") {
-			json.NewEncoder(w).Encode([]Document{{ID: "document", Dataset: "ds", Name: "Official source.md", Created: "2026-11-12T10:00:00Z"}})
-			return
-		}
-		json.NewEncoder(w).Encode([]Document{})
 	}))
 	defer server.Close()
 	a := projectUIFixture()
 	a.Config.ServiceURL = server.URL
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 30)
@@ -185,9 +201,10 @@ func TestSearchSourceDocumentUsesNormalThreePaneReader(t *testing.T) {
 	}
 	a.closeUnifiedSearch()
 	// Recent catalog is metadata-only when readable titles already exist.
-	_, err := a.recentSearchItems(context.Background(), a.Client, []Project{{Dataset: "ds"}}, "fixture")
-	if err != nil {
-		t.Fatal(err)
+	control, _ := a.accessClient()
+	rows, err := searchRecentItemsV2(context.Background(), control, []Project{{ID: "p", Dataset: "ds"}}, "p", "", "")
+	if err != nil || len(rows) != 1 || rows[0].Title != "Readable title" || rows[0].BodyLoaded {
+		t.Fatal("recent catalog should remain metadata-only", rows, err)
 	}
 }
 

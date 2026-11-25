@@ -184,10 +184,11 @@ func (a *App) confirmCommonKnowledge() {
 	e.Busy = true
 	op := e.Generation
 	client, p, receipt, draft := a.Client, e.Target, e.Receipt, e.Draft
+	control, hasControl := a.accessClient()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		document, message, err := client.confirmCommon(ctx, p, receipt, draft)
+		document, message, err := client.confirmCommon(ctx, control, hasControl, p, receipt, draft)
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
 				return

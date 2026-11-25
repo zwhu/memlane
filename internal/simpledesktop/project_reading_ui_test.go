@@ -1,7 +1,6 @@
 package simpledesktop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -193,33 +192,58 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 		t.Fatal("withdrawal retained searchable content")
 	}
 }
-func TestProjectRecordsMergeOfficialPagesBeforeSlicing(t *testing.T) {
+func TestRawRecordsCursorAppendsMergedPageWithoutDuplicates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/datasets/") {
-			out := []Document{}
-			for n := 0; n < 35; n++ {
-				out = append(out, Document{ID: fmt.Sprint(n), Dataset: "ds", Name: "raw.md", Created: "2026-11-12T10:00:00Z"})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/raw-records":
+			q := r.URL.Query()
+			if q.Get("kind") != "all" || q.Get("limit") != "30" {
+				t.Error("unexpected raw records request", q)
 			}
-			json.NewEncoder(w).Encode(out)
-			return
+			resp := v2RawRecordsResponse{DatasetID: "ds", CacheReady: true}
+			session := v2RawRecordItem{ItemKind: "session", Session: &v2RawSessionEntry{Session: Session{ID: "s", Dataset: "ds"}, Label: "Session"}}
+			start, end := 0, 29
+			switch q.Get("cursor") {
+			case "":
+				resp.Items = append(resp.Items, session)
+				resp.HasMore, resp.NextCursor = true, "merged-30"
+			case "merged-30":
+				start, end = 29, 35
+				resp.Items = append(resp.Items, session) // The adjacent page overlaps the session.
+			default:
+				t.Error("unexpected cursor", q)
+			}
+			for n := start; n < end; n++ {
+				resp.Items = append(resp.Items, v2RawRecordItem{ItemKind: "document", Document: &Document{ID: fmt.Sprint(n), Dataset: "ds", Name: "raw.md"}})
+			}
+			json.NewEncoder(w).Encode(resp)
+		default:
+			http.NotFound(w, r)
 		}
-		sessions := []Session{{ID: "foreign", Dataset: "elsewhere"}, {ID: "s", Dataset: "ds", Updated: "2026-11-13T10:00:00Z"}, {ID: "s", Dataset: "ds", Updated: "2026-11-13T10:00:00Z"}}
-		json.NewEncoder(w).Encode(map[string]any{"sessions": sessions, "has_more": false})
 	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL}}
-	rows, more, err := c.projectRecords(context.Background(), Project{Dataset: "ds"}, 0, "原始记录")
-	if err != nil || !more || len(rows) != 30 || rows[0].ID != "s" {
-		t.Fatalf("first merged page: %v %v %v", len(rows), more, err)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	a.page, a.kind = "知识", "原始记录"
+	s := a.state()
+	s.Locating = true // Exercise list paging without selecting a detail.
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.load(s)
+	drainReading(t, updates, func() bool { return !s.Loading })
+	if s.Error != "" || !s.More || len(s.Items) != 30 || s.Items[0].ID != "s" {
+		t.Fatalf("first merged page: %v %v %s", len(s.Items), s.More, s.Error)
 	}
-	next, more, err := c.projectRecords(context.Background(), Project{Dataset: "ds"}, 30, "原始记录")
-	if err != nil || more || len(next) != 6 {
-		t.Fatalf("second merged page: %d %v %v", len(next), more, err)
+	a.appendRawRecords(s)
+	drainReading(t, updates, func() bool { return !s.RawAppending })
+	if s.Error != "" || s.More || len(s.Items) != 36 {
+		t.Fatalf("second merged page: %d %v %s", len(s.Items), s.More, s.Error)
 	}
 	seen := map[string]bool{}
-	for _, i := range append(rows, next...) {
-		if seen[i.key()] {
-			t.Fatal("duplicated merged item")
+	for _, i := range s.Items {
+		if seen[i.key()] || i.Dataset != "ds" {
+			t.Fatal("duplicated or foreign merged item", i)
 		}
 		seen[i.key()] = true
 	}

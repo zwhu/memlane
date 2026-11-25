@@ -58,7 +58,6 @@ DOCS_PROCESS_REF_RE = re.compile(
     r'|(?<![A-Za-z0-9_-])(?:\.\./)+process(?:/|(?![A-Za-z0-9_-]))'
     r'|\]\(\s*\.?/?process(?:/|\s*\))'
 )
-ML019_MESSAGE = '禁止在 Go 桌面端新增对 overviewDocuments/overviewSessions/旧首页接口的全量拉表调用；仅允许精确回退路径函数，新功能请走 /v1 游标或点查接口'
 ML020_MESSAGE = '/v1 列表接口必须实施 _MAX_PAGE_LIMIT (<=50)、_parse_limit (<=50) 与 JSON 字节预算裁剪 (fit_items_to_json_budget)'
 ML020_UTF8_MESSAGE = '/v1 列表接口禁止裸用默认 ASCII 转义的 web.json_response（会使中文体积翻倍击穿字节预算）；须走统一 UTF-8 JSON 响应辅助或显式 UTF-8 dumps'
 ML021_CONNECT_MESSAGE = '禁止在非白名单模块直接或间接调用 sqlite3.connect（含别名/getattr/importlib）；只读访问官方库必须经 sqlite_ro.open_official_sqlite_ro'
@@ -2556,75 +2555,6 @@ GO_FUNC_HEADER_RE = re.compile(r'(?:^|\n)func\b[^{]*\{')
 GO_VIEW_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*View\s*\([^)]*\)\s*\{')
 GO_LOAD_OVERVIEW_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*loadOverview\s*\([^)]*\)\s*\{')
 GO_START_FUNC_RE = re.compile(r'func\s*\(\s*\w+\s+\*App\s*\)\s*Start\s*\([^)]*\)\s*\{')
-GO_OVERVIEW_DOCS_CALL_RE = re.compile(r'\.\s*overviewDocuments\b')
-GO_OVERVIEW_SESSIONS_CALL_RE = re.compile(r'\.\s*overviewSessions\b')
-GO_V1_OVERVIEW_BOOTSTRAP_RE = re.compile(r'/v1/overview/bootstrap')
-ML019_LEGACY_OVERVIEW_DOCS_ALLOWLIST = {
-    ('internal/simpledesktop/overview.go', 'overview'): 1,
-    ('internal/simpledesktop/common_knowledge.go', 'commonDocumentItems'): 1,
-    ('internal/simpledesktop/common_knowledge_page.go', 'confirmCommonDeletion'): 1,
-    ('internal/simpledesktop/knowledge_waterfall.go', 'loadKnowledgeFeed'): 1,
-    ('internal/simpledesktop/project_queue.go', 'pendingProjectCatalog'): 1,
-    ('internal/simpledesktop/project_records.go', 'projectRecordCatalog'): 1,
-    ('internal/simpledesktop/unified_search.go', 'recentSearchItems'): 1,
-}
-ML019_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST = {
-    ('internal/simpledesktop/overview.go', 'overview'): 1,
-}
-ML019_LEGACY_V1_BOOTSTRAP_ALLOWLIST = {
-    ('internal/simpledesktop/v2_client.go', 'overviewBootstrap'): 1,
-    ('internal/simpledesktop/project_access.go', 'requestWithHeaders'): 1,
-}
-
-
-def _strip_go_comments_keep_strings(source):
-    """Mask Go // and /* */ comments while preserving string literals and line numbers."""
-    out = []
-    i = 0
-    n = len(source)
-    while i < n:
-        ch = source[i]
-        if ch == '"':
-            out.append(ch)
-            i += 1
-            escaped = False
-            while i < n:
-                c = source[i]
-                out.append(c)
-                i += 1
-                if escaped:
-                    escaped = False
-                elif c == '\\':
-                    escaped = True
-                elif c == '"' or c == '\n':
-                    break
-        elif ch == '`':
-            out.append(ch)
-            i += 1
-            while i < n:
-                c = source[i]
-                out.append(c)
-                i += 1
-                if c == '`':
-                    break
-        elif ch == '/' and i + 1 < n and source[i + 1] == '/':
-            while i < n and source[i] != '\n':
-                out.append(' ')
-                i += 1
-        elif ch == '/' and i + 1 < n and source[i + 1] == '*':
-            out.append('  ')
-            i += 2
-            while i < n:
-                if source[i] == '*' and i + 1 < n and source[i + 1] == '/':
-                    out.append('  ')
-                    i += 2
-                    break
-                out.append('\n' if source[i] == '\n' else ' ')
-                i += 1
-        else:
-            out.append(ch)
-            i += 1
-    return ''.join(out)
 
 
 def _extract_brace_block(source, open_brace_index):
@@ -2743,115 +2673,6 @@ def _strip_go_comments(source):
     return ''.join(out)
 
 
-def _skip_go_balanced(text, start, open_ch, close_ch):
-    depth = 0
-    i = start
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if ch == open_ch:
-            depth += 1
-        elif ch == close_ch:
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return n
-
-
-def _extract_go_toplevel_funcs(clean):
-    """Return list of (body_open_idx, body_end_idx, func_name) for top-level Go functions/methods."""
-    funcs = []
-    n = len(clean)
-    i = 0
-    brace_depth = 0
-    while i < n:
-        ch = clean[i]
-        if ch == '{':
-            brace_depth += 1
-            i += 1
-            continue
-        if ch == '}':
-            if brace_depth > 0:
-                brace_depth -= 1
-            i += 1
-            continue
-        if brace_depth == 0 and clean.startswith('func', i):
-            after_kw = i + 4
-            line_start = clean.rfind('\n', 0, i) + 1
-            if (
-                clean[line_start:i].strip() == ''
-                and after_kw < n
-                and (clean[after_kw] in ' \t' or clean[after_kw] == '(')
-            ):
-                j = after_kw
-                while j < n and clean[j] in ' \t\r\n':
-                    j += 1
-                if j < n and clean[j] == '(':
-                    j = _skip_go_balanced(clean, j, '(', ')')
-                    while j < n and clean[j] in ' \t\r\n':
-                        j += 1
-                name_start = j
-                while j < n and (clean[j].isalnum() or clean[j] == '_'):
-                    j += 1
-                func_name = clean[name_start:j]
-                if func_name:
-                    while j < n and clean[j] in ' \t\r':
-                        j += 1
-                    if j < n and clean[j] == '[':
-                        j = _skip_go_balanced(clean, j, '[', ']')
-                        while j < n and clean[j] in ' \t\r':
-                            j += 1
-                    if j < n and clean[j] == '(':
-                        j = _skip_go_balanced(clean, j, '(', ')')
-                        matched_body = False
-                        while j < n:
-                            while j < n and clean[j] in ' \t\r':
-                                j += 1
-                            if j >= n or clean[j] == '\n':
-                                break
-                            if clean[j] == '{':
-                                body = _extract_brace_block(clean, j)
-                                body_end = j + len(body)
-                                funcs.append((j, body_end, func_name))
-                                i = body_end
-                                matched_body = True
-                                break
-                            if clean[j] == '(':
-                                j = _skip_go_balanced(clean, j, '(', ')')
-                            elif clean[j] == '[':
-                                j = _skip_go_balanced(clean, j, '[', ']')
-                            elif clean.startswith('interface', j) and (
-                                j + 9 == n or not (clean[j + 9].isalnum() or clean[j + 9] == '_')
-                            ):
-                                j += 9
-                                while j < n and clean[j] in ' \t\r':
-                                    j += 1
-                                if j < n and clean[j] == '{':
-                                    j = _skip_go_balanced(clean, j, '{', '}')
-                            elif clean.startswith('struct', j) and (
-                                j + 6 == n or not (clean[j + 6].isalnum() or clean[j + 6] == '_')
-                            ):
-                                j += 6
-                                while j < n and clean[j] in ' \t\r':
-                                    j += 1
-                                if j < n and clean[j] == '{':
-                                    j = _skip_go_balanced(clean, j, '{', '}')
-                            else:
-                                j += 1
-                        if matched_body:
-                            continue
-        i += 1
-    return funcs
-
-
-def _enclosing_go_func_name(toplevel_funcs, pos):
-    for start, end, name in toplevel_funcs:
-        if start <= pos < end:
-            return name
-    return None
-
-
 def _enclosing_go_func_body(clean, pos):
     last_block = None
     for match in GO_FUNC_HEADER_RE.finditer(clean, 0, pos + 1):
@@ -2962,40 +2783,6 @@ def check_go_performance(source, path):
                     if not _inside_early_return_block(inner_head, call_match.start()) and 'AfterFunc' not in inner_head:
                         line = clean[:brace_idx + 1 + call_match.start()].count('\n') + 1
                         issues.append((line, 'ML012', ML012_START_MESSAGE))
-
-    # ML019: Ban new Go call sites to legacy full-table endpoints; exemptions bind exact path + exact enclosing function.
-    rel_path = _normalize_rel_path(path)
-    toplevel_funcs = _extract_go_toplevel_funcs(clean)
-
-    def _check_ml018_matches(matches, text_for_lines, allowlist):
-        seen_per_fn = {}
-        for match in matches:
-            fn_name = _enclosing_go_func_name(toplevel_funcs, match.start())
-            key = (rel_path, fn_name)
-            allowed_max = allowlist.get(key, 0) if fn_name is not None else 0
-            count = seen_per_fn.get(key, 0) + 1
-            seen_per_fn[key] = count
-            if count > allowed_max:
-                line = text_for_lines[:match.start()].count('\n') + 1
-                issues.append((line, 'ML019', ML019_MESSAGE))
-
-    _check_ml018_matches(
-        GO_OVERVIEW_DOCS_CALL_RE.finditer(clean),
-        clean,
-        ML019_LEGACY_OVERVIEW_DOCS_ALLOWLIST,
-    )
-    _check_ml018_matches(
-        GO_OVERVIEW_SESSIONS_CALL_RE.finditer(clean),
-        clean,
-        ML019_LEGACY_OVERVIEW_SESSIONS_ALLOWLIST,
-    )
-
-    no_comments = _strip_go_comments_keep_strings(source)
-    _check_ml018_matches(
-        GO_V1_OVERVIEW_BOOTSTRAP_RE.finditer(no_comments),
-        no_comments,
-        ML019_LEGACY_V1_BOOTSTRAP_ALLOWLIST,
-    )
 
     return issues
 

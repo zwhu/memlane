@@ -271,7 +271,8 @@ func (a *App) loadOverview(identityChecked ...bool) {
 	v := &a.overviewState
 	a.cancelOverviewRecall()
 	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
-	if a.Config.ProjectControl != nil && !a.access.Loaded {
+	control, hasControl := a.accessClient()
+	if hasControl && !a.access.Loaded {
 		v.Loading, v.ActivityLoading = true, true
 		return
 	}
@@ -301,7 +302,6 @@ func (a *App) loadOverview(identityChecked ...bool) {
 	epoch, identity := a.epoch, a.readingIdentity
 	v.Loading = true
 	client := a.Client
-	control, hasControl := a.accessClient()
 	stateDir := a.readingStateDir()
 	accessProjects := append([]AccessProject(nil), a.access.Directory.Projects...)
 	if len(accessProjects) == 0 && len(a.Config.Projects) > 0 {
@@ -313,111 +313,125 @@ func (a *App) loadOverview(identityChecked ...bool) {
 		}
 	}
 
-	if hasControl {
+	if !hasControl {
+		cancel()
 		if v.activityCancel != nil {
 			v.activityCancel()
 		}
-		v.activityCancel = cancel
 		v.activityGeneration++
-		actGen := v.activityGeneration
-		v.ActivityLoading = true
-		searchHistory := v.SearchHistory
-		projects := overviewProjects(a.Config)
-		go func() {
-			defer cancel()
-			readingID, _ := readingIdentity(Client{Config: client.Config})
-			failClosed := func(err error) {
-				if errors.Is(ctx.Err(), context.Canceled) {
-					return
-				}
-				a.Update(func() {
-					if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-						return
-					}
-					withdraw := readingUnavailable(err)
-					if withdraw {
-						a.withdrawOverviewScope()
-					}
-					a.overviewState.Loading = false
-					message := controlUserError(err)
-					a.overviewState.Error = message
-					if withdraw || actGen == a.overviewState.activityGeneration {
-						a.overviewState.ActivityLoading = false
-						a.overviewState.ActivityError = message
-					}
-					a.onOverviewBootstrapSettled()
-				})
-			}
-			if err := control.requireReadingContract(ctx); err != nil {
-				failClosed(err)
+		a.Update(func() {
+			if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
 				return
 			}
-			if len(accessProjects) > 0 {
-				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-					if ctx.Err() != nil || isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
-						failClosed(migErr)
-						return
-					}
-				}
-			}
-			v2Resp, v2Err := control.overviewBootstrap(ctx, readingID, 365, 20, 50, 50)
-			if v2Err == nil {
-				snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
-				var historyEvents []overviewEvent
-				var historyErr error
-				if searchHistory {
-					historyEvents, historyErr = client.overviewSearchHistory(ctx)
-				}
-				a.Update(func() {
-					if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-						return
-					}
-					a.overviewState.Loading = false
-					a.overviewState.RawLoaded = true
-					a.overviewState.V2Mode = true
-					a.overviewState.V2Generation = v2Resp.Generation
-					a.overviewState.V2TotalKnowledge = v2Resp.TotalKnowledgeCount
-					a.overviewState.V2DayBuckets = buckets
-					a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
-					a.overviewState.Snapshot = snapshot
-					a.overviewState.snapshotVersion++
-					a.recentScope = ""
-					a.overviewState.Loaded = true
-					a.overviewState.Error = ""
-					a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
-					if !wasLoaded {
-						a.startOverviewEntrance()
-					}
-					if actGen == a.overviewState.activityGeneration {
-						a.overviewState.ActivityLoading = false
-						a.overviewState.Events = events
-						a.overviewState.RecallError = ""
-						a.overviewState.More = more
-						a.overviewState.ActivityError = ""
-						a.overviewState.ActivityLoaded = true
-						a.overviewState.activityFetchedAt = time.Now()
-						if searchHistory {
-							if historyErr != nil {
-								a.overviewState.HistoryError = historyErr.Error()
-							} else {
-								a.overviewState.History = historyEvents
-								a.overviewState.HistoryLoaded = true
-								a.overviewState.HistoryError = ""
-							}
-						}
-					}
-					if a.overviewState.Day != "" {
-						a.loadOverviewDayV2(a.overviewState.Day, false)
-					}
-					a.onOverviewBootstrapSettled()
-				})
-				return
-			}
-			failClosed(v2Err)
-		}()
+			a.overviewState.Loading = false
+			a.overviewState.ActivityLoading = false
+			a.overviewState.Error = "控制面服务不可用，请确认服务已启动"
+			a.overviewState.ActivityError = a.overviewState.Error
+			a.onOverviewBootstrapSettled()
+		})
 		return
 	}
-	a.loadOverviewLegacy(generation, wasLoaded)
+	if v.activityCancel != nil {
+		v.activityCancel()
+	}
+	v.activityCancel = cancel
+	v.activityGeneration++
+	actGen := v.activityGeneration
+	v.ActivityLoading = true
+	searchHistory := v.SearchHistory
+	projects := overviewProjects(a.Config)
+	go func() {
+		defer cancel()
+		readingID, _ := readingIdentity(Client{Config: client.Config})
+		failClosed := func(err error) {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return
+			}
+			a.Update(func() {
+				if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+					return
+				}
+				withdraw := readingUnavailable(err)
+				if withdraw {
+					a.withdrawOverviewScope()
+				}
+				a.overviewState.Loading = false
+				message := controlUserError(err)
+				a.overviewState.Error = message
+				if withdraw || actGen == a.overviewState.activityGeneration {
+					a.overviewState.ActivityLoading = false
+					a.overviewState.ActivityError = message
+				}
+				a.onOverviewBootstrapSettled()
+			})
+		}
+		if err := control.requireReadingContract(ctx); err != nil {
+			failClosed(err)
+			return
+		}
+		if len(accessProjects) > 0 {
+			if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
+				if ctx.Err() != nil || isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+					failClosed(migErr)
+					return
+				}
+			}
+		}
+		v2Resp, v2Err := control.overviewBootstrap(ctx, readingID, 365, 20, 50, 50)
+		if v2Err == nil {
+			snapshot, buckets, events, more := buildOverviewFromV2Bootstrap(projects, v2Resp, 50)
+			var historyEvents []overviewEvent
+			var historyErr error
+			if searchHistory {
+				historyEvents, historyErr = client.overviewSearchHistory(ctx)
+			}
+			a.Update(func() {
+				if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
+					return
+				}
+				a.overviewState.Loading = false
+				a.overviewState.RawLoaded = true
+				a.overviewState.V2Mode = true
+				a.overviewState.V2Generation = v2Resp.Generation
+				a.overviewState.V2TotalKnowledge = v2Resp.TotalKnowledgeCount
+				a.overviewState.V2DayBuckets = buckets
+				a.overviewState.V2RecallStartedAt = v2Resp.RecallStartedAt
+				a.overviewState.Snapshot = snapshot
+				a.overviewState.snapshotVersion++
+				a.recentScope = ""
+				a.overviewState.Loaded = true
+				a.overviewState.Error = ""
+				a.applyOverviewV2ProjectSummaries(v2Resp.Projects)
+				if !wasLoaded {
+					a.startOverviewEntrance()
+				}
+				if actGen == a.overviewState.activityGeneration {
+					a.overviewState.ActivityLoading = false
+					a.overviewState.Events = events
+					a.overviewState.RecallError = ""
+					a.overviewState.More = more
+					a.overviewState.ActivityError = ""
+					a.overviewState.ActivityLoaded = true
+					a.overviewState.activityFetchedAt = time.Now()
+					if searchHistory {
+						if historyErr != nil {
+							a.overviewState.HistoryError = historyErr.Error()
+						} else {
+							a.overviewState.History = historyEvents
+							a.overviewState.HistoryLoaded = true
+							a.overviewState.HistoryError = ""
+						}
+					}
+				}
+				if a.overviewState.Day != "" {
+					a.loadOverviewDayV2(a.overviewState.Day, false)
+				}
+				a.onOverviewBootstrapSettled()
+			})
+			return
+		}
+		failClosed(v2Err)
+	}()
 }
 
 func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSummary) {
@@ -442,111 +456,6 @@ func (a *App) applyOverviewV2ProjectSummaries(summaries []v2OverviewProjectSumma
 		}
 		q.StateVersion++
 	}
-}
-
-func (a *App) loadOverviewLegacy(generation uint64, wasLoaded bool) {
-	v := &a.overviewState
-	authEpoch := a.authEpoch
-	activityDone := a.startOverviewActivity()
-	if v.cancel != nil {
-		v.cancel()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), overviewLoadTimeout)
-	v.cancel = cancel
-	epoch, identity := a.epoch, a.readingIdentity
-	v.Loading = true
-	client := a.Client
-	titles := a.titles
-	genStr := fmt.Sprint(generation)
-	go func() {
-		defer cancel()
-		if wasLoaded && activityDone != nil {
-			wait := time.NewTimer(140 * time.Millisecond)
-			select {
-			case <-activityDone:
-			case <-ctx.Done():
-				wait.Stop()
-				if errors.Is(ctx.Err(), context.Canceled) {
-					return
-				}
-			case <-wait.C:
-			}
-			wait.Stop()
-		}
-		snapshot, err := client.overview(ctx)
-		if err == nil && !wasLoaded && len(snapshot.Knowledge) > 0 {
-			// On cold start without cache, preheat the first 10 visible titles
-			// within a bounded 800ms budget so the first paint swaps atomically
-			// from skeleton to real 2-line rich text with zero flicker.
-			preCtx, preCancel := context.WithTimeout(ctx, 800*time.Millisecond)
-			topN := min(10, len(snapshot.Knowledge))
-			var wg sync.WaitGroup
-			for idx := 0; idx < topN; idx++ {
-				n := idx
-				item := snapshot.Knowledge[n]
-				if item.Document == nil || readableDocumentTitle(*item.Document) != "" {
-					continue
-				}
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
-						snapshot.Knowledge[n].Title = overviewReadingTitle(res)
-						snapshot.Knowledge[n].ReadingState = "ready"
-					}
-				}()
-			}
-			wg.Wait()
-			preCancel()
-		}
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return
-		}
-		a.Update(func() {
-			if generation != a.overviewState.generation || authEpoch != a.authEpoch || epoch != a.epoch || identity != a.readingIdentity || !a.syncReadingIdentity() {
-				return
-			}
-			defer a.settleLegacyOverview()
-			a.overviewState.Loading = false
-			if err != nil {
-				if readingAuthDenied(err) {
-					a.withdrawOverviewScope()
-				}
-				a.overviewState.Error = err.Error()
-				return
-			}
-			if snapshot.RawError != "" {
-				snapshot.Raw = a.overviewState.Snapshot.Raw
-			} else {
-				a.overviewState.RawLoaded = true
-			}
-			ready := map[string]Item{}
-			for _, old := range a.overviewState.Snapshot.Knowledge {
-				ready[old.key()] = old
-			}
-			for n, item := range snapshot.Knowledge {
-				if old, ok := ready[item.key()]; ok {
-					if snapshot.Knowledge[n].ReadingState != "ready" && old.ReadingState == "ready" && item.Document != nil && (item.Document.ContentHash != "" || item.Document.Updated != "") && keyForReading(a.readingIdentity, old, genStr) == keyForReading(a.readingIdentity, item, genStr) {
-						snapshot.Knowledge[n].Title, snapshot.Knowledge[n].ReadingState = old.Title, old.ReadingState
-					}
-					if snapshot.Knowledge[n].RecallStats == nil && old.RecallStats != nil {
-						snapshot.Knowledge[n].RecallStats = old.RecallStats
-					}
-				}
-			}
-			a.overviewState.Snapshot = snapshot
-			a.overviewState.snapshotVersion++
-			a.loadOverviewRecallStats(generation)
-			// A new catalog may have the same IDs as the already preheated old
-			// catalog. Let that publication consume cached titles again.
-			a.recentScope = ""
-			a.overviewState.Loaded = true
-			a.overviewState.Error = ""
-			if !wasLoaded {
-				a.startOverviewEntrance()
-			}
-		})
-	}()
 }
 
 func (a *App) startOverviewEntrance() {

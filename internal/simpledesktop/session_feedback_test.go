@@ -42,14 +42,14 @@ func TestPendingObservationSeparatesNewEntriesAndKeepsReceipt(t *testing.T) {
 	}
 }
 
-func TestSessionCatalogDeduplicatesWholeSessionsNotQuestions(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{{ID: "codex_one", Dataset: "ds"}, {ID: "codex_one", Dataset: "ds"}, {ID: "codex_two", Dataset: "ds"}}, "has_more": false})
-	}))
-	defer server.Close()
-	rows, _, err := (Client{Config: Config{ServiceURL: server.URL}}).projectRecords(context.Background(), Project{Dataset: "ds"}, 0, "会话")
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("same host session split or different sessions merged: %d %v", len(rows), err)
+func TestRawRecordSessionRowsPreserveWholeSessionIdentity(t *testing.T) {
+	resp := v2RawRecordsResponse{DatasetID: "ds", CacheReady: true, Items: []v2RawRecordItem{
+		{ItemKind: "session", Session: &v2RawSessionEntry{Session: Session{ID: "codex_one", Dataset: "ds"}, MsgCount: 4}},
+		{ItemKind: "session", Session: &v2RawSessionEntry{Session: Session{ID: "codex_two", Dataset: "ds"}, MsgCount: 2}},
+	}}
+	rows, err := v2RawRecordsToItems("ds", resp)
+	if err != nil || len(rows) != 2 || rows[0].ID != "codex_one" || rows[1].ID != "codex_two" || rows[0].key() == rows[1].key() {
+		t.Fatalf("same host session split or different sessions merged: %+v %v", rows, err)
 	}
 }
 

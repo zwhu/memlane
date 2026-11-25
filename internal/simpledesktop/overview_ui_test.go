@@ -364,9 +364,16 @@ func TestOverviewReturnIgnoresHistoryFromBeforeThisVisit(t *testing.T) {
 }
 
 func TestOverviewRefreshFailureKeepsViewAndExpandedPage(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "p"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "p"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.loadOverview()
@@ -411,9 +418,16 @@ func TestOverviewTitleKeepsReadableSentenceForTwoLineLayout(t *testing.T) {
 }
 
 func TestOverviewDirectoryRefreshPreservesDateAndRejectsStaleCallbacks(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "p", Name: "original"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "p", Name: "original"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.loadOverview()
@@ -429,14 +443,13 @@ func TestOverviewDirectoryRefreshPreservesDateAndRejectsStaleCallbacks(t *testin
 	if v.Day != "2026-11-13" || v.ExpandedEvent != "kept" {
 		t.Fatal("display metadata changed content identity")
 	}
-	// Hold both responses, change the range, then execute the old callbacks.
-	oldContent, oldActivity := <-updates, <-updates
+	// Hold the bootstrap response, change the range, then execute the old callback.
+	oldBootstrap := <-updates
 	a.Config.Common = []Project{{Dataset: "new-common"}}
 	a.Client.Config = a.Config
 	a.loadOverview()
 	v.Day = "2026-11-12"
-	oldContent()
-	oldActivity()
+	oldBootstrap()
 	if !v.Loading || !v.ActivityLoading || v.Day != "2026-11-12" || v.Offset != 3 || v.Scroll.Y != 100 || v.ActivityLimit != 40 {
 		t.Fatal("old callback changed new range/selection")
 	}
@@ -455,48 +468,44 @@ func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
 	a := New(cfg, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if cfg.ProjectControl != nil {
-		d, err := (ProjectControlClient{Config: *cfg.ProjectControl}).directory(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		a.applyAccessDirectory(d)
+	control, ok := a.accessClient()
+	if !ok {
+		t.Fatal("explicit live overview check requires the control plane")
 	}
-	snapshot, err := a.Client.overview(ctx)
-	if err != nil || snapshot.RawError != "" {
-		t.Fatalf("read-only snapshot: %v %s", err, snapshot.RawError)
-	}
-	// Independently classify the official complete page results and stable IDs.
-	knowledge, documents := map[string]bool{}, map[string]bool{}
-	days := map[string]int{}
-	excluded := 0
-	for _, p := range overviewProjects(a.Config) {
-		rows, err := a.Client.overviewDocuments(ctx, p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, d := range rows {
-			key := d.Dataset + "/" + d.ID
-			if d.knowledge() {
-				if !knowledge[key] {
-					knowledge[key] = true
-					if day, ok := d.knowledgeDay(time.Local); ok {
-						days[day]++
-					}
-				}
-			} else if derivedMaterial(d) {
-				excluded++
-			} else {
-				documents[key] = true
-			}
-		}
-	}
-	sessions, err := a.Client.overviewSessions(ctx, overviewProjects(a.Config))
+	directory, err := control.directory(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(knowledge) != len(snapshot.Knowledge) || len(documents)+len(sessions) != snapshot.Raw {
-		t.Fatal("official enumeration differs from overview")
+	a.applyAccessDirectory(directory)
+	resp, err := control.overviewBootstrap(ctx, "", 365, 20, 50, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := overviewProjects(a.Config)
+	snapshot, days, _, _ := buildOverviewFromV2Bootstrap(projects, resp, 50)
+	allowed := map[string]bool{}
+	for _, p := range projects {
+		allowed[p.Dataset] = true
+	}
+	sessions, documents := 0, 0
+	for _, summary := range resp.Projects {
+		if allowed[summary.DatasetID] {
+			sessions += summary.SessionCount
+			documents += summary.RawDocCount
+		}
+	}
+	if resp.Common != nil && allowed[resp.Common.DatasetID] {
+		documents += resp.Common.RawDocCount
+	}
+	if snapshot.Raw != sessions+documents || len(snapshot.Knowledge) > min(20, resp.TotalKnowledgeCount) {
+		t.Fatal("bootstrap totals or recent limit inconsistent with the rendered overview")
+	}
+	seen := map[string]bool{}
+	for _, item := range snapshot.Knowledge {
+		if !allowed[item.Dataset] || seen[item.key()] {
+			t.Fatal("recent knowledge contains a foreign or duplicate document", item.key())
+		}
+		seen[item.key()] = true
 	}
 	first, err := firstUseDays(a.Config, time.Now())
 	if err != nil {
@@ -507,7 +516,7 @@ func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
 		statePath = filepath.Join(filepath.Dir(path), "client-state.json")
 	}
 	state, _ := os.ReadFile(statePath)
-	receipt := map[string]any{"checked_at": time.Now().UTC().Format(time.RFC3339), "source": "live official read-only; client date association only, no official/model/index writes", "knowledge": len(knowledge), "raw_sessions": len(sessions), "raw_documents": len(documents), "raw_total": snapshot.Raw, "excluded_derived": excluded, "knowledge_dates": days, "used_days": first, "client_state_sha256": fmt.Sprintf("%x", sha256.Sum256(state)), "projects": len(a.Config.Projects), "scopes": len(overviewProjects(a.Config))}
+	receipt := map[string]any{"checked_at": time.Now().UTC().Format(time.RFC3339), "source": "live official read-only; client date association only, no official/model/index writes", "knowledge": resp.TotalKnowledgeCount, "raw_sessions": sessions, "raw_documents": documents, "raw_total": snapshot.Raw, "knowledge_dates": days, "used_days": first, "client_state_sha256": fmt.Sprintf("%x", sha256.Sum256(state)), "projects": len(a.Config.Projects), "scopes": len(overviewProjects(a.Config))}
 	data, _ := json.MarshalIndent(receipt, "", "  ")
 	if dir := os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE"); dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -521,25 +530,35 @@ func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
 }
 
 func TestOverviewRefreshKeepsResolvedTitles(t *testing.T) {
-	doc := Document{ID: "k", Dataset: "p", Name: "", Created: "2026-11-13T00:00:00Z", ContentHash: "stable", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}
+	const title = "Resolved first sentence."
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/data") {
-			json.NewEncoder(w).Encode([]Document{doc})
-		} else {
-			json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
+				RecentItems: []v2KnowledgeItem{{DocID: "k", DatasetID: "p", Title: title, ContentHash: "stable"}},
+			})
+		default:
+			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{Dataset: "p"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.loadOverview()
 	drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
 	v := &a.overviewState
-	v.Snapshot.Knowledge[0].Title = "Resolved first sentence."
-	v.Snapshot.Knowledge[0].ReadingState = "ready"
+	if len(v.Snapshot.Knowledge) != 1 || v.Snapshot.Knowledge[0].Title != title {
+		t.Fatal("bootstrap did not provide the resolved title", v.Snapshot.Knowledge, v.Error)
+	}
 	a.recentScope = "already preheated old catalog"
 	a.loadOverview()
+	if v.Snapshot.Knowledge[0].Title != title {
+		t.Fatal("refresh hid the resolved title before publication")
+	}
 	drainReading(t, updates, func() bool { return !v.Loading && !v.ActivityLoading })
 	if v.Snapshot.Knowledge[0].Title != "Resolved first sentence." || a.recentScope != "" {
 		t.Fatal("catalog publication lost readable title or blocked title hydration")

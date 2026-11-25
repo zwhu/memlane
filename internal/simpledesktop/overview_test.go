@@ -13,65 +13,58 @@ import (
 	"time"
 )
 
-func TestOverviewFullPagesScopeAndDerivedMaterials(t *testing.T) {
-	docs := make([]Document, 0, 106)
-	for n := 0; n < 103; n++ {
-		docs = append(docs, Document{ID: fmt.Sprint(n), Dataset: "p", Created: "2026-11-16T23:00:00", Metadata: map[string]any{"node_set": []any{"session_learnings"}, "session_date": "2026-11-13"}})
+func readingControlConfig(t *testing.T, url string) *ProjectControlConfig {
+	t.Helper()
+	token := filepath.Join(t.TempDir(), "manager.token")
+	if err := os.WriteFile(token, []byte("0123456789012345678901234567890123456789"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	docs = append(docs, Document{ID: "session-copy", Dataset: "p", Metadata: map[string]any{"node_set": []any{"user_sessions_from_cache"}}}, Document{ID: "trace-copy", Dataset: "p", Metadata: map[string]any{"node_set": []any{"agent_trace_feedbacks"}}}, Document{ID: "attachment", Dataset: "p", Metadata: map[string]any{"session_id": "s0"}})
-	sessionCalls, docCalls := 0, 0
+	return &ProjectControlConfig{URL: url, ManagementTokenFile: token}
+}
+
+func TestOverviewBootstrapUsesScopedTotalsAndSourceDayBuckets(t *testing.T) {
+	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
+		if r.Method != http.MethodGet {
 			t.Error("read-only request expected")
 		}
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 		switch r.URL.Path {
-		case "/api/v1/datasets/p/data":
-			docCalls++
-			end := min(offset+100, len(docs))
-			json.NewEncoder(w).Encode(docs[offset:end])
-		case "/api/v1/sessions":
-			sessionCalls++
-			rows := []Session{}
-			for i := offset; i < min(offset+100, 102); i++ {
-				rows = append(rows, Session{ID: fmt.Sprint("s", i), Dataset: "p", User: "u"})
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			calls++
+			if r.URL.Query().Get("recent_limit") != "20" {
+				t.Error("overview did not request a bounded recent list")
 			}
-			if offset == 100 {
-				rows = append(rows, Session{ID: "unrelated", Dataset: "code", User: "u"})
-			}
-			json.NewEncoder(w).Encode(map[string]any{"sessions": rows, "has_more": offset == 0})
+			totalRaw := 110
+			json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
+				TotalKnowledgeCount: 103, TotalRawCount: &totalRaw,
+				Projects:   []v2OverviewProjectSummary{{DatasetID: "p", SessionCount: 102, RawDocCount: 1}, {DatasetID: "code", RawDocCount: 7}},
+				DayBuckets: []v2OverviewDayBucket{{Day: "2026-11-13", Count: 103}},
+				RecentItems: []v2KnowledgeItem{
+					{DocID: "lesson", DatasetID: "p", EffectiveDate: "2026-11-13", CreatedAt: "2026-11-16T23:00:00"},
+					{DocID: "unrelated", DatasetID: "code"},
+				},
+			})
 		default:
 			t.Errorf("out of scope request %s", r.URL.Path)
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	client := Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p", CodeDataset: "code"}, {Dataset: "p"}}, Common: []Project{{Dataset: "p"}}}}
-	snapshot, err := client.overview(context.Background())
-	if err != nil || snapshot.RawError != "" || len(snapshot.Knowledge) != 103 || snapshot.Raw != 103 {
-		t.Fatalf("knowledge=%d raw=%d rawErr=%s err=%v", len(snapshot.Knowledge), snapshot.Raw, snapshot.RawError, err)
-	}
-	if docCalls != 2 || sessionCalls != 2 {
-		t.Fatalf("must traverse once in parallel and dedup dataset: docs=%d sessions=%d", docCalls, sessionCalls)
-	}
-	zone := time.FixedZone("+8", 8*3600)
-	if got := overviewBuckets(snapshot, zone)["2026-11-13"]; got != 103 {
-		t.Fatalf("source date must be independent of processing date: %d", got)
-	}
-}
-
-func TestOverviewRejectsChangingPagesAndKeepsKnowledgeOnSessionError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/sessions" {
-			http.Error(w, "unavailable", 503)
-			return
-		}
-		json.NewEncoder(w).Encode([]Document{{ID: "knowledge", Dataset: "p", Created: "2026-11-13T01:00:00Z", Metadata: map[string]any{"node_set": []any{"session_learnings"}}}})
-	}))
-	defer server.Close()
-	snapshot, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p"}}}}).overview(context.Background())
-	if err != nil || len(snapshot.Knowledge) != 1 || snapshot.RawError == "" {
-		t.Fatalf("knowledge lost on session failure: %+v %v", snapshot, err)
+	cfg := Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL),
+		Projects: []Project{{Dataset: "p", CodeDataset: "code"}, {Dataset: "p"}}, Common: []Project{{Dataset: "p"}}}
+	a := New(cfg, nil)
+	a.access.Loaded = true
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+	v := a.overviewState
+	if calls != 1 || v.Error != "" || v.V2TotalKnowledge != 103 || v.Snapshot.Raw != 103 ||
+		len(v.Snapshot.Knowledge) != 1 || v.Snapshot.Knowledge[0].ID != "lesson" ||
+		v.V2DayBuckets["2026-11-13"] != 103 || v.V2DayBuckets["2026-11-16"] != 0 {
+		t.Fatalf("unexpected overview bootstrap: calls=%d state=%+v", calls, v)
 	}
 }
 

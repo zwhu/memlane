@@ -3,9 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -120,30 +118,6 @@ type knowledgeCardMeasurement struct {
 var knowledgeQuote = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M3 13c0-6 3-9 8-10v4c-3 1-4 3-4 5h4v9H3zm12 0c0-6 3-9 8-10v4c-3 1-4 3-4 5h4v9h-8z"/></svg>`))
 var knowledgeSource = homeSVG(`<path d="m10 13 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(1 0) scale(.9)"/>`)
 
-func knowledgeCatalog(docs []Document) []Item {
-	rows := []Item{}
-	seen := map[string]bool{}
-	for _, d := range docs {
-		if !d.knowledge() {
-			continue
-		}
-		copy := d
-		i := Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Date: d.date(), Source: d.session(), Document: &copy}
-		if !seen[i.key()] {
-			rows = append(rows, i)
-			seen[i.key()] = true
-		}
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		x, y := dateOrder(rows[i].Date), dateOrder(rows[j].Date)
-		if x.Equal(y) {
-			return rows[i].key() < rows[j].key()
-		}
-		return x.After(y)
-	})
-	return rows
-}
-
 func (a *App) loadKnowledgeFeed(s *pane) {
 	a.syncReadingIdentity()
 	p, ok := a.current()
@@ -166,7 +140,6 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	s.Knowledge.RecallRequest++
 	s.Knowledge.RecallPending = 0
 	s.Knowledge.RecallChecked = nil
-	wasLoaded := s.Loaded
 	client := a.Client
 	control, hasControl := a.accessClient()
 	stateDir := a.readingStateDir()
@@ -181,8 +154,6 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 	if !hasCurrentProject && p.ID != "" && p.Dataset != "" {
 		accessProjects = append(accessProjects, AccessProject{ID: p.ID, Name: p.Name, Dataset: p.Dataset})
 	}
-	titles := a.titles
-	genStr := a.readingGeneration(s)
 	sortByRecalls := s.Knowledge.SortByRecalls
 	categoryFilter := s.Knowledge.CategoryFilter
 	unreadOnly := s.Knowledge.UnreadOnly
@@ -205,185 +176,77 @@ func (a *App) loadKnowledgeFeed(s *pane) {
 				}
 			})
 		}
-		if p.Dataset != "" && hasControl {
-			if len(accessProjects) > 0 {
-				if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
-					if ctx.Err() != nil {
-						return
-					}
-					if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
-						failClosed(migErr)
-						return
-					}
-				}
-			}
-			sortParam := "date"
-			if sortByRecalls {
-				sortParam = "recall"
-			}
-			v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
-			if v2Err == nil {
-				mapped := make([]Item, 0, len(v2Resp.Items))
-				for _, row := range v2Resp.Items {
-					if row.DocID == "" {
-						continue
-					}
-					mapped = append(mapped, row.toItem(recallStartedAt))
-				}
-				baseTotal := v2Resp.TotalFiltered
-				if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
-					sum := 0
-					for _, cnt := range v2Resp.CategoryCounts {
-						sum += cnt
-					}
-					baseTotal = sum
-				}
-				update(func() {
-					if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
-						return
-					}
-					s.Loading = false
-					s.Error = ""
-					s.Knowledge.V2Mode = true
-					s.Knowledge.NextCursor = v2Resp.NextCursor
-					s.Knowledge.PrevCursor = v2Resp.PrevCursor
-					s.Knowledge.HasPrev = v2Resp.HasPrev
-					s.Knowledge.Prepending = false
-					s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
-					s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
-					s.Knowledge.ServerBaseTotal = baseTotal
-					s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
-					s.Knowledge.NewCatalogAvailable = false
-					s.Knowledge.CountsLoaded = true
-					s.Knowledge.CountsError = ""
-					s.Knowledge.Catalog = nil
-					s.Items = mapped
-					s.More = v2Resp.HasMore
-					s.Loaded = true
-					a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
-					a.hydrateKnowledgeCards(s)
-					if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
-						a.selectItem(s, s.Items[0])
-					}
-				})
-				return
-			}
-			failClosed(v2Err)
+		if !hasControl {
+			failClosed(fmt.Errorf("控制面服务不可用，无法加载知识目录"))
 			return
 		}
-		var docs []Document
-		var err error
-		var counts *knowledgeRecallCounts
-		var countsError error
 		if p.Dataset == "" {
-			err = fmt.Errorf("项目正在登记，内容归属尚未确认")
-		} else {
-			var wg sync.WaitGroup
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				docs, err = client.overviewDocuments(ctx, p)
-			}()
-			if hasControl {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					counts, countsError = control.knowledgeRecallCounts(ctx, p.Dataset)
-				}()
-			}
-			wg.Wait()
+			failClosed(fmt.Errorf("项目正在登记，内容归属尚未确认"))
+			return
 		}
-		preheated := map[string]Item{}
-		if err == nil && !wasLoaded {
-			rows := knowledgeCatalog(docs)
-			applyRecallCounts(rows, counts)
-			sortKnowledgeRows(rows, sortByRecalls)
-			preCtx, preCancel := context.WithTimeout(ctx, 600*time.Millisecond)
-			topN := min(10, len(rows))
-			var mu sync.Mutex
-			var wg sync.WaitGroup
-			for idx := 0; idx < topN; idx++ {
-				item := rows[idx]
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
-						mu.Lock()
-						preheated[item.key()] = res
-						mu.Unlock()
-					}
-				}()
+		if len(accessProjects) > 0 {
+			if migErr := a.migrateReadingStateV2Snapshot(ctx, control, readingID, stateDir, accessProjects); migErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if isControlAuthDenied(migErr) || a.hasPendingLocalReadingMigration(control.Config.URL, stateDir, readingID, accessProjects) {
+					failClosed(migErr)
+					return
+				}
 			}
-			wg.Wait()
-			preCancel()
 		}
-		update(func() {
-			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
-				return
-			}
-			s.Loading = false
-			if err != nil {
-				s.Error = err.Error()
-				if readingUnavailable(err) {
-					a.InvalidateReading(p.Dataset)
-					s.Knowledge.Catalog = nil
+		sortParam := "date"
+		if sortByRecalls {
+			sortParam = "recall"
+		}
+		v2Resp, v2Err := control.projectKnowledgeV2(ctx, readingID, p.ID, sortParam, categoryFilter, unreadOnly, recallAgentID, recallEventID, knowledgeBatch, "")
+		if v2Err == nil {
+			mapped := make([]Item, 0, len(v2Resp.Items))
+			for _, row := range v2Resp.Items {
+				if row.DocID == "" {
+					continue
 				}
-				return
+				mapped = append(mapped, row.toItem(recallStartedAt))
 			}
-			s.Knowledge.V2Mode = false
-			s.Knowledge.NextCursor = ""
-			s.Knowledge.PrevCursor = ""
-			s.Knowledge.HasPrev = false
-			s.Knowledge.Prepending = false
-			rows := knowledgeCatalog(docs)
-			applyRecallCounts(rows, counts)
-			s.Knowledge.CountsLoaded = counts != nil
-			s.Knowledge.RecallNext = time.Now().Add(30 * time.Second)
-			s.Knowledge.CountsError = ""
-			if countsError != nil {
-				s.Knowledge.CountsError = countsError.Error()
-			}
-			sortKnowledgeRows(rows, s.Knowledge.SortByRecalls)
-			if s.ListScroll.Y > 0 {
-				byKey := map[string]Item{}
-				for _, i := range rows {
-					byKey[i.key()] = i
+			baseTotal := v2Resp.TotalFiltered
+			if categoryFilter != "" && len(v2Resp.CategoryCounts) > 0 {
+				sum := 0
+				for _, cnt := range v2Resp.CategoryCounts {
+					sum += cnt
 				}
-				ordered := make([]Item, 0, len(rows))
-				for _, old := range s.Knowledge.Catalog {
-					if i, ok := byKey[old.key()]; ok {
-						ordered = append(ordered, i)
-						delete(byKey, old.key())
-					}
+				baseTotal = sum
+			}
+			update(func() {
+				if epoch != a.epoch || authEpoch != a.authEpoch || request != s.request || !a.syncReadingIdentity() {
+					return
 				}
-				for _, i := range rows {
-					if _, ok := byKey[i.key()]; ok {
-						ordered = append(ordered, i)
-					}
+				s.Loading = false
+				s.Error = ""
+				s.Knowledge.V2Mode = true
+				s.Knowledge.NextCursor = v2Resp.NextCursor
+				s.Knowledge.PrevCursor = v2Resp.PrevCursor
+				s.Knowledge.HasPrev = v2Resp.HasPrev
+				s.Knowledge.Prepending = false
+				s.Knowledge.TotalFiltered = v2Resp.TotalFiltered
+				s.Knowledge.ServerCategoryCounts = v2Resp.CategoryCounts
+				s.Knowledge.ServerBaseTotal = baseTotal
+				s.Knowledge.CatalogVersion = v2Resp.CatalogVersion
+				s.Knowledge.NewCatalogAvailable = false
+				s.Knowledge.CountsLoaded = true
+				s.Knowledge.CountsError = ""
+				s.Knowledge.Catalog = nil
+				s.Items = mapped
+				s.More = v2Resp.HasMore
+				s.Loaded = true
+				a.syncV2ProjectUnreadCount(p.ID, p.Dataset, v2Resp.UnreadCount, v2Resp.UnreadStateRev, v2Resp.CatalogVersion)
+				a.hydrateKnowledgeCards(s)
+				if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
+					a.selectItem(s, s.Items[0])
 				}
-				rows = ordered
-			}
-			old := map[string]Item{}
-			for _, i := range s.Items {
-				old[i.key()] = i
-			}
-			s.Knowledge.Catalog = rows
-			rows = a.filteredKnowledgeCatalog(s)
-			count := min(max(knowledgeBatch, len(s.Items)), len(rows))
-			s.Items = append([]Item(nil), rows[:count]...)
-			for n, i := range s.Items {
-				if pre, ok := preheated[i.key()]; ok {
-					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].BodyTruncated, s.Items[n].ReadingState = pre.Body, true, pre.BodyTruncated, "ready"
-				} else if before, ok := old[i.key()]; ok && before.BodyLoaded && keyForReading("", i, "") == keyForReading("", before, "") && i.Document != nil && (i.Document.Updated != "" || i.Document.ContentHash != "") {
-					s.Items[n].Body, s.Items[n].BodyLoaded, s.Items[n].BodyTruncated, s.Items[n].ReadingState = before.Body, true, before.BodyTruncated, "ready"
-				}
-			}
-			s.More, s.Loaded = count < len(rows), true
-			a.hydrateKnowledgeCards(s)
-			if s.Selected == nil && len(s.Items) > 0 && !s.Locating {
-				a.selectItem(s, s.Items[0])
-			}
-		})
+			})
+			return
+		}
+		failClosed(v2Err)
 	}()
 }
 

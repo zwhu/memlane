@@ -588,46 +588,50 @@ func TestColdStartLoginReadDoesNotOverwriteToggle(t *testing.T) {
 	}
 }
 
-func TestColdStartLegacyWaitsForActivityAndOverview(t *testing.T) {
-	activityStarted, releaseActivity := make(chan struct{}), make(chan struct{})
-	defer close(releaseActivity)
-	a := New(Config{ServiceURL: coldStartTestURL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+func TestColdStartWaitsForV2OverviewAndActivityBootstrap(t *testing.T) {
+	bootstrapStarted, releaseBootstrap := make(chan struct{}, 1), make(chan struct{})
+	a := New(Config{ServiceURL: coldStartTestURL, ProjectControl: readingControlConfig(t, coldStartTestURL)}, nil)
 	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/activity/pipeline-runs":
-			close(activityStarted)
+		case "/v1/projects":
+			json.NewEncoder(w).Encode(AccessDirectory{Projects: []AccessProject{{ID: "p", Dataset: "ds"}}})
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			bootstrapStarted <- struct{}{}
 			select {
-			case <-releaseActivity:
+			case <-releaseBootstrap:
 			case <-r.Context().Done():
+				return
 			}
-			_, _ = w.Write([]byte(`[]`))
-		case "/api/v1/sessions":
-			_, _ = w.Write([]byte(`{"sessions":[]}`))
-		case "/api/v1/datasets/ds/data":
-			_, _ = w.Write([]byte(`[]`))
+			json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{Generation: 1})
+		case "/api/v1/activity/pipeline-runs", "/api/v1/datasets/ds/data", "/api/v1/sessions":
+			t.Error("overview startup requested a legacy route", r.URL)
+			http.NotFound(w, r)
 		default:
-			_, _ = w.Write([]byte(`{}`))
+			w.Write([]byte(`{}`))
 		}
 	})}
-	updates := make(chan func(), 16)
+	updates := make(chan func(), 32)
 	a.Update = func(fn func()) { updates <- fn }
 	a.Start()
 	defer a.cancelOverviewRequests()
 	defer a.cancelAndResetPanes()
-	nextStartupUpdate(t, updates)()
+	drainReading(t, updates, func() bool { return a.access.Loaded })
+	a.loadOverview()
 	select {
-	case <-activityStarted:
-	case <-time.After(3 * time.Second):
-		t.Fatal("activity request did not start")
+	case <-bootstrapStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap request did not start")
 	}
-	if !a.overviewState.Loaded || !a.overviewState.ActivityLoading || a.startupDeferred.done || a.monitor.PollEnabled {
-		t.Fatal("legacy overview released startup before activity settled")
+	if !a.overviewState.Loading || !a.overviewState.ActivityLoading || a.startupDeferred.done || a.monitor.PollEnabled {
+		t.Fatal("overview released startup before the combined response settled")
 	}
-	releaseActivity <- struct{}{}
-	nextStartupUpdate(t, updates)()
-	if !a.overviewState.ActivityLoaded || !a.overviewState.overviewColdStartMotion ||
-		!a.startupDeferred.done || a.startupDeferred.timer != nil || !a.monitor.PollEnabled {
-		t.Fatal("legacy overview did not settle after both results")
+	close(releaseBootstrap)
+	drainReading(t, updates, func() bool { return a.overviewState.Loaded && a.overviewState.ActivityLoaded })
+	if !a.overviewState.overviewColdStartMotion || !a.startupDeferred.done ||
+		a.startupDeferred.timer != nil || !a.monitor.PollEnabled {
+		t.Fatal("overview did not release deferred startup after both results")
 	}
 }
 

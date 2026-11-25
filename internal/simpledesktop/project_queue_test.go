@@ -16,42 +16,53 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func TestPendingProjectDocumentsUsesOfficialCompletionNotActivityGuess(t *testing.T) {
-	completed := false
-	include := true
+func TestProjectQueueUsesOfficialPendingDocumentsAndPreservesSummaryErrors(t *testing.T) {
+	var completed, missing bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			t.Fatal("queue enumeration wrote data")
-		}
-		if r.URL.Path == "/api/v1/datasets/ds/processing-status" {
-			if r.URL.Query().Get("pipeline") != "cognify_pipeline" {
-				t.Error("wrong processing stage")
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/message-summary":
+			if r.Method != http.MethodGet {
+				t.Error("queue enumeration wrote data")
 			}
-			items := []map[string]any{{"id": "raw", "name": "design.md", "completed": completed}, {"id": "done", "name": "done.md", "completed": true}, {"id": "knowledge", "name": "Session learning", "completed": false}, {"id": "session-copy", "completed": false}, {"id": "trace-copy", "completed": false}}
-			json.NewEncoder(w).Encode(map[string]any{"items": items})
-			return
+			resp := v2MessageSummaryResponse{ProjectID: "p", DatasetID: "ds", Activity: []activityRow{{Outcome: "succeeded"}}}
+			if missing {
+				resp.Errors = map[string]string{"documents": "文档列表已变化，请重新读取"}
+			} else if !completed {
+				resp.PendingDocumentsCount = 1
+				resp.PendingDocuments = []projectMessageSummaryDocument{{ID: "raw", Name: "design.md"}}
+			}
+			json.NewEncoder(w).Encode(resp)
+		default:
+			t.Error("unexpected queue request", r.URL.Path)
+			http.NotFound(w, r)
 		}
-		docs := []Document{{ID: "done", Dataset: "ds", Name: "done.md"}, {ID: "knowledge", Dataset: "ds", Name: "Session learning", Metadata: map[string]any{"node_set": []any{"session_learnings", "session_learnings:s"}}}, {ID: "session-copy", Dataset: "ds", Metadata: map[string]any{"node_set": []any{"user_sessions_from_cache"}}}, {ID: "trace-copy", Dataset: "ds", Metadata: map[string]any{"node_set": []any{"agent_trace_feedbacks"}}}}
-		if include {
-			docs = append(docs, Document{ID: "raw", Dataset: "ds", Name: "design.md"})
-		}
-		json.NewEncoder(w).Encode(docs)
 	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL}}
-	rows, err := c.pendingProjectDocuments(context.Background(), Project{Dataset: "ds"})
-	if err != nil || len(rows) != 1 || rows[0].ID != "raw" {
-		t.Fatalf("completion classification failed: %#v %v", rows, err)
+	a := New(Config{ServiceURL: server.URL}, nil)
+	in := projectQueueFetchInput{client: a.Client, project: AccessProject{ID: "p", Dataset: "ds"}, control: readingControlConfig(t, server.URL), stateDir: t.TempDir()}
+	fetch := func() projectQueueSnapshot {
+		var snap projectQueueSnapshot
+		a.fetchProjectQueueSummary(context.Background(), in, &snap)
+		return snap
+	}
+	snap := fetch()
+	if snap.documentErr != nil || len(snap.documents) != 1 || snap.documents[0].ID != "raw" || snap.pendingDocumentsCount != 1 {
+		t.Fatalf("official pending document was lost: %+v", snap)
 	}
 	completed = true
-	rows, err = c.pendingProjectDocuments(context.Background(), Project{Dataset: "ds"})
-	if err != nil || len(rows) != 0 {
-		t.Fatal("completed document kept pending")
+	snap = fetch()
+	if snap.documentErr != nil || len(snap.documents) != 0 {
+		t.Fatal("completed document kept pending", snap)
 	}
-	completed = false
-	include = false
-	if _, err = c.pendingProjectDocuments(context.Background(), Project{Dataset: "ds"}); err == nil {
+	missing = true
+	if snap = fetch(); snap.documentErr == nil {
 		t.Fatal("missing metadata faked successful empty list")
+	}
+	in.control = nil
+	if snap = fetch(); snap.documentErr == nil || snap.noticeErr == nil || snap.activityErr == nil {
+		t.Fatal("queue did not report the unavailable control plane", snap)
 	}
 }
 func projectQueueFixture() (*App, *projectQueueState) {

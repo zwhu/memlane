@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -103,166 +101,6 @@ func overviewProjects(c Config) []Project {
 		}
 	}
 	return result
-}
-
-const overviewDocumentsPageSize = 1000
-
-func (c Client) overviewDocuments(ctx context.Context, p Project) ([]Document, error) {
-	var all []Document
-	seen := map[string]bool{}
-	for offset := 0; offset <= 1000000; {
-		var page []Document
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/datasets/%s/data?limit=%d&offset=%d", url.PathEscape(p.Dataset), overviewDocumentsPageSize, offset), &page); err != nil {
-			return nil, err
-		}
-		for _, d := range page {
-			if d.ID == "" || d.Dataset != p.Dataset {
-				return nil, fmt.Errorf("官方内容身份不匹配")
-			}
-			if !seen[d.ID] {
-				seen[d.ID] = true
-				all = append(all, d)
-			}
-		}
-		// Some legacy or test servers cap per-page responses at 100 or 500 rows
-		// even when limit=1000 is requested; advance by len(page) and only stop
-		// early when the page is clearly shorter than both our request and common caps.
-		if len(page) == 0 || (len(page) < overviewDocumentsPageSize && len(page) != 100 && len(page) != 500) {
-			if err := c.rememberKnowledgeDays(all); err != nil {
-				return nil, err
-			}
-			sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
-			return all, nil
-		}
-		offset += len(page)
-	}
-	return nil, fmt.Errorf("官方分页上限内未读完，统计暂不可用")
-}
-
-func (c Client) overviewSessions(ctx context.Context, projects []Project) ([]Session, error) {
-	allowed := map[string]bool{}
-	for _, p := range projects {
-		allowed[p.Dataset] = true
-	}
-	result := []Session{}
-	seen := map[string]bool{}
-	for offset := 0; offset <= 1000000; offset += 100 {
-		var page struct {
-			Sessions []Session `json:"sessions"`
-			More     bool      `json:"has_more"`
-		}
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/sessions?range=all&limit=100&offset=%d&order_by=last_activity_at&descending=true", offset), &page); err != nil {
-			return nil, err
-		}
-		for _, s := range page.Sessions {
-			key := s.User + "/" + s.ID
-			if s.ID == "" {
-				return nil, fmt.Errorf("官方会话身份缺失")
-			}
-			if allowed[s.Dataset] && !seen[key] {
-				seen[key] = true
-				s.Updated = ""
-				result = append(result, s)
-			}
-		}
-		if !page.More {
-			sort.Slice(result, func(i, j int) bool { return result[i].User+result[i].ID < result[j].User+result[j].ID })
-			return result, nil
-		}
-		if len(page.Sessions) == 0 {
-			return nil, fmt.Errorf("官方会话分页不完整")
-		}
-	}
-	return nil, fmt.Errorf("官方会话分页未读完")
-}
-
-func aggregateOverview(projects []Project, docs map[string][]Document, sessions []Session) overviewSnapshot {
-	out := overviewSnapshot{}
-	raw := map[string]bool{}
-	for _, s := range sessions {
-		raw["session/"+s.User+"/"+s.ID] = true
-	}
-	for _, p := range projects {
-		for _, d := range docs[p.Dataset] {
-			if d.knowledge() {
-				copy := d
-				out.Knowledge = append(out.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Source: d.session(), Document: &copy})
-				if _, ok := d.knowledgeDay(time.Local); !ok {
-					out.MissingDates++
-				}
-			} else if !derivedMaterial(d) {
-
-				raw["document/"+d.Dataset+"/"+d.ID] = true
-			}
-		}
-	}
-	out.Raw = len(raw)
-	sort.SliceStable(out.Knowledge, func(i, j int) bool {
-		a, _ := out.Knowledge[i].Document.knowledgeDay(time.Local)
-		b, _ := out.Knowledge[j].Document.knowledgeDay(time.Local)
-		if a == b {
-			return out.Knowledge[i].key() < out.Knowledge[j].key()
-		}
-		return a > b
-	})
-	return out
-}
-
-func (c Client) overview(ctx context.Context) (overviewSnapshot, error) {
-	projects := overviewProjects(c.Config)
-	if len(projects) == 0 {
-		return overviewSnapshot{}, nil
-	}
-	// Single-pass concurrent fetch across datasets and sessions (ID-deduped)
-	// replaces the old serial double-traversal for 3-5x faster cold starts.
-	docs := make(map[string][]Document, len(projects))
-	var (
-		mu         sync.Mutex
-		wg         sync.WaitGroup
-		docErr     error
-		sessions   []Session
-		sessionErr error
-	)
-	// Bounded concurrency (3) keeps single-process official_service_dev.py responsive
-	// so overviewActivity isn't starved behind a burst of dataset auth checks.
-	sem := make(chan struct{}, min(3, len(projects)))
-	for _, proj := range projects {
-		p := proj
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			rows, err := c.overviewDocuments(ctx, p)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				if docErr == nil {
-					docErr = err
-				}
-				return
-			}
-			docs[p.Dataset] = rows
-		}()
-	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		s, err := c.overviewSessions(ctx, projects)
-		mu.Lock()
-		sessions, sessionErr = s, err
-		mu.Unlock()
-	}()
-	wg.Wait()
-	if docErr != nil {
-		return overviewSnapshot{}, docErr
-	}
-	if sessionErr != nil {
-		snapshot := aggregateOverview(projects, docs, nil)
-		snapshot.RawError = sessionErr.Error()
-		return snapshot, nil
-	}
-	return aggregateOverview(projects, docs, sessions), nil
 }
 
 type activityRow struct {

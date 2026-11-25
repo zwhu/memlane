@@ -146,25 +146,42 @@ func TestCommonEditorSubmittedLockedAndNeverReplaced(t *testing.T) {
 }
 func TestCommonCategoryPagingFiltersBeforeSlicing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		docs := []Document{}
-		for n := 0; n < 65; n++ {
-			category := "experience"
-			if n >= 30 {
-				category = "preference"
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/common/knowledge":
+			q := r.URL.Query()
+			if q.Get("dataset_id") != "common" || q.Get("common_category") != "preference" || q.Get("limit") != "30" {
+				t.Error("category must be part of the paginated request", q)
 			}
-			docs = append(docs, Document{ID: fmt.Sprintf("%03d", n), Dataset: "common", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": category}})
+			start := 0
+			if q.Get("cursor") == "preferences-30" {
+				start = 30
+			} else if q.Has("cursor") {
+				t.Error("unexpected cursor", q)
+			}
+			resp := v2CommonKnowledgeResponse{TotalFiltered: 35, HasMore: start == 0}
+			if resp.HasMore {
+				resp.NextCursor = "preferences-30"
+			}
+			for n := start; n < min(start+30, 35); n++ {
+				resp.Items = append(resp.Items, v2KnowledgeItem{DocID: fmt.Sprintf("%03d", n+30), DatasetID: "common", CommonCategory: "preference"})
+			}
+			json.NewEncoder(w).Encode(resp)
+		default:
+			t.Error("unexpected request", r.URL.Path)
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(docs)
 	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL}}
-	rows, more, err := c.commonDocuments(context.Background(), Project{Dataset: "common"}, 0, "preference")
-	if err != nil || len(rows) != 30 || !more {
-		t.Fatalf("filtered first page: %d %v %v", len(rows), more, err)
+	control := ProjectControlClient{Config: *readingControlConfig(t, server.URL)}
+	rows, err := control.commonKnowledgePageV2(context.Background(), "common", "preference", 30, v2KnowledgePageOpts{})
+	if err != nil || len(rows.Items) != 30 || !rows.HasMore || rows.TotalFiltered != 35 || rows.Items[0].DocID != "030" {
+		t.Fatalf("filtered first page: %+v %v", rows, err)
 	}
-	next, more, err := c.commonDocuments(context.Background(), Project{Dataset: "common"}, 30, "preference")
-	if err != nil || len(next) != 5 || more {
-		t.Fatalf("filtered second page: %d %v %v", len(next), more, err)
+	next, err := control.commonKnowledgePageV2(context.Background(), "common", "preference", 30, v2KnowledgePageOpts{Cursor: rows.NextCursor})
+	if err != nil || len(next.Items) != 5 || next.HasMore || next.Items[0].DocID != "060" {
+		t.Fatalf("filtered second page: %+v %v", next, err)
 	}
 }
 func TestCommonPageEmptyAndLoadingDiffer(t *testing.T) {
@@ -189,15 +206,21 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	d := Document{ID: "saved", Dataset: "common", Name: "Saved preference", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST":
+		case r.Method == "POST" && r.URL.Path == "/api/v1/remember":
 			writes.Add(1)
 			json.NewEncoder(w).Encode(CommonWriteReceipt{Status: "running", DatasetID: "common", DataID: "saved", PipelineRunID: "same-run"})
-		case strings.HasSuffix(r.URL.Path, "/raw"):
-			fmt.Fprint(w, body)
+		case r.URL.Path == "/v1/datasets/common/documents/saved/body":
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: d.ID, DatasetID: d.Dataset, Body: &body})
 		case strings.Contains(r.URL.Path, "pipeline-runs"):
 			json.NewEncoder(w).Encode([]map[string]string{{"kind": "pipeline", "dataset_id": "common", "pipeline_run_id": "same-run", "status": "STARTED"}})
+		case r.URL.Path == "/v1/datasets/common/documents/saved":
+			json.NewEncoder(w).Encode(documentLookupV2Response{Document: d})
+		case r.URL.Path == "/v1/common/knowledge":
+			json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{})
+		case r.URL.Path == "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
 		default:
-			json.NewEncoder(w).Encode([]Document{d})
+			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
@@ -205,6 +228,7 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	credential := filepath.Join(t.TempDir(), "official.key")
 	os.WriteFile(credential, []byte("synthetic-key"), 0600)
 	a.Config.ServiceURL = server.URL
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Config.TokenFile = credential
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
@@ -221,7 +245,7 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	a.confirmCommonKnowledge()
 	drainReading(t, updates, func() bool { return !a.commonEdit.Busy })
 	if !a.commonEdit.SaveVerified || a.commonEdit.Processing != "STARTED" || writes.Load() != 1 {
-		t.Fatal("confirmation resubmitted or confused processing with saved content")
+		t.Fatalf("confirmation resubmitted or confused processing with saved content: writes=%d message=%q processing=%q", writes.Load(), a.commonEdit.Message, a.commonEdit.Processing)
 	}
 }
 func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
@@ -234,15 +258,27 @@ func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
 			w.WriteHeader(500)
 			return
 		}
-		docs := []Document{}
-		if present {
-			docs = append(docs, d)
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/common/knowledge":
+			json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{})
+		case "/v1/datasets/common/documents/0":
+			if present {
+				json.NewEncoder(w).Encode(documentLookupV2Response{Document: d})
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"error": "document_not_found"})
+			}
+		default:
+			t.Error("unexpected verification request", r.URL.Path)
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(docs)
 	}))
 	defer server.Close()
 	a := commonUIFixture()
 	a.Client.Config.ServiceURL = server.URL
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.deleteCommonKnowledge(d)
@@ -281,15 +317,22 @@ func TestCommonConfirmKnownOlderDocumentOutsideFirstPage(t *testing.T) {
 			w.Write([]byte(body))
 			return
 		}
-		docs := []Document{}
-		for n := 0; n < 45; n++ {
-			docs = append(docs, Document{ID: fmt.Sprintf("d%02d", n), Dataset: "common", Created: fmt.Sprintf("2026-11-%02dT00:00:00Z", 28-n/2), Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/datasets/common/documents/d44":
+			json.NewEncoder(w).Encode(documentLookupV2Response{
+				Document:       Document{ID: "d44", Dataset: "common", Created: "2026-11-06T00:00:00Z"},
+				CommonCategory: "preference",
+			})
+		default:
+			t.Error("known ID must use point lookup", r.URL.Path)
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(docs)
 	}))
 	defer server.Close()
 	c := Client{Config: Config{ServiceURL: server.URL}}
-	d, _, err := c.confirmCommon(context.Background(), Project{Dataset: "common"}, CommonWriteReceipt{DataID: "d44", Status: "completed"}, draft)
+	d, _, err := c.confirmCommon(context.Background(), ProjectControlClient{Config: *readingControlConfig(t, server.URL)}, true, Project{Dataset: "common"}, CommonWriteReceipt{DataID: "d44", Status: "completed"}, draft)
 	if err != nil || d.ID != "d44" || rawReads != 1 {
 		t.Fatalf("known saved ID lost beyond first list page: %s %d %v", d.ID, rawReads, err)
 	}

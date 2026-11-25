@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 )
@@ -47,40 +46,6 @@ func commonCategory(d Document) string {
 		return category
 	}
 	return ""
-}
-
-func (c Client) commonDocumentItems(ctx context.Context, p Project, category string) ([]Item, error) {
-	rows, err := c.overviewDocuments(ctx, p)
-	if err != nil {
-		return nil, err
-	}
-	items := []Item{}
-	for _, d := range rows {
-		kind := commonCategory(d)
-		if kind == "" || (category != "" && kind != category) {
-			continue
-		}
-		copy := d
-		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Document: &copy, CommonCategory: kind})
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		a, _ := officialTime(items[i].Date)
-		b, _ := officialTime(items[j].Date)
-		if a.Equal(b) {
-			return items[i].key() < items[j].key()
-		}
-		return a.After(b)
-	})
-	return items, nil
-}
-func (c Client) commonDocuments(ctx context.Context, p Project, offset int, category string) ([]Item, bool, error) {
-	items, err := c.commonDocumentItems(ctx, p, category)
-	if err != nil {
-		return nil, false, err
-	}
-	start := min(max(offset, 0), len(items))
-	end := min(start+30, len(items))
-	return items[start:end], end < len(items), nil
 }
 
 type CommonWriteReceipt struct {
@@ -201,32 +166,52 @@ func (c Client) deleteCommon(ctx context.Context, p Project, d Document) error {
 	return nil
 }
 
-func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWriteReceipt, draft CommonDraft) (Document, string, error) {
+func (c Client) confirmCommon(ctx context.Context, control ProjectControlClient, hasControl bool, p Project, receipt CommonWriteReceipt, draft CommonDraft) (Document, string, error) {
+	if !hasControl {
+		return Document{}, "保存尚未核对", fmt.Errorf("控制面服务不可用，无法核对官方保存结果")
+	}
 	expected, err := draft.markdown()
 	if err != nil {
 		return Document{}, "", err
 	}
-	rows, err := c.commonDocumentItems(ctx, p, draft.Category)
-	if receipt.DataID == "" && len(rows) > 30 {
-		rows = rows[:30]
-	}
-	if err != nil {
-		return Document{}, "", err
+	notFound := fmt.Errorf("未找到与本次正文一致的官方文档；保留原操作，不重复提交")
+	var rows []Item
+	if receipt.DataID != "" {
+		res, lookupErr := control.documentLookupV2(ctx, p.Dataset, receipt.DataID)
+		if isControlErrorCode(lookupErr, http.StatusNotFound, "document_not_found") {
+			return Document{}, "保存尚未核对", notFound
+		}
+		if lookupErr != nil {
+			return Document{}, "保存尚未核对", lookupErr
+		}
+		d := res.Document
+		category := commonCategory(d)
+		if d.Dataset != p.Dataset || d.ID != receipt.DataID ||
+			(d.Metadata["memlane_kind"] == "common_knowledge" && category != draft.Category) ||
+			(res.CommonCategory != "" && res.CommonCategory != draft.Category) ||
+			(category == "" && res.CommonCategory == "") ||
+			(receipt.ContentHash != "" && d.ContentHash != receipt.ContentHash) {
+			return Document{}, "保存尚未核对", notFound
+		}
+		rows = []Item{{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Title: d.title(), Date: d.date(), Document: &d, CommonCategory: draft.Category}}
+	} else {
+		res, pageErr := control.commonKnowledgePageV2(ctx, p.Dataset, draft.Category, 30, v2KnowledgePageOpts{})
+		if pageErr != nil {
+			return Document{}, "保存尚未核对", pageErr
+		}
+		for _, row := range res.Items[:min(30, len(res.Items))] {
+			if row.DocID == "" || row.DatasetID != p.Dataset || row.CommonCategory != draft.Category ||
+				(receipt.ContentHash != "" && row.ContentHash != "" && row.ContentHash != receipt.ContentHash) {
+				continue
+			}
+			rows = append(rows, row.toItem(""))
+			if len(rows) == 8 {
+				break
+			}
+		}
 	}
 	var document Document
-	reads := 0
 	for _, row := range rows {
-		d := *row.Document
-		if receipt.DataID != "" && d.ID != receipt.DataID {
-			continue
-		}
-		if receipt.ContentHash != "" && d.ContentHash != receipt.ContentHash {
-			continue
-		}
-		if reads >= 8 {
-			break
-		}
-		reads++
 		loaded, readErr := c.read(ctx, row)
 		if readErr != nil {
 			return Document{}, "官方正文读取未确认", readErr
@@ -234,12 +219,12 @@ func (c Client) confirmCommon(ctx context.Context, p Project, receipt CommonWrit
 		// The official raw-text ingestion strips the final LF. Compare only
 		// that transport normalization; retain all internal whitespace/content.
 		if strings.TrimSuffix(loaded.Body, "\n") == strings.TrimSuffix(expected, "\n") {
-			document = d
+			document = *row.Document
 			break
 		}
 	}
 	if document.ID == "" {
-		return Document{}, "保存尚未核对", fmt.Errorf("未找到与本次正文一致的官方文档；保留原操作，不重复提交")
+		return Document{}, "保存尚未核对", notFound
 	}
 	processing := "提炼状态未确认"
 	if receipt.Status == "completed" || receipt.Status == "incremental" || receipt.Status == "unchanged" || receipt.Status == "full_rebuild" {

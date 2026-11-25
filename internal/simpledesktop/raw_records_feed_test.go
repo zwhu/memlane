@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,24 +14,55 @@ import (
 
 func TestRawRecordsScrollAppendsStableSnapshotAndRefreshes(t *testing.T) {
 	var added atomic.Bool
-	var catalogs atomic.Int32
+	var firstPages, cursorPages atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/datasets/") {
-			catalogs.Add(1)
-			rows := []Document{}
-			if added.Load() {
-				rows = append(rows, Document{ID: "new", Dataset: "ds", Name: "new.md", Created: "2026-11-17T00:00:00Z"})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/raw-records":
+			q := r.URL.Query()
+			if q.Get("kind") != "all" || q.Get("limit") != "30" {
+				t.Error("unexpected raw page request", q)
 			}
-			for n := 0; n < 65; n++ {
-				rows = append(rows, Document{ID: fmt.Sprintf("raw-%02d", n), Dataset: "ds", Name: fmt.Sprintf("raw-%02d.md", n), Created: "2026-11-16T00:00:00Z"})
+			resp := v2RawRecordsResponse{DatasetID: "ds", CacheReady: true}
+			addDoc := func(id, date string) {
+				resp.Items = append(resp.Items, v2RawRecordItem{ItemKind: "document",
+					Document: &Document{ID: id, Dataset: "ds", Name: id + ".md", Created: date}})
 			}
-			json.NewEncoder(w).Encode(rows)
-			return
+			start, end := 0, 30
+			switch q.Get("cursor") {
+			case "":
+				firstPages.Add(1)
+				resp.NextCursor = "snapshot-30"
+				if added.Load() {
+					addDoc("new", "2026-11-17T00:00:00Z")
+					end--
+					resp.NextCursor = "updated-29"
+				}
+			case "snapshot-30":
+				cursorPages.Add(1)
+				start, end, resp.NextCursor = 30, 60, "snapshot-60"
+			case "snapshot-60":
+				cursorPages.Add(1)
+				start, end = 60, 65
+			default:
+				t.Error("unexpected cursor", q)
+			}
+			for n := start; n < end; n++ {
+				addDoc(fmt.Sprintf("raw-%02d", n), "2026-11-16T00:00:00Z")
+			}
+			resp.HasMore = resp.NextCursor != ""
+			json.NewEncoder(w).Encode(resp)
+		case "/v1/datasets/ds/documents/raw-00/body":
+			body := "keep reading"
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "raw-00", DatasetID: "ds", Body: &body})
+		default:
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{}, "has_more": false})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Name: "p", Dataset: "ds"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Name: "p", Dataset: "ds"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 300)
 	a.Update = func(fn func()) { updates <- fn }
 	a.page, a.kind = "知识", "原始记录"
@@ -46,7 +76,7 @@ func TestRawRecordsScrollAppendsStableSnapshotAndRefreshes(t *testing.T) {
 		}
 	})
 	a.load(s)
-	drainReading(t, updates, func() bool { return !s.Loading })
+	drainReading(t, updates, func() bool { return !s.Loading && !s.Reading })
 	if len(s.Items) != 30 || !s.More {
 		t.Fatalf("first batch %d more=%v", len(s.Items), s.More)
 	}
@@ -59,6 +89,9 @@ func TestRawRecordsScrollAppendsStableSnapshotAndRefreshes(t *testing.T) {
 	for n := 0; n < 12 && len(s.Items) < 65; n++ {
 		tt.Scroll(350, 600, 0, 10000)
 		tt.Frame()
+		if s.RawAppending {
+			drainReading(t, updates, func() bool { return !s.RawAppending })
+		}
 	}
 	if len(s.Items) != 65 || s.More {
 		t.Fatalf("scroll did not append all records: %d more=%v", len(s.Items), s.More)
@@ -66,8 +99,8 @@ func TestRawRecordsScrollAppendsStableSnapshotAndRefreshes(t *testing.T) {
 	if tt.HasText("下一页") || tt.HasText("上一页") {
 		t.Fatal("manual paging remains")
 	}
-	if catalogs.Load() != 1 {
-		t.Fatal("append re-enumerated changing official catalog")
+	if firstPages.Load() != 1 || cursorPages.Load() != 2 {
+		t.Fatal("append did not follow the two cursor pages", firstPages.Load(), cursorPages.Load())
 	}
 	seen := map[string]bool{}
 	for _, i := range s.Items {
@@ -80,8 +113,9 @@ func TestRawRecordsScrollAppendsStableSnapshotAndRefreshes(t *testing.T) {
 		t.Fatal("append lost reader")
 	}
 	a.load(s)
-	drainReading(t, updates, func() bool { return !s.Loading })
-	if len(s.Items) != 65 || s.Items[0].ID != "new" || !s.More {
-		t.Fatalf("refresh lost displayed range or new item: %d %v", len(s.Items), s.More)
+	drainReading(t, updates, func() bool { return !s.Loading && !s.Reading })
+	if len(s.Items) != 30 || s.Items[0].ID != "new" || !s.More || s.RawNextCursor != "updated-29" ||
+		s.Selected == nil || s.Selected.Body != "keep reading" || firstPages.Load() != 2 {
+		t.Fatalf("refresh did not replace the cursor snapshot and retain the reader: %d %v", len(s.Items), s.More)
 	}
 }

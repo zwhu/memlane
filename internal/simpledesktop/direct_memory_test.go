@@ -70,8 +70,9 @@ func TestDirectOfficialMemoryReadAndSearch(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].Kind != "知识片段" || results[0].SourceDocument != direct.ID {
 		t.Fatal(results, err)
 	}
-	if feed := knowledgeCatalog([]Document{direct, material}); len(feed) != 1 || feed[0].ID != direct.ID {
-		t.Fatal(feed)
+	item := (v2KnowledgeItem{DocID: direct.ID, DatasetID: direct.Dataset, Kind: "direct_memory"}).toItem("")
+	if item.ID != direct.ID || !item.Document.knowledge() || item.Source != "" || material.knowledge() {
+		t.Fatal("direct memory or raw material classified incorrectly", item)
 	}
 }
 

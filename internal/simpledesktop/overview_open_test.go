@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,20 +15,35 @@ import (
 func TestOverviewOpenLocatesSecondPageAndScrollsToTarget(t *testing.T) {
 	var pages atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
-			fmt.Fprint(w, "Target knowledge body.")
+		if r.URL.Path == "/v1/datasets/ds/documents/58/body" {
+			body := "Target knowledge body."
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "58", DatasetID: "ds", Body: &body})
 			return
 		}
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		pages.Add(1)
-		rows := []Document{}
-		for n := offset; n < min(offset+31, 60); n++ {
-			rows = append(rows, Document{ID: fmt.Sprint(n), Dataset: "ds", Name: fmt.Sprintf("Knowledge %d", n), Metadata: map[string]any{"node_set": []string{"session_learnings"}}})
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/knowledge":
+			if r.URL.Query().Get("anchor_doc_id") == "" {
+				json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{})
+				return
+			}
+			pages.Add(1)
+			if r.URL.Query().Get("anchor_doc_id") != "58" || r.URL.Query().Get("limit") != "30" {
+				t.Error("locator did not request the target's bounded page", r.URL)
+			}
+			resp := v2ProjectKnowledgeResponse{DatasetID: "ds", HasPrev: true, PrevCursor: "page-1", TotalFiltered: 60}
+			for n := 30; n < 60; n++ {
+				resp.Items = append(resp.Items, v2KnowledgeItem{DocID: fmt.Sprint(n), DatasetID: "ds", Title: fmt.Sprintf("Knowledge %d", n), PreviewText: fmt.Sprintf("Knowledge %d", n)})
+			}
+			json.NewEncoder(w).Encode(resp)
+		default:
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(rows)
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Name: "project", Dataset: "ds"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Name: "project", Dataset: "ds"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.access.Next = time.Now().Add(time.Hour)
@@ -38,17 +51,18 @@ func TestOverviewOpenLocatesSecondPageAndScrollsToTarget(t *testing.T) {
 	a.openOverviewItem(Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: d.Name, Document: &d})
 	s := a.state()
 	drainReading(t, updates, func() bool { return !s.Loading && !s.Reading })
-	if s.Offset != 30 || s.Selected == nil || s.Selected.ID != "58" || s.Error != "" || !containsReadingItem(s.Items, s.Selected.key()) {
+	if !s.Knowledge.HasPrev || s.Knowledge.PrevCursor != "page-1" || s.Selected == nil || s.Selected.ID != "58" || s.Error != "" || !containsReadingItem(s.Items, s.Selected.key()) {
 		t.Fatalf("overview did not locate the target page: offset=%d selected=%v error=%s", s.Offset, s.Selected, s.Error)
 	}
-	if pages.Load() < 2 {
+	if pages.Load() != 1 || s.Selected.Body != "Target knowledge body." {
 		t.Fatal("target page was never read")
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
+	tt.Advance(time.Second)
 	tt.Frame()
 	r, ok := tt.Find("Knowledge 58")
 	if !ok || r.H <= 0 || r.Y < 96 || r.Y+r.H > 800 || s.ListSelection != 28 {
-		t.Fatalf("target is not visible and selected: rect=%+v listSelection=%d", r, s.ListSelection)
+		t.Fatalf("target is not visible and selected: rect=%+v listSelection=%d texts=%v", r, s.ListSelection, tt.Texts())
 	}
 	a.load(s)
 	drainReading(t, updates, func() bool { return !s.Loading && !s.Reading })
@@ -113,8 +127,21 @@ func TestDetailTitleBackfillsOnlyMatchingOverviewVersion(t *testing.T) {
 func TestOverviewLocateReplyCannotOverrideANewSelection(t *testing.T) {
 	started, release := make(chan struct{}, 1), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
-			fmt.Fprint(w, "New selected content.")
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		if r.URL.Path == "/v1/datasets/ds/documents/new/body" {
+			body := "New selected content."
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "new", DatasetID: "ds", Body: &body})
+			return
+		}
+		if r.URL.Path != "/v1/projects/p/knowledge" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("anchor_doc_id") != "old" {
+			json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{})
 			return
 		}
 		select {
@@ -122,10 +149,11 @@ func TestOverviewLocateReplyCannotOverrideANewSelection(t *testing.T) {
 		default:
 		}
 		<-release
-		fmt.Fprint(w, `[{"id":"old","datasetId":"ds","name":"old","externalMetadata":{"node_set":["session_learnings"]}}]`)
+		json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{Items: []v2KnowledgeItem{{DocID: "old", DatasetID: "ds", Title: "old"}}})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	a.access.Loaded = true
 	updates := make(chan func(), 8)
 	a.Update = func(fn func()) { updates <- fn }
 	d := Document{ID: "old", Dataset: "ds", Name: "old"}
@@ -143,7 +171,7 @@ func TestOverviewLocateReplyCannotOverrideANewSelection(t *testing.T) {
 		case fn := <-updates:
 			fn()
 		case <-deadline.C:
-			if s.Selected == nil || s.Selected.ID != "new" || s.HomeAnchor != nil {
+			if s.Selected == nil || s.Selected.ID != "new" || s.Selected.Body != "New selected content." || s.HomeAnchor != nil {
 				t.Fatal("late locator replaced explicit new selection")
 			}
 			return
@@ -155,21 +183,31 @@ func TestOverviewLocateIgnoresCancelledDetailReply(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var rawCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		if r.URL.Path == "/v1/datasets/ds/documents/target/body" {
 			if rawCount.Add(1) == 1 {
 				close(started)
 				<-r.Context().Done()
 				return
 			}
-			fmt.Fprint(w, "Located content.")
+			body := "Located content."
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "target", DatasetID: "ds", Body: &body})
+			return
+		}
+		if r.URL.Path != "/v1/projects/p/knowledge" {
+			http.NotFound(w, r)
 			return
 		}
 		<-release
-		fmt.Fprint(w, `[{"id":"target","datasetId":"ds","name":"Target","externalMetadata":{"node_set":["session_learnings"]}}]`)
+		json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{Items: []v2KnowledgeItem{{DocID: "target", DatasetID: "ds", Title: "target"}}})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
 	a.page, a.kind = "知识", "知识"
+	a.access.Loaded = true
 	updates := make(chan func(), 8)
 	a.Update = func(fn func()) { updates <- fn }
 	d := Document{ID: "target", Dataset: "ds", Name: "Target"}

@@ -549,26 +549,20 @@ func (a *App) confirmCommonDeletion() {
 	}
 	e.Busy = true
 	d, p, op := *e.Delete, e.DeleteTarget, e.Generation
-	client := a.Client
+	control, ok := a.accessClient()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		var present bool
 		var err error
-		if control, ok := client.controlClient(); ok {
+		if ok {
 			_, err = control.documentLookupV2(ctx, p.Dataset, d.ID)
 			present = err == nil
 			if isControlErrorCode(err, http.StatusNotFound, "document_not_found") {
 				err = nil
 			}
 		} else {
-			docs, listErr := client.overviewDocuments(ctx, p)
-			err = listErr
-			for _, doc := range docs {
-				if doc.ID == d.ID {
-					present = true
-				}
-			}
+			err = fmt.Errorf("控制面服务不可用，无法核对官方删除结果")
 		}
 		a.Update(func() {
 			if op != a.commonEdit.Generation {

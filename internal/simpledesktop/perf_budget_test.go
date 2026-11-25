@@ -534,7 +534,7 @@ func TestSwitchProjectToOverviewIsPaintOnlyAndZeroTitleStorm(t *testing.T) {
 // across /v1/* cursor APIs, <=300 sliding window pagination, 256 KiB profile
 // virtualization, multi-project tray flyout caching, Light/Dark frame times
 // (<12ms/<16ms median, <25ms peak), cold-start Overview (<150ms), and bounded
-// heap delta (<=25 MiB) with zero legacy overviewDocuments fallbacks.
+// heap delta (<=25 MiB) with zero legacy full-catalog fallbacks.
 func TestScale50kDesktopSLABudgets(t *testing.T) {
 	now := time.Now()
 	const (

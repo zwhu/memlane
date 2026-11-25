@@ -4,23 +4,29 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
 func TestRawFilterReturnRefreshesCachedAllWithoutDroppingReading(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/v1/datasets/") {
-			json.NewEncoder(w).Encode([]Document{})
-			return
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/raw-records":
+			kind := r.URL.Query().Get("kind")
+			if kind != "all" && kind != "session" {
+				t.Error("unexpected record filter", kind)
+			}
+			json.NewEncoder(w).Encode(v2RawRecordsResponse{DatasetID: "ds", CacheReady: true, Items: []v2RawRecordItem{
+				{ItemKind: "session", Session: &v2RawSessionEntry{Session: Session{ID: "today", Dataset: "ds", Updated: "2026-11-15T00:51:00+08:00"}, Label: "Today"}},
+				{ItemKind: "session", Session: &v2RawSessionEntry{Session: Session{ID: "yesterday", Dataset: "ds", Updated: "2026-11-14T22:11:00+08:00"}, Label: "Yesterday"}},
+			}})
+		default:
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(map[string]any{"sessions": []Session{
-			{ID: "today", Dataset: "ds", Updated: "2026-11-15T00:51:00+08:00"},
-			{ID: "yesterday", Dataset: "ds", Updated: "2026-11-14T22:11:00+08:00"},
-		}, "has_more": false})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
 	updates := make(chan func(), 100)
 	a.Update = func(fn func()) { updates <- fn }
 	a.page, a.kind = "知识", "原始记录"

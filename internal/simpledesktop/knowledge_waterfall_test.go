@@ -14,27 +14,42 @@ import (
 )
 
 func TestKnowledgeFeedFiltersBeforeBatchAndKeepsScroll(t *testing.T) {
-	docs := []Document{}
-	for n := 0; n < 170; n++ {
-		d := lessonDocument()
-		d.ID = fmt.Sprint(n)
-		d.Updated = "v1"
-		if n%2 == 0 {
-			d.Metadata = map[string]any{}
-		}
-		docs = append(docs, d)
-	}
+	const preview = "真实知识全文。第二句必须保留。"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
-			fmt.Fprint(w, "# Session learning (session s)\n\n真实知识全文。第二句必须保留。")
-			return
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/projects/p/knowledge":
+			q := r.URL.Query()
+			if q.Get("limit") != "30" {
+				t.Error("knowledge pages must request a bounded result", q)
+			}
+			start, err := strconv.Atoi(q.Get("cursor"))
+			if q.Has("cursor") && err != nil {
+				t.Error("invalid cursor", q)
+			}
+			end := min(start+30, 85)
+			resp := v2ProjectKnowledgeResponse{DatasetID: "dataset", TotalFiltered: 85, HasMore: end < 85}
+			if resp.HasMore {
+				resp.NextCursor = strconv.Itoa(end)
+			}
+			for n := start; n < end; n++ {
+				resp.Items = append(resp.Items, v2KnowledgeItem{
+					DocID: fmt.Sprint(2*n + 1), DatasetID: "dataset", UpdatedAt: "v1", PreviewText: preview,
+				})
+			}
+			json.NewEncoder(w).Encode(resp)
+		default:
+			if r.URL.Path == "/v1/datasets/dataset/documents/1/body" {
+				body := preview
+				json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "1", DatasetID: "dataset", Body: &body})
+				return
+			}
+			http.NotFound(w, r)
 		}
-		off, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		end := min(off+100, len(docs))
-		json.NewEncoder(w).Encode(docs[min(off, len(docs)):end])
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
 	updates := make(chan func(), 200)
 	a.Update = func(fn func()) { updates <- fn }
 	a.page, a.kind = "知识", "知识"
@@ -42,19 +57,19 @@ func TestKnowledgeFeedFiltersBeforeBatchAndKeepsScroll(t *testing.T) {
 	s.ListScroll.Y = 80
 	a.loadKnowledgeFeed(s)
 	ready := func() bool {
-		if !s.Loaded || s.Loading {
+		if !s.Loaded || s.Loading || s.Knowledge.Appending {
 			return false
 		}
 		for _, i := range s.Items {
-			if !i.BodyLoaded {
+			if i.BodyLoaded || i.Preview != preview {
 				return false
 			}
 		}
 		return true
 	}
 	drainReading(t, updates, ready)
-	if len(s.Items) != 30 || len(s.Knowledge.Catalog) != 85 || !s.More {
-		t.Fatalf("first batch=%d catalog=%d more=%v", len(s.Items), len(s.Knowledge.Catalog), s.More)
+	if len(s.Items) != 30 || s.Knowledge.TotalFiltered != 85 || len(s.Knowledge.Catalog) != 0 || !s.More {
+		t.Fatalf("first batch=%d total=%d more=%v", len(s.Items), s.Knowledge.TotalFiltered, s.More)
 	}
 	first := s.Items[0].key()
 	a.appendKnowledgeBatch(s)
@@ -76,13 +91,17 @@ func TestKnowledgeFeedFiltersBeforeBatchAndKeepsScroll(t *testing.T) {
 	}
 	a.loadKnowledgeFeed(s)
 	drainReading(t, updates, ready)
-	if len(s.Items) != 85 || s.ListScroll.Y != 80 || knowledgeCardBody(s.Items[0]) != "真实知识全文。第二句必须保留。" {
+	if len(s.Items) != 30 || s.Knowledge.TotalFiltered != 85 || !s.More || s.Items[0].key() != first || s.ListScroll.Y != 80 || s.Items[0].Preview != preview {
 		t.Fatal("refresh lost content, range or position")
+	}
+	drainReading(t, updates, func() bool { return !s.Reading })
+	if s.Selected == nil || knowledgeCardBody(*s.Selected) != preview {
+		t.Fatalf("selected detail did not retain its official body: selected=%+v error=%q", s.Selected, s.Error)
 	}
 	// Official denial must remove full text and copy eligibility.
 	a.InvalidateReading("dataset")
 	for _, i := range s.Items {
-		if i.BodyLoaded || knowledgeCardBody(i) != "" {
+		if i.BodyLoaded || i.Preview != "" || knowledgeCardBody(i) != "" {
 			t.Fatal("revoked content retained")
 		}
 	}
@@ -133,8 +152,8 @@ func TestKnowledgeThreePaneSelectionCopyAndScroll(t *testing.T) {
 func TestKnowledgeFeedRejectsLateProjectReply(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/raw") {
-			fmt.Fprint(w, "body")
+		if r.URL.Path != "/v1/projects/p/knowledge" {
+			http.NotFound(w, r)
 			return
 		}
 		select {
@@ -143,11 +162,10 @@ func TestKnowledgeFeedRejectsLateProjectReply(t *testing.T) {
 			close(started)
 		}
 		<-release
-		d := lessonDocument()
-		json.NewEncoder(w).Encode([]Document{d})
+		json.NewEncoder(w).Encode(v2ProjectKnowledgeResponse{Items: []v2KnowledgeItem{{DocID: "old", DatasetID: "dataset"}}})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
 	a.page, a.kind = "知识", "知识"
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }

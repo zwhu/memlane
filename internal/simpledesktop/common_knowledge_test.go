@@ -32,8 +32,17 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 			t.Error("confirmation must not submit content")
 		}
 		switch r.URL.Path {
-		case "/api/v1/datasets/common/data":
-			_ = json.NewEncoder(w).Encode([]Document{{ID: "document", Dataset: "common", ContentHash: "hash", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}})
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/common/knowledge":
+			q := r.URL.Query()
+			if q.Get("dataset_id") != "common" || q.Get("common_category") != "preference" || q.Get("limit") != "30" || q.Has("cursor") {
+				t.Error("confirmation did not request one bounded category page", q)
+			}
+			json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{Items: []v2KnowledgeItem{
+				{DocID: "wrong-hash", DatasetID: "common", CommonCategory: "preference", ContentHash: "different"},
+				{DocID: "document", DatasetID: "common", CommonCategory: "preference"},
+			}})
 		case "/api/v1/datasets/common/data/document/raw":
 			_, _ = w.Write([]byte(strings.TrimSuffix(body, "\n")))
 		case "/api/v1/activity/pipeline-runs":
@@ -47,21 +56,68 @@ func TestCommonConfirmKeepsSavedBodyAndProcessingStatusSeparate(t *testing.T) {
 	}))
 	defer server.Close()
 	c := Client{Config: Config{ServiceURL: server.URL}}
+	control := ProjectControlClient{Config: *readingControlConfig(t, server.URL)}
 	receipt := CommonWriteReceipt{Status: "running", DatasetID: "common", ContentHash: "hash", PipelineRunID: "original-run"}
-	d, message, err := c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	d, message, err := c.confirmCommon(context.Background(), control, true, Project{Dataset: "common"}, receipt, draft)
 	if err != nil || d.ID != "document" || !strings.Contains(message, "正文已核对") || strings.Contains(message, "提炼已完成") {
 		t.Fatalf("running confused with completion: %s %v", message, err)
 	}
 	outcome = "succeeded"
 	kind = "operation"
-	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	_, message, err = c.confirmCommon(context.Background(), control, true, Project{Dataset: "common"}, receipt, draft)
 	if err != nil || strings.Contains(message, "提炼已完成") {
 		t.Fatalf("background launch confused with processing: %s %v", message, err)
 	}
 	kind = "pipeline"
-	_, message, err = c.confirmCommon(context.Background(), Project{Dataset: "common"}, receipt, draft)
+	_, message, err = c.confirmCommon(context.Background(), control, true, Project{Dataset: "common"}, receipt, draft)
 	if err != nil || !strings.Contains(message, "提炼已完成") {
 		t.Fatalf("terminal result missing: %s %v", message, err)
+	}
+}
+
+func TestCommonConfirmBoundsCandidateReadsAndFailsClosed(t *testing.T) {
+	draft := CommonDraft{Title: "A preference", Body: "Keep internal  spacing.", Category: "preference"}
+	expected, err := draft.markdown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlCfg := readingControlConfig(t, "http://127.0.0.1:12345")
+	reads := 0
+	httpClient := &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/common/knowledge" {
+			items := []v2KnowledgeItem{
+				{DocID: "foreign", DatasetID: "other", CommonCategory: "preference"},
+				{DocID: "wrong-category", DatasetID: "common", CommonCategory: "experience"},
+			}
+			for _, id := range []string{"a", "b", "c", "d", "e", "f", "g", "h", "match"} {
+				items = append(items, v2KnowledgeItem{DocID: id, DatasetID: "common", CommonCategory: "preference"})
+			}
+			json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{Items: items, HasMore: true, NextCursor: "unused"})
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/datasets/common/documents/"), "/body")
+		if id == "" || !strings.HasSuffix(r.URL.Path, "/body") || id == "foreign" || id == "wrong-category" {
+			t.Errorf("unexpected confirmation request %s", r.URL)
+			http.NotFound(w, r)
+			return
+		}
+		reads++
+		body := expected
+		if id != "match" {
+			body = strings.Replace(expected, "internal  spacing", "internal spacing", 1)
+		}
+		json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: id, DatasetID: "common", Body: &body})
+	})}
+	client := Client{Config: Config{ProjectControl: controlCfg}, HTTP: httpClient}
+	control := ProjectControlClient{Config: *controlCfg, HTTP: httpClient}
+	project := Project{Dataset: "common"}
+	doc, status, err := client.confirmCommon(context.Background(), control, true, project, CommonWriteReceipt{}, draft)
+	if doc.ID != "" || status != "保存尚未核对" || err == nil || reads != 8 {
+		t.Fatalf("confirmation should stop before the ninth body: doc=%q status=%q err=%v reads=%d", doc.ID, status, err, reads)
+	}
+	doc, status, err = client.confirmCommon(context.Background(), control, false, project, CommonWriteReceipt{}, draft)
+	if doc.ID != "" || status != "保存尚未核对" || err == nil || !strings.Contains(err.Error(), "控制面服务不可用") || reads != 8 {
+		t.Fatalf("missing control plane did not fail closed: doc=%q status=%q err=%v reads=%d", doc.ID, status, err, reads)
 	}
 }
 

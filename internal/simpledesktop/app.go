@@ -666,7 +666,6 @@ func (a *App) load(s *pane) {
 	p, ok := a.current()
 	page, kind, offset, q := a.page, a.kind, s.Offset, s.Query
 	rawFeed := page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") && q == ""
-	rawCount := max(30, len(s.Items))
 	category := a.commonCategoryFilter()
 	commonPageIdx := s.CommonPageIndex
 	var commonOpts v2KnowledgePageOpts
@@ -683,18 +682,10 @@ func (a *App) load(s *pane) {
 	}
 	client := a.Client
 	control, hasControl := a.accessClient()
-	titles := a.titles
-	genStr := a.readingGeneration(s)
-	recallFilter := map[string]bool{}
-	for id, yes := range s.Knowledge.RecallFilter {
-		recallFilter[id] = yes
-	}
 	go func() {
 		defer cancel()
 		var rows []Item
-		var rawCatalog []Item
 		var rawCacheReady bool
-		var usedFast bool
 		var usedV2Raw bool
 		var v2RawNextCursor string
 		var usedV2Common bool
@@ -748,23 +739,8 @@ func (a *App) load(s *pane) {
 				} else {
 					err = v2Err
 				}
-			}
-			if !usedV2Common {
-				if len(recallFilter) == 0 {
-					rows, more, err = client.commonDocuments(ctx, p, offset, category)
-				} else {
-					var all []Item
-					all, err = client.commonDocumentItems(ctx, p, category)
-					for _, row := range all {
-						if recallFilter[row.ID] {
-							rows = append(rows, row)
-						}
-					}
-					start := min(offset, len(rows))
-					end := min(start+30, len(rows))
-					more = end < len(rows)
-					rows = rows[start:end]
-				}
+			} else {
+				err = fmt.Errorf("控制面服务不可用，无法加载通用知识")
 			}
 		} else if page == "知识" && (kind == "原始记录" || kind == "会话" || kind == "文档") {
 			if hasControl {
@@ -777,41 +753,9 @@ func (a *App) load(s *pane) {
 					more = resp.HasMore
 					rawCacheReady = resp.CacheReady
 					v2RawNextCursor = resp.NextCursor
-					usedFast = true
 				}
 			} else {
-				rawCatalog, err = client.projectRecordCatalog(ctx, p, kind)
-				if err == nil {
-					end := min(rawCount, len(rawCatalog))
-					rows = append([]Item{}, rawCatalog[:end]...)
-					more = end < len(rawCatalog)
-					if !refreshing && !rawCacheReady && len(rows) > 0 {
-						preCtx, preCancel := context.WithTimeout(ctx, 500*time.Millisecond)
-						limit := min(10, len(rows))
-						var preMu sync.Mutex
-						var preWg sync.WaitGroup
-						for idx := 0; idx < limit; idx++ {
-							if rows[idx].Session == nil || rows[idx].ReadingState == "ready" {
-								continue
-							}
-							idx := idx
-							item := rows[idx]
-							preWg.Add(1)
-							go func() {
-								defer preWg.Done()
-								if res, e := titles.read(preCtx, client, item, genStr, true, true); e == nil {
-									preMu.Lock()
-									rows[idx].Title = res.Title
-									rows[idx].SessionSummary = res.SessionSummary
-									rows[idx].ReadingState = "ready"
-									preMu.Unlock()
-								}
-							}()
-						}
-						preWg.Wait()
-						preCancel()
-					}
-				}
+				err = fmt.Errorf("控制面服务不可用，无法加载原始记录")
 			}
 		} else if kind == "会话" {
 			rows, more, err = client.sessions(ctx, p, offset)
@@ -867,11 +811,7 @@ func (a *App) load(s *pane) {
 				s.RawV2Mode = usedV2Raw
 				s.RawNextCursor = v2RawNextCursor
 				s.RawAppending = false
-				if usedV2Raw {
-					s.RawCatalog = nil
-				} else {
-					s.RawCatalog = rawCatalog
-				}
+				s.RawCatalog = nil
 				s.Offset = 0
 				if !refreshing && len(rows) > 0 && a.page == "知识" && a.kind == kind {
 					a.motionRuns.rawPage++
@@ -905,7 +845,7 @@ func (a *App) load(s *pane) {
 					s.SessionSubagents = false
 					s.Error = "选中内容已不在当前官方页面，请重新选择"
 				}
-			} else if rawFeed && len(s.Items) > 0 && !s.Locating && (usedFast || s.Items[0].Session != nil) {
+			} else if rawFeed && len(s.Items) > 0 && !s.Locating && usedV2Raw {
 				a.selectItem(s, s.Items[0])
 			}
 		})
