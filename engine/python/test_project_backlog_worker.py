@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 from project_backlog_worker import process, check, review, save, entry_key
 from project_capture_patch import apply as apply_capture_patch
-from test_plugin_capture_drain import DATASET, HOST, PYTHON, SESSION, UPSTREAM, DrainFixture, qa
+from test_plugin_capture_drain import DATASET, HOST, PYTHON, SESSION, UPSTREAM, DrainFixture, _compile_cached, qa
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -257,10 +257,20 @@ class WorkerDrainFixture(DrainFixture):
         self.session_detail = {"session_id": SESSION, "dataset_id": DATASET, "qas": [], "traces": []}
 
     def load_sender(self):
-        source = self.access_patch.apply("_plugin_common.py", (UPSTREAM / "_plugin_common.py").read_text())
-        self.common = self.load("_plugin_common", UPSTREAM / "_plugin_common.py", apply_capture_patch(source))
+        common_code = _compile_cached(
+            "worker_patched_plugin_common",
+            UPSTREAM / "_plugin_common.py",
+            lambda: apply_capture_patch(
+                self.access_patch.apply("_plugin_common.py", (UPSTREAM / "_plugin_common.py").read_text())
+            ),
+        )
+        self.common = self.load_compiled("_plugin_common", UPSTREAM / "_plugin_common.py", common_code)
         self.common.set_session_key(HOST)
-        self.capture = self.load("_memlane_capture", PYTHON / "plugin_capture.py")
+        self.capture = self.load_compiled(
+            "_memlane_capture",
+            PYTHON / "plugin_capture.py",
+            _compile_cached("plugin_capture", PYTHON / "plugin_capture.py"),
+        )
         self.stack.enter_context(patch.object(self.common, "_json_http_request", side_effect=self.capture_http))
 
     def capture_http(self, path, body=None, *, method="POST", **kwargs):

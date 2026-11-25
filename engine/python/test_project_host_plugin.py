@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from pathlib import Path
@@ -16,8 +17,73 @@ from project_policy import PolicyError
 from unittest.mock import patch
 import shutil
 
+_FILES_FOR_PATCH = None
+
+
+def setUpModule():
+    global _FILES_FOR_PATCH
+    real_files_for = project_host_plugin.files_for
+    cache = {}
+
+    def _cached_files_for(kind, archive=None, *, source=None):
+        resolved = Path(archive) if archive is not None else project_host_plugin.resolve_official_archive(source)
+        try:
+            st = os.lstat(resolved)
+            key = (
+                kind,
+                str(resolved),
+                st.st_dev,
+                st.st_ino,
+                st.st_size,
+                st.st_mtime_ns,
+                project_host_plugin.CLAUDE_FRESH_BOUNDARY,
+            )
+        except OSError:
+            return real_files_for(kind, archive=archive, source=source)
+        hit = cache.get(key)
+        if hit is None:
+            files, upstream = real_files_for(kind, archive=archive, source=source)
+            hit = (dict(files), copy.deepcopy(upstream))
+            cache[key] = hit
+        return dict(hit[0]), copy.deepcopy(hit[1])
+
+    _FILES_FOR_PATCH = patch.object(project_host_plugin, 'files_for', side_effect=_cached_files_for)
+    _FILES_FOR_PATCH.start()
+
+
+def tearDownModule():
+    global _FILES_FOR_PATCH
+    if _FILES_FOR_PATCH is not None:
+        _FILES_FOR_PATCH.stop()
+        _FILES_FOR_PATCH = None
+
 
 class HostPluginTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Shared read-only prepared artifacts for tests that only read scripts/ with per-test HOME.
+        cls._shared_temp = tempfile.TemporaryDirectory()
+        cls._shared_root = Path(cls._shared_temp.name).resolve()
+        private_write(cls._shared_root / 'child.key', b'synthetic-child-key')
+        private_write(cls._shared_root / 'control.key', b'synthetic-control-key-' * 3)
+        shared_agent = {
+            'key_file': str(cls._shared_root / 'child.key'),
+            'control_token_file': str(cls._shared_root / 'control.key'),
+        }
+        cls._shared_artifacts = {}
+        for kind in ('claude_code', 'cursor'):
+            installation = prepare(
+                None, cls._shared_root / 'private', kind + '-synthetic', shared_agent,
+                'http://127.0.0.1:18999', 'http://127.0.0.1:18998', str(cls._shared_root),
+                host_kind=kind, python=sys.executable,
+            )
+            verify_artifact(installation)
+            cls._shared_artifacts[kind] = installation
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._shared_temp.cleanup()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
@@ -36,7 +102,12 @@ class HostPluginTests(unittest.TestCase):
     def isolated(self, installation, source):
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
-        env.update(HOME=str(self.root), COGNEE_PLUGIN_IN_VENV='1', COGNEE_SESSION_KEY='synthetic-host')
+        env.update(
+            HOME=str(self.root),
+            COGNEE_PLUGIN_IN_VENV='1',
+            COGNEE_SESSION_KEY='synthetic-host',
+            PYTHONDONTWRITEBYTECODE='1',
+        )
         result = subprocess.run([sys.executable, '-c', source, str(Path(installation['plugin_dir']) / 'scripts')],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr[-3000:])
@@ -58,7 +129,7 @@ class HostPluginTests(unittest.TestCase):
             files_for('claude_code', bad)
 
     def test_claude_parser_respects_boundary_and_never_scans_sidechain_history(self):
-        installation = self.artifact('claude_code')
+        installation = self._shared_artifacts['claude_code']
         self.isolated(installation, r'''
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[1])
@@ -83,7 +154,7 @@ assert "disabled" not in json.dumps(parsed)
 ''')
 
     def test_cursor_deferred_injection_rebuilds_and_missing_answer_never_reads_history(self):
-        installation = self.artifact('cursor')
+        installation = self._shared_artifacts['cursor']
         self.isolated(installation, r'''
 import pathlib, sys
 sys.path.insert(0, sys.argv[1])
@@ -103,7 +174,7 @@ assert cursor.read_transcript_tail("/never-read") == []
 ''')
 
     def test_claude_fresh_start_captures_first_turn_without_replaying_existing_history(self):
-        self.isolated(self.artifact('claude_code'), r'''
+        self.isolated(self._shared_artifacts['claude_code'], r'''
 import json, os, pathlib, sys, uuid
 sys.path.insert(0, sys.argv[1])
 import _plugin_common as common
@@ -144,7 +215,7 @@ assert coding.parse_claude(str(existing), boundary).get("request", "") == ""
 ''')
 
     def test_claude_absent_resume_changed_policy_and_wrong_path_skip_first_turn(self):
-        self.isolated(self.artifact('claude_code'), r'''
+        self.isolated(self._shared_artifacts['claude_code'], r'''
 import os, pathlib, sys, uuid
 sys.path.insert(0, sys.argv[1])
 import _plugin_common as common
@@ -179,7 +250,7 @@ assert policy.capture_boundary(str(wrong)) is None
     def test_claude_and_cursor_bundle_capture_patch_for_qi01_qi03_parity(self):
         for kind in ('claude_code', 'cursor'):
             with self.subTest(kind=kind):
-                installation = self.artifact(kind)
+                installation = self._shared_artifacts[kind]
                 root = Path(installation['plugin_dir'])
                 self.assertTrue((root / 'scripts/_memlane_capture.py').is_file())
                 receipt = json.loads((root / '.memlane-project-access.json').read_text())

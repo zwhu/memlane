@@ -36,6 +36,29 @@ DATASET = "11111111-1111-4111-8111-111111111111"
 SESSION = "synthetic-drain-session"
 HOST = "synthetic-drain-host"
 
+_ACCESS_PATCH_MODULE = None
+_COMPILED_CACHE = {}
+
+
+def _get_access_patch():
+    global _ACCESS_PATCH_MODULE
+    if _ACCESS_PATCH_MODULE is None:
+        path = ROOT / "engine/patches/project_access.py"
+        spec = importlib.util.spec_from_file_location("drain_fixture_project_access", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _ACCESS_PATCH_MODULE = module
+    return _ACCESS_PATCH_MODULE
+
+
+def _compile_cached(key, path, source_builder=None):
+    code = _COMPILED_CACHE.get(key)
+    if code is None:
+        source = Path(path).read_text(encoding="utf-8") if source_builder is None else source_builder()
+        code = compile(source, str(path), "exec")
+        _COMPILED_CACHE[key] = code
+    return code
+
 
 def qa(label, *, numbered=True, **fields):
     entry = {"type": "qa", "question": label, "answer": "answer for " + label,
@@ -65,6 +88,13 @@ class DrainFixture:
             spec.loader.exec_module(module)
         else:
             exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+
+    def load_compiled(self, name, path, code):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        exec(code, module.__dict__)
         return module
 
     def __enter__(self):
@@ -105,12 +135,26 @@ class DrainFixture:
                            MEMLANE_PROJECT_CONTROL_TOKEN_FILE=str(token))
         self.stack.enter_context(patch.dict(os.environ, environment, clear=True))
         self.stack.enter_context(patch.object(sys, "path", [str(UPSTREAM), *sys.path]))
-        self.access_patch = self.load("drain_fixture_project_access", ROOT / "engine/patches/project_access.py")
-        self.stack.callback(sys.modules.pop, "drain_fixture_project_access", None)
-        self.policy = self.load("_memlane_policy", PYTHON / "project_plugin_policy.py")
-        self.access = self.load("_memlane_access", PYTHON / "project_access_hooks.py")
-        self.load("_env_file", UPSTREAM / "_env_file.py",
-                  self.access_patch.apply("_env_file.py", (UPSTREAM / "_env_file.py").read_text()))
+        self.access_patch = _get_access_patch()
+        self.policy = self.load_compiled(
+            "_memlane_policy",
+            PYTHON / "project_plugin_policy.py",
+            _compile_cached("project_plugin_policy", PYTHON / "project_plugin_policy.py"),
+        )
+        self.access = self.load_compiled(
+            "_memlane_access",
+            PYTHON / "project_access_hooks.py",
+            _compile_cached("project_access_hooks", PYTHON / "project_access_hooks.py"),
+        )
+        self.load_compiled(
+            "_env_file",
+            UPSTREAM / "_env_file.py",
+            _compile_cached(
+                "patched_env_file",
+                UPSTREAM / "_env_file.py",
+                lambda: self.access_patch.apply("_env_file.py", (UPSTREAM / "_env_file.py").read_text()),
+            ),
+        )
         self.load_sender()
         self.filters = importlib.import_module("_capture_policy")
         self.common._write_map_record(HOST, {"session_id": SESSION, "dataset": DATASET, "host_key": HOST})
@@ -125,10 +169,21 @@ class DrainFixture:
         return self.stack.__exit__(*exc)
 
     def load_sender(self):
-        self.common = self.load("_plugin_common", UPSTREAM / "_plugin_common.py",
-                                self.access_patch.apply("_plugin_common.py", (UPSTREAM / "_plugin_common.py").read_text()))
+        self.common = self.load_compiled(
+            "_plugin_common",
+            UPSTREAM / "_plugin_common.py",
+            _compile_cached(
+                "patched_plugin_common",
+                UPSTREAM / "_plugin_common.py",
+                lambda: self.access_patch.apply("_plugin_common.py", (UPSTREAM / "_plugin_common.py").read_text()),
+            ),
+        )
         self.common.set_session_key(HOST)
-        self.capture = self.load("_memlane_capture", PYTHON / "plugin_capture.py")
+        self.capture = self.load_compiled(
+            "_memlane_capture",
+            PYTHON / "plugin_capture.py",
+            _compile_cached("plugin_capture", PYTHON / "plugin_capture.py"),
+        )
         self.stack.enter_context(patch.object(self.common, "_json_http_request", side_effect=self.capture_http))
 
     def reopen(self):

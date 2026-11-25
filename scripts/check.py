@@ -16,6 +16,7 @@ import argparse
 import ast
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -153,38 +154,42 @@ ENGINE_DOMAIN_TESTS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# Static LPT weights (seconds, from empirical baseline) for balanced worker bucketing.
+DEFAULT_MODULE_WEIGHT_S = 0.5
+SOLO_BUCKET_THRESHOLD_S = 3.5
+LIGHT_BUCKET_TARGET_S = 2.5
+
+# Static LPT weights (seconds, calibrated from empirical post-P1 timings)
+# for unified cross-suite scheduling so the heaviest modules occupy slots at t=0.
 MODULE_WEIGHT_HINTS: dict[str, float] = {
-    'engine/python/test_generation_probe.py': 91.0,
-    'engine/python/test_agent_connections.py': 65.0,
-    'engine/python/test_capture_receipts.py': 45.0,
-    'engine/python/test_antigravity_connection.py': 28.0,
-    'engine/python/test_codex_completion_endpoint.py': 27.0,
-    'engine/python/test_generation_ollama.py': 22.0,
-    'engine/python/test_project_tool_patch.py': 20.0,
-    'engine/python/test_project_host_plugin.py': 19.0,
-    'engine/python/test_project_backlog_worker.py': 18.0,
-    'scripts/test_verify_setup_cli.py': 15.0,
-    'engine/python/test_antigravity_bridge.py': 12.0,
-    'engine/python/test_plugin_capture_drain.py': 12.0,
+    'engine/python/test_agent_connections.py': 19.6,
+    'engine/python/test_antigravity_connection.py': 16.0,
+    'engine/python/test_project_host_plugin.py': 14.0,
+    'engine/python/test_project_backlog_worker.py': 13.0,
+    'engine/python/test_generation_probe.py': 12.0,
+    'engine/python/test_capture_receipts.py': 11.0,
+    'engine/python/test_plugin_capture_drain.py': 10.0,
+    'engine/python/test_codex_completion_endpoint.py': 9.5,
     'engine/python/test_codex_trace_patch.py': 9.0,
-    'engine/python/test_pi_completion.py': 9.0,
+    'engine/python/test_generation_ollama.py': 9.0,
     'engine/python/test_generation_handoff.py': 7.0,
     'engine/python/test_generation_capacity.py': 6.4,
     'engine/python/test_project_plugin_patch.py': 6.3,
+    'engine/python/test_project_tool_patch.py': 6.1,
     'engine/python/test_user_profiles.py': 6.1,
     'engine/python/test_generation_bridge.py': 5.5,
-    'scripts/test_build_release.py': 4.2,
+    'scripts/test_verify_setup_cli.py': 4.5,
     'engine/python/test_project_control.py': 3.6,
-    'engine/python/test_scaling_adversarial.py': 2.7,
+    'engine/python/test_antigravity_bridge.py': 3.2,
+    'engine/python/test_scaling_adversarial.py': 3.1,
+    'engine/python/test_pi_completion.py': 2.5,
     'engine/python/test_trae_hooks_migration.py': 2.3,
     'engine/python/test_registry_sessions_store.py': 2.0,
     'engine/python/test_generation_validation.py': 1.8,
-    'scripts/test_dev.py': 1.7,
     'engine/python/test_v2_api.py': 1.7,
+    'scripts/test_build_release.py': 1.4,
+    'scripts/test_dev.py': 0.9,
 }
 
-SOLO_BUCKET_THRESHOLD_S = 10.0
 RESULT_MARKER = '__MEMLANE_CHECK_RESULT__='
 
 _UNITTEST_WORKER = r'''
@@ -923,6 +928,16 @@ def plan_changed(
     return plan
 
 
+def module_weight(rel: str) -> float:
+    """Return the static LPT weight estimate (seconds) for a Python test module."""
+    return MODULE_WEIGHT_HINTS.get(normalize_rel(rel), DEFAULT_MODULE_WEIGHT_S)
+
+
+def bucket_weight(bucket: list[str]) -> float:
+    """Return the aggregate static LPT weight estimate (seconds) for a module bucket."""
+    return round(sum(module_weight(rel) for rel in bucket), 3)
+
+
 def bucket_python_modules(modules: list[str], max_workers: int) -> list[list[str]]:
     """Pack Python test module paths into LPT-balanced buckets for parallel execution."""
     if not modules:
@@ -930,29 +945,53 @@ def bucket_python_modules(modules: list[str], max_workers: int) -> list[list[str
     workers = max(1, min(max_workers, len(modules)))
     weighted = sorted(
         modules,
-        key=lambda rel: (-MODULE_WEIGHT_HINTS.get(rel, 0.5), rel),
+        key=lambda rel: (-module_weight(rel), rel),
     )
     buckets: list[list[str]] = []
     light: list[tuple[float, str]] = []
     for rel in weighted:
-        w = MODULE_WEIGHT_HINTS.get(rel, 0.5)
+        w = module_weight(rel)
         if w >= SOLO_BUCKET_THRESHOLD_S and workers > 1:
             buckets.append([rel])
         else:
             light.append((w, rel))
 
     if light:
-        light_bucket_count = max(1, min(workers, len(light)))
+        if workers <= 1:
+            light_bucket_count = 1
+        else:
+            total_light = sum(w for w, _ in light)
+            target_bins = max(1, math.ceil(total_light / LIGHT_BUCKET_TARGET_S))
+            if not buckets:
+                light_bucket_count = min(len(light), max(workers, target_bins))
+            else:
+                light_bucket_count = min(len(light), target_bins)
         light_bins: list[tuple[float, list[str]]] = [(0.0, []) for _ in range(light_bucket_count)]
         for w, rel in light:
-            light_bins.sort(key=lambda item: item[0])
+            light_bins.sort(key=lambda item: (item[0], len(item[1])))
             load, items = light_bins[0]
             items.append(rel)
             light_bins[0] = (load + w, items)
-        for _, items in sorted(light_bins, key=lambda item: -item[0]):
+        for _, items in sorted(light_bins, key=lambda item: (-item[0], item[1])):
             if items:
                 buckets.append(items)
+    buckets.sort(key=lambda items: (-bucket_weight(items), items))
     return buckets
+
+
+def schedule_python_work_items(
+    scripts_tests: list[str],
+    engine_tests: list[str],
+    max_workers: int,
+) -> list[tuple[str, list[str]]]:
+    """Build unified cross-suite buckets sorted in global LPT descending order."""
+    work_items: list[tuple[str, list[str]]] = []
+    for bucket in bucket_python_modules(scripts_tests, max_workers):
+        work_items.append(('scripts', bucket))
+    for bucket in bucket_python_modules(engine_tests, max_workers):
+        work_items.append(('engine/python', bucket))
+    work_items.sort(key=lambda item: (-bucket_weight(item[1]), item[0], item[1]))
+    return work_items
 
 
 def _run_cmd(
@@ -1030,6 +1069,7 @@ def _run_python_bucket(
             'elapsed_s': elapsed,
             'output': (proc.stdout or '') + '\n' + (proc.stderr or ''),
         }
+    parsed['suite_dir'] = suite_dir
     parsed['exit_code'] = proc.returncode
     parsed['ok'] = bool(parsed.get('ok')) and proc.returncode == 0
     parsed['wall_elapsed_s'] = elapsed
@@ -1045,6 +1085,21 @@ def _run_python_bucket(
     return parsed
 
 
+def _summarize_suite_group(results: list[dict[str, Any]], suite_dir: str) -> dict[str, Any]:
+    group = [r for r in results if r.get('suite_dir') == suite_dir]
+    ok = all(bool(r.get('ok')) and r.get('exit_code', 0) == 0 for r in group)
+    return {
+        'suite_dir': suite_dir,
+        'bucket_count': len(group),
+        'module_count': sum(len(r.get('modules') or []) for r in group),
+        'tests_run': sum(int(r.get('tests_run', 0)) for r in group),
+        'failures': sum(int(r.get('failures', 0)) for r in group),
+        'errors': sum(int(r.get('errors', 0)) for r in group),
+        'ok': ok,
+        'elapsed_s': round(sum(float(r.get('elapsed_s', 0.0)) for r in group), 3),
+    }
+
+
 def run_python_suite_parallel(
     python_bin: str,
     root: Path,
@@ -1055,14 +1110,21 @@ def run_python_suite_parallel(
     json_mode: bool = False,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    work_items: list[tuple[str, list[str]]] = []
-    for bucket in bucket_python_modules(scripts_tests, jobs):
-        work_items.append(('scripts', bucket))
-    for bucket in bucket_python_modules(engine_tests, jobs):
-        work_items.append(('engine/python', bucket))
+    work_items = schedule_python_work_items(scripts_tests, engine_tests, jobs)
 
     if not work_items:
-        return {'ok': True, 'exit_code': 0, 'elapsed_s': 0.0, 'tests_run': 0, 'buckets': []}
+        return {
+            'ok': True,
+            'exit_code': 0,
+            'elapsed_s': 0.0,
+            'tests_run': 0,
+            'workers': 0,
+            'suites': {
+                'scripts': _summarize_suite_group([], 'scripts'),
+                'engine_python': _summarize_suite_group([], 'engine/python'),
+            },
+            'buckets': [],
+        }
 
     worker_count = max(1, min(jobs, len(work_items)))
     results: list[dict[str, Any]] = []
@@ -1096,6 +1158,10 @@ def run_python_suite_parallel(
         'elapsed_s': round(time.perf_counter() - started, 3),
         'tests_run': total_tests,
         'workers': worker_count,
+        'suites': {
+            'scripts': _summarize_suite_group(results, 'scripts'),
+            'engine_python': _summarize_suite_group(results, 'engine/python'),
+        },
         'buckets': [
             {
                 'suite_dir': r['suite_dir'],

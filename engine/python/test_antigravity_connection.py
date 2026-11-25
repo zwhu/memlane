@@ -15,6 +15,7 @@ from unittest.mock import patch
 from aiohttp.test_utils import make_mocked_request
 
 from agent_connections import detect_executable, verify_artifact, sha
+import antigravity_plugin
 from antigravity_plugin import files_for
 from antigravity_connection import AntigravityConnection
 from project_control import private_write, Registry
@@ -24,6 +25,57 @@ from project_policy import PolicyError
 
 
 class AntigravityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Cache immutable pinned archive extraction/AST patching by (resolved_archive, lstat)
+        # so real antigravity_plugin.files_for() runs once on the pinned archive and always
+        # runs uncached on missing/modified/bad archives.
+        real_files_for = antigravity_plugin.files_for
+        cache = {}
+        manifest = json.loads((antigravity_plugin.ENGINE / 'coding-memory-components.json').read_text())['plugin']
+        default_archive = antigravity_plugin.ENGINE.parent / '.cache/coding-memory-components' / (manifest['commit'] + '.tar.gz')
+
+        def _cached_files_for(archive=None):
+            resolved = Path(archive or default_archive)
+            try:
+                st = os.lstat(resolved)
+                key = (str(resolved), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+            except OSError:
+                return real_files_for(archive)
+            hit = cache.get(key)
+            if hit is None:
+                files, upstream = real_files_for(archive)
+                hit = (dict(files), copy.deepcopy(upstream))
+                cache[key] = hit
+            return dict(hit[0]), copy.deepcopy(hit[1])
+
+        cls._files_for_patch = patch.object(antigravity_plugin, 'files_for', side_effect=_cached_files_for)
+        cls._files_for_patch.start()
+        # Shared read-only prepared artifact for tests that only read scripts/ with per-test HOME.
+        cls._shared_temp = tempfile.TemporaryDirectory()
+        cls._shared_root = Path(cls._shared_temp.name).resolve()
+        private_write(cls._shared_root / 'child.key', b'synthetic-child-key')
+        private_write(cls._shared_root / 'control.key', b'synthetic-control-key-' * 3)
+        shared_agent = {
+            'key_file': str(cls._shared_root / 'child.key'),
+            'control_token_file': str(cls._shared_root / 'control.key'),
+        }
+        cls._shared_installation = prepare(
+            None, cls._shared_root / 'private', 'antigravity-synthetic', shared_agent,
+            'http://127.0.0.1:18999', 'http://127.0.0.1:18998', str(cls._shared_root),
+            host_kind='antigravity', python=sys.executable,
+        )
+        shared_marker = Path(cls._shared_installation['plugin_dir']) / '.memlane-installation.json'
+        shared_data = json.loads(shared_marker.read_text())
+        shared_data.update(runtime_profile=str(cls._shared_root / '.gemini/config'), activated_at=1)
+        private_write(shared_marker, json.dumps(shared_data).encode())
+        verify_artifact(cls._shared_installation)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._shared_temp.cleanup()
+        cls._files_for_patch.stop()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
@@ -57,17 +109,25 @@ class AntigravityTests(unittest.TestCase):
         private_write(marker, json.dumps(data).encode())
         return value
 
-    def isolated(self, source):
-        installation = self.artifact()
-        verify_artifact(installation)
+    def isolated(self, source, *, readonly=False):
+        if readonly:
+            installation = self._shared_installation
+        else:
+            installation = self.artifact()
+            verify_artifact(installation)
         env = {k: v for k, v in os.environ.items() if not k.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
-        env.update(HOME=str(self.root), COGNEE_SESSION_KEY='synthetic-host', COGNEE_PLUGIN_IN_VENV='1')
+        env.update(
+            HOME=str(self.root),
+            COGNEE_SESSION_KEY='synthetic-host',
+            COGNEE_PLUGIN_IN_VENV='1',
+            PYTHONDONTWRITEBYTECODE='1',
+        )
         result = subprocess.run([sys.executable, '-c', source, str(Path(installation['plugin_dir']) / 'scripts')],
                                 env=env, cwd=self.root, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr[-3000:])
 
     def test_pinned_archive_and_official_hooks_remain_native(self):
-        files, upstream = files_for()
+        files, upstream = antigravity_plugin.files_for()
         self.assertEqual(upstream['host_kind'], 'antigravity')
         hooks = json.loads(files['hooks.json'])
         self.assertEqual(set(hooks), {'cognee-bootstrap', 'cognee-recall', 'cognee-capture', 'cognee-stop'})
@@ -93,7 +153,7 @@ assert common.plugin_identity_mode(value) == 'disabled'
 policy.permit = lambda *a, **kw: False
 assert coding.build_block('denied query', '/') == ''
 assert common.run_session_improve('synthetic', 'synthetic') is False
-''')
+''', readonly=True)
 
     def test_actual_activation_publishes_same_boundary_to_source_and_native(self):
         installation = self.artifact()
@@ -726,10 +786,15 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
             registry.close()
 
     def test_processing_session_short_circuits_agy_hook_without_error_record(self):
-        installation = self.artifact()
+        installation = self._shared_installation
         hook_script = Path(installation['plugin_dir']) / 'scripts/agy_hook.py'
         env = {k: v for k, v in os.environ.items() if not k.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
-        env.update(HOME=str(self.root), COGNEE_PLUGIN_IN_VENV='1', MEMLANE_PROCESSING_SESSION='1')
+        env.update(
+            HOME=str(self.root),
+            COGNEE_PLUGIN_IN_VENV='1',
+            MEMLANE_PROCESSING_SESSION='1',
+            PYTHONDONTWRITEBYTECODE='1',
+        )
         result = subprocess.run(
             [sys.executable, str(hook_script), 'store-user-prompt.py'],
             input='not-even-json', env=env, cwd=self.root,
@@ -750,7 +815,7 @@ encoded = mod._prompt_context({'cwd': '/tmp/repo', 'model': 'gemini', 'turn_id':
 parsed = json.loads(encoded)
 assert re.match(r'^\\d{4}-\\d{2}-\\d{2}$', parsed['date']), parsed
 assert parsed['cwd'] == '/tmp/repo', parsed
-''')
+''', readonly=True)
 
     def test_write_denied_buffers_numbered_entry_without_ambiguous_duplicate(self):
         self.isolated('''
@@ -786,7 +851,7 @@ policy.require = lambda op, *a, **k: (_ for _ in ()).throw(policy.NotReady('capt
 asyncio.run(store_mod._store_tool_call({'tool_name': 'Read', 'tool_input': {'file_path': '/tmp/b.py'}, 'tool_response': 'ok'}))
 asyncio.run(store_mod._store_assistant_stop({'assistant_message': 'synthetic answer', 'turn_id': '1'}))
 assert not bridge_file.exists(), bridge_file.read_text(encoding='utf-8')
-''')
+''', readonly=True)
 
     def test_run_session_improve_detailed_returns_structured_reasons(self):
         self.isolated('''
@@ -835,7 +900,7 @@ assert res == {'ok': False, 'reason': 'failed', 'error': 'boom'}, res
 common.improve_session_via_http = lambda *a, **k: {'ok': True}
 res = common.run_session_improve_detailed(dataset, session_id, trigger='auto')
 assert res == {'ok': True, 'reason': '', 'error': ''}, res
-''')
+''', readonly=True)
 
 
 if __name__ == '__main__':

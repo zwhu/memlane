@@ -285,8 +285,177 @@ class ParallelRunnerAndTaskTests(unittest.TestCase):
         buckets = check.bucket_python_modules(mods, max_workers=3)
         self.assertIn(['engine/python/test_generation_probe.py'], buckets)
         self.assertIn(['engine/python/test_agent_connections.py'], buckets)
+        self.assertEqual(buckets[0], ['engine/python/test_agent_connections.py'])
+        self.assertEqual(buckets[1], ['engine/python/test_generation_probe.py'])
         flattened = sorted(item for b in buckets for item in b)
         self.assertEqual(flattened, sorted(mods))
+
+    def test_schedule_python_work_items_orders_globally_by_lpt_across_suites(self):
+        scripts_mods = [
+            'scripts/test_unknown_a.py',
+            'scripts/test_unknown_b.py',
+            'scripts/test_verify_setup_cli.py',
+            'scripts/test_dev.py',
+        ]
+        engine_mods = [
+            'engine/python/test_unknown_c.py',
+            'engine/python/test_v2_api.py',
+            'engine/python/test_agent_connections.py',
+            'engine/python/test_antigravity_connection.py',
+        ]
+        items = check.schedule_python_work_items(scripts_mods, engine_mods, max_workers=6)
+        weights = [check.bucket_weight(bucket) for _, bucket in items]
+        self.assertEqual(weights, sorted(weights, reverse=True))
+        # Heaviest engine/python modules occupy t=0 ahead of scripts buckets.
+        self.assertEqual(items[0], ('engine/python', ['engine/python/test_agent_connections.py']))
+        self.assertEqual(items[1], ('engine/python', ['engine/python/test_antigravity_connection.py']))
+        # Medium scripts module interleaves ahead of lighter engine/python and unregistered modules.
+        verify_idx = items.index(('scripts', ['scripts/test_verify_setup_cli.py']))
+        self.assertEqual(verify_idx, 2)
+        # Every input module appears exactly once under its owning suite_dir.
+        flattened_scripts = sorted(m for s, b in items if s == 'scripts' for m in b)
+        flattened_engine = sorted(m for s, b in items if s == 'engine/python' for m in b)
+        self.assertEqual(flattened_scripts, sorted(scripts_mods))
+        self.assertEqual(flattened_engine, sorted(engine_mods))
+
+        # Cross-suite reverse case: heavy scripts module dispatches before light engine module.
+        reverse_items = check.schedule_python_work_items(
+            ['scripts/test_verify_setup_cli.py'],
+            ['engine/python/test_v2_api.py'],
+            max_workers=2,
+        )
+        self.assertEqual(
+            reverse_items,
+            [
+                ('scripts', ['scripts/test_verify_setup_cli.py']),
+                ('engine/python', ['engine/python/test_v2_api.py']),
+            ],
+        )
+
+    def test_parallel_runner_submits_global_lpt_order_and_preserves_suite_group_stats(self):
+        submitted: list[tuple[str, list[str]]] = []
+
+        def fake_bucket(python_bin, root, suite_dir, module_paths):
+            submitted.append((suite_dir, list(module_paths)))
+            return {
+                'suite_dir': suite_dir,
+                'modules': [Path(m).stem for m in module_paths],
+                'tests_run': len(module_paths) * 3,
+                'failures': 0,
+                'errors': 0,
+                'skipped': 0,
+                'ok': True,
+                'exit_code': 0,
+                'elapsed_s': 0.25,
+                'output': '',
+            }
+
+        scripts_mods = ['scripts/test_dev.py', 'scripts/test_verify_setup_cli.py']
+        engine_mods = ['engine/python/test_v2_api.py', 'engine/python/test_agent_connections.py']
+        expected = check.schedule_python_work_items(scripts_mods, engine_mods, max_workers=4)
+
+        with patch.object(check, '_run_python_bucket', side_effect=fake_bucket):
+            res = check.run_python_suite_parallel(
+                sys.executable, check.ROOT, scripts_mods, engine_mods, jobs=1, json_mode=True
+            )
+            # With jobs=1 each suite is 1 bucket, heavier engine bucket dispatches before scripts.
+            self.assertEqual([s for s, _ in submitted], ['engine/python', 'scripts'])
+
+        submitted.clear()
+        orig_submit = check.ThreadPoolExecutor.submit
+        dispatch_order: list[tuple[str, list[str]]] = []
+
+        def recording_submit(self_pool, fn, *args, **kwargs):
+            dispatch_order.append((args[2], list(args[3])))
+            return orig_submit(self_pool, fn, *args, **kwargs)
+
+        with patch.object(check, '_run_python_bucket', side_effect=fake_bucket), \
+             patch.object(check.ThreadPoolExecutor, 'submit', recording_submit):
+            res = check.run_python_suite_parallel(
+                sys.executable, check.ROOT, scripts_mods, engine_mods, jobs=4, json_mode=True
+            )
+
+        self.assertEqual(dispatch_order, expected)
+        self.assertEqual(dispatch_order[0], ('engine/python', ['engine/python/test_agent_connections.py']))
+        self.assertEqual(dispatch_order[1], ('scripts', ['scripts/test_verify_setup_cli.py']))
+        self.assertTrue(res['ok'])
+        self.assertEqual(res['exit_code'], 0)
+        self.assertEqual(res['tests_run'], 12)
+        self.assertEqual(res['suites']['scripts']['suite_dir'], 'scripts')
+        self.assertEqual(res['suites']['scripts']['module_count'], 2)
+        self.assertEqual(res['suites']['scripts']['tests_run'], 6)
+        self.assertTrue(res['suites']['scripts']['ok'])
+        self.assertEqual(res['suites']['engine_python']['suite_dir'], 'engine/python')
+        self.assertEqual(res['suites']['engine_python']['module_count'], 2)
+        self.assertEqual(res['suites']['engine_python']['tests_run'], 6)
+        self.assertTrue(res['suites']['engine_python']['ok'])
+
+        empty_res = check.run_python_suite_parallel(
+            sys.executable, check.ROOT, [], [], jobs=2, json_mode=True
+        )
+        self.assertTrue(empty_res['ok'])
+        self.assertEqual(empty_res['workers'], 0)
+        self.assertEqual(empty_res['suites']['scripts']['tests_run'], 0)
+        self.assertEqual(empty_res['suites']['engine_python']['tests_run'], 0)
+
+    def test_parallel_runner_cross_suite_real_subprocesses_and_failure_aggregation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts_dir = root / 'scripts'
+            engine_dir = root / 'engine/python'
+            scripts_dir.mkdir(parents=True)
+            engine_dir.mkdir(parents=True)
+            (scripts_dir / 'test_s_ok.py').write_text(
+                'import unittest\n'
+                'class S(unittest.TestCase):\n'
+                '    def test_ok(self):\n'
+                '        self.assertEqual(2 + 2, 4)\n',
+                encoding='utf-8',
+            )
+            (engine_dir / 'test_e_ok.py').write_text(
+                'import unittest\n'
+                'class E(unittest.TestCase):\n'
+                '    def test_ok(self):\n'
+                '        self.assertTrue(True)\n',
+                encoding='utf-8',
+            )
+            ok_res = check.run_python_suite_parallel(
+                sys.executable,
+                root,
+                ['scripts/test_s_ok.py'],
+                ['engine/python/test_e_ok.py'],
+                jobs=2,
+                json_mode=True,
+            )
+            self.assertTrue(ok_res['ok'])
+            self.assertEqual(ok_res['exit_code'], 0)
+            self.assertEqual({b['suite_dir'] for b in ok_res['buckets']}, {'scripts', 'engine/python'})
+            self.assertEqual(ok_res['suites']['scripts']['tests_run'], 1)
+            self.assertEqual(ok_res['suites']['engine_python']['tests_run'], 1)
+            self.assertTrue(ok_res['suites']['scripts']['ok'])
+            self.assertTrue(ok_res['suites']['engine_python']['ok'])
+
+            (engine_dir / 'test_e_fail.py').write_text(
+                'import unittest\n'
+                'class EFail(unittest.TestCase):\n'
+                '    def test_fail(self):\n'
+                '        self.fail("engine boom")\n',
+                encoding='utf-8',
+            )
+            fail_res = check.run_python_suite_parallel(
+                sys.executable,
+                root,
+                ['scripts/test_s_ok.py'],
+                ['engine/python/test_e_ok.py', 'engine/python/test_e_fail.py'],
+                jobs=2,
+                json_mode=True,
+            )
+            self.assertFalse(fail_res['ok'])
+            self.assertEqual(fail_res['exit_code'], 1)
+            self.assertTrue(fail_res['suites']['scripts']['ok'])
+            self.assertEqual(fail_res['suites']['scripts']['failures'], 0)
+            self.assertFalse(fail_res['suites']['engine_python']['ok'])
+            self.assertEqual(fail_res['suites']['engine_python']['failures'], 1)
 
     def test_parallel_runner_executes_isolated_temp_modules_and_reports_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
