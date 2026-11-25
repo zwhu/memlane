@@ -2,6 +2,8 @@
 
 本目录是可交互的 HTML 原型，用于评审设计方向，**不是生产实现**。访谈结论见对话中的 redesign-decisions；用户确认后，再依据本原型编写「视觉规范 V4」并修改 MyGo Native。
 
+> 2026-11-25 起，首次启动向导以 [onboarding-prototype/](../onboarding-prototype/) 为准。本目录中的 `pages-setup.*` 仅保留作历史对照。
+
 ## 打开方式
 
 ```sh

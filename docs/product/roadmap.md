@@ -131,12 +131,20 @@
 - **参考位置**：[app.go](../../internal/simpledesktop/app.go)、[knowledge_waterfall.go](../../internal/simpledesktop/knowledge_waterfall.go)、[project_reading_ui.go](../../internal/simpledesktop/project_reading_ui.go)、[motion_tokens.go](../../internal/simpledesktop/motion_tokens.go)、[MyGo 动效契约](../design/motion-implementation.md)。
 - **状态**：TODO，已记录、未排期；本轮仅记录，暂不改动实现。
 
-## 首次安装向导第 3 步页面视觉与布局优化
+## 首次安装向导重设计（专注式向导）
 
-- **记录日期**：2026-11-25，用户实窗审阅首装向导第 3 步（绑定 Agent 与记忆提炼）后明确反馈页面视觉与排版过于杂乱，要求后续优化。
-- [ ] 重新梳理首装向导第 3 步的信息层级与视觉布局：精简多 Agent 默认展开检查清单的纵向堆叠密度、分离或分区组织「采集接入」与「记忆提炼」两大区块、消除提示框与说明文案重复，并按 [视觉规范 V4](../design/visual-standards-v4-20261120.md) 在浅色与深色两套外观下实窗验收。
-- **参考位置**：[initial_setup_layout.go](../../internal/simpledesktop/initial_setup_layout.go)、[integrations_ui.go](../../internal/simpledesktop/integrations_ui.go)、[first_generation_setup.go](../../internal/simpledesktop/first_generation_setup.go)。
-- **状态**：TODO，已记录、未排期；本轮仅记录，暂不改动实现。
+- **记录日期**：2026-11-25。用户实窗审阅首装向导第 3 步（绑定 Agent 与记忆提炼）后，反馈页面视觉与排版过于杂乱。同日完成整体重设计并经用户确认，范围扩展为整个首次启动向导。
+- **设计依据**：[视觉规范 V4 §7.7](../design/visual-standards-v4-20261120.md#77-首次启动向导2026-11-25-专注式向导重设计)、[设计决议 2026-11-25](../design/design.md)、可交互原型 [onboarding-prototype/](../design/onboarding-prototype/)。
+- [ ] 布局外壳：顶部紧凑步骤条加 `600` 单列，替换左步骤栏；接入右上角「遇到问题」菜单（环境详情、复制诊断、导出诊断包、指定已有组件路径）。
+- [ ] 欢迎页：打开窗口即在后台检测 Agent 与组件；并排提供「开始设置」与「让 Agent 代我安装」，后者使用通俗说明加折叠完整指令的弹窗。
+- [ ] 第 1 步：只展示已检测到的 Agent；新增「查看支持列表」弹窗；一个都没检测到时显示空态并允许先跳过。
+- [ ] 第 2 步：能力清单合并原「准备内容」与「技术明细」；页内同意替代二次确认弹窗，同意依据仍为计划摘要；安装与启动状态在清单行上原地更新；新增可展开的脱敏「安装日志」（实时滚动，失败自动展开，可复制）；完成后自动进入下一步。
+- [ ] 第 3 步拆为「接入」与「记忆提炼」两屏：接入屏批量「全部接入」，可单个跳过，重启说明只写一次；提炼屏新增「验证并启用」编排（保存 → 验证 → 设为待启用 → 启用）及进度清单，失败时原地恢复。
+- [ ] 新增完成页；同一宿主统一显示为「TRAE CN」。
+- [ ] 产品上线后同步更新 [公测安装指南](beta-install-guide.md) 中涉及安装确认弹层的描述。
+- **验收**：回归 `beta3_onboarding_test.go`、`initial_setup_layout_test.go`、`agent_connection_flow_test.go` 与模型相关 4 组 unittest；在 Native `1200×820` 下按浅色、深色和「减少动态效果」逐屏实窗验收。
+- **参考位置**：[initial_setup_layout.go](../../internal/simpledesktop/initial_setup_layout.go)、[initial_setup.go](../../internal/simpledesktop/initial_setup.go)、[onboarding_agents.go](../../internal/simpledesktop/onboarding_agents.go)、[integrations_ui.go](../../internal/simpledesktop/integrations_ui.go)、[first_generation_setup.go](../../internal/simpledesktop/first_generation_setup.go)。
+- **状态**：设计已确认，文档已更新；实现待排期。
 
 ## 关闭自动采集未真正停止自动采集（Bug）
 

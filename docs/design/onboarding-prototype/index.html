@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<title>Memlane 初始化向导重设计原型（2026-11-25）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="../visual-v4-prototype/tokens.css" />
+<link rel="stylesheet" href="onboarding.css" />
+</head>
+<body>
+  <!-- 原型控制条（不属于设计） -->
+  <div class="proto-bar" id="protoBar">
+    <b>初始化重设计原型</b>
+    <label>外观 <select id="pTheme"><option value="light">浅色</option><option value="dark">深色</option></select></label>
+    <label>跳转 <select id="pStage">
+      <option value="welcome">欢迎</option><option value="agents">① 选择 Agent</option><option value="env">② 准备环境</option>
+      <option value="connect">③ 接入 Agent</option><option value="process">④ 记忆提炼</option><option value="done">完成</option>
+    </select></label>
+    <label>检测 <select id="pHosts"><option value="some">检测到 4 个</option><option value="none">一个都没有</option></select></label>
+    <label>环境 <select id="pEnv"><option value="missing">需安装</option><option value="ready">已复用就绪</option><option value="fail">安装失败</option></select></label>
+    <label>提炼 CLI <select id="pCli"><option value="yes">已检测到</option><option value="none">未检测到</option></select></label>
+    <label>验证 <select id="pVerify"><option value="pass">通过</option><option value="slow">较慢后通过</option><option value="fail">失败</option></select></label>
+    <label><input type="checkbox" id="pReduce" /> 减少动态效果</label>
+    <button id="pReset">重置</button>
+  </div>
+
+  <div class="stage-wrap" id="stageWrap">
+    <div class="win" id="win" role="application" aria-label="Memlane 初始化">
+      <header class="ob-bar" id="obBar"></header>
+      <main class="ob-body" id="obBody"></main>
+      <footer class="ob-foot" id="obFoot"></footer>
+      <div class="ob-layer" id="obLayer"></div>
+      <div class="ob-toast" id="obToast" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+  <script src="onboarding.js"></script>
+</body>
+</html>
