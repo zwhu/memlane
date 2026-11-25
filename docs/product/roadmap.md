@@ -9,8 +9,9 @@
 ### 关闭自动采集未真正停止自动采集（Bug，2026-11-25）
 
 - **来源**：2026-11-25 用户明确反馈「关闭自动采集不是真的关闭自动采集」，记录为待修复 Bug TODO。
-- [ ] 排查并修复项目/宿主关闭「自动采集」开关后仍继续产生自动采集的缺陷：沿下方技术方案逐层核对开关落盘（项目登记表）、接入网关自动写入门禁、后台补采队列选取与宿主插件缓存/hooks 上报四处是否真实生效；验证关闭后新对话/新工具调用不再写入自动采集记录、重启后保持关闭态、且不影响手动读取与主动记忆操作。
-- **状态**：TODO（Bug），已记录、待定位根因与排期修复。
+- [x] 排查并修复项目/宿主关闭「自动采集」开关后仍继续产生自动采集的缺陷（提交 `39cac4c`）：完成项目登记表独立 `auto_capture`/`auto_capture_version` 落盘与权限解耦、接入网关区分自动/手工/主动记忆/原编号回执、后台补采取消联动与防复活、全部 8 宿主本地带版本策略缓存与水位推进、以及桌面端无补采任务亦可直接开关；已通过双路对抗审查、受影响全量单测、OpenCode 编译套件与真实隔离 HTTP 连续闭环验收。
+- [ ] 待补齐：真实宿主机长会话（Codex / TRAE CN 等）端到端实机抽检。
+- **状态**：已实现并通过自动化与隔离 HTTP 闭环验收（`39cac4c`），待真机实窗复验。
 
 #### 关闭项目自动采集的技术方案（待评审）
 
@@ -22,16 +23,16 @@
 
 - **来源**：2026-11-25 用户实窗审阅首装向导第 3 步后，完成整体专注式重设计并经用户确认。
 - **设计依据**：[视觉规范 V4 §7.7](../design/visual-standards-v4-20261120.md#77-首次启动向导2026-11-25-专注式向导重设计)、可交互原型 [onboarding-prototype/](../design/onboarding-prototype/)。
-- [ ] 布局外壳：顶部紧凑步骤条加 `600` 单列，替换左步骤栏；接入右上角「遇到问题」菜单（环境详情、复制诊断、导出诊断包、指定已有组件路径）。
-- [ ] 欢迎页：打开窗口即在后台检测 Agent 与组件；并排提供「开始设置」与「让 Agent 代我安装」，后者使用通俗说明加折叠完整指令的弹窗。
-- [ ] 第 1 步：只展示已检测到的 Agent；新增「查看支持列表」弹窗；一个都没检测到时显示空态并允许先跳过。
-- [ ] 第 2 步：能力清单合并原「准备内容」与「技术明细」；页内同意替代二次确认弹窗，同意依据仍为计划摘要；安装与启动状态在清单行上原地更新；新增可展开的脱敏「安装日志」（实时滚动，失败自动展开，可复制）；完成后自动进入下一步。
-- [ ] 第 3 步拆为「接入」与「记忆提炼」两屏：接入屏批量「全部接入」，可单个跳过，重启说明只写一次；提炼屏新增「验证并启用」编排（保存 → 验证 → 设为待启用 → 启用）及进度清单，失败时原地恢复。
-- [ ] 新增完成页；同一宿主统一显示为「TRAE CN」。
-- [ ] 产品上线后同步更新 [公测安装指南](beta-install-guide.md) 中涉及安装确认弹层的描述。
-- **验收**：回归 `beta3_onboarding_test.go`、`initial_setup_layout_test.go`、`agent_connection_flow_test.go` 与模型相关 4 组 unittest；在 Native `1200×820` 下按浅色、深色和「减少动态效果」逐屏实窗验收。
-- **参考位置**：[initial_setup_layout.go](../../internal/simpledesktop/initial_setup_layout.go)、[initial_setup.go](../../internal/simpledesktop/initial_setup.go)、[onboarding_agents.go](../../internal/simpledesktop/onboarding_agents.go)、[integrations_ui.go](../../internal/simpledesktop/integrations_ui.go)、[first_generation_setup.go](../../internal/simpledesktop/first_generation_setup.go)。
-- **状态**：设计已确认，文档与原型已更新；实现待排期。
+- [x] 布局外壳：顶部紧凑步骤条加 `600` 单列，替换左步骤栏；接入右上角「遇到问题」菜单（环境详情、复制诊断、导出诊断包、指定已有组件路径）。
+- [x] 欢迎页：打开窗口即在后台检测 Agent 与组件；并排提供「开始设置」与「让 Agent 代我安装」，后者使用通俗说明加折叠完整指令的弹窗。
+- [x] 第 1 步：只展示已检测到的 Agent；新增「查看支持列表」弹窗；一个都没检测到时显示空态并允许先跳过。
+- [x] 第 2 步：能力清单合并原「准备内容」与「技术明细」；页内同意替代二次确认弹窗，同意依据仍为计划摘要；安装与启动状态在清单行上原地更新；新增可展开的脱敏「安装日志」（实时滚动，失败自动展开，可复制）；完成后自动进入下一步。
+- [x] 第 3 步拆为「接入」与「记忆提炼」两屏：接入屏批量「全部接入」，可单个跳过，重启说明只写一次；提炼屏新增「验证并启用」编排（保存 → 验证 → 设为待启用 → 启用）及进度清单，失败时原地恢复。
+- [x] 新增完成页；同一宿主统一显示为「TRAE CN」。
+- [x] 已同步更新 [公测安装指南](beta-install-guide.md) 中涉及页内同意与延后配置的描述。
+- [ ] 待补齐：在真实 macOS Native `1200×820` 窗口下按浅色、深色和「减少动态效果」逐屏实窗验收（headless `1200×820` 浅/深色渲染图及全量 Go 回归与性能预算均已通过）。
+- **参考位置**：[onboarding_shell.go](../../internal/simpledesktop/onboarding_shell.go)、[onboarding_env.go](../../internal/simpledesktop/onboarding_env.go)、[onboarding_connect.go](../../internal/simpledesktop/onboarding_connect.go)、[onboarding_generation.go](../../internal/simpledesktop/onboarding_generation.go)、[initial_setup.go](../../internal/simpledesktop/initial_setup.go)、[onboarding_agents.go](../../internal/simpledesktop/onboarding_agents.go)、[first_generation_setup.go](../../internal/simpledesktop/first_generation_setup.go)。
+- **状态**：已实现并通过双路对抗审查、Go 全量单测与 headless 1200×820 浅/深色渲染核验（`cccb1bb`），待实窗验收。
 
 ### App 记录与日志的可读性和时间（含 TRAE CLI 补丁过滤提示）
 
@@ -55,7 +56,7 @@
 
 - [ ] **首次安装依赖瘦身**：按 [安装依赖瘦身调研](../research/install-dependency-slimming-20261125.md) 推进零侵入分级瘦身，压缩首次安装下载量与运行库解压体积。
 - [ ] **首屏性能深度演进**：按 [首屏 20× 性能调研](../research/native-first-screen-performance-20261122.md) 继续优化冷启动与大库列表渲染路径。
-- [ ] **工程测试提速（Phase P1）与 UTM 热复用**：按 [多 Agent 耗时复盘](../engineering/agent-workflow-efficiency-retrospective-20261125.md) 重构 Go/Python Top 慢测将 `scripts/check.py --full` 压入 60 秒内，并落地同版本 UTM 隔离热环境复用。
+- [x] **工程测试提速（Phase P1）与 UTM 热复用**：按 [多 Agent 耗时复盘](../engineering/agent-workflow-efficiency-retrospective-20261125.md) 重构 Go/Python Top 慢测、落地全局 LPT 调度与同版本 UTM 隔离热环境复用（`f6e82f5`、`418d06e`、`ef7bc08`、`c033a5b`）。
 - [ ] **架构治理、旧回退清理与定时 Loop 架构巡检（2026-11-25）**：见 [架构守护、Python 扩张冻结与定时架构巡检规划](../engineering/architecture-governance-and-py-freeze.md)——在已落地的 `diff_guard.py`（`DG001–DG005`，含非 Cognee Python 新增冻结）基础上，单开切片清掉 `internal/simpledesktop/` 残留的 7 处 `overviewDocuments` / `overviewSessions` 旧回退并同步移除 `ML019`，并设计定时 Loop 巡检架构漂移、Python 存量瘦身与僵尸 lint 规则。
 
 ---
