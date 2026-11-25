@@ -17,22 +17,27 @@ import (
 )
 
 func TestProcessArgsHandlesSpaces(t *testing.T) {
+	t.Parallel()
 	root := filepath.Join(t.TempDir(), "Application Support", "Memlane")
 	executable := filepath.Join(root, "runtime-0123456789abcdef", "scripts", "dev.py")
 	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// Copy the executable so both the kernel exec path and argv[0] contain spaces.
+	// Hardlink (falling back to copy across filesystems) the running test binary
+	// so both the kernel exec path and argv[0] contain spaces without triggering
+	// a fresh Mach-O cold-execution scan on macOS.
 	testBinary, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary, err := os.ReadFile(testBinary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(executable, binary, 0o700); err != nil {
-		t.Fatal(err)
+	if err := os.Link(testBinary, executable); err != nil {
+		binary, readErr := os.ReadFile(testBinary)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if writeErr := os.WriteFile(executable, binary, 0o700); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -76,6 +81,7 @@ func TestProcessArgsChild(t *testing.T) {
 }
 
 func TestParseProcArgs2(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		argc    uint32

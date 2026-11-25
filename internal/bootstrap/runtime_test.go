@@ -12,6 +12,7 @@ import (
 )
 
 func TestManagedInstallFailureRetainsExitCodeAndRedactsOutput(t *testing.T) {
+	t.Parallel()
 	err := runManaged(context.Background(), t.TempDir(), "/bin/sh", "-c", "echo 'API_KEY=private-value' >&2; exit 7")
 	var failure *CommandFailure
 	if !errors.As(err, &failure) || failure.ExitCode != 7 || strings.Contains(failure.Output, "private-value") {
@@ -19,6 +20,7 @@ func TestManagedInstallFailureRetainsExitCodeAndRedactsOutput(t *testing.T) {
 	}
 }
 func TestManagedInstallCancellationStopsOwnedProcessGroup(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -29,6 +31,7 @@ func TestManagedInstallCancellationStopsOwnedProcessGroup(t *testing.T) {
 }
 
 func TestManagedInstallMissingExecutableRetainsOriginalLaunchError(t *testing.T) {
+	t.Parallel()
 	err := runManaged(context.Background(), t.TempDir(), "/nonexistent/memlane-python")
 	var failure *CommandFailure
 	if !errors.As(err, &failure) || failure.ExitCode >= 0 || !strings.Contains(failure.Output, "no such file") {
@@ -37,6 +40,7 @@ func TestManagedInstallMissingExecutableRetainsOriginalLaunchError(t *testing.T)
 }
 
 func TestRuntimeInstallHandlesApplicationSupportPathWithRealUV(t *testing.T) {
+	t.Parallel()
 	uv, err := exec.LookPath("uv")
 	if err != nil {
 		t.Skip("uv not installed; real parser regression requires uv")
@@ -61,7 +65,7 @@ func TestRuntimeInstallHandlesApplicationSupportPathWithRealUV(t *testing.T) {
 
 func TestRuntimePostInstallProbeIgnoresExistingPython(t *testing.T) {
 	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	routineProbeTimeout, postInstallProbeTimeout = 1500*time.Millisecond, 1500*time.Millisecond
+	routineProbeTimeout, postInstallProbeTimeout = 200*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
 
 	lock := []byte("locked==1\n")
@@ -73,14 +77,13 @@ func TestRuntimePostInstallProbeIgnoresExistingPython(t *testing.T) {
 			t.Fatal(err)
 		}
 		managed := filepath.Join(binDir, "python")
-		body := "#!/bin/sh\nif [ \"$#\" = 4 ]; then " + pythonVersionScript() + "; exit 0; fi\n" + script + "\n"
-		if err := os.WriteFile(managed, []byte(body), 0700); err != nil {
-			t.Fatal(err)
-		}
+		body := "if [ \"$#\" = 4 ]; then " + pythonVersionScript() + "; exit 0; fi\n" + script
+		writeWarmBootstrapScript(t, managed, body)
 		return dest
 	}
 
 	t.Run("managed timeout not overwritten by incompatible existing python", func(t *testing.T) {
+		t.Parallel()
 		dest := writeManaged(t, "sleep 10")
 		existing := fakeDependencyPython(t, `echo '{"mismatch":[{"name":"locked","expected":"1","actual":"missing"}]}'`)
 		d := RuntimeDriver{Lock: lock, ExistingPython: existing}
@@ -93,6 +96,7 @@ func TestRuntimePostInstallProbeIgnoresExistingPython(t *testing.T) {
 	})
 
 	t.Run("managed deterministic failure not overwritten by existing python timeout", func(t *testing.T) {
+		t.Parallel()
 		dest := writeManaged(t, `echo '{"mismatch":[{"name":"locked","expected":"1","actual":"missing"}]}'`)
 		existing := fakeDependencyPython(t, "sleep 10")
 		d := RuntimeDriver{Lock: lock, ExistingPython: existing}
@@ -105,6 +109,7 @@ func TestRuntimePostInstallProbeIgnoresExistingPython(t *testing.T) {
 	})
 
 	t.Run("routine detect still probes existing python for reuse", func(t *testing.T) {
+		t.Parallel()
 		dest := t.TempDir()
 		existing := fakeDependencyPython(t, `echo '{"mismatch":[],"native_error":null}'`)
 		d := RuntimeDriver{Lock: lock, ExistingPython: existing}

@@ -15,6 +15,7 @@ import (
 )
 
 func TestPluginReuseVerifiesEveryFileAndRetainsForeignChanges(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,7 @@ func TestPluginReuseVerifiesEveryFileAndRetainsForeignChanges(t *testing.T) {
 }
 
 func TestPluginReceiptAndFilesCannotBeLinks(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -88,6 +90,7 @@ func TestPluginReceiptAndFilesCannotBeLinks(t *testing.T) {
 // Exercise the real pinned integration archive, extraction, patch construction,
 // and manifest verification together. No external network or model is used.
 func TestPinnedIntegrationArchiveBuildsManagedPlugin(t *testing.T) {
+	t.Parallel()
 	archive := filepath.Join("..", "..", ".cache", "coding-memory-components", "a176248914fdb32a78354854b300174203b15a5c.tar.gz")
 	b, err := os.ReadFile(archive)
 	if os.IsNotExist(err) {
@@ -155,6 +158,7 @@ func TestPinnedIntegrationArchiveBuildsManagedPlugin(t *testing.T) {
 }
 
 func TestApplyManagedPluginUpdateResolvesActiveSnapshotAndPreservesFields(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +241,7 @@ func TestApplyManagedPluginUpdateResolvesActiveSnapshotAndPreservesFields(t *tes
 }
 
 func TestApplyManagedPluginUpdateRefusesUnverifiedOrInsideStore(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -277,6 +282,7 @@ func TestApplyManagedPluginUpdateRefusesUnverifiedOrInsideStore(t *testing.T) {
 }
 
 func TestApplyManagedPluginUpdateIgnoresStaleOwnerConfigForForeignStore(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +331,7 @@ func TestApplyManagedPluginUpdateIgnoresStaleOwnerConfigForForeignStore(t *testi
 }
 
 func TestPluginClassifiesVerifiedPolicyUpdates(t *testing.T) {
+	t.Parallel()
 	const policy = "scripts/_memlane_policy.py"
 	const original = "scripts/main.py"
 	digest := func(contents string) string {

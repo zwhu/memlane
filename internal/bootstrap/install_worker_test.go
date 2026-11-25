@@ -30,6 +30,7 @@ func workerTestRoot(t *testing.T) string {
 }
 
 func TestResolveInstallOperationID(t *testing.T) {
+	t.Parallel()
 	root := workerTestRoot(t)
 	if got, err := ResolveInstallOperationID(root, "custom"); got != "" || !errors.Is(err, ErrOperationIDMismatch) {
 		t.Fatalf("custom new operation = %q, %v", got, err)
@@ -55,6 +56,7 @@ func TestResolveInstallOperationID(t *testing.T) {
 }
 
 func TestInstallWorkerProtectsExistingStore(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	cfg := InstallWorkerConfig{ComponentRoot: prepared.StoreRoot, ConfigPath: prepared.ConfigPath}
 	err := RunInstallWorker(t.Context(), engine.BootstrapAssets, cfg)
@@ -67,6 +69,7 @@ func TestInstallWorkerProtectsExistingStore(t *testing.T) {
 }
 
 func TestInstallWorkerProtectsProspectiveStore(t *testing.T) {
+	t.Parallel()
 	root := workerTestRoot(t)
 	cfg := InstallWorkerConfig{
 		ComponentRoot: filepath.Join(root, "library", "components"),
@@ -83,8 +86,10 @@ func TestInstallWorkerProtectsProspectiveStore(t *testing.T) {
 }
 
 func TestInstallWorkerProtectsProspectiveStoreWithProvidedEnv(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"prospective store", "existing store", "invalid JSON", "symlinked config"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			var root, configPath string
 			wantError := "组件目录必须与现有日常库分开"
 			if mode == "existing store" {
@@ -128,6 +133,7 @@ func TestInstallWorkerProtectsProspectiveStoreWithProvidedEnv(t *testing.T) {
 }
 
 func TestInstallWorkerMatchesScope(t *testing.T) {
+	t.Parallel()
 	state := InstallWorkerState{
 		PID: 42, State: "starting", Components: []string{"uv", "python"},
 		StartRuntime: true, ConfigPath: "/store/runtime.json", OperationID: "first-install", PlanDigest: "reviewed",
@@ -175,6 +181,7 @@ func TestInstallWorkerMatchesScope(t *testing.T) {
 }
 
 func TestLaunchDetachedInstallWorkerRejectsIncompatibleActiveWorker(t *testing.T) {
+	t.Parallel()
 	root := workerTestRoot(t)
 	installer := Installer{Root: filepath.Join(root, "installation")}
 	path, err := WorkerStatePath(root)
@@ -383,7 +390,7 @@ func TestRunInstallWorkerWithTimesOutPreparingRuntime(t *testing.T) {
 	t.Cleanup(func() {
 		workerRuntimeStartTimeout, workerProcessStartTimeFn, workerProcessTableFn = oldTimeout, oldStartTime, oldTable
 	})
-	workerRuntimeStartTimeout = time.Second
+	workerRuntimeStartTimeout = 200 * time.Millisecond
 	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
 	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
 	prepared, env, assets := newRuntimePreparationFixture(t, `
@@ -502,6 +509,7 @@ func openDetachedTestSignal(t *testing.T, deadline <-chan struct{}, fifo string,
 }
 
 func TestInstallWorkerRecordsUpgradeLockedDuringRuntimeStart(t *testing.T) {
+	t.Parallel()
 	root := workerTestRoot(t)
 	installer := Installer{Root: filepath.Join(root, "installation")}
 	if err := prepareInstallationDir(installer.Root); err != nil {
@@ -518,8 +526,10 @@ func TestInstallWorkerRecordsUpgradeLockedDuringRuntimeStart(t *testing.T) {
 }
 
 func TestInstallWorkerFailsClosedOnExistingInvalidConfig(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"invalid JSON", "linked config"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			root := workerTestRoot(t)
 			install := filepath.Join(root, "installation")
 			if err := os.Mkdir(install, 0700); err != nil {
@@ -821,6 +831,7 @@ func TestDetectOrphanInstallProcesses(t *testing.T) {
 }
 
 func TestInspectInstallWorkerReadOnly(t *testing.T) {
+	t.Parallel()
 	root := workerTestRoot(t)
 	state, active, err := InspectInstallWorker(t.Context(), root)
 	if err != nil || active || !reflect.DeepEqual(state, InstallWorkerState{}) {
@@ -869,6 +880,7 @@ func TestInstallWorkerSurvivesParentSIGKILL(t *testing.T) {
 		runSlowWorkerFixture(t, cfg)
 		return
 	}
+	t.Parallel()
 	if _, err := supervisor.ProcessStartTime(t.Context(), os.Getpid()); err != nil {
 		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
 			t.Skipf("Seatbelt restricts ps: %v", err)

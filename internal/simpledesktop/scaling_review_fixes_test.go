@@ -203,9 +203,11 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 	controlCapabilitiesCache.mu.Unlock()
 
 	release := make(chan struct{})
-	var started atomic.Int32
+	inFlight := make(chan string, 3)
+	var handlersWG sync.WaitGroup
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/capabilities" {
+		switch r.URL.Path {
+		case "/v1/capabilities":
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{
 				APIVersions: []string{"v1"}, ReadingContract: readingContract,
 				Features: []string{
@@ -214,8 +216,23 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 				},
 			})
 			return
+		case "/v1/reading-state/migrate-local":
+			// Complete reading-state migration immediately so all 3 data loads reach
+			// their actual endpoints concurrently instead of blocking behind one flight.
+			_ = json.NewEncoder(w).Encode(v2ReadingStateMigrateResponse{
+				Migrated: []v2ReadingStateMigratedScope{
+					{ProjectID: "p1", DatasetID: "ds-1", Status: "already_migrated"},
+				},
+			})
+			return
+		case "/v1/overview/bootstrap", "/v1/projects/p1/knowledge", "/v1/projects/p1/message-summary":
+			handlersWG.Add(1)
+			defer handlersWG.Done()
+			inFlight <- r.URL.Path
+		default:
+			http.NotFound(w, r)
+			return
 		}
-		started.Add(1)
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -245,8 +262,6 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 					{ID: "pending-1", DatasetID: "ds-1", Title: "Secret Doc"},
 				},
 			})
-		default:
-			http.NotFound(w, r)
 		}
 	}))
 	defer control.Close()
@@ -273,17 +288,37 @@ func TestReviewFixInvalidateReadingFencesInFlightCallbacks(t *testing.T) {
 	a.loadKnowledgeFeed(s)
 	a.loadProjectQueue(q, a.access.Directory.Projects[0])
 
-	deadline := time.Now().Add(3 * time.Second)
-	for started.Load() < 3 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	seenInFlight := map[string]bool{}
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for len(seenInFlight) < 3 {
+		select {
+		case path := <-inFlight:
+			seenInFlight[path] = true
+		case <-timeout.C:
+			close(release)
+			t.Fatalf("expected all 3 data requests in flight before InvalidateReading, got %v", seenInFlight)
+		}
 	}
 
-	// Revoke access while all three requests are in flight!
+	// Revoke access while all three requests are genuinely in flight!
 	a.InvalidateReading("")
 	close(release)
+	handlersWG.Wait()
 
-	// Drain any queued update closures.
-	time.Sleep(80 * time.Millisecond)
+	// Both loadKnowledgeFeed and loadProjectQueue always enqueue an update callback
+	// (loadOverview skips a.Update when canceled before decoding). Wait for both
+	// guaranteed callbacks, then drain any optional third callback before asserting.
+	drainDeadline := time.NewTimer(2 * time.Second)
+	defer drainDeadline.Stop()
+	for i := 0; i < 2; i++ {
+		select {
+		case fn := <-updates:
+			fn()
+		case <-drainDeadline.C:
+			t.Fatalf("timed out waiting for in-flight callbacks to enqueue after release (received %d/2)", i)
+		}
+	}
 	for {
 		select {
 		case fn := <-updates:
@@ -429,6 +464,7 @@ afterSecond:
 // 1. Overview Raw KPI includes session_count, common.raw_doc_count, and total_raw_count.
 // 2. Overview V2 Day view renders via virtualized ui.List in Light & Dark modes with 0 body reads.
 func TestReviewFixOverviewRawCountKPIAndV2DayVirtualization(t *testing.T) {
+	// ui.NewTester shares MyGo's global scene.Atlas; keep UI raster tests sequential.
 	projects := []Project{
 		{ID: "p1", Name: "memlane", Dataset: "ds-1"},
 		{ID: "common", Name: "通用记忆", Dataset: "ds-common"},
@@ -2088,6 +2124,7 @@ func TestReviewFixQueueMigrationAndAuthorizationIsolation(t *testing.T) {
 }
 
 func TestReviewFixR4MarkAllReceiptPreservesSameRevisionUnread(t *testing.T) {
+	t.Parallel()
 	a := &App{}
 	q := &projectQueueState{ServerUnreadStateRev: 5}
 	before := q.ServerUnreadSnapshot

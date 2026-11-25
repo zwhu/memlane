@@ -329,6 +329,8 @@ type integrationState struct {
 	KeyEpoch                                                                                                    uint64
 }
 
+var loadAgentVersionsFn = loadAgentVersions
+
 func integrationOperation() string { return controlplane.NewUIOperationID() }
 func connectionName(kind string) string {
 	if kind == "antigravity" {
@@ -515,7 +517,7 @@ func (a *App) RefreshConnections() {
 			err = client.request(ctx, "GET", "/v1/connections?force=1", nil, &connections)
 		}
 		if err == nil {
-			loadAgentVersions(ctx, config, connections.Connections)
+			loadAgentVersionsFn(ctx, config, connections.Connections)
 		}
 		a.Update(func() {
 			if request != s.Request {
@@ -596,7 +598,7 @@ func (a *App) RefreshIntegrations() {
 		wg.Wait()
 		connectionsLoaded := !config.GenerationSetupOnly && connErr == nil
 		if connectionsLoaded {
-			loadAgentVersions(ctx, config, connections.Connections)
+			loadAgentVersionsFn(ctx, config, connections.Connections)
 		}
 		a.Update(func() {
 			if request != s.Request {

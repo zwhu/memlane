@@ -17,6 +17,7 @@ import (
 )
 
 func TestScalingP2ProvenanceBackfillSameMachineAndStopLocalWrite(t *testing.T) {
+	t.Parallel()
 	token := p1TestTokenFile(t)
 	var backfillCalls atomic.Int32
 	var receivedRaw map[string]any
@@ -96,6 +97,7 @@ func TestScalingP2ProvenanceBackfillSameMachineAndStopLocalWrite(t *testing.T) {
 }
 
 func TestScalingP2ProvenanceBackfillCustomDirDaysAndBackup(t *testing.T) {
+	t.Parallel()
 	token := p1TestTokenFile(t)
 	var calls atomic.Int32
 	var secondDays map[string]string
@@ -188,6 +190,7 @@ func TestScalingP2ProvenanceBackfillCustomDirDaysAndBackup(t *testing.T) {
 }
 
 func TestScalingP2ProvenanceBackfillLegacyFallback(t *testing.T) {
+	t.Parallel()
 	token := p1TestTokenFile(t)
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -283,15 +286,11 @@ func TestScalingP2ColdPendingWatchPersistenceZeroSubprocessOnRestart(t *testing.
 
 	counterFile := filepath.Join(dir, "py-invocations.txt")
 	fakePython := filepath.Join(dir, "fake-python.sh")
-	script := fmt.Sprintf(`#!/bin/sh
-echo x >> %q
+	script := fmt.Sprintf(`echo x >> %q
 cat <<'JSON'
 {"pending":0,"unknown_outcomes":0,"signature":"sig-cold-1","session_id":"sess-1","session_inactive":true,"cold_watch":{"map_path":%q,"bridge_path":%q,"bridge_exists":true,"bridge_size":%d,"bridge_mtime_ns":%d}}
-JSON
-`, counterFile, mapPath, bridgePath, bInfo.Size(), bInfo.ModTime().UnixNano())
-	if err := os.WriteFile(fakePython, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+JSON`, counterFile, mapPath, bridgePath, bInfo.Size(), bInfo.ModTime().UnixNano())
+	writeWarmDesktopScript(t, fakePython, script)
 
 	inst := AgentInstallation{
 		HostKind:    "codex",

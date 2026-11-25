@@ -214,6 +214,7 @@ func waitForPIDDead(t *testing.T, pid int) {
 }
 
 func TestSupervisorOrderedStartReverseShutdownAndNoOrphans(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -365,6 +366,7 @@ func TestSupervisorOrderedStartReverseShutdownAndNoOrphans(t *testing.T) {
 }
 
 func TestSupervisorSigtermFallbackToSigkill(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -411,6 +413,7 @@ func TestSupervisorSigtermFallbackToSigkill(t *testing.T) {
 }
 
 func TestSupervisorDetectsCrashWithoutAutoRestart(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -473,6 +476,7 @@ func TestSupervisorDetectsCrashWithoutAutoRestart(t *testing.T) {
 }
 
 func TestSupervisorHealthDebounceDegradedAndRecovery(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -534,6 +538,7 @@ func TestSupervisorHealthDebounceDegradedAndRecovery(t *testing.T) {
 }
 
 func TestSupervisorRefusesUnrecoveredReceiptAndRecoversDeadOwner(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	if err := os.Mkdir(storeRoot, 0o700); err != nil {
@@ -611,6 +616,7 @@ func TestSupervisorRefusesUnrecoveredReceiptAndRecoversDeadOwner(t *testing.T) {
 }
 
 func TestTrimServiceLogPreservesInodeAndCreatesPrevious(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	logPath := filepath.Join(rootParent, "logs", "service.log")
 
@@ -681,6 +687,7 @@ func TestTrimServiceLogPreservesInodeAndCreatesPrevious(t *testing.T) {
 }
 
 func TestInspectVerifyOwnerAndLockFileRecovery(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	if err := os.Mkdir(storeRoot, 0o700); err != nil {
@@ -791,6 +798,7 @@ func TestInspectVerifyOwnerAndLockFileRecovery(t *testing.T) {
 }
 
 func TestSupervisorExternalOwnerKeepOnTimeoutAndConcurrentStop(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -914,6 +922,7 @@ func TestSupervisorExternalOwnerKeepOnTimeoutAndConcurrentStop(t *testing.T) {
 }
 
 func TestOpenPrivateLogAndTrimDirSecurityPolicies(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	logsDir := filepath.Join(rootParent, "logs")
 	if err := os.Mkdir(logsDir, 0o700); err != nil {
@@ -949,73 +958,78 @@ func TestOpenPrivateLogAndTrimDirSecurityPolicies(t *testing.T) {
 }
 
 func TestSupervisorConcurrentStartAndStopRace(t *testing.T) {
+	t.Parallel()
 	// Exercise concurrent Start() and Stop() across both Go-owned (.memlane-dev-owner.json WriteRecord)
 	// and ExternalOwner+KeepOnTimeout paths under -race to verify WaitGroup and receipt serialization.
 	for i := range 4 {
-		external := i%2 == 1
-		rootParent := canonicalTestDir(t)
-		storeRoot := filepath.Join(rootParent, "library")
-		logsDir := filepath.Join(rootParent, "runtime-logs")
-		if err := os.Mkdir(storeRoot, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Mkdir(logsDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		addr, origin := reserveLoopbackEndpoint(t)
-		configPath := filepath.Join(rootParent, "runtime.json")
-		writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
+		t.Run(fmt.Sprintf("iter-%d", i), func(t *testing.T) {
+			t.Parallel()
+			external := i%2 == 1
+			rootParent := canonicalTestDir(t)
+			storeRoot := filepath.Join(rootParent, "library")
+			logsDir := filepath.Join(rootParent, "runtime-logs")
+			if err := os.Mkdir(storeRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(logsDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			addr, origin := reserveLoopbackEndpoint(t)
+			configPath := filepath.Join(rootParent, "runtime.json")
+			writePrivateJSON(t, configPath, map[string]any{"official_data": storeRoot})
 
-		sup := supervisor.New(supervisor.Config{
-			StoreRoot:         storeRoot,
-			ConfigPath:        configPath,
-			ServiceURL:        origin,
-			MonitorInterval:   25 * time.Millisecond,
-			ReadyPollInterval: 10 * time.Millisecond,
-			ExternalOwner:     external,
-			KeepOnTimeout:     external,
-		})
-		spec := helperSpec(t, "official", "service", addr, filepath.Join(logsDir, "official.log"))
-		spec.StopGrace = time.Second
-		spec.KillWait = time.Second
+			sup := supervisor.New(supervisor.Config{
+				StoreRoot:         storeRoot,
+				ConfigPath:        configPath,
+				ServiceURL:        origin,
+				MonitorInterval:   25 * time.Millisecond,
+				ReadyPollInterval: 10 * time.Millisecond,
+				ExternalOwner:     external,
+				KeepOnTimeout:     external,
+			})
+			spec := helperSpec(t, "official", "service", addr, filepath.Join(logsDir, "official.log"))
+			spec.StopGrace = time.Second
+			spec.KillWait = time.Second
 
-		startDone := make(chan error, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		go func() {
-			startDone <- sup.Start(ctx, []supervisor.ServiceSpec{spec})
-		}()
+			startDone := make(chan error, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			go func() {
+				startDone <- sup.Start(ctx, []supervisor.ServiceSpec{spec})
+			}()
 
-		// Trigger Stop concurrently at staggered moments during Start/WriteRecord/monitor launch.
-		time.Sleep(time.Duration(i*35+15) * time.Millisecond)
-		if err := sup.Stop(context.Background()); err != nil {
-			cancel()
+			// Trigger Stop concurrently at staggered moments during Start/WriteRecord/monitor launch.
+			time.Sleep(time.Duration(i*35+15) * time.Millisecond)
+			if err := sup.Stop(context.Background()); err != nil {
+				cancel()
+				<-startDone
+				t.Fatalf("iteration %d Stop failed: %v", i, err)
+			}
 			<-startDone
-			t.Fatalf("iteration %d Stop failed: %v", i, err)
-		}
-		<-startDone
-		cancel()
+			cancel()
 
-		// Final Stop ensures any Start that completed just before or after is cleanly torn down.
-		if err := sup.Stop(context.Background()); err != nil {
-			t.Fatalf("iteration %d final Stop failed: %v", i, err)
-		}
-		if sup.Snapshot().State != supervisor.StateStopped {
-			t.Fatalf("iteration %d expected StateStopped, got %+v", i, sup.Snapshot())
-		}
-		if !external {
-			if _, err := os.Stat(filepath.Join(storeRoot, ".memlane-dev-owner.json")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("iteration %d expected owner receipt absent after concurrent Stop, got %v", i, err)
+			// Final Stop ensures any Start that completed just before or after is cleanly torn down.
+			if err := sup.Stop(context.Background()); err != nil {
+				t.Fatalf("iteration %d final Stop failed: %v", i, err)
 			}
-			lock, err := supervisor.AcquireOwner(storeRoot)
-			if err != nil {
-				t.Fatalf("iteration %d expected .service-owner released, got %v", i, err)
+			if sup.Snapshot().State != supervisor.StateStopped {
+				t.Fatalf("iteration %d expected StateStopped, got %+v", i, sup.Snapshot())
 			}
-			_ = lock.Release()
-		}
+			if !external {
+				if _, err := os.Stat(filepath.Join(storeRoot, ".memlane-dev-owner.json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("iteration %d expected owner receipt absent after concurrent Stop, got %v", i, err)
+				}
+				lock, err := supervisor.AcquireOwner(storeRoot)
+				if err != nil {
+					t.Fatalf("iteration %d expected .service-owner released, got %v", i, err)
+				}
+				_ = lock.Release()
+			}
+		})
 	}
 }
 
 func TestSupervisorTracksAndStopsDetachedSetsidDescendant(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -1091,6 +1105,7 @@ func TestSupervisorTracksAndStopsDetachedSetsidDescendant(t *testing.T) {
 }
 
 func TestSupervisorTrimsStoreRootLogsDir(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	storeLogsDir := filepath.Join(storeRoot, "logs")
@@ -1158,6 +1173,7 @@ func TestSupervisorTrimsStoreRootLogsDir(t *testing.T) {
 }
 
 func TestSupervisorStopRespectsContextBudgetAndCleansDescendants(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	logsDir := filepath.Join(rootParent, "runtime-logs")
@@ -1241,6 +1257,7 @@ func TestSupervisorStopRespectsContextBudgetAndCleansDescendants(t *testing.T) {
 }
 
 func TestTrimServiceLogRedactsSecretsInPrevious(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	logPath := filepath.Join(rootParent, "logs", "service.log")
 
@@ -1295,6 +1312,7 @@ func TestTrimServiceLogRedactsSecretsInPrevious(t *testing.T) {
 }
 
 func TestTrimServiceLogDropsSplitPartialFirstLineBeforeRedaction(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	logPath := filepath.Join(rootParent, "logs", "split.log")
 
@@ -1351,6 +1369,7 @@ func TestTrimServiceLogDropsSplitPartialFirstLineBeforeRedaction(t *testing.T) {
 }
 
 func TestStopVerifiedOwnerNeverSignalsReusedChildPID(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	if err := os.Mkdir(storeRoot, 0o700); err != nil {
@@ -1474,6 +1493,7 @@ func TestStopVerifiedOwnerNeverSignalsReusedChildPID(t *testing.T) {
 }
 
 func TestStopVerifiedOwnerReconcilesDirtyReceiptAndDeadOwnerVerifiedChild(t *testing.T) {
+	t.Parallel()
 	rootParent := canonicalTestDir(t)
 	storeRoot := filepath.Join(rootParent, "library")
 	if err := os.Mkdir(storeRoot, 0o700); err != nil {

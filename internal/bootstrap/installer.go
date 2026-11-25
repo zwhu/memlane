@@ -20,6 +20,7 @@ type Status string
 var (
 	postInstallProbeMaxAttempts = 2
 	postInstallProbeRetryDelay  = 2 * time.Second
+	spaceCheckInterval          = time.Second
 )
 
 const (
@@ -311,7 +312,7 @@ func (i Installer) runLocked(ctx context.Context, operation string, p Plan) erro
 func monitorResources(parent context.Context, check func(context.Context) error) (context.Context, context.CancelCauseFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
 	go func() {
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(spaceCheckInterval)
 		defer ticker.Stop()
 		for {
 			select {

@@ -4,17 +4,66 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 )
 
-func TestAgentVersionsUseConfiguredHostAndDoNotRunUndetectedHost(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "selected host")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf 'pi 0.84.1\\n'\n"), 0700); err != nil {
+var (
+	defaultLoadAgentVersionsFn func(context.Context, Config, []AgentConnection)
+	simpledesktopWarmScript    string
+	simpledesktopWarmScriptRaw []byte
+)
+
+func TestMain(m *testing.M) {
+	defaultLoadAgentVersionsFn = loadAgentVersionsFn
+	loadAgentVersionsFn = func(context.Context, Config, []AgentConnection) {}
+
+	var warmDir string
+	if dir, err := os.MkdirTemp("", "memlane-simpledesktop-warm-"); err == nil {
+		warmDir = dir
+		p := filepath.Join(dir, "warm-dispatcher.sh")
+		body := []byte("#!/bin/sh\nif [ -f \"$0.body.sh\" ]; then\n  . \"$0.body.sh\"\nfi\n")
+		if os.WriteFile(p, body, 0500) == nil {
+			_ = exec.Command(p).Run()
+			simpledesktopWarmScript = p
+			simpledesktopWarmScriptRaw = body
+		}
+	}
+	code := m.Run()
+	if warmDir != "" {
+		_ = os.RemoveAll(warmDir)
+	}
+	os.Exit(code)
+}
+
+func writeWarmDesktopScript(t *testing.T, target, body string) []byte {
+	t.Helper()
+	if simpledesktopWarmScript != "" {
+		if err := os.WriteFile(target+".body.sh", []byte(body+"\n"), 0600); err == nil {
+			if err := os.Link(simpledesktopWarmScript, target); err == nil {
+				return simpledesktopWarmScriptRaw
+			}
+			_ = os.Remove(target + ".body.sh")
+		}
+	}
+	raw := []byte("#!/bin/sh\n" + body + "\n")
+	if err := os.WriteFile(target, raw, 0700); err != nil {
 		t.Fatal(err)
 	}
+	return raw
+}
+
+func TestAgentVersionsUseConfiguredHostAndDoNotRunUndetectedHost(t *testing.T) {
+	t.Parallel()
+	if reflect.ValueOf(defaultLoadAgentVersionsFn).Pointer() != reflect.ValueOf(loadAgentVersions).Pointer() {
+		t.Fatal("production default loadAgentVersionsFn must be loadAgentVersions")
+	}
+	path := filepath.Join(t.TempDir(), "selected host")
+	writeWarmDesktopScript(t, path, `[ "$1" = --version ] || exit 7`+"\n"+`printf 'pi 0.84.1\n'`)
 	var config Config
 	b, _ := json.Marshal(map[string]any{"agent_hosts": map[string]any{"pi": map[string]string{"executable": path}}})
 	if err := json.Unmarshal(b, &config); err != nil {
@@ -28,6 +77,7 @@ func TestAgentVersionsUseConfiguredHostAndDoNotRunUndetectedHost(t *testing.T) {
 }
 
 func TestAgentVersionSurvivesCaptureStatusRefresh(t *testing.T) {
+	// ui.NewTester shares MyGo's global scene.Atlas; keep UI raster tests sequential.
 	a := New(Config{}, nil)
 	a.integrations.HostVersions = map[string]string{"pi": "0.84.1"}
 	row := AgentConnection{ID: "pi", Kind: "pi", Detected: true, Status: "configured_pending_new_session"}
@@ -40,9 +90,7 @@ func TestAgentVersionSurvivesCaptureStatusRefresh(t *testing.T) {
 func TestAntigravityVersionDetectionUsesAgyBinary(t *testing.T) {
 	dir := t.TempDir()
 	agy := filepath.Join(dir, "agy")
-	if err := os.WriteFile(agy, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf '1.5.13\\n'\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	writeWarmDesktopScript(t, agy, `[ "$1" = --version ] || exit 7`+"\n"+`printf '1.5.13\n'`)
 	t.Setenv("PATH", dir)
 	rows := []AgentConnection{{Kind: "antigravity", Detected: true}}
 	loadAgentVersions(context.Background(), Config{}, rows)
@@ -67,9 +115,7 @@ func TestTraexVersionResolvesExecutableAliases(t *testing.T) {
 				bin = bunBin
 			}
 			binary := filepath.Join(bin, name)
-			if err := os.WriteFile(binary, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf 'traecli 0.216.0\\n'\n"), 0700); err != nil {
-				t.Fatal(err)
-			}
+			writeWarmDesktopScript(t, binary, `[ "$1" = --version ] || exit 7`+"\n"+`printf 'traecli 0.216.0\n'`)
 			rows := []AgentConnection{{Kind: "traex", Detected: true}}
 			loadAgentVersions(context.Background(), Config{}, rows)
 			if rows[0].HostVersion != "0.216.0" {
@@ -92,10 +138,7 @@ func TestTraexVersionPrefersPATHAcrossAliases(t *testing.T) {
 		filepath.Join(localBin, "traecli"): "0.100.0",
 		filepath.Join(pathBin, "traex"):    "0.216.0",
 	} {
-		script := "#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf 'traecli " + version + "\\n'\n"
-		if err := os.WriteFile(path, []byte(script), 0700); err != nil {
-			t.Fatal(err)
-		}
+		writeWarmDesktopScript(t, path, "[ \"$1\" = --version ] || exit 7\nprintf 'traecli "+version+"\\n'")
 	}
 	rows := []AgentConnection{{Kind: "traex", Detected: true}}
 	loadAgentVersions(context.Background(), Config{}, rows)
@@ -105,6 +148,7 @@ func TestTraexVersionPrefersPATHAcrossAliases(t *testing.T) {
 }
 
 func TestTraeVersionReadsBundleWithoutLaunchingExecutable(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	contents := filepath.Join(root, "Trae CN.app", "Contents")
 	binary := filepath.Join(contents, "MacOS", "Trae CN")

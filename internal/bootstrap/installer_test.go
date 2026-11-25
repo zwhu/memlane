@@ -63,6 +63,7 @@ func approved(t *testing.T, i Installer, reqs []Requirement) Plan {
 	return p
 }
 func TestDetectionAndDeclineNeverInstall(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	p, err := i.Detect(context.Background(), reqs)
 	if err != nil {
@@ -170,6 +171,7 @@ func TestPostInstallProbeRetryDelayIsCancellable(t *testing.T) {
 }
 
 func TestTransientTimeoutDoesNotChangePlanDigest(t *testing.T) {
+	t.Parallel()
 	plan := Plan{Items: []Item{{Observation: Observation{Status: Incompatible, Reason: "timed out"}}}}
 	before := plan.Digest()
 	plan.Items[0].Observation.transientTimeout = true
@@ -179,6 +181,7 @@ func TestTransientTimeoutDoesNotChangePlanDigest(t *testing.T) {
 }
 
 func TestReuseAndChangedExternalDependency(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	d.observed["python"] = Observation{Status: Available, Path: "/external/python", Fingerprint: "one"}
 	p := approved(t, i, reqs)
@@ -197,6 +200,7 @@ func TestReuseAndChangedExternalDependency(t *testing.T) {
 	}
 }
 func TestInterruptedInstallResumesAndReprobesReady(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	p := approved(t, i, reqs)
 	d.fail = "cognee"
@@ -228,6 +232,7 @@ func TestInterruptedInstallResumesAndReprobesReady(t *testing.T) {
 	}
 }
 func TestCancelledInstallRechecksBeforeResume(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	p := approved(t, i, reqs)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -258,6 +263,9 @@ func (waitingDriver) Install(ctx context.Context, _ Requirement) error {
 	return ctx.Err()
 }
 func TestSpaceMonitorCancelsInFlightInstallation(t *testing.T) {
+	prevInterval := spaceCheckInterval
+	spaceCheckInterval = 10 * time.Millisecond
+	t.Cleanup(func() { spaceCheckInterval = prevInterval })
 	i, _, reqs := fixture(t)
 	i.Driver = waitingDriver{}
 	p := approved(t, i, reqs)
@@ -278,6 +286,7 @@ func TestSpaceMonitorCancelsInFlightInstallation(t *testing.T) {
 	}
 }
 func TestPlanChangeRequiresNewConsent(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	p := approved(t, i, reqs)
 	p.Items[0].Requirement.Source = "https://example.com/different"
@@ -292,6 +301,7 @@ func TestPlanChangeRequiresNewConsent(t *testing.T) {
 	}
 }
 func TestResourceGuardBeforeInstall(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	p := approved(t, i, reqs)
 	i.CheckSpace = func(context.Context) error { return errors.New("space below guard") }
@@ -300,6 +310,7 @@ func TestResourceGuardBeforeInstall(t *testing.T) {
 	}
 }
 func TestStateSymlinkRejected(t *testing.T) {
+	t.Parallel()
 	i, _, reqs := fixture(t)
 	target := t.TempDir()
 	if err := os.Symlink(target, i.Root); err != nil {
@@ -314,6 +325,7 @@ func TestStateSymlinkRejected(t *testing.T) {
 	}
 }
 func TestDiagnosticsWithoutRuntimeAndRedaction(t *testing.T) {
+	t.Parallel()
 	code := 1
 	r, prompt, err := Diagnostics(DiagnosticInput{Operation: "op", Stage: "python", ExitCode: &code, Error: "download failed", InstallerLog: "Authorization: Bearer private-token\nAPI_KEY=top-secret\nhttps://user:pw@example.com/file?custom=unknown-secret#fragment\n/Users/private-user/cache\nsk-testsecret123456\neyJtest.abc.def"})
 	if err != nil || !json.Valid([]byte(r)) {
@@ -330,6 +342,7 @@ func TestDiagnosticsWithoutRuntimeAndRedaction(t *testing.T) {
 }
 
 func TestRedactInstallerTextCoversProxyURLsAndSocksSchemes(t *testing.T) {
+	t.Parallel()
 	input := strings.Join([]string{
 		"HTTP_PROXY=http://alice:topsecret@corp-proxy.internal:8080",
 		"HTTPS_PROXY=https://bob:pw123@10.20.30.40:8443",
@@ -367,6 +380,7 @@ func TestRedactInstallerTextCoversProxyURLsAndSocksSchemes(t *testing.T) {
 // The installed App has no checkout disk reserve. Development callers may still
 // supply a guard, covered by the cancellation and pre-install guard tests above.
 func TestAppInstallationDoesNotRequireDevelopmentDiskGuard(t *testing.T) {
+	t.Parallel()
 	i, d, reqs := fixture(t)
 	i.CheckSpace = nil
 	p := approved(t, i, reqs)

@@ -32,6 +32,7 @@ import (
 )
 
 func TestFirstRuntimeReadinessRequiresLiveOwnerAndBothAuthenticatedAPIs(t *testing.T) {
+	t.Parallel()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +112,7 @@ func TestFirstRuntimeReadinessRequiresLiveOwnerAndBothAuthenticatedAPIs(t *testi
 }
 
 func TestFirstRuntimeDoesNotReplaceExistingOrBrokenConfigurations(t *testing.T) {
+	t.Parallel()
 	parent, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -134,6 +136,7 @@ func TestFirstRuntimeDoesNotReplaceExistingOrBrokenConfigurations(t *testing.T) 
 }
 
 func TestFirstRuntimeRefusesRemoteOriginsBeforeReadingCredentials(t *testing.T) {
+	t.Parallel()
 	if _, err := loopbackJSON(context.Background(), "https://example.invalid:443", "/api/v1/users/me", "/nonexistent/private-key", "X-Api-Key", ""); err == nil || strings.Contains(err.Error(), "no such file") {
 		t.Fatal("remote origin not rejected first", err)
 	}
@@ -494,7 +497,6 @@ func newSyntheticFirstRuntimeFixture(t *testing.T, mode string, extraEnv map[str
 	wrapperPath := filepath.Join(parent, "fake-python.sh")
 
 	var envLines strings.Builder
-	envLines.WriteString("#!/bin/sh\n")
 	envLines.WriteString("export MEMLANE_BOOTSTRAP_HELPER=1\n")
 	fmt.Fprintf(&envLines, "export MEMLANE_BOOTSTRAP_MODE=%q\n", mode)
 	fmt.Fprintf(&envLines, "export MEMLANE_BOOTSTRAP_STORE=%q\n", storeRoot)
@@ -504,10 +506,8 @@ func newSyntheticFirstRuntimeFixture(t *testing.T, mode string, extraEnv map[str
 	for k, v := range extraEnv {
 		fmt.Fprintf(&envLines, "export %s=%q\n", k, v)
 	}
-	fmt.Fprintf(&envLines, "exec %q -test.run=^TestFirstRuntimeHelperProcess$\n", exe)
-	if err := os.WriteFile(wrapperPath, []byte(envLines.String()), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	fmt.Fprintf(&envLines, "exec %q -test.run=^TestFirstRuntimeHelperProcess$", exe)
+	writeWarmBootstrapScript(t, wrapperPath, envLines.String())
 
 	cfgBytes, _ := json.Marshal(map[string]any{
 		"first_install":   FirstInstallation{Schema: 1, StoreID: storeID, Setup: true},
@@ -563,7 +563,7 @@ func waitPIDDead(t *testing.T, pid int) {
 }
 
 func TestStartFirstRuntimeDelegatesLifecycleLogRotationAndGracefulShutdown(t *testing.T) {
-	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+	t.Parallel()
 
 	tempMeta, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -577,6 +577,7 @@ func TestStartFirstRuntimeDelegatesLifecycleLogRotationAndGracefulShutdown(t *te
 		"MEMLANE_BOOTSTRAP_SPAWN_COUNT_FILE": spawnCountFile,
 		"MEMLANE_BOOTSTRAP_NOISE_BYTES":      "600",
 	})
+	t.Cleanup(func() { _ = ShutdownFirstRuntime(context.Background(), fix.configPath) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -692,9 +693,10 @@ func TestStartFirstRuntimeDelegatesLifecycleLogRotationAndGracefulShutdown(t *te
 }
 
 func TestStartFirstRuntimeRecoversStaleOwnerAndRefusesForeignOrLiveReceipt(t *testing.T) {
-	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+	t.Parallel()
 
 	fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", nil)
+	t.Cleanup(func() { _ = ShutdownFirstRuntime(context.Background(), fix.configPath) })
 	receiptPath := filepath.Join(fix.storeRoot, ".memlane-dev-owner.json")
 
 	// Case A: foreign config receipt must be refused and preserved untouched.
@@ -776,7 +778,7 @@ func TestStartFirstRuntimeRecoversStaleOwnerAndRefusesForeignOrLiveReceipt(t *te
 }
 
 func TestStartFirstRuntimeTimeoutPreservesInFlightOwnerAndRetryAdoptsHandle(t *testing.T) {
-	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+	t.Parallel()
 
 	metaDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -785,10 +787,11 @@ func TestStartFirstRuntimeTimeoutPreservesInFlightOwnerAndRetryAdoptsHandle(t *t
 	triggerFile := filepath.Join(metaDir, "go-ready")
 	spawnCountFile := filepath.Join(metaDir, "spawns.log")
 
-	_, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", map[string]string{
+	fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", map[string]string{
 		"MEMLANE_BOOTSTRAP_TRIGGER_FILE":     triggerFile,
 		"MEMLANE_BOOTSTRAP_SPAWN_COUNT_FILE": spawnCountFile,
 	})
+	t.Cleanup(func() { _ = ShutdownFirstRuntime(context.Background(), fix.configPath) })
 
 	shortCtx, shortCancel := context.WithTimeout(context.Background(), 140*time.Millisecond)
 	defer shortCancel()
@@ -833,9 +836,10 @@ func TestStartFirstRuntimeTimeoutPreservesInFlightOwnerAndRetryAdoptsHandle(t *t
 }
 
 func TestStartFirstRuntimeCrashRedactsSecretsAndLeavesNoLiveHandle(t *testing.T) {
-	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+	t.Parallel()
 
 	fix, prepared := newSyntheticFirstRuntimeFixture(t, "crash", nil)
+	t.Cleanup(func() { _ = ShutdownFirstRuntime(context.Background(), fix.configPath) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1122,21 +1126,30 @@ func TestStartFirstRuntimeOwnerLockHandoffFromSupervisedToActivationLauncher(t *
 }
 
 func TestStartFirstRuntimeCompletedActivationReplay(t *testing.T) {
+	t.Parallel()
 	requireRuntimeOwnerTestSupport(t)
 	for _, running := range []bool{false, true} {
 		t.Run(fmt.Sprintf("owner running=%t", running), func(t *testing.T) {
+			t.Parallel()
 			fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher_activate", nil)
-			wrapper, err := os.ReadFile(fix.wrapperPath)
-			if err != nil {
-				t.Fatal(err)
-			}
 			const replay = `for arg do
   if [ "$arg" = "--activate-file" ]; then exit 0; fi
 done
 `
-			wrapper = []byte(strings.Replace(string(wrapper), "#!/bin/sh\n", "#!/bin/sh\n"+replay, 1))
-			if err := os.WriteFile(fix.wrapperPath, wrapper, 0700); err != nil {
-				t.Fatal(err)
+			bodyPath := fix.wrapperPath + ".body.sh"
+			if body, err := os.ReadFile(bodyPath); err == nil {
+				if err := os.WriteFile(bodyPath, append([]byte(replay), body...), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				wrapper, err := os.ReadFile(fix.wrapperPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wrapper = []byte(strings.Replace(string(wrapper), "#!/bin/sh\n", "#!/bin/sh\n"+replay, 1))
+				if err := os.WriteFile(fix.wrapperPath, wrapper, 0700); err != nil {
+					t.Fatal(err)
+				}
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
@@ -1180,7 +1193,7 @@ done
 }
 
 func TestStartFirstRuntimeRetryCrashCleansUpHandleAndMonitor(t *testing.T) {
-	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
+	t.Parallel()
 
 	metaDir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -1190,6 +1203,7 @@ func TestStartFirstRuntimeRetryCrashCleansUpHandleAndMonitor(t *testing.T) {
 	fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", map[string]string{
 		"MEMLANE_BOOTSTRAP_TRIGGER_FILE": triggerFile,
 	})
+	t.Cleanup(func() { _ = ShutdownFirstRuntime(context.Background(), fix.configPath) })
 
 	shortCtx, shortCancel := context.WithTimeout(context.Background(), 140*time.Millisecond)
 	defer shortCancel()
@@ -1503,6 +1517,7 @@ func newRuntimePreparationFixture(t *testing.T, probeScript string) (FirstRuntim
 }
 
 func TestPrepareFirstRuntimeForUpgradePreservesConfig(t *testing.T) {
+	t.Parallel()
 	prepared, env, assets := newRuntimePreparationFixture(t, `
 case "$3" in
 	-c) echo '{"mismatch":[]}' ;;
@@ -1585,6 +1600,7 @@ esac`)
 }
 
 func TestEvaluateZeroDownloads(t *testing.T) {
+	t.Parallel()
 	const currentHash, oldHash = "new-runtime", "old-runtime"
 	plan := Plan{Items: []Item{{Observation: Observation{Status: Available}}}}
 	zero := &RuntimeUpgradeReceipt{ToRuntimeHash: currentHash, ZeroDownloads: true}
@@ -1650,6 +1666,7 @@ func TestEvaluateZeroDownloads(t *testing.T) {
 }
 
 func TestInspectOwnerRuntimeStatusReadOnly(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
@@ -1689,6 +1706,7 @@ func TestInspectOwnerRuntimeStatusReadOnly(t *testing.T) {
 }
 
 func TestInspectOwnerRuntimeStatusFiltersUpgradeReceipt(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	root := filepath.Join(prepared.HostHome, "components")
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
@@ -1736,11 +1754,13 @@ func TestInspectOwnerRuntimeStatusFiltersUpgradeReceipt(t *testing.T) {
 }
 
 func TestInspectOwnerRuntimeStatusSurvivesCorruptUpgradeReceipt(t *testing.T) {
+	t.Parallel()
 	const token = "sk-upgrade-receipt-fixture"
 	const oldHash = "1111111111111111"
 	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
 	for _, mode := range []string{"corrupt JSON", "symlink"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			prepared := newReadOnlyRuntimeFixture(t)
 			component := filepath.Join(prepared.HostHome, "components-"+token)
 			path, err := RuntimeUpgradeReceiptPath(component, prepared.ConfigPath)
@@ -1817,6 +1837,7 @@ func TestInspectOwnerRuntimeStatusSurvivesCorruptUpgradeReceipt(t *testing.T) {
 }
 
 func TestInspectOwnerRuntimeStatusLiveBeta2Argv(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "darwin" {
 		t.Skip("KERN_PROCARGS2 requires macOS")
 	}
@@ -1922,6 +1943,7 @@ func TestDetectOwnerRuntimeUsesServiceChildAndRejectsCheckout(t *testing.T) {
 }
 
 func TestRestartStaleRuntimeOwnerRejectsUnboundOwner(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	install := filepath.Join(prepared.HostHome, "installation")
 	prepared.Resources = filepath.Join(install, "runtime-1111111111111111")
@@ -1951,6 +1973,7 @@ func TestRestartStaleRuntimeOwnerRejectsUnboundOwner(t *testing.T) {
 }
 
 func TestStartFirstRuntimeRefusesHeldUpgradeLock(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	lock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
 	if err != nil {
@@ -1970,6 +1993,7 @@ func TestStartFirstRuntimeRefusesHeldUpgradeLock(t *testing.T) {
 }
 
 func TestVerifyRestartedRuntimeGeneration(t *testing.T) {
+	t.Parallel()
 	const bundledHash = "2222222222222222"
 	for _, tc := range []struct {
 		name string
@@ -2000,6 +2024,7 @@ func TestVerifyRestartedRuntimeGeneration(t *testing.T) {
 }
 
 func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	scripts := filepath.Join(prepared.Resources, "scripts")
 	if err := os.Mkdir(scripts, 0700); err != nil {
@@ -2010,7 +2035,7 @@ func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
 	if err := os.WriteFile(script, []byte("echo $$ > \"$HOME/launcher.pid\"\necho launcher-ready-to-wait\nexec /bin/sleep 30\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	err := StartFirstRuntimeDetached(ctx, prepared)
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -2041,6 +2066,7 @@ func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
 }
 
 func TestStartFirstRuntimeDetachedReportsEarlyExit(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	scripts := filepath.Join(prepared.Resources, "scripts")
 	if err := os.Mkdir(scripts, 0700); err != nil {
@@ -2059,8 +2085,10 @@ func TestStartFirstRuntimeDetachedReportsEarlyExit(t *testing.T) {
 }
 
 func TestStartFirstRuntimeDetachedObservesOwnerAfterLauncherExit(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"releases lock", "different config"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			// FIFO rendezvous uses wall time while the launcher is blocked in a syscall.
 			signalCtx, stopSignal := context.WithTimeout(t.Context(), 3*time.Second)
 			defer stopSignal()
@@ -2130,8 +2158,10 @@ func TestStartFirstRuntimeDetachedObservesOwnerAfterLauncherExit(t *testing.T) {
 }
 
 func TestStartFirstRuntimeDetachedCompetingOwner(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"releases lock", "different config", "different process", "invalid receipt", "unexpected phase"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			prepared := newReadOnlyRuntimeFixture(t)
 			lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
 			if err != nil {
@@ -2209,6 +2239,7 @@ func TestStartFirstRuntimeDetachedCompetingOwner(t *testing.T) {
 }
 
 func TestWaitFirstRuntimeDetachedRejectsInvalidConfig(t *testing.T) {
+	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
 	if err := os.WriteFile(prepared.ConfigPath, []byte("{"), 0600); err != nil {
 		t.Fatal(err)

@@ -66,6 +66,7 @@ type PythonInfo struct {
 var (
 	routineProbeTimeout     = 30 * time.Second
 	postInstallProbeTimeout = 90 * time.Second
+	probeWaitDelay          = 2 * time.Second
 )
 
 type postInstallProbeKey struct{}
@@ -119,7 +120,7 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 		}
 		return err
 	}
-	command.WaitDelay = 2 * time.Second
+	command.WaitDelay = probeWaitDelay
 	command.Dir = home
 	command.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + home,
 		"LANG=en_US.UTF-8", "HF_HOME=" + filepath.Join(home, "hf"), "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1",

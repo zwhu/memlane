@@ -13,6 +13,7 @@ import (
 )
 
 func TestRecordedConnectionReceiptRequiresFullScope(t *testing.T) {
+	t.Parallel()
 	o := generationUIOperation{Operation: "ui-repair", Profile: "trae", Kind: "connection_repair_trae_hooks"}
 	valid := controlplane.ConnectionOperationReceipt{
 		Recorded: true, Status: "complete", Reconciled: true,
@@ -31,6 +32,7 @@ func TestRecordedConnectionReceiptRequiresFullScope(t *testing.T) {
 	} {
 		for _, value := range []string{"", "unrelated"} {
 			t.Run(test.field+"/"+value, func(t *testing.T) {
+				t.Parallel()
 				receipt := valid
 				test.set(&receipt, value)
 				if connectionReceiptMatches(o, receipt) {
@@ -78,6 +80,7 @@ func TestRecordedConnectionReceiptRequiresFullScope(t *testing.T) {
 }
 
 func TestPendingConnectionReconcileRequiresExplicitSafeUnlock(t *testing.T) {
+	// ui.NewTester shares MyGo's global scene.Atlas; keep UI raster tests sequential.
 	for _, scenario := range []string{"safe", "explicit_zero_revision", "unrecorded", "unrecorded_apply", "unrecorded_nonterminal", "unrecorded_reconciled", "ambiguous", "post_mutation", "ambiguous_on_apply", "terminal_rejection"} {
 		t.Run(scenario, func(t *testing.T) {
 			var previews, applies atomic.Int32
@@ -260,6 +263,7 @@ func TestPendingConnectionReconcileRequiresExplicitSafeUnlock(t *testing.T) {
 }
 
 func TestConnectionActionKeeps409PendingWithoutVerifiedRejection(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name, phase, receipt string
 		wantReads, wantOps   int
@@ -272,6 +276,7 @@ func TestConnectionActionKeeps409PendingWithoutVerifiedRejection(t *testing.T) {
 		{"rejected", "pre_mutation", `{"recorded":true,"status":"complete","outcome":"rejected"}`, 1, 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
 			var reads atomic.Int32
 			row := AgentConnection{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"}
 			cfg := Config{GenerationFile: filepath.Join(t.TempDir(), "generation.json")}
@@ -324,6 +329,7 @@ func TestConnectionActionKeeps409PendingWithoutVerifiedRejection(t *testing.T) {
 }
 
 func TestPendingTraeRepairReviewsHostBeforeClearingOriginalOperation(t *testing.T) {
+	// ui.NewTester shares MyGo's global scene.Atlas; keep UI raster tests sequential.
 	for _, scenario := range []struct {
 		name                     string
 		terminal, rowNeedsReview bool
@@ -416,6 +422,7 @@ func TestPendingTraeRepairReviewsHostBeforeClearingOriginalOperation(t *testing.
 }
 
 func TestTraeHookRepairRowOffersHostReviewWithOrWithoutBlockedPreview(t *testing.T) {
+	// ui.NewTester shares MyGo's global scene.Atlas; keep UI raster tests sequential.
 	for _, blockedPreview := range []bool{false, true} {
 		root := t.TempDir()
 		a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)

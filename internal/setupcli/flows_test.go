@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -23,6 +24,7 @@ import (
 )
 
 func TestInstallPlanApplyAndPoll(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.owner.State, f.owner.OwnerLocked = "stopped", false
 	f.plan.Items[0].Observation.Status = bootstrap.Missing
@@ -89,6 +91,7 @@ func TestInstallPlanApplyAndPoll(t *testing.T) {
 }
 
 func TestInstallCompletesWithExistingComponents(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wait string
@@ -98,79 +101,83 @@ func TestInstallCompletesWithExistingComponents(t *testing.T) {
 		{"finishes during wait", "2", ExitOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			f.owner.State, f.owner.OwnerLocked = "stopped", false
-			f.row.Detected = false
-			var workerCtx context.Context
-			f.r.LaunchWorkerFn = func(ctx context.Context, executable string, args []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
-				if workerCtx != nil || executable != f.r.Executable || args[0] != "__install-worker" ||
-					!slices.Contains(args, "--start-runtime") || !cfg.StartRuntime || cfg.OperationID != "first-install" ||
-					cfg.ComponentRoot != f.root || cfg.ConfigPath != f.config || cfg.PlanDigest != f.plan.Digest() {
-					t.Fatalf("incorrect worker launch: %v, %+v", args, cfg)
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				f.owner.State, f.owner.OwnerLocked = "stopped", false
+				f.row.Detected = false
+				var workerCtx context.Context
+				f.r.LaunchWorkerFn = func(ctx context.Context, executable string, args []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+					if workerCtx != nil || executable != f.r.Executable || args[0] != "__install-worker" ||
+						!slices.Contains(args, "--start-runtime") || !cfg.StartRuntime || cfg.OperationID != "first-install" ||
+						cfg.ComponentRoot != f.root || cfg.ConfigPath != f.config || cfg.PlanDigest != f.plan.Digest() {
+						t.Fatalf("incorrect worker launch: %v, %+v", args, cfg)
+					}
+					// Model the detached process independently of the CLI's polling context.
+					workerCtx = context.WithoutCancel(ctx)
+					f.worker = bootstrap.InstallWorkerState{
+						State: "running", Stage: "starting_runtime", OperationID: cfg.OperationID, PID: 123,
+						ConfigPath: cfg.ConfigPath, PlanDigest: cfg.PlanDigest, StartRuntime: true,
+					}
+					f.workerActive = true
+					return f.worker, nil
 				}
-				// Model the detached process independently of the CLI's polling context.
-				workerCtx = context.WithoutCancel(ctx)
-				f.worker = bootstrap.InstallWorkerState{
-					State: "running", Stage: "starting_runtime", OperationID: cfg.OperationID, PID: 123,
-					ConfigPath: cfg.ConfigPath, PlanDigest: cfg.PlanDigest, StartRuntime: true,
+				finish := func() {
+					t.Helper()
+					if workerCtx == nil || workerCtx.Err() != nil {
+						t.Fatal("worker could not finish runtime startup")
+					}
+					f.worker.State, f.worker.Stage, f.workerActive = "completed", "ready", false
+					f.owner.State, f.owner.OwnerLocked = "ready", true
 				}
-				f.workerActive = true
-				return f.worker, nil
-			}
-			finish := func() {
-				t.Helper()
-				if workerCtx == nil || workerCtx.Err() != nil {
-					t.Fatal("worker could not finish runtime startup")
+				f.r.SleepFn = func(context.Context, time.Duration) error {
+					if tc.exit == ExitOK {
+						finish()
+					}
+					return nil
 				}
-				f.worker.State, f.worker.Stage, f.workerActive = "completed", "ready", false
-				f.owner.State, f.owner.OwnerLocked = "ready", true
-			}
-			f.r.SleepFn = func(context.Context, time.Duration) error {
-				if tc.exit == ExitOK {
-					finish()
-				}
-				return nil
-			}
-			inspect := f.r.InspectWorkerFn
-			polls := 0
-			f.r.InspectWorkerFn = func(ctx context.Context, root string) (bootstrap.InstallWorkerState, bool, error) {
-				if f.workerActive && tc.exit == ExitInProgressOrBusy {
-					if _, waiting := ctx.Deadline(); waiting {
-						polls++
-						if polls > 1 {
-							<-ctx.Done()
-							return bootstrap.InstallWorkerState{}, false, ctx.Err()
+				inspect := f.r.InspectWorkerFn
+				polls := 0
+				f.r.InspectWorkerFn = func(ctx context.Context, root string) (bootstrap.InstallWorkerState, bool, error) {
+					if f.workerActive && tc.exit == ExitInProgressOrBusy {
+						if _, waiting := ctx.Deadline(); waiting {
+							polls++
+							if polls > 1 {
+								<-ctx.Done()
+								return bootstrap.InstallWorkerState{}, false, ctx.Err()
+							}
 						}
 					}
+					return inspect(ctx, root)
 				}
-				return inspect(ctx, root)
-			}
-			e := f.command(tc.exit, "install", "--apply", "--plan-digest", f.plan.Digest(), "--wait", tc.wait)
-			if tc.exit == ExitInProgressOrBusy {
-				if polls != 2 || !e.Components.WorkerActive || e.Components.Progress == nil || e.Components.Progress.Stage != "starting_runtime" ||
-					e.RetryAfterMS != 10000 || !hasBlocker(e, "install_worker_active") {
-					t.Fatalf("runtime startup progress lost at deadline: %+v", e)
+				e := f.command(tc.exit, "install", "--apply", "--plan-digest", f.plan.Digest(), "--wait", tc.wait)
+				if tc.exit == ExitInProgressOrBusy {
+					if polls != 2 || !e.Components.WorkerActive || e.Components.Progress == nil || e.Components.Progress.Stage != "starting_runtime" ||
+						e.RetryAfterMS != 10000 || !hasBlocker(e, "install_worker_active") {
+						t.Fatalf("runtime startup progress lost at deadline: %+v", e)
+					}
+					status := f.command(ExitInProgressOrBusy, "doctor", "--operation-id", e.OperationID)
+					if len(status.Blockers) != 1 || !hasBlocker(status, "install_worker_active") ||
+						len(status.NextActions) != 1 || !hasAction(status, "doctor", "--operation-id", e.OperationID, "--json") ||
+						status.RetryAfterMS != 10000 || status.Daemon.State != "stopped" || !status.Components.WorkerActive {
+						t.Fatalf("active runtime worker reported conflicting advice: %+v", status)
+					}
+					finish()
+				} else if e.Daemon.State != "ready" || e.Components.WorkerActive {
+					t.Fatalf("runtime did not become ready: %+v", e)
 				}
-				status := f.command(ExitInProgressOrBusy, "doctor", "--operation-id", e.OperationID)
-				if len(status.Blockers) != 1 || !hasBlocker(status, "install_worker_active") ||
-					len(status.NextActions) != 1 || !hasAction(status, "doctor", "--operation-id", e.OperationID, "--json") ||
-					status.RetryAfterMS != 10000 || status.Daemon.State != "stopped" || !status.Components.WorkerActive {
-					t.Fatalf("active runtime worker reported conflicting advice: %+v", status)
+				e = f.command(ExitOK, "doctor", "--operation-id", e.OperationID)
+				if e.OperationID != "first-install" || e.Daemon.State != "ready" || e.Components.WorkerActive ||
+					e.Components.Progress == nil || e.Components.Progress.Stage != "ready" {
+					t.Fatalf("doctor did not report the completed worker: %+v", e)
 				}
-				finish()
-			} else if e.Daemon.State != "ready" || e.Components.WorkerActive {
-				t.Fatalf("runtime did not become ready: %+v", e)
-			}
-			e = f.command(ExitOK, "doctor", "--operation-id", e.OperationID)
-			if e.OperationID != "first-install" || e.Daemon.State != "ready" || e.Components.WorkerActive ||
-				e.Components.Progress == nil || e.Components.Progress.Stage != "ready" {
-				t.Fatalf("doctor did not report the completed worker: %+v", e)
-			}
+			})
 		})
 	}
 }
 
 func TestInstallCompletePlanWithExistingDaemon(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, state, phase string
 		stale              bool
@@ -190,6 +197,7 @@ func TestInstallCompletePlanWithExistingDaemon(t *testing.T) {
 			actions: [][]string{{"doctor", "--operation-id", "first-install"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.owner.State, f.owner.OwnerPhase, f.owner.StaleVersionDetected = tc.state, tc.phase, tc.stale
 			f.r.LaunchWorkerFn = func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
@@ -214,6 +222,7 @@ func TestInstallCompletePlanWithExistingDaemon(t *testing.T) {
 }
 
 func TestHiddenWorkerAssetsAndExitMapping(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	args := []string{"__install-worker", "--component-root", f.root, "--config", f.config,
 		"--mirror", "official", "--operation-id", "first-install", "--plan-digest", f.plan.Digest(), "--start-runtime"}
@@ -247,6 +256,7 @@ func TestHiddenWorkerAssetsAndExitMapping(t *testing.T) {
 }
 
 func TestInstallRejectsOverlapWithProspectiveLibrary(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "darwin" {
 		t.Skip("component bootstrap requires macOS")
 	}
@@ -287,6 +297,7 @@ func TestInstallRejectsOverlapWithProspectiveLibrary(t *testing.T) {
 }
 
 func TestCleanInstallLeavesProtectedStoreEmptyForPrepareFirstRuntime(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "darwin" {
 		t.Skip("component bootstrap requires macOS")
 	}
@@ -335,6 +346,7 @@ func TestCleanInstallLeavesProtectedStoreEmptyForPrepareFirstRuntime(t *testing.
 }
 
 func TestVerifyConnectionRequiresPostActivationEvidence(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.row.Status = "configured_pending_new_session"
 	f.row.Capture = &controlplane.AgentCaptureState{State: "healthy"}
@@ -382,6 +394,7 @@ func TestVerifyConnectionRequiresPostActivationEvidence(t *testing.T) {
 }
 
 func TestDoctorNetworkGenerationAndOperationReceipt(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.r.CheckDNSFn = func(_ context.Context, mirror string) bool {
 		if mirror != "official" {
@@ -422,6 +435,7 @@ func TestDoctorNetworkGenerationAndOperationReceipt(t *testing.T) {
 }
 
 func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
+	t.Parallel()
 	const untrusted = "private-untrusted-host-value"
 	for _, tc := range []struct {
 		name                                    string
@@ -439,6 +453,7 @@ func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
 		{name: "generation unavailable", local: []string{"pi"}, unavailable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.doc.First.Setup = false
 			f.writeConfig()
@@ -535,6 +550,7 @@ func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
 }
 
 func TestOfflineDoctorAvailableBridges(t *testing.T) {
+	t.Parallel()
 	gui := bootstrap.DetectedHost{Kind: "trae_ide", Detected: true, Executable: "/Applications/Trae CN.app/Contents/MacOS/Electron"}
 	codex := bootstrap.DetectedHost{Kind: "codex", Detected: true, SupportsProcessingCLI: true, Executable: "/usr/local/bin/codex"}
 	for _, tc := range []struct {
@@ -546,6 +562,7 @@ func TestOfflineDoctorAvailableBridges(t *testing.T) {
 		{"GUI only", []bootstrap.DetectedHost{gui}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
 			f.plan.Items[0].Observation.Status = bootstrap.Missing
@@ -564,6 +581,7 @@ func TestOfflineDoctorAvailableBridges(t *testing.T) {
 }
 
 func TestOwnerRepairAndStop(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.owner.State, f.owner.StaleVersionDetected = "stale_runtime", true
 	configBefore := readTestFile(t, f.config)
@@ -642,6 +660,7 @@ func TestOwnerRepairAndStop(t *testing.T) {
 }
 
 func TestConnectionActionsJournalAndConflicts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, phase, errorCode, errorPhase, receipt string
 		code                                        int
@@ -660,6 +679,7 @@ func TestConnectionActionsJournalAndConflicts(t *testing.T) {
 		{"transport", "activate", "transport", "", "", ExitNeedsReview, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			phase := strings.ReplaceAll(tc.phase, "-", "_")
 			if oneOf(tc.phase, "allow-capture", "defer-capture") {
@@ -747,8 +767,10 @@ func (f *fixture) assertRetained(id string, retained bool) {
 }
 
 func TestConnectionAutoConnectAndEnvironmentSelection(t *testing.T) {
+	t.Parallel()
 	for _, changed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "matching", true: "changed"}[changed], func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.row.Status = "not_connected"
 			f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
@@ -814,6 +836,7 @@ func TestConnectionAutoConnectAndEnvironmentSelection(t *testing.T) {
 }
 
 func TestRepairPendingOperationsAndSetupIsolation(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		code      int
 		errorCode string
@@ -821,6 +844,7 @@ func TestRepairPendingOperationsAndSetupIsolation(t *testing.T) {
 		{ExitOK, ""}, {ExitNeedsReview, "connection_operation_ambiguous_requires_review"}, {ExitPreflightBlocked, "revision_conflict"},
 	} {
 		t.Run(statuses[tc.code], func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.pending()
 			f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
@@ -874,6 +898,7 @@ func TestRepairPendingOperationsAndSetupIsolation(t *testing.T) {
 }
 
 func TestRepairPendingApplyRequiresTerminalEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(*controlplane.ConnectionOperationReceipt)
@@ -889,6 +914,7 @@ func TestRepairPendingApplyRequiresTerminalEvidence(t *testing.T) {
 		{"no unlock evidence", func(r *controlplane.ConnectionOperationReceipt) { r.SafeToUnlock, r.Reconciled = false, false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.pending()
 			f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
@@ -913,6 +939,7 @@ func TestRepairPendingApplyRequiresTerminalEvidence(t *testing.T) {
 }
 
 func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		code  int
 		phase string
@@ -920,6 +947,7 @@ func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
 		{ExitOK, ""}, {ExitPreflightBlocked, "pre_mutation"}, {ExitNeedsReview, "post_mutation"},
 	} {
 		t.Run(statuses[tc.code], func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
 				if tc.phase == "pre_mutation" && req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/operations/") {
@@ -965,6 +993,7 @@ func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
 }
 
 func TestMalformedFirstInstallIdentityRemainsReadOnly(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if err := os.Remove(filepath.Join(f.store, "store-identity.json")); err != nil {
 		t.Fatal(err)
@@ -978,6 +1007,7 @@ func hasAction(e envelope, args ...string) bool {
 }
 
 func TestUnavailableConnectionTargets(t *testing.T) {
+	t.Parallel()
 	checkNoWrites := func(t *testing.T, f *fixture) {
 		t.Helper()
 		if f.writes != 0 {
@@ -1035,6 +1065,7 @@ func TestUnavailableConnectionTargets(t *testing.T) {
 		{"verify", "--stage", "connection", "--agent", "codex"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			t.Parallel()
 			f := newUnavailableFixture(t, codex)
 			e := f.command(ExitActionRequired, args...)
 			const install = "npm i -g @openai/codex"
@@ -1048,6 +1079,7 @@ func TestUnavailableConnectionTargets(t *testing.T) {
 		})
 	}
 	t.Run("explicit unavailable status", func(t *testing.T) {
+		t.Parallel()
 		f := newUnavailableFixture(t, controlplane.AgentConnection{
 			ID: testInstance, Kind: "trae_ide", Status: "unavailable", Detected: false,
 		})
@@ -1059,6 +1091,7 @@ func TestUnavailableConnectionTargets(t *testing.T) {
 		checkNoWrites(t, f)
 	})
 	t.Run("unknown explicit instance", func(t *testing.T) {
+		t.Parallel()
 		f := newUnavailableFixture(t, codex)
 		e := f.command(ExitInvalidArguments, "connect", "--agent", "codex", "--instance-id", "codex-0123456789abcdef01234567", "--dry-run")
 		if !hasBlocker(e, "unknown_connection_target") || hasBlocker(e, "connection_target_unavailable") {
@@ -1069,6 +1102,7 @@ func TestUnavailableConnectionTargets(t *testing.T) {
 }
 
 func TestVerifyConnectionRequestedAgentAndNonCaptureReceipts(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.doc.First.Setup = false
 	f.writeConfig()
@@ -1105,6 +1139,7 @@ func TestVerifyConnectionRequestedAgentAndNonCaptureReceipts(t *testing.T) {
 }
 
 func TestDoctorOffersConnectionForTemplateAAndC(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, kind, status        string
 		setup, selected, explicit bool
@@ -1115,6 +1150,7 @@ func TestDoctorOffersConnectionForTemplateAAndC(t *testing.T) {
 		{"selected-agent", "cursor", "ready_to_activate", false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.doc.First.Setup = tc.setup
 			f.writeConfig()
@@ -1141,8 +1177,10 @@ func TestDoctorOffersConnectionForTemplateAAndC(t *testing.T) {
 }
 
 func TestCaptureReviewUsesFreshCaptureSHA(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"allow-capture", "defer-capture"} {
 		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.row.Status = "configured_pending_new_session"
 			args := []string{"connect", "--agent", testAgent, "--phase", phase}
@@ -1199,6 +1237,7 @@ func TestCaptureReviewUsesFreshCaptureSHA(t *testing.T) {
 }
 
 func TestRepairOrphanTraeHooksOffersFreshConnection(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
 		if strings.HasSuffix(req.URL.Path, "/repair-trae-hooks") && !body.DryRun {
@@ -1239,6 +1278,7 @@ func assertRecoveredHookRepair(t *testing.T, e envelope) {
 }
 
 func TestVerifyZeroDownloadsChecksRetainedWorkerAndJournal(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.r.InspectWorkerFn = bootstrap.InspectInstallWorker
 	args := []string{"verify", "--stage", "setup", "--expect-zero-downloads"}
@@ -1278,64 +1318,83 @@ func TestVerifyZeroDownloadsChecksRetainedWorkerAndJournal(t *testing.T) {
 }
 
 func TestInstallApplySharesWaitDeadline(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"complete plan", "incomplete plan"} {
 		t.Run(phase, func(t *testing.T) {
-			f := newFixture(t)
-			f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
-			if phase == "incomplete plan" {
-				f.plan.Items[0].Observation.Status = bootstrap.Missing
-			}
-			var deadline time.Time
-			checkDeadline := func(ctx context.Context) {
-				t.Helper()
-				got, ok := ctx.Deadline()
-				if !ok || time.Until(got) > 2*time.Second {
-					t.Fatalf("caller exceeded --wait 2: %v", got)
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
+				if phase == "incomplete plan" {
+					f.plan.Items[0].Observation.Status = bootstrap.Missing
 				}
-				if deadline.IsZero() {
-					deadline = got
-				} else if !got.Equal(deadline) {
-					t.Fatalf("deadline changed from %v to %v", deadline, got)
+				var deadline time.Time
+				checkDeadline := func(ctx context.Context) {
+					t.Helper()
+					got, ok := ctx.Deadline()
+					if !ok || time.Until(got) > 2*time.Second {
+						t.Fatalf("caller exceeded --wait 2: %v", got)
+					}
+					if deadline.IsZero() {
+						deadline = got
+					} else if !got.Equal(deadline) {
+						t.Fatalf("deadline changed from %v to %v", deadline, got)
+					}
 				}
-			}
-			newEnv := f.r.NewEnvFn
-			f.r.NewEnvFn = func(ctx context.Context, assets fs.FS, opts bootstrap.EnvironmentOptions) (*bootstrap.Environment, error) {
-				checkDeadline(ctx)
-				return newEnv(ctx, assets, opts)
-			}
-			f.r.DetectPlanFn = func(_ *bootstrap.Environment, ctx context.Context) (bootstrap.Plan, error) {
-				checkDeadline(ctx)
-				return f.plan, nil
-			}
-			f.r.LaunchWorkerFn = func(ctx context.Context, _ string, _ []string, _ bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
-				checkDeadline(ctx)
-				<-ctx.Done()
-				return bootstrap.InstallWorkerState{}, ctx.Err()
-			}
-			e := f.command(ExitInProgressOrBusy, "install", "--apply", "--wait", "2", "--plan-digest", f.plan.Digest())
-			if !hasBlocker(e, "install_worker_active") || e.RetryAfterMS != retryMillis {
-				t.Fatalf("deadline did not return retry advice: %+v", e)
-			}
+				newEnv := f.r.NewEnvFn
+				f.r.NewEnvFn = func(ctx context.Context, assets fs.FS, opts bootstrap.EnvironmentOptions) (*bootstrap.Environment, error) {
+					checkDeadline(ctx)
+					return newEnv(ctx, assets, opts)
+				}
+				f.r.DetectPlanFn = func(_ *bootstrap.Environment, ctx context.Context) (bootstrap.Plan, error) {
+					checkDeadline(ctx)
+					return f.plan, nil
+				}
+				f.r.LaunchWorkerFn = func(ctx context.Context, _ string, _ []string, _ bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+					checkDeadline(ctx)
+					<-ctx.Done()
+					return bootstrap.InstallWorkerState{}, ctx.Err()
+				}
+				e := f.command(ExitInProgressOrBusy, "install", "--apply", "--wait", "2", "--plan-digest", f.plan.Digest())
+				if !hasBlocker(e, "install_worker_active") || e.RetryAfterMS != retryMillis {
+					t.Fatalf("deadline did not return retry advice: %+v", e)
+				}
+			})
 		})
 	}
 }
 
 func TestRepairStaleDaemonPassesRealProtectedStoreCheckOffline(t *testing.T) {
+	t.Parallel()
+	const probeScript = "#!/bin/sh\n: > \"$(/usr/bin/dirname \"$0\")/runtime-probe-called\"\nexit 1\n"
+	warmDir := t.TempDir()
+	warmPython := filepath.Join(warmDir, "test-python")
+	writeFile(t, warmPython, []byte(probeScript))
+	if err := os.Chmod(warmPython, 0500); err != nil {
+		t.Fatal(err)
+	}
+	_ = exec.Command(warmPython).Run()
 	for _, setup := range []bool{true, false} {
 		name := "ready"
 		if setup {
 			name = "first_install_setup"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.bootstrapAssets = engine.BootstrapAssets
 			f.doc.First.Setup = setup
 			f.owner.State, f.owner.StaleVersionDetected = "stale_runtime", true
 			python := filepath.Join(f.root, "test-python")
 			probe := filepath.Join(f.root, "runtime-probe-called")
-			writeFile(t, python, []byte("#!/bin/sh\n: > \"$(/usr/bin/dirname \"$0\")/runtime-probe-called\"\nexit 1\n"))
-			if err := os.Chmod(python, 0700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(python), 0700); err != nil {
 				t.Fatal(err)
+			}
+			if err := os.Link(warmPython, python); err != nil {
+				writeFile(t, python, []byte(probeScript))
+				if err := os.Chmod(python, 0700); err != nil {
+					t.Fatal(err)
+				}
 			}
 			opts := bootstrap.EnvironmentOptions{Root: f.root, Python: python, UV: filepath.Join(f.root, "missing-uv")}
 			if err := bootstrap.SaveSelections(opts, f.config); err != nil {
@@ -1405,6 +1464,7 @@ func readTestFile(t *testing.T, path string) []byte {
 }
 
 func TestRepairPendingUnrecordedBeta2RevisionConflict(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	const id = "ui-beta2-conflict"
 	_, err := controlplane.RecordUIOperation(f.ops, controlplane.UIOperation{
@@ -1453,6 +1513,7 @@ func TestRepairPendingUnrecordedBeta2RevisionConflict(t *testing.T) {
 }
 
 func TestReviewRecoversInterruptedTraeHookRepair(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		mutate func(*controlplane.ConnectionOperationReceipt)
@@ -1467,6 +1528,7 @@ func TestReviewRecoversInterruptedTraeHookRepair(t *testing.T) {
 		{"empty action", func(r *controlplane.ConnectionOperationReceipt) { r.Action = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			args := []string{"connect", "--agent", testAgent, "--phase", "review"}
 			f.command(ExitOK, append(slices.Clone(args), "--dry-run")...)
@@ -1549,6 +1611,7 @@ func TestReviewRecoversInterruptedTraeHookRepair(t *testing.T) {
 }
 
 func TestSingleConfirmationBlocksBaselineDrift(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.row.Kind, f.row.ID, f.row.Status = "antigravity", "antigravity-0123456789abcdef01234567", "not_connected"
 	f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
@@ -1579,6 +1642,7 @@ func TestSingleConfirmationBlocksBaselineDrift(t *testing.T) {
 }
 
 func TestInstallReattachesWithApprovedDigestAfterPlanChanges(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.plan.Items[0].Observation.Status = bootstrap.Missing
 	digest := f.plan.Digest()
@@ -1617,6 +1681,7 @@ func TestInstallReattachesWithApprovedDigestAfterPlanChanges(t *testing.T) {
 }
 
 func TestFullInstallWorkerCompletionRequiresReadyDaemon(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, state, phase, blocker string
 		locked, ready               bool
@@ -1629,6 +1694,7 @@ func TestFullInstallWorkerCompletionRequiresReadyDaemon(t *testing.T) {
 		{"ready", "ready", "ready", "", true, true, ExitOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.worker = bootstrap.InstallWorkerState{
 				State: "running", OperationID: "first-install", PlanDigest: f.plan.Digest(), PID: 123, ConfigPath: f.config, StartRuntime: true,
@@ -1650,6 +1716,7 @@ func TestFullInstallWorkerCompletionRequiresReadyDaemon(t *testing.T) {
 }
 
 func TestDoctorReportsWorkerTelemetryAndMatchesExactID(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.worker = bootstrap.InstallWorkerState{
 		OperationID: "other-install", State: "running", Stage: "starting",
@@ -1673,8 +1740,10 @@ func TestDoctorReportsWorkerTelemetryAndMatchesExactID(t *testing.T) {
 }
 
 func TestComponentInstallRejectsIncompatibleWorker(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"inspect", "launch"} {
 		t.Run(source, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.plan.Items = append(f.plan.Items, bootstrap.Item{
 				Requirement: bootstrap.Requirement{ID: "embedding"}, Observation: bootstrap.Observation{Status: bootstrap.Missing},
@@ -1713,6 +1782,7 @@ func TestComponentInstallRejectsIncompatibleWorker(t *testing.T) {
 }
 
 func TestComponentInstallWithCompletePlan(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.plan.Items = append(f.plan.Items, bootstrap.Item{
 		Requirement: bootstrap.Requirement{ID: "python"}, Observation: bootstrap.Observation{Status: bootstrap.Available},
@@ -1741,6 +1811,7 @@ func TestComponentInstallWithCompletePlan(t *testing.T) {
 }
 
 func TestComponentInstallReprobesCompletedWorker(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status bootstrap.Status
@@ -1750,6 +1821,7 @@ func TestComponentInstallReprobesCompletedWorker(t *testing.T) {
 		{"available", bootstrap.Available, ExitOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			f.plan.Items = append(f.plan.Items, bootstrap.Item{
 				Requirement: bootstrap.Requirement{ID: "python"}, Observation: bootstrap.Observation{Status: bootstrap.Missing},
@@ -1775,12 +1847,14 @@ func TestComponentInstallReprobesCompletedWorker(t *testing.T) {
 }
 
 func TestWorkerLockContentionExit(t *testing.T) {
+	t.Parallel()
 	for code, message := range map[string]string{
 		"upgrade_locked":        "运行环境升级正在进行中，请稍后重试。",
 		"owner_busy":            "后台服务锁正在被占用，请稍后重试。",
 		"install_worker_active": "另一项组件安装正在进行中，请稍后重试。",
 	} {
 		t.Run(code, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			readyOwner := f.owner
 			f.row.Detected = false
@@ -1812,11 +1886,13 @@ func TestWorkerLockContentionExit(t *testing.T) {
 }
 
 func TestInspectWorkerPreservesTerminalSnapshotAtDeadline(t *testing.T) {
+	t.Parallel()
 	for _, state := range []bootstrap.InstallWorkerState{
 		{State: "completed", Stage: "ready"},
 		{State: "failed", Stage: "starting_runtime", ErrorCode: "install_worker_active"},
 	} {
 		t.Run(state.State, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 			defer cancel()
 			s := session{ctx: ctx, envelope: &envelope{Command: "install"}, options: options{values: map[string]string{"apply": "true"}}}
@@ -1834,8 +1910,10 @@ func TestInspectWorkerPreservesTerminalSnapshotAtDeadline(t *testing.T) {
 }
 
 func TestInstallApplyRetriesDeadlineKilledWorkerProbes(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"active snapshot", "prior active snapshot", "orphan probe"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			synctest.Test(t, func(t *testing.T) {
 				f := newFixture(t)
 				f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
@@ -1887,6 +1965,7 @@ func TestInstallApplyRetriesDeadlineKilledWorkerProbes(t *testing.T) {
 }
 
 func TestInstallWorkerContentionOffersFreshPlanDigest(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
 	f.plan.Items[0].Observation.Status = bootstrap.Missing
@@ -1914,6 +1993,7 @@ func TestInstallWorkerContentionOffersFreshPlanDigest(t *testing.T) {
 }
 
 func TestInstallRuntimeRequiresAuthenticatedReadiness(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"already ready", "detached start"} {
 		for _, tc := range []struct {
 			name, blocker     string
@@ -1925,6 +2005,7 @@ func TestInstallRuntimeRequiresAuthenticatedReadiness(t *testing.T) {
 			{"authenticated", "", true, false, ExitOK},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				f := newFixture(t)
 				if path == "detached start" {
 					f.owner.State, f.owner.OwnerLocked = "stopped", false
@@ -1955,6 +2036,7 @@ func TestInstallRuntimeRequiresAuthenticatedReadiness(t *testing.T) {
 }
 
 func TestRuntimePreparationLockContention(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		err                         error
 		installReason, repairReason string
@@ -1965,6 +2047,7 @@ func TestRuntimePreparationLockContention(t *testing.T) {
 		{supervisor.ErrOwnerLocked, "owner_busy", "owner_busy"},
 	} {
 		t.Run(tc.err.Error(), func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			check := func(reason string, args ...string) {
 				t.Helper()
@@ -1993,6 +2076,7 @@ func TestRuntimePreparationLockContention(t *testing.T) {
 }
 
 func TestHealthyAntigravityConnectionSkipsDefaultPreview(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.doc.First.Setup = false
 	f.writeConfig()
@@ -2052,6 +2136,7 @@ func TestHealthyAntigravityConnectionSkipsDefaultPreview(t *testing.T) {
 }
 
 func TestHealthyConnectionValidatesExplicitReviewedSHA(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.doc.First.Setup = false
 	f.writeConfig()
@@ -2084,6 +2169,7 @@ func TestHealthyConnectionValidatesExplicitReviewedSHA(t *testing.T) {
 }
 
 func TestVerifyZeroDownloadsUsesCurrentGenerationEvidence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, runtime string
 		bytes         int64
@@ -2098,6 +2184,7 @@ func TestVerifyZeroDownloadsUsesCurrentGenerationEvidence(t *testing.T) {
 		{"legacy sync", "", 0, true, true, ExitActionRequired},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			bundled := f.owner.RunningRuntimeHash
 			hash := map[string]string{"historical": "1111111111111111", "current": bundled}[tc.runtime]
@@ -2128,6 +2215,7 @@ func TestVerifyZeroDownloadsUsesCurrentGenerationEvidence(t *testing.T) {
 }
 
 func TestVerifyComponentsReadsUpgradeReceiptFromDisk(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	bundled := f.owner.RunningRuntimeHash
 	f.worker = bootstrap.InstallWorkerState{
@@ -2164,8 +2252,10 @@ func TestVerifyComponentsReadsUpgradeReceiptFromDisk(t *testing.T) {
 }
 
 func TestCorruptUpgradeReceiptOnlyBlocksZeroDownloadVerification(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"fixture", "real inspector"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			f := newFixture(t)
 			receiptPath, err := bootstrap.RuntimeUpgradeReceiptPath(f.root, f.config)
 			if err != nil {

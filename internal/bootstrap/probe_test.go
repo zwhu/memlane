@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -16,6 +17,43 @@ import (
 	"testing"
 	"time"
 )
+
+var bootstrapWarmDispatcher string
+
+func TestMain(m *testing.M) {
+	var warmDir string
+	if os.Getenv("MEMLANE_BOOTSTRAP_HELPER") != "1" && os.Getenv("MEMLANE_TEST_WORKER_ROLE") == "" {
+		if dir, err := os.MkdirTemp("", "memlane-bootstrap-warm-"); err == nil {
+			warmDir = dir
+			p := filepath.Join(dir, "warm-dispatcher.sh")
+			body := "#!/bin/sh\nif [ -f \"$0.body.sh\" ]; then\n  . \"$0.body.sh\"\nfi\n"
+			if os.WriteFile(p, []byte(body), 0500) == nil {
+				_ = exec.Command(p).Run()
+				bootstrapWarmDispatcher = p
+			}
+		}
+	}
+	code := m.Run()
+	if warmDir != "" {
+		_ = os.RemoveAll(warmDir)
+	}
+	os.Exit(code)
+}
+
+func writeWarmBootstrapScript(t *testing.T, target, script string) {
+	t.Helper()
+	if bootstrapWarmDispatcher != "" {
+		if err := os.WriteFile(target+".body.sh", []byte(script+"\n"), 0600); err == nil {
+			if err := os.Link(bootstrapWarmDispatcher, target); err == nil {
+				return
+			}
+			_ = os.Remove(target + ".body.sh")
+		}
+	}
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func sourceFixture(t *testing.T) (archive, source, digest string) {
 	t.Helper()
@@ -59,6 +97,7 @@ func sourceFixture(t *testing.T) (archive, source, digest string) {
 	return archive, source, hex.EncodeToString(h[:])
 }
 func TestFixedSourceRequiresArchiveAndExactFiles(t *testing.T) {
+	t.Parallel()
 	archive, source, digest := sourceFixture(t)
 	if err := VerifySource(archive, source, digest, []string{"cognee"}); err != nil {
 		t.Fatal(err)
@@ -71,6 +110,7 @@ func TestFixedSourceRequiresArchiveAndExactFiles(t *testing.T) {
 	}
 }
 func TestFixedSourceRejectsExtraModulesAndMissingPackages(t *testing.T) {
+	t.Parallel()
 	archive, source, digest := sourceFixture(t)
 	if err := VerifySource(archive, source, digest, []string{"cognee", "missing"}); err == nil {
 		t.Fatal("missing package accepted")
@@ -83,6 +123,7 @@ func TestFixedSourceRejectsExtraModulesAndMissingPackages(t *testing.T) {
 	}
 }
 func TestFixedSourceRejectsLinkedPackageAndWrongDigest(t *testing.T) {
+	t.Parallel()
 	archive, source, digest := sourceFixture(t)
 	if err := VerifySource(archive, source, "wrong", []string{"cognee"}); err == nil {
 		t.Fatal("wrong digest accepted")
@@ -109,9 +150,7 @@ func setShortProbeTimeouts(t *testing.T) {
 func fakePython(t *testing.T, script string) string {
 	t.Helper()
 	executable := filepath.Join(t.TempDir(), "python")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"+script+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	writeWarmBootstrapScript(t, executable, script)
 	return executable
 }
 
@@ -151,6 +190,7 @@ func TestPythonProbeTimeoutModes(t *testing.T) {
 }
 
 func TestPythonProbeDeterministicResults(t *testing.T) {
+	t.Parallel()
 	ctx := withPostInstallProbe(context.Background())
 	for _, script := range []string{"echo invalid-json", "exit 23", `echo '{"version":"3.11.0"}'`} {
 		o, err := ProbePython(ctx, fakePython(t, script))
@@ -169,10 +209,12 @@ func TestIsolatedPythonPreservesDeterministicExitAndReapsDescendant(t *testing.T
 	// Parent exits deterministically with 42 while a grandchild keeps stdout open.
 	script := "sleep 15 &\necho $! > '" + pidFile + "'\nexit 42"
 	python := fakeDependencyPython(t, script)
-	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	// Keep timeout below isolatedPython's 2s WaitDelay so probeCtx expires while draining pipes.
-	routineProbeTimeout, postInstallProbeTimeout = 1800*time.Millisecond, 1800*time.Millisecond
-	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
+	routine, postInstall, waitDelay := routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay
+	// Keep timeout below isolatedPython's WaitDelay so probeCtx expires while draining pipes.
+	routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay = 150*time.Millisecond, 150*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() {
+		routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay = routine, postInstall, waitDelay
+	})
 
 	o, err := ProbeDependencies(withPostInstallProbe(context.Background()), python, []byte("locked==1"))
 	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=42") {
@@ -202,10 +244,12 @@ func TestIsolatedPythonPreservesCrashSignalWhenDescendantHoldsPipeUntilTimeout(t
 	// Parent terminates with SIGABRT while a grandchild keeps stdout open past the probe timeout.
 	script := "sleep 15 &\necho $! > '" + pidFile + "'\nkill -ABRT $$"
 	python := fakeDependencyPython(t, script)
-	routine, postInstall := routineProbeTimeout, postInstallProbeTimeout
-	// Keep timeout below isolatedPython's 2s WaitDelay so probeCtx expires while draining pipes.
-	routineProbeTimeout, postInstallProbeTimeout = 1800*time.Millisecond, 1800*time.Millisecond
-	t.Cleanup(func() { routineProbeTimeout, postInstallProbeTimeout = routine, postInstall })
+	routine, postInstall, waitDelay := routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay
+	// Keep timeout below isolatedPython's WaitDelay so probeCtx expires while draining pipes.
+	routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay = 150*time.Millisecond, 150*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() {
+		routineProbeTimeout, postInstallProbeTimeout, probeWaitDelay = routine, postInstall, waitDelay
+	})
 
 	o, err := ProbeDependencies(withPostInstallProbe(context.Background()), python, []byte("locked==1"))
 	if err != nil || o.Status != Incompatible || o.transientTimeout || !strings.Contains(o.Reason, "exit_code=-1") {

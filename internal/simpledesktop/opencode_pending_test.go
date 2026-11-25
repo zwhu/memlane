@@ -47,15 +47,13 @@ func pendingTestInstallation(t *testing.T) (AgentInstallation, PendingOperatorCo
 	capture := filepath.Join(root, "request.json")
 	environment := filepath.Join(root, "environment.txt")
 	runtime := filepath.Join(root, "node-fixture")
-	script := "#!/bin/sh\ncat > " + pendingShellQuote(capture) + "\nprintf '%s|%s' \"${NODE_OPTIONS-unset}\" \"${COGNEE_API_KEY-unset}\" > " + pendingShellQuote(environment) + "\nprintf '%s\\n' '{\"pending\":1,\"unknown_outcomes\":0,\"signature\":\"" + strings.Repeat("a", 64) + "\"}'\n"
-	if err := os.WriteFile(runtime, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	scriptBody := "cat > " + pendingShellQuote(capture) + "\nprintf '%s|%s' \"${NODE_OPTIONS-unset}\" \"${COGNEE_API_KEY-unset}\" > " + pendingShellQuote(environment) + "\nprintf '%s\\n' '{\"pending\":1,\"unknown_outcomes\":0,\"signature\":\"" + strings.Repeat("a", 64) + "\"}'"
+	runtimeRaw := writeWarmDesktopScript(t, runtime, scriptBody)
 	token := filepath.Join(root, "manager-token")
 	if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return AgentInstallation{HostKind: "opencode", PluginDir: plugin, ManifestSHA: pendingDigest(manifest), HelperSHA: files["dist/src/managed-pending-cli.js"], BindingFile: binding, BindingSHA: pendingDigest([]byte("{}")), NodeExecutable: runtime, NodeSHA: pendingDigest([]byte(script))},
+	return AgentInstallation{HostKind: "opencode", PluginDir: plugin, ManifestSHA: pendingDigest(manifest), HelperSHA: files["dist/src/managed-pending-cli.js"], BindingFile: binding, BindingSHA: pendingDigest([]byte("{}")), NodeExecutable: runtime, NodeSHA: pendingDigest(runtimeRaw)},
 		PendingOperatorConfig{TokenFile: token, ControlURL: "http://127.0.0.1:19301", ServiceURL: "http://127.0.0.1:19302"}, capture
 }
 
@@ -90,8 +88,10 @@ func TestOpenCodePendingDispatchKeepsManagementCredentialPrivate(t *testing.T) {
 }
 
 func TestOpenCodePendingRejectsChangedInputsBeforeLaunchingWorker(t *testing.T) {
+	t.Parallel()
 	for _, mutation := range []string{"worker", "runtime", "binding_permissions", "extra_file", "operator_missing"} {
 		t.Run(mutation, func(t *testing.T) {
+			t.Parallel()
 			installation, operator, capture := pendingTestInstallation(t)
 			switch mutation {
 			case "worker":
@@ -99,6 +99,7 @@ func TestOpenCodePendingRejectsChangedInputsBeforeLaunchingWorker(t *testing.T) 
 					t.Fatal(err)
 				}
 			case "runtime":
+				_ = os.Remove(installation.NodeExecutable)
 				if err := os.WriteFile(installation.NodeExecutable, []byte("changed"), 0700); err != nil {
 					t.Fatal(err)
 				}
@@ -127,6 +128,7 @@ func TestOpenCodePendingRejectsChangedInputsBeforeLaunchingWorker(t *testing.T) 
 // Opt-in integration through the actual desktop dispatcher and prepared worker.
 // The private case is produced only by the owned synthetic acceptance driver.
 func TestOpenCodePendingPreparedWorker(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("MEMLANE_OPENCODE_PENDING_TEST_CASE")
 	if path == "" {
 		t.Skip("set an owned synthetic prepared-worker case")
