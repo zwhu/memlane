@@ -16,6 +16,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [overview.md](architecture/overview.md) | 当前系统分层、源码模块映射、核心数据流与架构全景图 |
+| [boundaries.md](architecture/boundaries.md) | 目标架构边界契约（Go 单二进制收口、Python ≤3.5k 引擎薄壳、方案 C `memlane hook` 与冲突策略、6 原语可替换引擎接口、`kit/*` 跨 App 复用预留与 5 万行预算红线） |
 | [development.md](architecture/development.md) | 日常开发入口 `scripts/dev.py`、统一门禁、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
 | [agent-connection-contract.md](architecture/agent-connection-contract.md) | 电脑级 5 宿主发现、官方插件优先接入与零项目授权契约 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
@@ -48,6 +49,7 @@
 | --- | --- |
 | [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
 | [architecture-governance-and-py-freeze.md](engineering/architecture-governance-and-py-freeze.md) | 防过度防御硬门禁（`diff_guard.py`）、非 Cognee Python 新增冻结（`DG005`）、旧回退清理清单及定时 Loop 架构/僵尸规则巡检规划 |
+| [architecture-boundary-and-loc-facts-20261125.md](engineering/architecture-boundary-and-loc-facts-20261125.md) | `b1a82e0` 基线全仓代码行数、19 日增长曲线、目录扁平度、Python 外部依赖分级与现行架构边界客观事实记录 |
 | [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
 | [defect-postmortems.md](engineering/defect-postmortems.md) | 近期关键缺陷复盘汇总（登录启动窗、画像文档误入项目队列、Codex 重试通知） |
