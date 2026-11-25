@@ -665,6 +665,43 @@ def plan_changed(
             plan['escalation_reasons'].append(f'unmapped scripts path: {rel}')
             continue
 
+        # Target architecture Go packages (`kit/*`, `core/*`, `app/*`, `cmd/memlane/*`, `arch_guard_test.go`).
+        if rel == 'arch_guard_test.go':
+            run_lint = True
+            go_vet_pkgs.add('.')
+            go_root_tests.update(['TestArchitectureImportBoundaries', 'TestGoSQLiteWALJournalSizeLimit', 'TestArchitectureGuardSelfTest'])
+            continue
+
+        if rel.startswith(('kit/', 'core/', 'app/', 'cmd/memlane/')):
+            run_lint = True
+            pkg_dir = str(Path(rel).parent).replace('\\', '/')
+            if pkg_dir and pkg_dir != '.':
+                go_vet_pkgs.add(f'./{pkg_dir}')
+                go_test_pkgs.add(f'./{pkg_dir}')
+            go_vet_pkgs.add('.')
+            go_root_tests.update(['TestArchitectureImportBoundaries', 'TestGoSQLiteWALJournalSizeLimit'])
+            if rel.startswith('kit/daemon/'):
+                go_vet_pkgs.update(['./internal/supervisor', './cmd/memlane-app'])
+                go_test_pkgs.update(['./internal/supervisor', './cmd/memlane-app'])
+            elif rel.startswith('kit/ui/'):
+                go_vet_pkgs.add('./internal/simpledesktop')
+                go_test_pkgs.add('./internal/simpledesktop')
+            elif rel.startswith(('kit/aiinstaller/', 'core/setup/')):
+                go_vet_pkgs.update(['./internal/bootstrap', './internal/setupcli'])
+                go_test_pkgs.update(['./internal/bootstrap', './internal/setupcli'])
+            continue
+
+        if rel.startswith('engines/cognee/'):
+            run_lint = True
+            if rel.endswith('.py'):
+                name = Path(rel).name
+                if name.startswith('test_'):
+                    _add_if_exists(root, engine_tests, [rel])
+                else:
+                    stem = Path(name).stem
+                    _add_if_exists(root, engine_tests, [f'engines/cognee/test_{stem}.py'])
+            continue
+
         # Go packages with dependency propagation from `go list`.
         if rel.startswith('internal/supervisor/'):
             run_lint = True

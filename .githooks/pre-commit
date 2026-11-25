@@ -29,18 +29,18 @@ for relpath in $STAGED; do
             echo "pre-commit: 禁止提交过程文档目录产物 ($relpath)，仅允许 docs/process/README.md 入库" >&2
             exit 1
             ;;
-        engine/python/*.py|scripts/*.py)
+        engine/python/*.py|engines/cognee/*.py|scripts/*.py)
             NEEDS_LINT=1
             NEEDS_DIFF_GUARD=1
             ;;
         *.py)
             NEEDS_DIFF_GUARD=1
             ;;
-        internal/simpledesktop/*.go)
+        internal/simpledesktop/*.go|kit/ui/*.go|app/*.go|app/*/*.go)
             NEEDS_LINT=1
             NEEDS_DIFF_GUARD=1
             ;;
-        internal/*.go|cmd/*.go)
+        internal/*.go|cmd/*.go|cmd/*/*.go|kit/*.go|kit/*/*.go|core/*.go|core/*/*.go|arch_guard_test.go)
             NEEDS_DIFF_GUARD=1
             ;;
         docs/*.md)
@@ -71,5 +71,15 @@ if [ "$NEEDS_LINT" -eq 1 ]; then
 fi
 
 if [ "$NEEDS_DIFF_GUARD" -eq 1 ] && [ -f "$REPO_ROOT/scripts/diff_guard.py" ]; then
-    "$PYTHON_BIN" "$REPO_ROOT/scripts/diff_guard.py" --staged
+    set -- --staged
+    if [ -n "${MEMLANE_ALLOW_NEW_PY:-}" ]; then
+        OLD_IFS="$IFS"
+        IFS=','
+        for pat in $MEMLANE_ALLOW_NEW_PY; do
+            [ -n "$pat" ] || continue
+            set -- "$@" --allow-new-py "$pat"
+        done
+        IFS="$OLD_IFS"
+    fi
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/diff_guard.py" "$@"
 fi
