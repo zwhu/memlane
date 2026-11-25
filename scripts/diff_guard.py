@@ -26,15 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PREFIX = 'github.com/zwhu/memlane'
 
 # Scripts that belong to Tier-B test/verification scaffolds rather than Tier-A production code.
-TIER_B_SCRIPTS = {
-    'scripts/verify_setup_cli.py',
-    'scripts/smoke_release_contracts.py',
-    'scripts/utm_isolated_env.py',
-    'scripts/bench_scaling.py',
-    'scripts/processing-timings.py',
-    'scripts/diff_guard.py',
-    'scripts/lint.py',
-}
+TIER_B_SCRIPTS = {'scripts/diff_guard.py', 'scripts/lint.py'}
 
 ALLOW_GUARD_RE = re.compile(r'memlane:allow-guard\(([^)]*)\)')
 
@@ -79,7 +71,7 @@ def is_tier_a_production(rel_path: str) -> bool:
     """Return True when rel_path is a Tier-A Python or Go production source file."""
     rel = normalize_rel(rel_path)
     name = Path(rel).name
-    if rel.startswith(('engine/python/', 'engines/cognee/')) and rel.endswith('.py'):
+    if rel.startswith('engines/cognee/') and rel.endswith('.py'):
         return not name.startswith('test_') and '/testdata/' not in rel and '/fixtures/' not in rel
     if rel.startswith('scripts/') and rel.endswith('.py'):
         if name.startswith('test_') or name.startswith('probe_'):
@@ -150,55 +142,29 @@ def collect_diff_context(
     base_ref: str = '',
 ) -> tuple[list[str], list[str], dict[str, set[int]]]:
     """Return (all_changed_files, newly_added_files, {rel_path: added_line_numbers})."""
-    changed_files: set[str] = set()
-    new_files: set[str] = set()
-    added_lines: dict[str, set[int]] = {}
+    comparison = ['--cached'] if staged else [base_ref.strip() or 'HEAD']
 
-    if staged:
-        name_proc = _run_git(['diff', '--cached', '--name-only'], root)
-        for line in name_proc.stdout.splitlines():
-            rel = normalize_rel(line)
-            if rel:
-                changed_files.add(rel)
-        added_proc = _run_git(['diff', '--cached', '--diff-filter=A', '--name-only'], root)
-        for line in added_proc.stdout.splitlines():
-            rel = normalize_rel(line)
-            if rel:
-                new_files.add(rel)
-        diff_proc = _run_git(['diff', '--cached', '--unified=0', '--no-color'], root)
-        added_lines.update(parse_unified_diff_added_lines(diff_proc.stdout))
-        return sorted(changed_files), sorted(new_files), added_lines
+    def paths(*flags):
+        result = _run_git(['diff', *flags, '--name-only', '-z', *comparison], root)
+        result.check_returncode()
+        return {normalize_rel(path) for path in result.stdout.split('\0') if path}
 
-    ref = base_ref.strip() or 'HEAD'
-    name_proc = _run_git(['diff', '--name-only', ref], root)
-    for line in name_proc.stdout.splitlines():
-        rel = normalize_rel(line)
-        if rel:
+    changed_files = paths()
+    new_files = paths('--diff-filter=A')
+    diff = _run_git(['-c', 'core.quotePath=false', 'diff', '--unified=0', '--no-color', *comparison], root)
+    diff.check_returncode()
+    added_lines = parse_unified_diff_added_lines(diff.stdout)
+    if not staged:
+        untracked = _run_git(['ls-files', '--others', '--exclude-standard', '-z'], root)
+        untracked.check_returncode()
+        for path in filter(None, untracked.stdout.split('\0')):
+            rel = normalize_rel(path)
             changed_files.add(rel)
-    added_proc = _run_git(['diff', '--diff-filter=A', '--name-only', ref], root)
-    for line in added_proc.stdout.splitlines():
-        rel = normalize_rel(line)
-        if rel:
             new_files.add(rel)
-    diff_proc = _run_git(['diff', '--unified=0', '--no-color', ref], root)
-    added_lines.update(parse_unified_diff_added_lines(diff_proc.stdout))
-
-    # Include untracked files when inspecting working tree against HEAD or base_ref.
-    untracked_proc = _run_git(['ls-files', '--others', '--exclude-standard'], root)
-    for line in untracked_proc.stdout.splitlines():
-        rel = normalize_rel(line)
-        if not rel:
-            continue
-        changed_files.add(rel)
-        new_files.add(rel)
-        file_path = root / rel
-        if file_path.is_file() and is_tier_a_production(rel):
-            try:
-                line_count = len(file_path.read_text(encoding='utf-8').splitlines())
-            except OSError:
-                continue
-            added_lines[rel] = set(range(1, line_count + 1))
-
+            if is_tier_a_production(rel):
+                source = read_target_source(root, rel, staged=False)
+                if source is not None:
+                    added_lines[rel] = set(range(1, len(source.splitlines()) + 1))
     return sorted(changed_files), sorted(new_files), added_lines
 
 
@@ -286,43 +252,37 @@ def _extract_python_comments(source: str) -> list[tuple[int, str]]:
     return comments
 
 
+def check_comments(rel_path, comments, added_lines):
+    blocks, audits = [], []
+    for lineno, comment in comments:
+        if added_lines.isdisjoint(range(lineno, lineno + comment.count('\n') + 1)):
+            continue
+        exemption = _extract_allow_guard(comment)
+        if exemption:
+            audits.append(audit('allow_guard', rel_path, lineno, f'豁免声明: {exemption}'))
+        elif exemption == '':
+            blocks.append(block('DG003', rel_path, lineno, 'memlane:allow-guard() 必须填写具体理由，禁止空白豁免'))
+        elif TEMP_COMMENT_RE.search(comment):
+            first_line = comment.splitlines()[0].strip()
+            blocks.append(block('DG003', rel_path, lineno, f'新增生产代码包含临时补丁/TODO 注释: {first_line}'))
+    return blocks, audits
+
+
+def block(code, path, line, message):
+    return {'code': code, 'path': path, 'line': line, 'message': message}
+
+
+def audit(kind, path, line, detail):
+    return {'kind': kind, 'path': path, 'line': line, 'detail': detail}
+
+
 def analyze_python_diff(
     rel_path: str,
     source: str,
     added_lines: set[int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    blocks: list[dict[str, Any]] = []
-    audits: list[dict[str, Any]] = []
+    blocks, audits = check_comments(rel_path, _extract_python_comments(source), added_lines)
     lines = source.splitlines()
-
-    # 1. Comment-level checks (DG003 temporary hack comments & allow-guard recording).
-    for lineno, comment_text in _extract_python_comments(source):
-        if lineno not in added_lines:
-            continue
-        exemption = _extract_allow_guard(comment_text)
-        if exemption is not None:
-            if not exemption:
-                blocks.append({
-                    'code': 'DG003',
-                    'path': rel_path,
-                    'line': lineno,
-                    'message': 'memlane:allow-guard() 必须填写具体理由，禁止空白豁免',
-                })
-            else:
-                audits.append({
-                    'kind': 'allow_guard',
-                    'path': rel_path,
-                    'line': lineno,
-                    'detail': f'豁免声明: {exemption}',
-                })
-            continue
-        if TEMP_COMMENT_RE.search(comment_text):
-            blocks.append({
-                'code': 'DG003',
-                'path': rel_path,
-                'line': lineno,
-                'message': f'新增生产代码包含临时补丁/TODO 注释: {comment_text.strip()}',
-            })
 
     # 2. AST-level checks (DG001 silent broad except + audit new except/import/fallback).
     try:
@@ -342,27 +302,13 @@ def analyze_python_diff(
                 exemption = _line_or_neighbor_exemption(lines, node.lineno)
                 if is_broad and is_silent:
                     if exemption:
-                        audits.append({
-                            'kind': 'except_swallow_exempted',
-                            'path': rel_path,
-                            'line': node.lineno,
-                            'detail': f'宽泛静默 except 已豁免 ({exemption})',
-                        })
+                        audits.append(audit('except_swallow_exempted', rel_path, node.lineno, f'宽泛静默 except 已豁免 ({exemption})'))
                     else:
-                        blocks.append({
-                            'code': 'DG001',
-                            'path': rel_path,
-                            'line': node.lineno,
-                            'message': '新增宽泛 except 静默吞掉异常（无日志/无上抛）；请删掉多余兜底、显式处理或写明 memlane:allow-guard(理由)',
-                        })
+                        blocks.append(block('DG001', rel_path, node.lineno,
+                            '新增宽泛 except 静默吞掉异常（无日志/无上抛）；请删掉多余兜底、显式处理或写明 memlane:allow-guard(理由)'))
                 else:
                     header = lines[node.lineno - 1].strip() if 0 <= node.lineno - 1 < len(lines) else 'except:'
-                    audits.append({
-                        'kind': 'new_except',
-                        'path': rel_path,
-                        'line': node.lineno,
-                        'detail': header,
-                    })
+                    audits.append(audit('new_except', rel_path, node.lineno, header))
 
     # 3. Line-level audit for new imports & fallback/sleep markers.
     for lineno in sorted(added_lines):
@@ -373,88 +319,22 @@ def analyze_python_diff(
         if not stripped or stripped.startswith('#'):
             continue
         if PY_IMPORT_LINE_RE.match(raw):
-            audits.append({
-                'kind': 'new_import',
-                'path': rel_path,
-                'line': lineno,
-                'detail': stripped,
-            })
+            audits.append(audit('new_import', rel_path, lineno, stripped))
         elif FALLBACK_AUDIT_RE.search(stripped):
-            audits.append({
-                'kind': 'fallback_or_sleep',
-                'path': rel_path,
-                'line': lineno,
-                'detail': stripped[:120],
-            })
+            audits.append(audit('fallback_or_sleep', rel_path, lineno, stripped[:120]))
 
     return blocks, audits
 
 
 def _extract_go_comments(source: str) -> list[tuple[int, str]]:
     """Extract Go // and /* */ comments with 1-based start line numbers without touching strings."""
-    comments: list[tuple[int, str]] = []
-    i = 0
-    n = len(source)
+    comments = []
     line = 1
-    while i < n:
-        ch = source[i]
-        nxt = source[i + 1] if i + 1 < n else ''
-        if ch == '"':
-            i += 1
-            while i < n:
-                if source[i] == '\\':
-                    i += 2
-                    continue
-                if source[i] == '"':
-                    i += 1
-                    break
-                if source[i] == '\n':
-                    line += 1
-                i += 1
-            continue
-        if ch == '`':
-            i += 1
-            while i < n:
-                if source[i] == '\n':
-                    line += 1
-                if source[i] == '`':
-                    i += 1
-                    break
-                i += 1
-            continue
-        if ch == "'":
-            i += 1
-            while i < n:
-                if source[i] == '\\':
-                    i += 2
-                    continue
-                if source[i] == "'":
-                    i += 1
-                    break
-                i += 1
-            continue
-        if ch == '/' and nxt == '/':
-            start = i
-            start_line = line
-            i += 2
-            while i < n and source[i] != '\n':
-                i += 1
-            comments.append((start_line, source[start:i]))
-            continue
-        if ch == '/' and nxt == '*':
-            start = i
-            start_line = line
-            i += 2
-            while i < n - 1 and not (source[i] == '*' and source[i + 1] == '/'):
-                if source[i] == '\n':
-                    line += 1
-                i += 1
-            i = min(n, i + 2)
-            comments.append((start_line, source[start:i]))
-            continue
-        if ch == '\n':
-            line += 1
-        i += 1
+    for match in GO_TOKEN_RE.finditer(source):
+        token = match.group()
+        if match.lastgroup == 'trivia' and token.startswith(('//', '/*')):
+            comments.append((line, token))
+        line += token.count('\n')
     return comments
 
 
@@ -521,40 +401,8 @@ def analyze_go_diff(
     source: str,
     added_lines: set[int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    blocks: list[dict[str, Any]] = []
-    audits: list[dict[str, Any]] = []
+    blocks, audits = check_comments(rel_path, _extract_go_comments(source), added_lines)
     lines = source.splitlines()
-
-    # 1. Comment-level checks (DG003 & allow-guard recording).
-    for lineno, comment_text in _extract_go_comments(source):
-        comment_span = set(range(lineno, lineno + comment_text.count('\n') + 1))
-        if not (comment_span & added_lines):
-            continue
-        exemption = _extract_allow_guard(comment_text)
-        if exemption is not None:
-            if not exemption:
-                blocks.append({
-                    'code': 'DG003',
-                    'path': rel_path,
-                    'line': lineno,
-                    'message': 'memlane:allow-guard() 必须填写具体理由，禁止空白豁免',
-                })
-            else:
-                audits.append({
-                    'kind': 'allow_guard',
-                    'path': rel_path,
-                    'line': lineno,
-                    'detail': f'豁免声明: {exemption}',
-                })
-            continue
-        if TEMP_COMMENT_RE.search(comment_text):
-            first_line = comment_text.splitlines()[0].strip()
-            blocks.append({
-                'code': 'DG003',
-                'path': rel_path,
-                'line': lineno,
-                'message': f'新增生产代码包含临时补丁/TODO 注释: {first_line}',
-            })
 
     # 2. Import audits and hard architecture blocks (DG006).
     added_import_lines = set()
@@ -562,12 +410,7 @@ def analyze_go_diff(
         if lineno not in added_lines:
             continue
         if lineno not in added_import_lines:
-            audits.append({
-                'kind': 'new_import',
-                'path': rel_path,
-                'line': lineno,
-                'detail': lines[lineno - 1].strip(),
-            })
+            audits.append(audit('new_import', rel_path, lineno, lines[lineno - 1].strip()))
             added_import_lines.add(lineno)
         if is_tier_a_production(rel_path):
             violation = _check_go_import_boundary(normalize_rel(rel_path), import_path)
@@ -589,12 +432,8 @@ def analyze_go_diff(
         # Single-line empty `if err != nil {}`
         if GO_EMPTY_ERR_RE.search(code_part):
             if not exemption:
-                blocks.append({
-                    'code': 'DG002',
-                    'path': rel_path,
-                    'line': lineno,
-                    'message': '新增空的 if err != nil {} 静默吞错；请返回错误、显式处理或写明 memlane:allow-guard(理由)',
-                })
+                blocks.append(block('DG002', rel_path, lineno,
+                    '新增空的 if err != nil {} 静默吞错；请返回错误、显式处理或写明 memlane:allow-guard(理由)'))
             continue
 
         # Multi-line `if err != nil {` followed immediately by `}` (ignoring blank lines/comments)
@@ -611,28 +450,14 @@ def analyze_go_diff(
                 body_lines.append(probe_code)
             if closed and not body_lines:
                 if not exemption:
-                    blocks.append({
-                        'code': 'DG002',
-                        'path': rel_path,
-                        'line': lineno,
-                        'message': '新增空的 if err != nil { } 静默吞错；请返回错误、显式处理或写明 memlane:allow-guard(理由)',
-                    })
+                    blocks.append(block('DG002', rel_path, lineno,
+                        '新增空的 if err != nil { } 静默吞错；请返回错误、显式处理或写明 memlane:allow-guard(理由)'))
                 continue
             if closed and len(body_lines) == 1 and GO_SWALLOW_STMT_RE.match(body_lines[0]):
-                audits.append({
-                    'kind': 'go_err_swallow_candidate',
-                    'path': rel_path,
-                    'line': lineno,
-                    'detail': f'{code_part} {body_lines[0]} }}',
-                })
+                audits.append(audit('go_err_swallow_candidate', rel_path, lineno, f'{code_part} {body_lines[0]} }}'))
 
         if lineno not in added_import_lines and FALLBACK_AUDIT_RE.search(code_part):
-            audits.append({
-                'kind': 'fallback_or_sleep',
-                'path': rel_path,
-                'line': lineno,
-                'detail': stripped[:120],
-            })
+            audits.append(audit('fallback_or_sleep', rel_path, lineno, stripped[:120]))
 
     return blocks, audits
 
@@ -651,12 +476,7 @@ def check_scope_locks(
     for rel in changed_files:
         for pat in locks:
             if rel == pat or fnmatch(rel, pat) or (pat.endswith('/') and rel.startswith(pat)):
-                blocks.append({
-                    'code': 'DG004',
-                    'path': rel,
-                    'line': 1,
-                    'message': f'禁止修改已锁定的骨架/契约文件 (匹配 --lock {pat})；若架子撑不住请停下来找主控改设计',
-                })
+                blocks.append(block('DG004', rel, 1, f'禁止修改已锁定的骨架/契约文件 (匹配 --lock {pat})；若架子撑不住请停下来找主控改设计'))
                 break
         if allows:
             matched = any(
@@ -664,12 +484,7 @@ def check_scope_locks(
                 for pat in allows
             )
             if not matched:
-                blocks.append({
-                    'code': 'DG004',
-                    'path': rel,
-                    'line': 1,
-                    'message': f'改动越界：文件不在允许范围 (--allow {", ".join(allows)}) 内',
-                })
+                blocks.append(block('DG004', rel, 1, f'改动越界：文件不在允许范围 (--allow {", ".join(allows)}) 内'))
     return blocks
 
 
@@ -691,12 +506,8 @@ def check_new_python_freeze(
         if rel in SELF_BOOTSTRAP_PY:
             continue
         if any(rel == pat or fnmatch(rel, pat) for pat in allowed):
-            audits.append({
-                'kind': 'approved_new_py',
-                'path': rel,
-                'line': 1,
-                'detail': '已通过 --allow-new-py 放行新增 Python 文件（审查需确认确属 Cognee 胶水边界）',
-            })
+            audits.append(audit('approved_new_py', rel, 1,
+                '已通过 --allow-new-py 放行新增 Python 文件（审查需确认确属 Cognee 胶水边界）'))
             continue
         # Allow adding a 1:1 test_<stem>.py strictly for an ALREADY-EXISTING production .py file.
         p = Path(rel)
@@ -708,12 +519,8 @@ def check_new_python_freeze(
             ]
             if any((root / cand).is_file() and cand not in new_set for cand in candidates):
                 continue
-        blocks.append({
-            'code': 'DG005',
-            'path': rel,
-            'line': 1,
-            'message': '禁止随意新增 Python 文件（非 Cognee 胶水已冻结 Python 扩张）；新功能/工具请用 Go 实现，确属 Cognee 底层胶水请先经人工确认并通过 --allow-new-py 放行',
-        })
+        blocks.append(block('DG005', rel, 1,
+            '禁止随意新增 Python 文件（非 Cognee 胶水已冻结 Python 扩张）；新功能/工具请用 Go 实现，确属 Cognee 底层胶水请先经人工确认并通过 --allow-new-py 放行'))
     return blocks, audits
 
 
@@ -800,44 +607,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog='diff_guard.py',
         description='只查本次 git diff 新增 A 类生产代码的防静默吞错、防临时补丁、骨架锁与防御代码审计工具。',
     )
-    parser.add_argument(
-        '--staged',
-        action='store_true',
-        help='仅检查 git 暂存区 (git diff --cached)',
-    )
-    parser.add_argument(
-        '--base',
-        default='',
-        metavar='REF',
-        help='与指定 git ref 比较工作区改动（默认 HEAD）',
-    )
-    parser.add_argument(
-        '--lock',
-        action='append',
-        default=[],
-        metavar='PATH_OR_GLOB',
-        help='锁定不准修改的骨架/契约文件或通配符（可多次指定）',
-    )
-    parser.add_argument(
-        '--allow',
-        action='append',
-        default=[],
-        metavar='PATH_OR_GLOB',
-        help='限定允许修改的文件或目录前缀/通配符（可多次指定）',
-    )
-    parser.add_argument(
-        '--allow-new-py',
-        action='append',
-        default=[],
-        metavar='PATH_OR_GLOB',
-        help='人工批准放行的新增 Python 文件（仅限确属 Cognee 底层胶水，可多次指定）',
-    )
-    parser.add_argument(
-        '--json',
-        action='store_true',
-        dest='json_output',
-        help='以 JSON 格式输出完整阻断项与审计清单',
-    )
+    parser.add_argument('--staged', action='store_true', help='仅检查 git 暂存区')
+    parser.add_argument('--base', default='', metavar='REF', help='比较工作区与指定 ref（默认 HEAD）')
+    parser.add_argument('--lock', action='append', default=[], metavar='PATH_OR_GLOB', help='锁定契约文件')
+    parser.add_argument('--allow', action='append', default=[], metavar='PATH_OR_GLOB', help='限定改动范围')
+    parser.add_argument('--allow-new-py', action='append', default=[], metavar='PATH_OR_GLOB', help='放行新增 Python 文件')
+    parser.add_argument('--json', action='store_true', dest='json_output', help='输出 JSON 阻断项与审计清单')
     return parser
 
 

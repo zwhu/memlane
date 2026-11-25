@@ -29,7 +29,7 @@ for relpath in $STAGED; do
             echo "pre-commit: 禁止提交过程文档目录产物 ($relpath)，仅允许 docs/process/README.md 入库" >&2
             exit 1
             ;;
-        engine/python/*.py|engines/cognee/*.py|scripts/*.py)
+        engines/cognee/*.py|scripts/*.py)
             NEEDS_LINT=1
             NEEDS_DIFF_GUARD=1
             ;;

@@ -1,6 +1,7 @@
 package memlane_test
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -18,9 +19,12 @@ func resolveLintPython() string {
 
 func recordLintInputs(t *testing.T) {
 	t.Helper()
-	for _, root := range []string{"scripts", filepath.Join("engine", "python"), filepath.Join("internal", "simpledesktop"), "docs"} {
+	for _, root := range []string{"scripts", "engines/cognee", "internal/simpledesktop", "kit/ui", "app", "docs"} {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				if path == root && root != "scripts" && errors.Is(walkErr, fs.ErrNotExist) {
+					return nil
+				}
 				return walkErr
 			}
 			if entry.IsDir() {

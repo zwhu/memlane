@@ -13,14 +13,14 @@ import diff_guard
 
 class TierClassificationTests(unittest.TestCase):
     def test_tier_a_vs_tier_b_classification(self):
-        self.assertTrue(diff_guard.is_tier_a_production('engine/python/v2_api.py'))
+        self.assertTrue(diff_guard.is_tier_a_production('engines/cognee/v2_api.py'))
         self.assertTrue(diff_guard.is_tier_a_production('internal/setupcli/install.go'))
-        self.assertTrue(diff_guard.is_tier_a_production('cmd/memlane-app/main.go'))
-        self.assertTrue(diff_guard.is_tier_a_production('scripts/dev.py'))
+        self.assertTrue(diff_guard.is_tier_a_production('cmd/memlane/main.go'))
+        self.assertTrue(diff_guard.is_tier_a_production('scripts/check.py'))
 
-        self.assertFalse(diff_guard.is_tier_a_production('engine/python/test_v2_api.py'))
+        self.assertFalse(diff_guard.is_tier_a_production('engines/cognee/test_v2_api.py'))
         self.assertFalse(diff_guard.is_tier_a_production('internal/setupcli/install_test.go'))
-        self.assertFalse(diff_guard.is_tier_a_production('scripts/verify_setup_cli.py'))
+        self.assertFalse(diff_guard.is_tier_a_production('scripts/lint.py'))
         self.assertFalse(diff_guard.is_tier_a_production('scripts/diff_guard.py'))
         self.assertFalse(diff_guard.is_tier_a_production('docs/engineering/workflow.md'))
 
@@ -30,7 +30,7 @@ class TierClassificationTests(unittest.TestCase):
                 self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/sample.go'))
                 self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/nested/sample.go'))
                 self.assertFalse(diff_guard.is_tier_a_production(f'{directory}/nested/sample_test.go'))
-        for directory in ('engine/python', 'engines/cognee'):
+        for directory in ('engines/cognee',):
             with self.subTest(directory=directory):
                 self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/sample.py'))
                 self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/nested/sample.py'))
@@ -56,7 +56,7 @@ class PythonDiffAnalysisTests(unittest.TestCase):
             '        raise\n'
         )
         blocks, audits = diff_guard.analyze_python_diff(
-            'engine/python/sample.py',
+            'engines/cognee/sample.py',
             source,
             added_lines=set(range(1, 13)),
         )
@@ -77,7 +77,7 @@ class PythonDiffAnalysisTests(unittest.TestCase):
             '    return 2\n'
         )
         blocks, _ = diff_guard.analyze_python_diff(
-            'engine/python/sample.py',
+            'engines/cognee/sample.py',
             source,
             added_lines={7, 8},
         )
@@ -95,7 +95,7 @@ class PythonDiffAnalysisTests(unittest.TestCase):
             '# memlane:allow-guard()\n'
         )
         blocks, audits = diff_guard.analyze_python_diff(
-            'engine/python/sample.py',
+            'engines/cognee/sample.py',
             source,
             added_lines=set(range(1, 9)),
         )
@@ -113,7 +113,7 @@ class PythonDiffAnalysisTests(unittest.TestCase):
             '    return x or fallback_value()\n'
         )
         blocks, audits = diff_guard.analyze_python_diff(
-            'engine/python/sample.py',
+            'engines/cognee/sample.py',
             source,
             added_lines={1, 2, 4, 5},
         )
@@ -252,13 +252,13 @@ class GoDiffAnalysisTests(unittest.TestCase):
 class ScopeLockAndGitIntegrationTests(unittest.TestCase):
     def test_scope_lock_and_allow_patterns(self):
         blocks = diff_guard.check_scope_locks(
-            ['internal/core/contract.go', 'internal/feature/impl.go', 'engine/python/other.py'],
+            ['internal/core/contract.go', 'internal/feature/impl.go', 'engines/cognee/other.py'],
             locked_patterns=['internal/core/contract.go'],
             allowed_patterns=['internal/feature/'],
         )
         by_path = {(b['path'], b['code']) for b in blocks}
         self.assertIn(('internal/core/contract.go', 'DG004'), by_path)
-        self.assertIn(('engine/python/other.py', 'DG004'), by_path)
+        self.assertIn(('engines/cognee/other.py', 'DG004'), by_path)
         self.assertNotIn(('internal/feature/impl.go', 'DG004'), by_path)
 
     def test_end_to_end_git_repo_staged_and_untracked(self):
@@ -268,14 +268,14 @@ class ScopeLockAndGitIntegrationTests(unittest.TestCase):
             subprocess.run(['git', 'config', 'user.name', 'tester'], cwd=repo, check=True)
             subprocess.run(['git', 'config', 'user.email', 'tester@example.com'], cwd=repo, check=True)
 
-            target = repo / 'engine/python/mod.py'
+            target = repo / 'engines/cognee/mod.py'
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('def existing():\n    return 1\n', encoding='utf-8')
             subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
             subprocess.run(['git', 'commit', '-m', 'init'], cwd=repo, check=True, capture_output=True)
 
             # Add an untracked Tier-A file with a silent broad except -> hits both DG005 and DG001.
-            untracked = repo / 'engine/python/new_mod.py'
+            untracked = repo / 'engines/cognee/new_mod.py'
             untracked.write_text('def f():\n    try:\n        return 1\n    except Exception:\n        pass\n', encoding='utf-8')
             work_report = diff_guard.run_diff_guard(repo, staged=False)
             self.assertFalse(work_report['ok'])
@@ -283,13 +283,13 @@ class ScopeLockAndGitIntegrationTests(unittest.TestCase):
             self.assertEqual(codes, {'DG001', 'DG005'})
 
             # Approving new_mod.py via --allow-new-py removes DG005 while still catching DG001.
-            approved_report = diff_guard.run_diff_guard(repo, staged=False, allow_new_py=['engine/python/new_mod.py'])
+            approved_report = diff_guard.run_diff_guard(repo, staged=False, allow_new_py=['engines/cognee/new_mod.py'])
             self.assertEqual([b['code'] for b in approved_report['blocks']], ['DG001'])
             self.assertTrue(any(a['kind'] == 'approved_new_py' for a in approved_report['audits']))
 
             # Adding a 1:1 test for an ALREADY-EXISTING module (mod.py) is allowed by DG005.
             untracked.unlink()
-            existing_test = repo / 'engine/python/test_mod.py'
+            existing_test = repo / 'engines/cognee/test_mod.py'
             existing_test.write_text('import unittest\n', encoding='utf-8')
             test_only_report = diff_guard.run_diff_guard(repo, staged=False)
             self.assertTrue(test_only_report['ok'], test_only_report['blocks'])
@@ -297,16 +297,16 @@ class ScopeLockAndGitIntegrationTests(unittest.TestCase):
 
             # Stage clean change on existing file only -> staged check should pass.
             target.write_text('def existing():\n    return 2\n', encoding='utf-8')
-            subprocess.run(['git', 'add', 'engine/python/mod.py'], cwd=repo, check=True)
+            subprocess.run(['git', 'add', 'engines/cognee/mod.py'], cwd=repo, check=True)
             staged_report = diff_guard.run_diff_guard(repo, staged=True)
             self.assertTrue(staged_report['ok'])
-            self.assertEqual(staged_report['scanned_tier_a_files'], ['engine/python/mod.py'])
+            self.assertEqual(staged_report['scanned_tier_a_files'], ['engines/cognee/mod.py'])
 
             # Locking mod.py fails staged check with DG004.
             locked_report = diff_guard.run_diff_guard(
                 repo,
                 staged=True,
-                locked_patterns=['engine/python/mod.py'],
+                locked_patterns=['engines/cognee/mod.py'],
             )
             self.assertFalse(locked_report['ok'])
             self.assertEqual(locked_report['blocks'][0]['code'], 'DG004')

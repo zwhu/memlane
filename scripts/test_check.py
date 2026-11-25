@@ -1,573 +1,145 @@
-"""Unit tests for scripts/check.py change mapping, staged execution, and parallel scheduling."""
-from __future__ import annotations
-
-from contextlib import redirect_stdout
+"""Tests for change routing, release plans and verification receipts."""
+import contextlib
 import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check
 
 
-def _stage(plan: dict, kind: str) -> dict | None:
-    return next((s for s in plan['stages'] if s['kind'] == kind), None)
+class CheckTests(unittest.TestCase):
+    def plan(self, root, flags, changes=None):
+        args = check.parse_args(flags)
+        args.python = sys.executable
+        with patch.object(check, 'collect_git_changes', return_value=changes or {}) as git:
+            plan = check.build_plan(args, root)
+        return plan, git
 
+    def commands(self, plan):
+        return {item['name']: item for stage in plan['stages'] for item in stage['checks']}
 
-class GitParsingTests(unittest.TestCase):
-    def test_parse_porcelain_z_handles_added_modified_deleted_and_renamed(self):
-        raw = (
-            b' M scripts/task.py\x00'
-            b'A  scripts/new_helper.py\x00'
-            b' D engine/python/old_mod.py\x00'
-            b'R  scripts/new_name.py\x00scripts/old_name.py\x00'
-            b'?? docs/guide.md\x00'
-        )
-        parsed = check.parse_porcelain_z(raw)
-        self.assertEqual(
-            parsed,
-            [
-                ('scripts/task.py', 'M'),
-                ('scripts/new_helper.py', 'A'),
-                ('engine/python/old_mod.py', 'D'),
-                ('scripts/old_name.py', 'R_OLD'),
-                ('scripts/new_name.py', 'R_NEW'),
-                ('docs/guide.md', 'A'),
-            ],
-        )
+    def test_full_and_pre_push_stage_order(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(check.shutil, 'which', return_value=None):
+            root = Path(tmp).resolve()
+            plan, _ = self.plan(root, ['--full', '--race-pkg', './kit/daemon'])
+            self.assertEqual([[item['name'] for item in stage['checks']] for stage in plan['stages']], [
+                ['lint', 'lint_tests', 'diff_guard'], ['go_vet', 'go_test', 'go_race'],
+                ['cognee_tests', 'scripts_tests', 'pi_extension'],
+            ])
+            steps = self.commands(plan)
+            self.assertEqual(steps['go_test']['command'], ['sh', 'scripts/go.sh', 'test', '-count=1', './...'])
+            self.assertEqual(steps['go_race']['env'], {'CGO_ENABLED': '1'})
+            self.assertEqual(steps['cognee_tests']['env'], {'PYTHONPATH': '.'})
+            self.assertEqual(steps['cognee_tests']['command'][1:],
+                             ['-m', 'unittest', 'discover', '-s', 'engines/cognee', '-p', 'test_*.py'])
+            self.assertEqual(steps['pi_extension']['status'], 'skipped')
+            plan, _ = self.plan(root, ['--pre-push'])
+            self.assertEqual(list(self.commands(plan)), ['lint', 'lint_tests', 'cognee_tests', 'scripts_tests'])
 
-    def test_parse_name_status_z_handles_renames_and_deletions(self):
-        raw = (
-            b'M\x00lint_gate_test.go\x00'
-            b'D\x00engine/python/test_removed.py\x00'
-            b'R100\x00engine/python/old.py\x00engine/python/new.py\x00'
-        )
-        parsed = check.parse_name_status_z(raw)
-        self.assertEqual(
-            parsed,
-            [
-                ('lint_gate_test.go', 'M'),
-                ('engine/python/test_removed.py', 'D'),
-                ('engine/python/old.py', 'R_OLD'),
-                ('engine/python/new.py', 'R_NEW'),
-            ],
-        )
-
-
-class PathMappingTests(unittest.TestCase):
-    def test_release_metadata_blind_spots_trigger_build_release_tests(self):
-        for rel in ('mygo.json', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.md'):
-            with self.subTest(path=rel):
-                plan = check.plan_changed([(rel, 'M')], root=check.ROOT)
-                self.assertFalse(plan['escalated_to_full'])
-                lint_stage = _stage(plan, 'lint')
-                py_stage = _stage(plan, 'python_parallel')
-                self.assertIsNotNone(lint_stage)
-                self.assertTrue(lint_stage['run_lint'])
-                self.assertIsNotNone(py_stage)
-                self.assertIn('scripts/test_build_release.py', py_stage['scripts_tests'])
-
-    def test_engine_prompts_and_patches_blind_spots(self):
-        prompts_plan = check.plan_changed([('engine/prompts/pi-schema-output.ts', 'M')], root=check.ROOT)
-        self.assertFalse(prompts_plan['escalated_to_full'])
-        go_stage = _stage(prompts_plan, 'go')
-        py_stage = _stage(prompts_plan, 'python_parallel')
-        self.assertIn('TestRuntimeAssets', go_stage['root_test_regex'])
-        self.assertIn('engine/python/test_pi_completion.py', py_stage['engine_tests'])
-        self.assertIn('engine/python/test_user_profiles.py', py_stage['engine_tests'])
-
-        patches_plan = check.plan_changed([('engine/patches/project_access.py', 'M')], root=check.ROOT)
-        self.assertFalse(patches_plan['escalated_to_full'])
-        go_stage = _stage(patches_plan, 'go')
-        py_stage = _stage(patches_plan, 'python_parallel')
-        self.assertIn('TestRuntimeAssets', go_stage['root_test_regex'])
-        self.assertIn('./internal/bootstrap', go_stage['test_packages'])
-        self.assertIn('engine/python/test_project_plugin_patch.py', py_stage['engine_tests'])
-
-    def test_official_service_dev_triggers_all_four_model_contract_tests(self):
-        plan = check.plan_changed([('engine/python/official_service_dev.py', 'M')], root=check.ROOT)
-        self.assertFalse(plan['escalated_to_full'])
-        py_stage = _stage(plan, 'python_parallel')
-        self.assertIsNotNone(py_stage)
-        for required in (*check.MODEL_CONTRACT_TESTS, 'engine/python/test_official_service_dev.py'):
-            self.assertIn(required, py_stage['engine_tests'])
-
-    def test_unmapped_path_fails_safe_to_full_gate(self):
-        plan = check.plan_changed([('config/unknown-runtime.yaml', 'M')], root=check.ROOT)
-        self.assertTrue(plan['escalated_to_full'])
-        self.assertTrue(any('unmapped path' in r for r in plan['escalation_reasons']))
-        self.assertEqual([s['kind'] for s in plan['stages']], ['lint', 'go', 'python_parallel'])
-        self.assertEqual(plan['stages'][1]['test_packages'], ['./...'])
-
-    def test_deleted_and_renamed_files_never_schedule_missing_tests(self):
-        plan = check.plan_changed(
-            [
-                ('engine/python/test_deleted_nonexistent.py', 'D'),
-                ('scripts/old_removed.py', 'R_OLD'),
-                ('scripts/dev.py', 'R_NEW'),
-            ],
-            root=check.ROOT,
-        )
-        py_stage = _stage(plan, 'python_parallel')
-        self.assertIsNotNone(py_stage)
-        self.assertNotIn('engine/python/test_deleted_nonexistent.py', py_stage['engine_tests'])
-        self.assertIn('scripts/test_dev.py', py_stage['scripts_tests'])
-        go_stage = _stage(plan, 'go')
-        self.assertIn('TestRuntimeAssets', go_stage['root_test_regex'])
-
-    def test_forbidden_process_docs_path_is_rejected(self):
-        plan = check.plan_changed([('docs/process/draft.md', 'A')], root=check.ROOT)
-        self.assertEqual(plan['forbidden_paths'], ['docs/process/draft.md'])
-        cleanup = check.plan_changed([('docs/process/draft.md', 'D')], root=check.ROOT)
-        self.assertEqual(cleanup['forbidden_paths'], [])
-        self.assertTrue(_stage(cleanup, 'lint')['run_lint'])
-        allowed = check.plan_changed([('docs/process/README.md', 'M')], root=check.ROOT)
-        self.assertEqual(allowed['forbidden_paths'], [])
-        self.assertTrue(_stage(allowed, 'lint')['run_lint'])
-
-    def test_p0_1_slice_files_stay_targeted_without_full_escalation(self):
-        plan = check.plan_changed(
-            [
-                ('scripts/task.py', 'M'),
-                ('lint_gate_test.go', 'M'),
-                ('scripts/check.py', 'A'),
-                ('scripts/test_check.py', 'A'),
-                ('.githooks/pre-push', 'M'),
-            ],
-            root=check.ROOT,
-        )
-        self.assertFalse(plan['escalated_to_full'])
-        lint_stage = _stage(plan, 'lint')
-        self.assertTrue(lint_stage['run_lint'])
-        self.assertTrue(lint_stage['run_lint_tests'])
-        self.assertIn('.githooks/pre-push', lint_stage['hook_syntax_files'])
-        go_stage = _stage(plan, 'go')
-        self.assertIn('.', go_stage['vet_packages'])
-        self.assertIn('TestStaticLintGate', go_stage['root_test_regex'])
-        self.assertIn('TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports', go_stage['root_test_regex'])
-        py_stage = _stage(plan, 'python_parallel')
-        self.assertIn('scripts/test_check.py', py_stage['scripts_tests'])
-        self.assertIn('scripts/test_disk_space.py', py_stage['scripts_tests'])
-
-    def test_go_dependency_propagation_for_bootstrap_and_setupcli(self):
-        plan = check.plan_changed([('internal/bootstrap/probe.go', 'M')], root=check.ROOT)
-        self.assertFalse(plan['escalated_to_full'])
-        self.assertTrue(_stage(plan, 'lint')['run_lint'])
-        go_stage = _stage(plan, 'go')
-        self.assertIn('./internal/bootstrap', go_stage['test_packages'])
-        self.assertIn('./internal/setupcli', go_stage['test_packages'])
-        self.assertIn('./internal/simpledesktop', go_stage['vet_packages'])
-
-    def test_cli_rejects_removed_fast_flag_and_supports_changed_staged_combo(self):
-        with self.assertRaises(SystemExit) as ctx:
-            check.build_parser().parse_args(['--fast'])
-        self.assertEqual(ctx.exception.code, 2)
-
-        buf = io.StringIO()
-        with patch.object(check, 'collect_git_changes', return_value=[('docs/engineering/workflow.md', 'M')]) as collect, \
-             redirect_stdout(buf):
-            code = check.main(['--changed', '--staged', '--dry-run', '--json'], root=check.ROOT, allow_task_wrap=False)
-        self.assertEqual(code, 0)
-        collect.assert_called_once_with(check.ROOT, staged=True)
-
-        for bad in (['--staged', '--full'], ['--changed', 'HEAD~1', '--staged']):
-            with self.subTest(args=bad), self.assertRaises(SystemExit) as bad_ctx:
-                check.main(bad, root=check.ROOT, allow_task_wrap=False)
-            self.assertEqual(bad_ctx.exception.code, 2)
-
-    def test_unmatched_engine_module_fails_safe_even_alongside_tested_files(self):
-        plan = check.plan_changed(
-            [
-                ('engine/python/test_v2_api.py', 'M'),
-                ('engine/python/brand_new_orphan_module.py', 'A'),
-            ],
-            root=check.ROOT,
-        )
-        self.assertTrue(plan['escalated_to_full'])
-        self.assertTrue(any('brand_new_orphan_module' in r for r in plan['escalation_reasons']))
-        self.assertEqual([s['kind'] for s in plan['stages']], ['lint', 'go', 'python_parallel'])
-
-
-class FullAndReleaseStageTests(unittest.TestCase):
-    def test_full_gate_enforces_three_serialized_stages(self):
-        stages = check.build_full_stages(check.ROOT, include_release=False, race_pkgs=['./internal/bootstrap'])
-        self.assertEqual([(s['stage'], s['kind']) for s in stages], [(1, 'lint'), (2, 'go'), (3, 'python_parallel')])
-        self.assertTrue(stages[0]['run_lint'] and stages[0]['run_lint_tests'])
-        self.assertEqual(stages[1]['test_packages'], ['./...'])
-        self.assertEqual(stages[1]['race_packages'], ['./internal/bootstrap'])
-        self.assertTrue(stages[2]['scripts_tests'])
-        self.assertTrue(stages[2]['engine_tests'])
-
-    def test_pre_push_plan_covers_full_lint_and_all_script_tests(self):
-        stages = check.build_pre_push_stages(check.ROOT)
-        self.assertEqual([(s['stage'], s['kind']) for s in stages], [(1, 'lint'), (2, 'python_parallel')])
-        self.assertTrue(stages[0]['run_lint'] and stages[0]['run_lint_tests'])
-        self.assertIn('scripts/test_lint.py', stages[1]['scripts_tests'])
-        self.assertIn('scripts/test_check.py', stages[1]['scripts_tests'])
-        self.assertEqual(stages[1]['engine_tests'], [])
-
-    def test_execute_stages_stops_on_stage1_failure_and_preserves_order(self):
-        observed: list[str] = []
-
-        def fake_run_cmd(cmd, *, cwd, env=None, quiet_on_success=False):
-            observed.append(' '.join(cmd))
-            if 'lint.py' in ' '.join(cmd):
-                return {'command': cmd, 'exit_code': 1, 'ok': False, 'elapsed_s': 0.01, 'output': 'ML001'}
-            return {'command': cmd, 'exit_code': 0, 'ok': True, 'elapsed_s': 0.01, 'output': ''}
-
-        stages = check.build_full_stages(check.ROOT, include_release=False)
-        with patch.object(check, '_run_cmd', side_effect=fake_run_cmd), \
-             patch.object(check, 'run_python_suite_parallel') as py_run:
-            code, results = check.execute_stages(stages, root=check.ROOT, python_bin=sys.executable, jobs=2, json_mode=True)
-        self.assertEqual(code, 1)
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]['name'], 'lint_and_self_test')
-        py_run.assert_not_called()
-
-    def test_release_mode_propagates_smoke_exit_codes_0_1_2_3(self):
+    def test_release_app_resolves_bundle_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / 'scripts').mkdir()
-            smoke = root / 'scripts/smoke_release_contracts.py'
-            smoke.write_text('# stub\n', encoding='utf-8')
-            fake_app = root / 'Memlane'
-            fake_app.write_text('#!/bin/sh\n', encoding='utf-8')
-            fake_app.chmod(0o700)
-            stage = {
-                'stage': 4,
-                'name': 'release_contract_smoke',
-                'kind': 'release_smoke',
-                'app_path': str(fake_app),
-            }
-            for expected_code in (0, 1, 2, 3):
-                with self.subTest(exit_code=expected_code):
-                    completed = subprocess.CompletedProcess([], expected_code, '{"status":"stub"}\n', '')
-                    with patch.object(check.subprocess, 'run', return_value=completed):
-                        code, results = check.execute_stages(
-                            [stage], root=root, python_bin=sys.executable, jobs=1, json_mode=True
-                        )
-                    self.assertEqual(code, expected_code)
-                    self.assertEqual(results[0]['exit_code'], expected_code)
-                    self.assertEqual(results[0]['ok'], expected_code == 0)
+            root = Path(tmp).resolve()
+            app = root / 'Release.app'
+            contents = app / 'Contents'
+            contents.mkdir(parents=True)
+            (contents / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': 'Memlane Beta'}))
+            plan, _ = self.plan(root, ['--release', '--app', str(app)])
+            smoke = self.commands(plan)['release_contract_smoke']
+            self.assertEqual([item['stage'] for item in plan['stages']], [1, 2, 3, 4])
+            self.assertEqual(smoke['command'], [
+                'sh', 'scripts/go.sh', 'test', '-count=1', '-run', 'TestReleaseContractSmoke', './cmd/memlane',
+            ])
+            self.assertEqual(smoke['env'], {'MEMLANE_RELEASE_SMOKE_BIN': str(contents / 'MacOS/Memlane Beta')})
+            plain, _ = self.plan(root, ['--release'])
+            self.assertNotIn('env', self.commands(plain)['release_contract_smoke'])
 
-    def test_dry_run_json_output_and_no_task_reexec(self):
-        buf = io.StringIO()
-        with patch.object(check, 'collect_git_changes', return_value=[('docs/engineering/workflow.md', 'M')]), \
-             patch.object(check, '_reexec_under_task') as reexec, \
-             redirect_stdout(buf):
-            code = check.main(['--changed', '--dry-run', '--json'], root=check.ROOT, allow_task_wrap=True)
-        self.assertEqual(code, 0)
-        reexec.assert_not_called()
-        payload = json.loads(buf.getvalue())
-        self.assertEqual(payload['schema_version'], 1)
-        self.assertEqual(payload['mode'], 'changed')
-        self.assertTrue(payload['dry_run'])
-        self.assertEqual(payload['stages'][0]['kind'], 'lint')
+    def test_diff_guard_receives_comparison_and_scope_flags(self):
+        path = {'scripts/test_check.py': 'M'}
+        for flags, expected in ((['--changed', 'baseline'], ['--base', 'baseline']), (['--staged'], ['--staged'])):
+            with self.subTest(flags=flags):
+                options = ['--lock', 'app/*', '--allow', 'scripts/*', '--allow-new-py', 'scripts/new.py']
+                plan, git = self.plan(check.ROOT, flags + options, path)
+                steps = self.commands(plan)
+                args = steps['diff_guard']['command'][2:]
+                self.assertEqual(args, expected + options)
+                self.assertEqual(list(steps), ['lint', 'lint_tests', 'diff_guard', 'scripts_tests'])
+                git.assert_called_once_with(check.ROOT, staged=flags == ['--staged'],
+                                            base_ref='baseline' if flags[0] == '--changed' else None)
 
+    def test_go_targeting_and_escalation(self):
+        plan, _ = self.plan(check.ROOT, ['--changed'], {'core/hooks/adapter.go': 'M', 'cmd/memlane/hook.go': 'M'})
+        self.assertEqual(self.commands(plan)['go_test']['command'][-2:], ['./cmd/memlane', './core/hooks'])
+        self.assertNotIn('cognee_tests', self.commands(plan))
+        for path in sorted(check.GO_ALL | {'engine/agents/pi/index.ts', 'engines/cognee/runner.py'}):
+            with self.subTest(path=path):
+                broad, _ = self.plan(check.ROOT, ['--changed'], {path: 'D'})
+                self.assertEqual(self.commands(broad)['go_test']['command'][-1], './...')
+                self.assertEqual(broad['deleted_files'], [path])
+                self.assertEqual(broad['escalation_reasons'], [path])
+        plan, _ = self.plan(check.ROOT, ['--changed'], {'engines/cognee/test_runner.py': 'M'})
+        self.assertIn('cognee_tests', self.commands(plan))
+        self.assertNotIn('scripts_tests', self.commands(plan))
 
-class ParallelRunnerAndTaskTests(unittest.TestCase):
-    def test_bucket_python_modules_isolates_heavy_modules_and_balances_light(self):
-        mods = [
-            'engine/python/test_generation_probe.py',
-            'engine/python/test_agent_connections.py',
-            'engine/python/test_alpha.py',
-            'engine/python/test_beta.py',
-            'engine/python/test_gamma.py',
-            'engine/python/test_delta.py',
-        ]
-        buckets = check.bucket_python_modules(mods, max_workers=3)
-        self.assertIn(['engine/python/test_generation_probe.py'], buckets)
-        self.assertIn(['engine/python/test_agent_connections.py'], buckets)
-        self.assertEqual(buckets[0], ['engine/python/test_agent_connections.py'])
-        self.assertEqual(buckets[1], ['engine/python/test_generation_probe.py'])
-        flattened = sorted(item for b in buckets for item in b)
-        self.assertEqual(flattened, sorted(mods))
-
-    def test_schedule_python_work_items_orders_globally_by_lpt_across_suites(self):
-        scripts_mods = [
-            'scripts/test_unknown_a.py',
-            'scripts/test_unknown_b.py',
-            'scripts/test_verify_setup_cli.py',
-            'scripts/test_dev.py',
-        ]
-        engine_mods = [
-            'engine/python/test_unknown_c.py',
-            'engine/python/test_v2_api.py',
-            'engine/python/test_agent_connections.py',
-            'engine/python/test_antigravity_connection.py',
-        ]
-        items = check.schedule_python_work_items(scripts_mods, engine_mods, max_workers=6)
-        weights = [check.bucket_weight(bucket) for _, bucket in items]
-        self.assertEqual(weights, sorted(weights, reverse=True))
-        # Heaviest engine/python modules occupy t=0 ahead of scripts buckets.
-        self.assertEqual(items[0], ('engine/python', ['engine/python/test_agent_connections.py']))
-        self.assertEqual(items[1], ('engine/python', ['engine/python/test_antigravity_connection.py']))
-        # Medium scripts module interleaves ahead of lighter engine/python and unregistered modules.
-        verify_idx = items.index(('scripts', ['scripts/test_verify_setup_cli.py']))
-        self.assertEqual(verify_idx, 2)
-        # Every input module appears exactly once under its owning suite_dir.
-        flattened_scripts = sorted(m for s, b in items if s == 'scripts' for m in b)
-        flattened_engine = sorted(m for s, b in items if s == 'engine/python' for m in b)
-        self.assertEqual(flattened_scripts, sorted(scripts_mods))
-        self.assertEqual(flattened_engine, sorted(engine_mods))
-
-        # Cross-suite reverse case: heavy scripts module dispatches before light engine module.
-        reverse_items = check.schedule_python_work_items(
-            ['scripts/test_verify_setup_cli.py'],
-            ['engine/python/test_v2_api.py'],
-            max_workers=2,
-        )
-        self.assertEqual(
-            reverse_items,
-            [
-                ('scripts', ['scripts/test_verify_setup_cli.py']),
-                ('engine/python', ['engine/python/test_v2_api.py']),
-            ],
-        )
-
-    def test_parallel_runner_submits_global_lpt_order_and_preserves_suite_group_stats(self):
-        submitted: list[tuple[str, list[str]]] = []
-
-        def fake_bucket(python_bin, root, suite_dir, module_paths):
-            submitted.append((suite_dir, list(module_paths)))
-            return {
-                'suite_dir': suite_dir,
-                'modules': [Path(m).stem for m in module_paths],
-                'tests_run': len(module_paths) * 3,
-                'failures': 0,
-                'errors': 0,
-                'skipped': 0,
-                'ok': True,
-                'exit_code': 0,
-                'elapsed_s': 0.25,
-                'output': '',
-            }
-
-        scripts_mods = ['scripts/test_dev.py', 'scripts/test_verify_setup_cli.py']
-        engine_mods = ['engine/python/test_v2_api.py', 'engine/python/test_agent_connections.py']
-        expected = check.schedule_python_work_items(scripts_mods, engine_mods, max_workers=4)
-
-        with patch.object(check, '_run_python_bucket', side_effect=fake_bucket):
-            res = check.run_python_suite_parallel(
-                sys.executable, check.ROOT, scripts_mods, engine_mods, jobs=1, json_mode=True
-            )
-            # With jobs=1 each suite is 1 bucket, heavier engine bucket dispatches before scripts.
-            self.assertEqual([s for s, _ in submitted], ['engine/python', 'scripts'])
-
-        submitted.clear()
-        orig_submit = check.ThreadPoolExecutor.submit
-        dispatch_order: list[tuple[str, list[str]]] = []
-
-        def recording_submit(self_pool, fn, *args, **kwargs):
-            dispatch_order.append((args[2], list(args[3])))
-            return orig_submit(self_pool, fn, *args, **kwargs)
-
-        with patch.object(check, '_run_python_bucket', side_effect=fake_bucket), \
-             patch.object(check.ThreadPoolExecutor, 'submit', recording_submit):
-            res = check.run_python_suite_parallel(
-                sys.executable, check.ROOT, scripts_mods, engine_mods, jobs=4, json_mode=True
-            )
-
-        self.assertEqual(dispatch_order, expected)
-        self.assertEqual(dispatch_order[0], ('engine/python', ['engine/python/test_agent_connections.py']))
-        self.assertEqual(dispatch_order[1], ('scripts', ['scripts/test_verify_setup_cli.py']))
-        self.assertTrue(res['ok'])
-        self.assertEqual(res['exit_code'], 0)
-        self.assertEqual(res['tests_run'], 12)
-        self.assertEqual(res['suites']['scripts']['suite_dir'], 'scripts')
-        self.assertEqual(res['suites']['scripts']['module_count'], 2)
-        self.assertEqual(res['suites']['scripts']['tests_run'], 6)
-        self.assertTrue(res['suites']['scripts']['ok'])
-        self.assertEqual(res['suites']['engine_python']['suite_dir'], 'engine/python')
-        self.assertEqual(res['suites']['engine_python']['module_count'], 2)
-        self.assertEqual(res['suites']['engine_python']['tests_run'], 6)
-        self.assertTrue(res['suites']['engine_python']['ok'])
-
-        empty_res = check.run_python_suite_parallel(
-            sys.executable, check.ROOT, [], [], jobs=2, json_mode=True
-        )
-        self.assertTrue(empty_res['ok'])
-        self.assertEqual(empty_res['workers'], 0)
-        self.assertEqual(empty_res['suites']['scripts']['tests_run'], 0)
-        self.assertEqual(empty_res['suites']['engine_python']['tests_run'], 0)
-
-    def test_parallel_runner_cross_suite_real_subprocesses_and_failure_aggregation(self):
+    def test_pi_loader_discovery_and_targeting(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            scripts_dir = root / 'scripts'
-            engine_dir = root / 'engine/python'
-            scripts_dir.mkdir(parents=True)
-            engine_dir.mkdir(parents=True)
-            (scripts_dir / 'test_s_ok.py').write_text(
-                'import unittest\n'
-                'class S(unittest.TestCase):\n'
-                '    def test_ok(self):\n'
-                '        self.assertEqual(2 + 2, 4)\n',
-                encoding='utf-8',
-            )
-            (engine_dir / 'test_e_ok.py').write_text(
-                'import unittest\n'
-                'class E(unittest.TestCase):\n'
-                '    def test_ok(self):\n'
-                '        self.assertTrue(True)\n',
-                encoding='utf-8',
-            )
-            ok_res = check.run_python_suite_parallel(
-                sys.executable,
-                root,
-                ['scripts/test_s_ok.py'],
-                ['engine/python/test_e_ok.py'],
-                jobs=2,
-                json_mode=True,
-            )
-            self.assertTrue(ok_res['ok'])
-            self.assertEqual(ok_res['exit_code'], 0)
-            self.assertEqual({b['suite_dir'] for b in ok_res['buckets']}, {'scripts', 'engine/python'})
-            self.assertEqual(ok_res['suites']['scripts']['tests_run'], 1)
-            self.assertEqual(ok_res['suites']['engine_python']['tests_run'], 1)
-            self.assertTrue(ok_res['suites']['scripts']['ok'])
-            self.assertTrue(ok_res['suites']['engine_python']['ok'])
+            root = Path(tmp).resolve()
+            entry = root / 'package/dist/cli.js'
+            entry.parent.mkdir(parents=True)
+            entry.touch()
+            pi = root / 'pi'
+            pi.symlink_to(entry)
+            loader = entry.parent / 'core/extensions/loader.js'
+            loader.parent.mkdir(parents=True)
+            loader.touch()
+            binaries = {'node': '/tool/node', 'pi': str(pi)}
+            with patch.object(check.shutil, 'which', side_effect=binaries.get):
+                plan, _ = self.plan(root, ['--changed'], {'scripts/test_pi_extension.mjs': 'M'})
+            self.assertEqual(self.commands(plan)['pi_extension']['command'],
+                             ['/tool/node', 'scripts/test_pi_extension.mjs', str(entry.parent.parent)])
 
-            (engine_dir / 'test_e_fail.py').write_text(
-                'import unittest\n'
-                'class EFail(unittest.TestCase):\n'
-                '    def test_fail(self):\n'
-                '        self.fail("engine boom")\n',
-                encoding='utf-8',
-            )
-            fail_res = check.run_python_suite_parallel(
-                sys.executable,
-                root,
-                ['scripts/test_s_ok.py'],
-                ['engine/python/test_e_ok.py', 'engine/python/test_e_fail.py'],
-                jobs=2,
-                json_mode=True,
-            )
-            self.assertFalse(fail_res['ok'])
-            self.assertEqual(fail_res['exit_code'], 1)
-            self.assertTrue(fail_res['suites']['scripts']['ok'])
-            self.assertEqual(fail_res['suites']['scripts']['failures'], 0)
-            self.assertFalse(fail_res['suites']['engine_python']['ok'])
-            self.assertEqual(fail_res['suites']['engine_python']['failures'], 1)
+    def test_process_artifact_rejection_and_dry_run_does_not_wrap(self):
+        changes = {'docs/process/README.md': 'M', 'docs/process/run.log': 'A', 'docs/process/old.log': 'D'}
+        stdout = io.StringIO()
+        with patch.object(check, 'collect_git_changes', return_value=changes),                 patch.object(check.subprocess, 'call') as wrapper, contextlib.redirect_stdout(stdout):
+            self.assertEqual(check.main(['--changed', '--dry-run', '--json']), 1)
+        wrapper.assert_not_called()
+        receipt = json.loads(stdout.getvalue())
+        self.assertFalse(receipt['ok'])
+        self.assertEqual(receipt['forbidden_paths'], ['docs/process/run.log'])
 
-    def test_parallel_runner_executes_isolated_temp_modules_and_reports_failures(self):
+    def test_direct_execution_uses_task_wrapper(self):
+        with patch.dict(os.environ, {'MEMLANE_DISK_TASK': ''}),                 patch.object(check.subprocess, 'call', return_value=42) as wrapper:
+            self.assertEqual(check.main(['--full']), 42)
+        self.assertEqual(wrapper.call_args.args[0],
+                         [sys.executable, 'scripts/task.py', '--', sys.executable, 'scripts/check.py', '--full'])
+
+    def test_failed_stage_preserves_exit_and_skips_dependents(self):
+        steps = [{'stage': 1, 'name': 'static', 'checks': [check.verification('lint', 'lint')]},
+                 {'stage': 2, 'name': 'go', 'checks': [check.verification('go', 'go')]}]
+        with patch.object(check.subprocess, 'run', return_value=subprocess.CompletedProcess([], 7, 'details')) as run:
+            self.assertEqual(check.execute(steps, check.ROOT, 3, True), 7)
+        run.assert_called_once()
+        self.assertEqual(steps[0]['checks'][0]['output'], 'details')
+        self.assertEqual(steps[1]['checks'][0]['status'], 'skipped')
+
+    def test_git_status_collects_deletions_and_untracked_but_respects_index(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            scripts_dir = root / 'scripts'
-            scripts_dir.mkdir()
-            (scripts_dir / 'test_one.py').write_text(
-                'import os, unittest\n'
-                'class One(unittest.TestCase):\n'
-                '    def test_ok(self):\n'
-                '        self.assertTrue(os.environ.get("TMPDIR", "").endswith("/"))\n',
-                encoding='utf-8',
-            )
-            (scripts_dir / 'test_two.py').write_text(
-                'import unittest\n'
-                'class Two(unittest.TestCase):\n'
-                '    def test_ok(self):\n'
-                '        self.assertEqual(1 + 1, 2)\n',
-                encoding='utf-8',
-            )
-            ok_res = check.run_python_suite_parallel(
-                sys.executable, root, ['scripts/test_one.py', 'scripts/test_two.py'], [], jobs=2, json_mode=True
-            )
-            self.assertTrue(ok_res['ok'])
-            self.assertEqual(ok_res['tests_run'], 2)
-
-            (scripts_dir / 'test_fail.py').write_text(
-                'import unittest\n'
-                'class Fail(unittest.TestCase):\n'
-                '    def test_boom(self):\n'
-                '        self.fail("intentional")\n',
-                encoding='utf-8',
-            )
-            fail_res = check.run_python_suite_parallel(
-                sys.executable, root, ['scripts/test_one.py', 'scripts/test_fail.py'], [], jobs=2, json_mode=True
-            )
-            self.assertFalse(fail_res['ok'])
-            self.assertEqual(fail_res['exit_code'], 1)
-
-    def test_parallel_runner_fails_closed_on_nonzero_worker_exit_after_ok_marker(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            scripts_dir = root / 'scripts'
-            scripts_dir.mkdir()
-            (scripts_dir / 'test_atexit_crash.py').write_text(
-                'import atexit, os, sys, unittest\n'
-                'def _crash_on_exit():\n'
-                '    sys.stderr.write("simulated interpreter teardown crash\\n")\n'
-                '    sys.stderr.flush()\n'
-                '    os._exit(2)\n'
-                'atexit.register(_crash_on_exit)\n'
-                'class ExitCrash(unittest.TestCase):\n'
-                '    def test_pass_before_teardown_crash(self):\n'
-                '        self.assertTrue(True)\n',
-                encoding='utf-8',
-            )
-            bucket_res = check._run_python_bucket(
-                sys.executable, root, 'scripts', ['scripts/test_atexit_crash.py']
-            )
-            self.assertFalse(bucket_res['ok'])
-            self.assertEqual(bucket_res['exit_code'], 2)
-            self.assertEqual(bucket_res['tests_run'], 1)
-            self.assertIn('simulated interpreter teardown crash', bucket_res['output'])
-
-            suite_res = check.run_python_suite_parallel(
-                sys.executable, root, ['scripts/test_atexit_crash.py'], [], jobs=1, json_mode=True
-            )
-            self.assertFalse(suite_res['ok'])
-            self.assertEqual(suite_res['exit_code'], 1)
-            self.assertFalse(suite_res['buckets'][0]['ok'])
-            self.assertEqual(suite_res['buckets'][0]['exit_code'], 2)
-
-    def test_task_py_wait_timeout_eliminates_two_second_sleep_on_short_commands(self):
-        # Run task.py directly in a fresh env without MEMLANE_DISK_TASK to verify fast exit.
-        env = {k: v for k, v in os.environ.items() if k != 'MEMLANE_DISK_TASK'}
-        started = time.perf_counter()
-        proc = subprocess.run(
-            [sys.executable, str(check.ROOT / 'scripts/task.py'), '--', sys.executable, '-c', 'pass'],
-            cwd=str(check.ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        elapsed = time.perf_counter() - started
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertLess(elapsed, 1.8, f'task.py short command still slept ~2s: {elapsed:.2f}s')
-
-    def test_changed_wires_diff_guard_with_lock_and_allow_flags(self):
-        buf = io.StringIO()
-        with patch.object(check, 'collect_git_changes', return_value=[('engine/python/v2_api.py', 'M')]), \
-             redirect_stdout(buf):
-            code = check.main(
-                ['--changed', '--lock', 'internal/core/contract.go', '--allow', 'engine/python/', '--dry-run', '--json'],
-                root=check.ROOT,
-                allow_task_wrap=False,
-            )
-        self.assertEqual(code, 0)
-        receipt = json.loads(buf.getvalue())
-        lint_stage = _stage(receipt, 'lint')
-        self.assertIsNotNone(lint_stage)
-        self.assertEqual(
-            lint_stage.get('diff_guard'),
-            {
-                'staged': False,
-                'base_ref': '',
-                'lock': ['internal/core/contract.go'],
-                'allow': ['engine/python/'],
-                'allow_new_py': [],
-            },
-        )
+            root = Path(tmp).resolve()
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / 'staged.py').touch()
+            subprocess.run(['git', 'add', 'staged.py'], cwd=root, check=True)
+            (root / 'new space.py').touch()
+            self.assertEqual(check.collect_git_changes(root, staged=True), {'staged.py': 'A'})
+            git_output = [b'D\0old.py\0M\0x.py\0', b'new space.py\0']
+            with patch.object(check.subprocess, 'check_output', side_effect=git_output):
+                self.assertEqual(check.collect_git_changes(root), {'old.py': 'D', 'x.py': 'M', 'new space.py': 'A'})
 
 
 if __name__ == '__main__':

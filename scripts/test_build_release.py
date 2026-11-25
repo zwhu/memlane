@@ -16,6 +16,40 @@ import build_release
 
 
 class BuildReleaseTests(unittest.TestCase):
+    def test_go_level_zero_smoke_command(self):
+        repo = Path('/repo')
+        with patch.dict(os.environ, {'MEMLANE_RELEASE_SMOKE_VERSION': 'ambient'}):
+            for code, version in ((0, '0.1.0-beta.3'), (1, '')):
+                with self.subTest(code=code, version=version):
+                    proc = subprocess.CompletedProcess([], code)
+                    with patch.object(build_release.subprocess, 'run', return_value=proc) as run:
+                        actual, report = build_release.run_local_contract_smoke(
+                            'Memlane', expected_version=version, repo_root=repo,
+                        )
+                    self.assertEqual(actual, code)
+                    self.assertEqual(report['status'], 'passed' if code == 0 else 'failed')
+                    self.assertEqual(report['returncode'], code)
+                    self.assertEqual(run.call_args.args[0], [
+                        'sh', '/repo/scripts/go.sh', 'test', '-count=1', '-run',
+                        'TestReleaseContractSmoke', './cmd/memlane',
+                    ])
+                    self.assertEqual(run.call_args.kwargs['cwd'], repo)
+                    env = run.call_args.kwargs['env']
+                    self.assertEqual(env['MEMLANE_RELEASE_SMOKE_BIN'], str(Path('Memlane').absolute()))
+                    self.assertEqual(env.get('MEMLANE_RELEASE_SMOKE_VERSION'), version or None)
+
+    def test_strict_json_and_privacy_helpers(self):
+        for raw in ('[]', '{} {}', '{"k":1,"k":2}', '{"a":{"k":1,"k":2}}',
+                    '{"v":NaN}', '{"v":Infinity}', '{"v":-Infinity}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                build_release.json_object(raw)
+        good = json.dumps({'agent_guidance': build_release.GUIDANCE, 'label': 'disk-cleanup memlane-task-run'})
+        build_release.check_output_privacy(good, build_release.json_object(good))
+        for raw in (r'{"x":"\u0073k-secret"}', '{"x":"Bearer secret"}', '{"x":"management.token"}',
+                    '{"x":"owner.token"}', '{"x":"X-Api-Key"}', '{"x":".local/private"}'):
+            with self.subTest(raw=raw), self.assertRaises(RuntimeError):
+                build_release.check_output_privacy(raw, build_release.json_object(raw))
+
     def test_packaged_cli_doctor_isolated_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             executable = Path(tmp) / 'Memlane'
@@ -107,7 +141,7 @@ class BuildReleaseTests(unittest.TestCase):
             'identifier': 'io.github.zwhu.memlane',
             'version': version,
             'icon': 'assets/branding/memlane-icon.png',
-            'main': './cmd/memlane-app',
+            'main': './cmd/memlane',
             'out': 'build',
             'resources': list(build_release.REQUIRED_LICENSE_FILES) if declare_license_resources else [],
             'macos': {'minimumSystemVersion': min_sys, 'signingIdentity': '-'},
