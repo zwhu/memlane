@@ -3,6 +3,10 @@ import hashlib
 import json
 
 
+PROVIDERS = {'openai': 'openai', 'anthropic': 'anthropic', 'gemini': 'gemini',
+             'custom': 'openai', 'ollama': 'ollama_chat'}
+
+
 def native_llm_kwargs(environment):
     fields = {
         'LLM_PROVIDER': 'llm_provider', 'LLM_MODEL': 'llm_model',
@@ -38,8 +42,17 @@ def environment_from_generation_config(config):
             'ollama_schema_evidence': 'MEMLANE_OLLAMA_SCHEMA_EVIDENCE', 'chunks_per_batch': 'CHUNKS_PER_BATCH',
         }
         env = {key: config[field] for field, key in fields.items() if config.get(field) is not None}
-        if config.get('mode') == 'agent_bridge' and 'provider' not in config:
+        if config.get('mode') == 'agent_bridge':
             env['LLM_PROVIDER'] = 'openai'
+            env.setdefault('CHUNKS_PER_BATCH', '2')
+        provider = env.get('LLM_PROVIDER')
+        if provider is not None:
+            if not isinstance(provider, str) or provider not in PROVIDERS:
+                raise ValueError('unsupported_generation_provider')
+            prefix = PROVIDERS[provider] + '/'
+            model = env.get('LLM_MODEL')
+            if isinstance(model, str) and model.strip() and not model.startswith(prefix):
+                env['LLM_MODEL'] = prefix + model
         tokens = config.get('max_output_tokens')
         if tokens is not None:
             # The native adapter forwards llm_args, not its stored completion cap.
@@ -47,6 +60,8 @@ def environment_from_generation_config(config):
             if isinstance(args, str):
                 args = json.loads(args)
             env['LLM_ARGS'] = {**(args if args is not None else {}), 'max_tokens': int(tokens)}
+    env.setdefault('STRUCTURED_OUTPUT_FRAMEWORK', 'litellm_native')
+    env.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'true')
     if env.get('LLM_PROVIDER') == 'ollama':
         env.setdefault('LLM_API_KEY', 'ollama')
         if env.get('LLM_ENDPOINT'):

@@ -162,8 +162,11 @@ class CogneeBackend:
                 raise PolicyError('official_extract_failed', 503)
             if result.status == 'completed':
                 touched.extend(sessions)
-            runs.extend(str(stage.run.pipeline_run_id) for stage in result.stages if stage.run is not None)
-        return {'touched_doc_ids': touched, 'pipeline_run_id': runs[0] if runs else None}
+            for stage in result.stages:
+                if stage.run is not None:
+                    runs.append(str(stage.run.pipeline_run_id))
+                    touched.extend(str(doc) for doc in (getattr(stage.run, 'data_ids', None) or []))
+        return {'touched_doc_ids': list(dict.fromkeys(touched)), 'pipeline_run_id': runs[0] if runs else None}
 
     async def search(self, payload, limit):
         from cognee import SearchType, search
@@ -178,10 +181,19 @@ class CogneeBackend:
             except NoDataError:
                 continue
             for value in result or []:
-                chunks = value.get('search_result', [value]) if isinstance(value, dict) else value
+                if isinstance(value, dict):
+                    chunks = value.get('search_result', [value])
+                    result_dataset = value.get('dataset_id')
+                else:
+                    chunks = getattr(value, 'search_result', value)
+                    result_dataset = getattr(value, 'dataset_id', None)
+                if isinstance(chunks, (dict, BaseModel)):
+                    chunks = [chunks]
                 if not isinstance(chunks, list):
                     continue
                 for chunk in chunks:
+                    if isinstance(chunk, BaseModel):
+                        chunk = chunk.model_dump()
                     if not isinstance(chunk, dict):
                         continue
                     metadata = chunk.get('external_metadata')
@@ -195,9 +207,14 @@ class CogneeBackend:
                     kind = chunk.get('kind', metadata.get('kind', 'document'))
                     if payload.filters.kind is not None and kind != payload.filters.kind:
                         continue
-                    document = chunk.get('data_id') or chunk.get('document_id')
+                    parent = chunk.get('is_part_of')
+                    if isinstance(parent, dict):
+                        parent = parent.get('id')
+                    elif not isinstance(parent, (str, UUID)):
+                        parent = None
+                    document = chunk.get('data_id') or chunk.get('document_id') or parent or chunk.get('id')
                     if document is not None:
-                        hits.append({'dataset_id': str(dataset), 'document_id': str(document),
+                        hits.append({'dataset_id': str(result_dataset or dataset), 'document_id': str(document),
                                      'title': chunk.get('document_name') or chunk.get('title') or '',
                                      'snippet': chunk.get('text') or '', 'score': chunk.get('score'),
                                      'metadata': metadata})

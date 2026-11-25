@@ -3,14 +3,17 @@ from contextvars import ContextVar
 from datetime import date
 import hashlib
 import os
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 from fastapi import FastAPI
 import httpx
+from pydantic import BaseModel
 
 from engines.cognee import PolicyError
-from engines.cognee.engine_api import install_engine_api
+from engines.cognee.engine_api import CogneeBackend, Extract, Scope, Search, SearchFilters, install_engine_api
 from engines.cognee.handoff import ModelHandoffController
 from engines.cognee.language_egress import current_output_language, set_default_language
 from engines.cognee.runner import SetupOnlyMiddleware
@@ -50,6 +53,84 @@ class Backend:
 
     async def graph(self, dataset_id, filter_text):
         return {'nodes': [{'id': dataset_id, 'label': filter_text}], 'edges': []}
+
+
+class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, {'LITELLM_LOCAL_MODEL_COST_MAP': 'true'}))
+        self.backend = CogneeBackend()
+        self.dataset = uuid4()
+        self.scope = Scope(dataset_id=str(self.dataset))
+        self.user = object()
+        self.enterContext(patch.object(self.backend, '_dataset', return_value=(self.user, self.dataset)))
+
+    async def test_search_unwraps_sdk_results_and_resolves_document_ids(self):
+        from cognee import SearchType
+        from cognee.modules.search.types.SearchResult import SearchResult
+
+        class Chunk(BaseModel):
+            is_part_of: dict[str, str] | None = None
+            id: str
+
+        parent = uuid4()
+        sdk_dataset = uuid4()
+        results = [
+            SearchResult(dataset_id=self.dataset, dataset_name='project', search_result=[
+                {'data_id': 'data', 'document_id': 'other', 'is_part_of': 'parent', 'id': 'chunk'},
+                {'document_id': 'doc', 'is_part_of': 'parent', 'id': 'chunk'},
+                Chunk(is_part_of={'id': 'nested-parent'}, id='chunk'),
+                {'is_part_of': parent, 'id': 'chunk'},
+                {'is_part_of': 'string-parent', 'id': 'chunk'},
+                {'is_part_of': '', 'id': 'id-only'},
+                {'is_part_of': ['invalid-parent']},
+                'ignored',
+            ]),
+            SearchResult(dataset_id=sdk_dataset, dataset_name='project', search_result={'id': 'single-dict'}),
+            SearchResult(dataset_id=None, dataset_name=None, search_result=Chunk(id='single-model')),
+            SearchResult(dataset_id=None, dataset_name=None, search_result='ignored'),
+            {'dataset_id': sdk_dataset, 'search_result': [{'id': 'wrapped-dict'}]},
+            {'id': 'plain-dict'},
+        ]
+        with patch('cognee.search', return_value=results) as search:
+            hits = await self.backend.search(Search(scopes=[self.scope], query='match'), limit=20)
+        search.assert_awaited_once_with(query_text='match', query_type=SearchType.CHUNKS,
+                                        user=self.user, dataset_ids=[self.dataset], top_k=20)
+        expected = [
+            ('data', self.dataset), ('doc', self.dataset), ('nested-parent', self.dataset),
+            (str(parent), self.dataset), ('string-parent', self.dataset), ('id-only', self.dataset),
+            ('single-dict', sdk_dataset), ('single-model', self.dataset),
+            ('wrapped-dict', sdk_dataset), ('plain-dict', self.dataset),
+        ]
+        self.assertEqual([(hit['document_id'], hit['dataset_id']) for hit in hits],
+                         [(doc, str(dataset)) for doc, dataset in expected])
+
+    async def test_search_filters_sdk_chunks_by_kind(self):
+        from cognee.modules.search.types.SearchResult import SearchResult
+
+        result = SearchResult(dataset_id=None, dataset_name=None, search_result=[
+            {'data_id': 'source', 'external_metadata': '{"kind":"capture_qa"}', 'text': 'snippet', 'score': 0.3},
+            {'data_id': 'document'},
+            {'data_id': 'trace', 'kind': 'capture_trace', 'metadata': {'kind': 'capture_qa'}},
+        ])
+        with patch('cognee.search', return_value=[result]):
+            hits = await self.backend.search(
+                Search(scopes=[self.scope], query='match', filters=SearchFilters(kind='capture_qa')), limit=10)
+        self.assertEqual(hits, [{'dataset_id': str(self.dataset), 'document_id': 'source', 'title': '',
+                                 'snippet': 'snippet', 'score': 0.3, 'metadata': {'kind': 'capture_qa'}}])
+
+    async def test_extract_includes_unique_improve_stage_data_ids(self):
+        doc, lesson, session = (str(uuid4()) for _ in range(3))
+        document_run = SimpleNamespace(data_ids=[doc], pipeline_run_id='cognify')
+        stages = [
+            SimpleNamespace(run=None),
+            SimpleNamespace(run=SimpleNamespace(data_ids=[doc, lesson, lesson], pipeline_run_id='improve')),
+            SimpleNamespace(run=SimpleNamespace(pipeline_run_id='finalize')),
+        ]
+        with (patch.object(self.backend, '_find_data', new_callable=AsyncMock, side_effect=[True, None]),
+              patch('cognee.cognify', return_value=document_run),
+              patch('cognee.improve', return_value=SimpleNamespace(status='completed', stages=stages))):
+            result = await self.backend.extract(Extract(scope=self.scope, doc_ids=[doc, session]))
+        self.assertEqual(result, {'touched_doc_ids': [doc, session, lesson], 'pipeline_run_id': 'cognify'})
 
 
 class EngineAPITests(unittest.IsolatedAsyncioTestCase):

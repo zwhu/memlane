@@ -1,5 +1,6 @@
 import asyncio
 from contextvars import ContextVar
+from copy import deepcopy
 import os
 from pathlib import Path
 import tempfile
@@ -14,6 +15,7 @@ from engines.cognee import PolicyError
 from engines.cognee.capacity import EndpointCapacity
 from engines.cognee.handoff import ModelHandoffController
 from engines.cognee.language_egress import set_default_language
+from engines.cognee.ollama_schema import receipt_for, register_verified_schema
 
 
 CONFIG = {'provider': 'openai', 'model': 'openai/example', 'endpoint': 'http://localhost:45110/v1'}
@@ -33,6 +35,32 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
 
     def make_controller(self, **kwargs):
         return ModelHandoffController(factory=dict, background=kwargs.pop('background', lambda: ()), **kwargs)
+
+    async def test_flat_ollama_applies_and_restores_schema_registration(self):
+        self.enterContext(patch.dict(os.environ, {'LITELLM_LOCAL_MODEL_COST_MAP': 'true'}))
+        import litellm
+
+        endpoint = 'http://127.0.0.1:11434'
+        bare = 'qwen3:8b'
+        model = 'ollama_chat/' + bare
+        evidence = receipt_for(model, endpoint)
+        profile = {'provider': 'ollama', 'model': bare, 'endpoint': endpoint, 'ollama_schema_evidence': evidence}
+        aliases = {model, bare, 'ollama/' + bare}
+        before = deepcopy({key: litellm.model_cost[key] for key in aliases if key in litellm.model_cost})
+        handoff = ModelHandoffController(background=lambda: ())
+        self.addAsyncCleanup(handoff.close)
+        with patch('engines.cognee.handoff.register_verified_schema', wraps=register_verified_schema) as register:
+            applied = await handoff.apply('ollama', profile)
+        register.assert_called_once_with(evidence, model, endpoint)
+        self.assertTrue(applied['applied'])
+        self.assertEqual(handoff.mode, 'ready')
+        self.assertEqual(handoff.config.llm_model, model)
+        self.assertEqual(handoff.config.llm_api_key, 'ollama')
+        self.assertEqual(handoff.config.structured_output_framework, 'litellm_native')
+        self.assertEqual(os.environ['OLLAMA_API_BASE'], endpoint)
+        self.assertTrue(any(litellm.model_cost.get(key, {}).get('supports_response_schema') for key in (model, bare)))
+        await handoff.close()
+        self.assertEqual({key: litellm.model_cost[key] for key in aliases if key in litellm.model_cost}, before)
 
     async def test_digest_receipt_conflict_and_no_files(self):
         with tempfile.TemporaryDirectory() as directory:
