@@ -397,9 +397,10 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 return web.json_response(generation_validation.get(request.match_info['operation_id']))
             value = generation.view()
             if generation_validation is not None:
-                from agent_bridge_runtime import bridge_choices, bridge_default_states
+                from agent_bridge_runtime import bridge_choices, bridge_default_states, detected_bridge_kinds
                 value['agent_bridges'] = bridge_choices(generation_validation.runtime)
                 value['agent_defaults'] = bridge_default_states(generation_validation.runtime)
+                value['detected_processing_clis'] = detected_bridge_kinds(generation_validation.runtime)
             return web.json_response(value)
         payload = await body(request)
         if request.method == 'DELETE':

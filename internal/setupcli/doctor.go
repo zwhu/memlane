@@ -2,8 +2,10 @@ package setupcli
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
@@ -34,12 +36,17 @@ func (s *session) doctor() {
 	}
 	id := s.get("operation-id")
 	matchesWorker := id != "" && worker.OperationID == id
+	owner, ok := s.inspectOwner()
+	contention := matchesWorker && workerOK && !active && retryableWorkerContention(worker)
+	staleContention := contention && s.Components.Complete && ownerCurrent(owner, s.App.BundledRuntimeHash)
+	retryableFailure := contention && !staleContention
 	if matchesWorker && workerOK && !active && worker.State != "" {
 		s.operation(id)
-		s.terminalWorker(worker)
+		if !staleContention {
+			s.terminalWorker(worker)
+		}
 	}
-	owner, ok := s.inspectOwner()
-	if ok && s.Environment.StoreMode != "external_readonly" {
+	if ok && s.Environment.StoreMode != "external_readonly" && (!(active || retryableFailure) || owner.State != "stopped") {
 		s.ownerAdvice(owner)
 	}
 	ops, opsOK := s.pendingOperations()
@@ -55,6 +62,7 @@ func (s *session) doctor() {
 			s.block(ExitNeedsReview, "deferred_setup_receipt_unavailable")
 		}
 	}
+	genOK := false
 	if client != nil {
 		dir, err := client.Connections(s.ctx, false)
 		if err != nil {
@@ -73,7 +81,7 @@ func (s *session) doctor() {
 				}
 			}
 		}
-		s.generation(client)
+		genOK = s.generation(client)
 		if opsOK {
 			for _, op := range ops {
 				if op.IsConnection() && (!s.has("agent") || slices.ContainsFunc(s.Connections.Hosts, func(host hostSummary) bool { return host.ID == op.Profile })) {
@@ -88,6 +96,7 @@ func (s *session) doctor() {
 			} else {
 				s.operation(id)
 				s.Artifacts.ConnectionOperation = receiptSummary(id, res)
+				s.showHookRepairFromReceipt(res)
 			}
 		}
 	} else if owner.OwnerLocked && oneOf(owner.State, "ready", "stale_runtime") {
@@ -96,9 +105,23 @@ func (s *session) doctor() {
 	if s.has("include-logs") {
 		s.showLogs(owner, client)
 	}
-	s.showLocalHosts(client == nil)
-	if len(s.Generation.AvailableBridges) == 0 && s.Generation.Active == nil {
-		s.Generation.RecommendedProcessingCLIs = bootstrap.RecommendedProcessingCLIs()
-		s.Generation.MissingProcessingCLIHint = processingHint
+	s.showLocalHosts(client == nil, client != nil && genOK)
+	if (client == nil || genOK) && len(s.Generation.AvailableBridges) == 0 && s.Generation.Active == nil {
+		detected := s.Generation.DetectedUnconfiguredCLIs
+		recommendations := bootstrap.RecommendedProcessingCLIs()
+		if len(detected) == 0 {
+			s.Generation.RecommendedProcessingCLIs = recommendations
+			s.Generation.MissingProcessingCLIHint = processingHint
+			return
+		}
+		s.Generation.MissingProcessingCLIHint = fmt.Sprintf(unconfiguredProcessingHintFormat, strings.Join(detected, "、"))
+		for _, rec := range recommendations {
+			if slices.Contains(detected, rec.Kind) && !slices.ContainsFunc(s.Generation.RecommendedProcessingCLIs, func(existing bootstrap.RecommendedProcessingCLI) bool {
+				return existing.Kind == rec.Kind
+			}) {
+				rec.InstallCommand = ""
+				s.Generation.RecommendedProcessingCLIs = append(s.Generation.RecommendedProcessingCLIs, rec)
+			}
+		}
 	}
 }

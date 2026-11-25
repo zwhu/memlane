@@ -20,6 +20,45 @@ from test_first_install_runtime import FirstRuntimeFixture
 
 
 class Step3BridgeSetupTests(FirstRuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_generation_reports_detected_clis_without_default_models(self):
+        host = self.parent / 'generation-discovery'
+        home = Path(default_profile('traex', home=host))
+        home.mkdir(parents=True)
+        executable = host / '.local/bin/traecli'
+        executable.parent.mkdir(parents=True)
+        auth = home / 'cli/auth.json'
+        config = {'official_data': str(self.root), 'service_commit': self.spec['source_commit']}
+        registry = Registry(self.root / 'discovery-projects.json', None)
+        self.addCleanup(registry.close)
+        store = GenerationStore(self.root / 'discovery-generation.json', config['service_commit'])
+        self.addCleanup(store.close)
+        validator = GenerationValidation(store, config)
+        self.addAsyncCleanup(validator.close)
+        app = create_app(registry, 'm' * 40, {}, generation=store, generation_validation=validator)
+        app.freeze()
+        self.addAsyncCleanup(app.cleanup)
+
+        async def generation():
+            request = make_mocked_request('GET', '/v1/generation', app=app, headers={
+                'Authorization': 'Bearer ' + 'm' * 40})
+            response = await app._handle(request)
+            self.assertEqual(response.status, 200)
+            return json.loads(response.body)
+
+        with patch('agent_discovery.Path.home', return_value=host), \
+             patch('agent_discovery.shutil.which', return_value=None), \
+             patch.object(Path, 'is_file', autospec=True, side_effect=self.only_fixture_files(host)):
+            for installed, configured in ((False, False), (True, False), (True, True)):
+                with self.subTest(installed=installed, configured=configured):
+                    if installed:
+                        executable.touch(mode=0o700)
+                    if configured:
+                        (home / 'traecli.toml').write_text('model = "fixture"')
+                    body = await generation()
+                    self.assertEqual(body['detected_processing_clis'], ['traex'] if installed else [])
+                    self.assertEqual(set(body['agent_bridges']), {'traex'} if configured else set())
+                    self.assertFalse(auth.exists())
+
     async def test_validation_next_handoff_and_activation_without_capture_binding(self):
         for kind, binary, defaults, contents in (
             ('codex', 'Applications/Codex.app/Contents/Resources/codex-cli/bin/codex', 'config.toml', 'model = "fixture"'),

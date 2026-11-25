@@ -15,29 +15,55 @@ import (
 
 var agentVersionPattern = regexp.MustCompile(`\b[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\b`)
 
-func resolveAgentExecutable(kind, name string) string {
-	if path, err := exec.LookPath(name); err == nil {
-		return path
+func agentExecutableNames(kind string) []string {
+	switch kind {
+	case "traex":
+		return []string{"traecli", "traex", "trae-cli"}
+	case "claude_code":
+		return []string{"claude"}
+	case "antigravity":
+		return []string{"agy"}
+	case "codex", "pi", "opencode", "cursor":
+		return []string{kind}
+	default:
+		return nil
 	}
-	var candidates []string
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		candidates = append(candidates, filepath.Join(home, ".local/bin", name))
+}
+
+func resolveAgentExecutable(kind string, names ...string) string {
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	var dirs []string
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".local/bin"), filepath.Join(home, ".bun/bin"))
 		if kind == "opencode" {
-			candidates = append(candidates, filepath.Join(home, ".opencode/bin", name))
-		}
-		if kind == "antigravity" {
-			candidates = append(candidates, filepath.Join(home, "Applications/Gemini.app/Contents/Helpers/agy"))
+			dirs = append(dirs, filepath.Join(home, ".opencode/bin"))
 		}
 	}
-	candidates = append(candidates,
-		filepath.Join("/opt/homebrew/bin", name),
-		filepath.Join("/usr/local/bin", name),
-	)
+	dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
+	isExecutable := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0
+	}
+	for _, dir := range dirs {
+		for _, name := range names {
+			if candidate := filepath.Join(dir, name); isExecutable(candidate) {
+				return candidate
+			}
+		}
+	}
 	if kind == "antigravity" {
-		candidates = append(candidates, "/Applications/Gemini.app/Contents/Helpers/agy")
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+		const bundleExecutable = "Applications/Gemini.app/Contents/Helpers/agy"
+		if home != "" {
+			if candidate := filepath.Join(home, bundleExecutable); isExecutable(candidate) {
+				return candidate
+			}
+		}
+		if candidate := "/" + bundleExecutable; isExecutable(candidate) {
 			return candidate
 		}
 	}
@@ -66,15 +92,7 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 			executable = config.CodexExecutable
 		}
 		if executable == "" {
-			name := map[string]string{
-				"codex": "codex", "pi": "pi", "traex": "traecli",
-				"claude_code": "claude", "opencode": "opencode",
-				"cursor": "cursor", "antigravity": "agy",
-			}[rows[n].Kind]
-			if name == "" {
-				continue
-			}
-			executable = resolveAgentExecutable(rows[n].Kind, name)
+			executable = resolveAgentExecutable(rows[n].Kind, agentExecutableNames(rows[n].Kind)...)
 		}
 		if executable == "" {
 			continue

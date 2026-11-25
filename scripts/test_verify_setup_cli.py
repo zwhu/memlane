@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -51,11 +52,26 @@ if args == ['worker']:
     worker_dir.mkdir(parents=True, exist_ok=True)
     with worker_lock.open('w') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        worker_state.write_text(json.dumps({'operation_id': 'first-install', 'state': 'running'}))
+        state = {'operation_id': 'first-install', 'state': 'running'}
+        if settings.get('locked_runtime_start'):
+            state['stage'] = 'starting_runtime'
+        if settings.get('runtime_start'):
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            pid = os.getpid()
+            try:
+                started = subprocess.check_output(['/bin/ps', '-p', str(pid), '-o', 'lstart='],
+                                                  encoding='utf-8', timeout=5).strip()
+            except (OSError, subprocess.SubprocessError):
+                started = ''
+            state.update(stage='starting_runtime', pid=pid)
+            if started:
+                state['started'] = started
+        temp = worker_state.with_suffix('.tmp')
+        temp.write_text(json.dumps(state))
+        temp.replace(worker_state)
         deadline = time.monotonic() + 5
         while not worker_finish.exists() and time.monotonic() < deadline:
             time.sleep(.01)
-        temp = worker_state.with_suffix('.tmp')
         temp.write_text(json.dumps({'operation_id': 'first-install', 'state': 'completed'}))
         temp.replace(worker_state)
     worker_done.touch()
@@ -106,6 +122,7 @@ def pending_rows():
 
 def completed_worker():
     reply(10, operation_id='first-install',
+          daemon={'state': 'ready'},
           components={'worker_active': False, 'progress': {'state': 'completed'}},
           blockers=[{'code': 'connection_not_activated'}])
 
@@ -126,6 +143,12 @@ if args[0] == 'doctor':
         assert flag('--operation-id') == 'first-install'
         if scenario == 'half-installed':
             if not worker_finish.exists():
+                if settings.get('runtime_start'):
+                    state = json.loads(worker_state.read_text())
+                    assert state['stage'] == 'starting_runtime'
+                    os.kill(state['pid'], 0)
+                    with worker_lock.open('r') as handle:
+                        fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
                 worker_finish.touch()
                 if settings.get('orphan'):
                     reply(40, blockers=[{'code': 'orphan_install_process'}])
@@ -496,17 +519,524 @@ class RunnerTests(unittest.TestCase):
                     self.assertEqual(len(polls), int(setting == 'poll_state'))
                     self.assertFalse(any(args[0] == 'verify' for args in self.calls()))
 
+    def poll_runner(self):
+        return gate.Gate(SimpleNamespace(
+            executable=self.executable, home=self.root, config=self.root / 'runtime.json',
+            component_root=self.root / 'components', hooks_path=self.hooks, mirror='official',
+        ))
+
+    def test_exit_twenty_guidance_matches_go(self):
+        source = (Path(gate.__file__).resolve().parent.parent / 'internal/setupcli/types.go').read_text(encoding='utf-8')
+        declaration = next(line for line in source.splitlines() if line.startswith('const agentGuidance = '))
+        self.assertEqual(gate.GUIDANCE, json.loads(declaration.split(' = ', 1)[1]))
+        self.assertIn('On exit 20 follow next_actions after retry_after_ms', gate.GUIDANCE)
+
+    def test_install_poll_retries_worker_lock_contention(self):
+        digest = 'a' * 64
+        for error in gate.RETRYABLE_WORKER_ERRORS:
+            for use_apply in (True, False):
+                with self.subTest(error=error, use_apply=use_apply):
+                    runner = self.poll_runner()
+                    failed = {'worker_active': False, 'progress': {'state': 'failed', 'error_code': error}}
+                    expected = ['doctor', '--operation-id', 'first-install']
+                    actions = []
+                    if use_apply:
+                        actions = [{'args': ['install', '--mirror', 'official', '--apply', '--plan-digest', digest,
+                                            '--config', str(runner.options.config), '--component-root',
+                                            str(runner.options.component_root), '--json']}]
+                        expected = ['install', '--apply', '--plan-digest', digest, '--wait', '45']
+                    initial = gate.CLIResult(20, {
+                        'components': failed, 'operation_id': 'first-install', 'retry_after_ms': 10000,
+                        'next_actions': actions,
+                    })
+                    final = gate.CLIResult(0, {
+                        'components': {'worker_active': False, 'progress': {'state': 'completed'}} if use_apply else failed,
+                        'operation_id': 'first-install', 'daemon': {'state': 'ready'},
+                    })
+                    with patch.object(gate, 'run_cli', return_value=final) as run_cli, patch.object(gate.time, 'sleep') as sleep:
+                        self.assertIs(runner.poll(initial), final)
+                    run_cli.assert_called_once_with(self.executable, runner.command(*expected),
+                                                    env=runner.env, timeout=65.0)
+                    sleep.assert_called_once_with(10)
+
+    def test_install_poll_recovers_from_contention_without_worker_receipt(self):
+        runner = self.poll_runner()
+        runner.options.max_polls = 2
+        digest = 'a' * 64
+        components = {'worker_active': False, 'progress': None}
+        doctor = ['doctor', '--operation-id', 'first-install']
+        initial = gate.CLIResult(20, {
+            'components': components, 'operation_id': 'first-install', 'retry_after_ms': 1000,
+            'blockers': [{'code': 'install_worker_active'}], 'next_actions': [{'args': doctor}],
+        })
+        stopped = gate.CLIResult(10, {
+            'components': components, 'daemon': {'state': 'stopped'},
+            'blockers': [{'code': 'daemon_stopped'}],
+            'next_actions': [{'args': ['install', '--plan']},
+                             {'args': ['install', '--apply', '--plan-digest', digest]}],
+        })
+        active = gate.CLIResult(20, {
+            'components': {'worker_active': True, 'progress': {'state': 'running'}},
+            'operation_id': 'second-install', 'retry_after_ms': 0,
+        })
+        ready = gate.CLIResult(0, {
+            'components': {'worker_active': False, 'progress': {'state': 'completed'}},
+            'operation_id': 'second-install', 'daemon': {'state': 'ready'},
+        })
+        with patch.object(gate, 'run_cli', side_effect=[stopped, active, ready]) as run_cli, patch.object(gate.time, 'sleep') as sleep:
+            self.assertIs(runner.poll(initial), ready)
+        self.assertEqual([call.args[1] for call in run_cli.call_args_list], [
+            runner.command(*doctor), runner.command('install', '--apply', '--plan-digest', digest, '--wait', '45'),
+            runner.command('doctor', '--operation-id', 'second-install'),
+        ])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (0,)])
+
+    def test_install_poll_refreshes_plan_before_retrying_apply(self):
+        digest = 'b' * 64
+        busy = gate.CLIResult(20, {
+            'components': {'worker_active': False, 'progress': {'state': 'failed', 'error_code': 'owner_busy'}},
+            'retry_after_ms': 1000,
+            'next_actions': [{'args': ['install', '--plan', '--config', '/old/config', '--component', 'runtime',
+                                       '--component-root', '/old/components', '--mirror', 'old', '--json']}],
+        })
+        components = {'worker_active': False, 'progress': None}
+        ready = gate.CLIResult(0, {'components': components, 'daemon': {'state': 'ready'}})
+        for resolves in (True, False):
+            with self.subTest(resolves=resolves):
+                runner = self.poll_runner()
+                runner.options.max_polls = 1
+                apply_scope = ['--component', 'runtime', '--operation-id', 'new-install']
+                apply = ['install', '--apply', '--plan-digest', digest, *apply_scope, '--wait', '5', '--json']
+                refreshed = gate.CLIResult(10, {
+                    'components': busy.payload['components'], 'daemon': {'state': 'stopped'},
+                    'artifacts': {'plan_digest': digest},
+                    'next_actions': [{'args': apply}],
+                })
+                retries = 1 if resolves else 3
+                replies = [refreshed, ready] if resolves else [refreshed, busy] * retries
+                with patch.object(gate, 'run_cli', side_effect=replies) as run_cli, patch.object(gate.time, 'sleep') as sleep:
+                    if resolves:
+                        self.assertIs(runner.poll(busy), ready)
+                    else:
+                        with self.assertRaisesRegex(gate.VerificationError, 'install lock contention retry limit exceeded'):
+                            runner.poll(busy)
+                self.assertEqual([call.args[1] for call in run_cli.call_args_list], [
+                    runner.command('install', '--plan', '--component', 'runtime'),
+                    runner.command('install', '--apply', '--plan-digest', digest, *apply_scope, '--wait', '45'),
+                ] * retries)
+                self.assertEqual([call.args for call in sleep.call_args_list], [(1,)] * retries)
+
+    def test_install_poll_rejects_failed_worker_on_plan_or_doctor(self):
+        for command, error_code, step in (
+            (['install', '--plan'], 'runtime_start_failed', 'refresh installation plan 1'),
+            (['doctor', '--operation-id', 'first-install'], 'owner_busy', 'poll install operation 1'),
+        ):
+            with self.subTest(command=command, error_code=error_code):
+                runner = self.poll_runner()
+                busy = gate.CLIResult(20, {
+                    'components': {'worker_active': False}, 'operation_id': 'first-install', 'retry_after_ms': 0,
+                    'next_actions': [{'args': command}],
+                })
+                digest = 'b' * 64
+                failed = gate.CLIResult(10, {
+                    'components': {'worker_active': False, 'progress': {'state': 'failed', 'error_code': error_code}},
+                    'operation_id': 'first-install', 'daemon': {'state': 'stopped'},
+                    'artifacts': {'plan_digest': digest},
+                    'next_actions': [{'args': ['install', '--apply', '--plan-digest', digest]}],
+                })
+                error = 'install worker state is failed'
+                with patch.object(gate, 'run_cli', return_value=failed) as run_cli, patch.object(gate.time, 'sleep'):
+                    with self.assertRaisesRegex(gate.VerificationError, f'^{error}$'):
+                        runner.poll(busy)
+                run_cli.assert_called_once_with(self.executable, runner.command(*command), env=runner.env, timeout=65.0)
+                self.assertEqual(runner.receipts[-1], {
+                    'step': step, 'status': 'failed', 'exit_code': 10, 'error': error,
+                })
+
+    def test_install_poll_routes_busy_or_active_refreshed_plan_to_doctor(self):
+        idle = {'worker_active': False, 'progress': None}
+        ready = gate.CLIResult(0, {'components': idle, 'daemon': {'state': 'ready'}})
+        busy = gate.CLIResult(20, {
+            'components': idle, 'retry_after_ms': 0, 'operation_id': 'first-install',
+            'next_actions': [{'args': ['install', '--plan']}],
+        })
+        for code, worker_active in ((20, False), (10, True)):
+            for operation_id in ('second-install', 'bad/id', '', None):
+                with self.subTest(code=code, worker_active=worker_active, operation_id=operation_id):
+                    runner = self.poll_runner()
+                    refreshed = gate.CLIResult(code, {
+                        **busy.payload, 'components': {'worker_active': worker_active},
+                        'operation_id': operation_id,
+                    })
+                    expected = [runner.command('install', '--plan')]
+                    with patch.object(gate, 'run_cli', side_effect=[refreshed, ready]) as run_cli, patch.object(gate.time, 'sleep'):
+                        if operation_id == 'second-install':
+                            self.assertIs(runner.poll(busy), ready)
+                            expected.append(runner.command('doctor', '--operation-id', operation_id))
+                        else:
+                            error = 'install poll requires a valid operation ID'
+                            with self.assertRaisesRegex(gate.VerificationError, f'^{error}$'):
+                                runner.poll(busy)
+                            self.assertEqual(runner.receipts[-1], {
+                                'step': 'refresh installation plan 1', 'status': 'failed', 'exit_code': code, 'error': error,
+                            })
+                    self.assertEqual([call.args[1] for call in run_cli.call_args_list], expected)
+
+        runner = self.poll_runner()
+        with patch.object(gate, 'run_cli', return_value=ready) as run_cli, patch.object(gate.time, 'sleep'):
+            self.assertIs(runner.poll(busy), ready)
+        run_cli.assert_called_once_with(self.executable, runner.command('install', '--plan'),
+                                        env=runner.env, timeout=65.0)
+
+    def test_install_poll_uses_tracked_id_when_busy_refreshed_plan_omits_it(self):
+        idle = {'worker_active': False, 'progress': None}
+        refreshed = gate.CLIResult(20, {
+            'components': idle, 'retry_after_ms': 0,
+            'next_actions': [{'args': ['install', '--plan']}],
+        })
+        ready = gate.CLIResult(0, {'components': idle, 'daemon': {'state': 'ready'}})
+        for tracked_id in ('first-install', None):
+            with self.subTest(tracked_id=tracked_id):
+                runner = self.poll_runner()
+                initial = (gate.CLIResult(20, {**refreshed.payload, 'operation_id': tracked_id})
+                           if tracked_id else refreshed)
+                expected = [runner.command('install', '--plan')]
+                with patch.object(gate, 'run_cli', side_effect=[refreshed, ready]) as run_cli, patch.object(gate.time, 'sleep'):
+                    if tracked_id:
+                        self.assertIs(runner.poll(initial), ready)
+                        expected.append(runner.command('doctor', '--operation-id', tracked_id))
+                    else:
+                        error = 'install poll requires a valid operation ID'
+                        with self.assertRaisesRegex(gate.VerificationError, f'^{error}$'):
+                            runner.poll(initial)
+                        self.assertEqual(runner.receipts[-1]['step'], 'review install retry 2')
+                self.assertEqual([call.args[1] for call in run_cli.call_args_list], expected)
+
+    def test_install_poll_resumes_recovery_after_forced_doctor(self):
+        runner = self.poll_runner()
+        idle = {'worker_active': False, 'progress': None}
+        busy = gate.CLIResult(20, {
+            'components': idle, 'operation_id': 'first-install', 'retry_after_ms': 0,
+            'next_actions': [{'args': ['install', '--plan']}],
+        })
+        refreshed = gate.CLIResult(20, {**busy.payload, 'operation_id': 'second-install'})
+        apply = ['install', '--apply', '--plan-digest', 'b' * 64]
+        stopped = gate.CLIResult(10, {
+            'components': idle, 'operation_id': 'second-install', 'daemon': {'state': 'stopped'},
+            'blockers': [{'code': 'daemon_stopped'}], 'next_actions': [{'args': apply}],
+        })
+        ready = gate.CLIResult(0, {'components': idle, 'daemon': {'state': 'ready'}})
+        with patch.object(gate, 'run_cli', side_effect=[refreshed, stopped, ready]) as run_cli, patch.object(gate.time, 'sleep'):
+            self.assertIs(runner.poll(busy), ready)
+        self.assertEqual([call.args[1] for call in run_cli.call_args_list], [
+            runner.command('install', '--plan'), runner.command('doctor', '--operation-id', 'second-install'),
+            runner.command(*apply, '--wait', '45'),
+        ])
+
+    def test_install_poll_applies_refreshed_plan_when_daemon_is_already_ready(self):
+        runner = self.poll_runner()
+        idle = {'worker_active': False, 'progress': None}
+        busy = gate.CLIResult(20, {
+            'components': idle, 'retry_after_ms': 0,
+            'next_actions': [{'args': ['install', '--plan']}],
+        })
+        digest = 'b' * 64
+        apply = ['install', '--apply', '--plan-digest', digest]
+        ready = gate.CLIResult(0, {'components': idle, 'daemon': {'state': 'ready'}})
+        refreshed = gate.CLIResult(10, {
+            **ready.payload, 'artifacts': {'plan_digest': digest}, 'next_actions': [{'args': apply}],
+        })
+        with patch.object(gate, 'run_cli', side_effect=[refreshed, ready]) as run_cli, patch.object(gate.time, 'sleep'):
+            self.assertIs(runner.poll(busy), ready)
+        self.assertEqual([call.args[1] for call in run_cli.call_args_list], [
+            runner.command('install', '--plan'), runner.command(*apply, '--wait', '45'),
+        ])
+
+    def test_install_poll_rejects_invalid_refreshed_apply_action(self):
+        digest = 'b' * 64
+        apply = ['install', '--apply', '--plan-digest', digest, '--component', 'runtime']
+        scoped = ['--component', 'runtime']
+        scope_error = 'refreshed install apply action changed component scope'
+        digest_error = 'refreshed install apply action plan_digest mismatch'
+        for plan_scope, plan_digest, actions, error in (
+            (scoped, digest, [], 'refreshed installation plan did not provide an install apply action'),
+            (scoped, None, [{'args': apply}], 'missing or invalid plan_digest receipt'),
+            (scoped, 'invalid', [{'args': apply}], 'missing or invalid plan_digest receipt'),
+            (scoped, 'a' * 64, [{'args': apply}], digest_error),
+            (scoped, digest, [{'args': apply + ['--plan-digest', digest]}], digest_error),
+            (scoped, digest, [{'args': apply[:-2]}], scope_error),
+            ([], digest, [{'args': apply}], scope_error),
+            (scoped, digest, [{'args': [*apply[:-2], '--wait', *apply[-2:]]}], scope_error),
+        ):
+            with self.subTest(plan_scope=plan_scope, plan_digest=plan_digest, actions=actions):
+                runner = self.poll_runner()
+                plan = ['install', '--plan', *plan_scope]
+                busy = gate.CLIResult(20, {
+                    'components': {'worker_active': False}, 'retry_after_ms': 0,
+                    'next_actions': [{'args': plan}],
+                })
+                refreshed = gate.CLIResult(10, {
+                    'components': {'worker_active': False}, 'daemon': {'state': 'ready'},
+                    'artifacts': {} if plan_digest is None else {'plan_digest': plan_digest},
+                    'next_actions': actions,
+                })
+                with patch.object(gate, 'run_cli', return_value=refreshed) as run_cli, patch.object(gate.time, 'sleep'):
+                    with self.assertRaisesRegex(gate.VerificationError, f'^{error}$'):
+                        runner.poll(busy)
+                run_cli.assert_called_once_with(self.executable, runner.command(*plan),
+                                                env=runner.env, timeout=65.0)
+                self.assertEqual(runner.receipts[-1], {
+                    'step': 'review refreshed installation plan 1', 'status': 'failed', 'error': error,
+                })
+
+    def test_install_poll_rejects_operation_id_change_from_doctor(self):
+        components = {'worker_active': True, 'progress': {'state': 'running'}}
+        initial = gate.CLIResult(20, {
+            'components': components, 'operation_id': 'first-install', 'retry_after_ms': 0,
+        })
+        for code, status in (
+            (20, {'components': components, 'retry_after_ms': 0}),
+            (0, {'components': {'worker_active': False}, 'daemon': {'state': 'ready'}}),
+        ):
+            with self.subTest(code=code):
+                runner = self.poll_runner()
+                changed = gate.CLIResult(code, {**status, 'operation_id': 'second-install'})
+                with patch.object(gate, 'run_cli', return_value=changed) as run_cli, patch.object(gate.time, 'sleep'):
+                    with self.assertRaisesRegex(gate.VerificationError, '^install poll changed operation ID$'):
+                        runner.poll(initial)
+                run_cli.assert_called_once_with(self.executable, runner.command('doctor', '--operation-id', 'first-install'),
+                                                env=runner.env, timeout=65.0)
+                self.assertEqual(runner.receipts[-1], {
+                    'step': 'poll install operation 1', 'status': 'failed', 'exit_code': code,
+                    'error': 'install poll changed operation ID',
+                })
+
+    def test_install_poll_rejects_operation_id_change_from_initial_doctor(self):
+        for code in (0, 10, 20):
+            with self.subTest(code=code):
+                runner = self.poll_runner()
+                initial = gate.CLIResult(code, {
+                    'components': {'worker_active': code == 20}, 'daemon': {'state': 'ready'},
+                    'operation_id': 'second-install', 'retry_after_ms': 0,
+                })
+                with patch.object(gate, 'run_cli') as run_cli:
+                    with self.assertRaisesRegex(gate.VerificationError, '^install poll changed operation ID$'):
+                        runner.poll(initial, 'first-install')
+                run_cli.assert_not_called()
+                self.assertEqual(runner.receipts, [{
+                    'step': 'inspect initial install worker state', 'status': 'failed',
+                    'error': 'install poll changed operation ID',
+                }])
+
+    def test_install_poll_rejects_empty_doctor_id_with_worker(self):
+        operation_id = 'first-install'
+        active = gate.CLIResult(20, {
+            'components': {'worker_active': True}, 'operation_id': operation_id, 'retry_after_ms': 0,
+        })
+        for components in (
+            {'worker_active': False, 'progress': {'state': 'completed'}},
+            {'worker_active': False, 'progress': {}},
+            {'worker_active': True, 'progress': None},
+        ):
+            for id_fields in ({}, {'operation_id': None}, {'operation_id': ''}):
+                doctor = gate.CLIResult(0, {'components': components, 'daemon': {'state': 'ready'}, **id_fields})
+                for initial in (True, False):
+                    with self.subTest(components=components, id_fields=id_fields, initial=initial):
+                        runner = self.poll_runner()
+                        with patch.object(gate, 'run_cli', return_value=doctor) as run_cli, patch.object(gate.time, 'sleep'):
+                            with self.assertRaisesRegex(gate.VerificationError, '^install poll changed operation ID$'):
+                                runner.poll(doctor if initial else active, operation_id)
+                        if initial:
+                            run_cli.assert_not_called()
+                            self.assertEqual(runner.receipts[-1]['step'], 'inspect initial install worker state')
+                        else:
+                            run_cli.assert_called_once_with(self.executable, runner.command('doctor', '--operation-id', operation_id),
+                                                            env=runner.env, timeout=65.0)
+                            self.assertEqual(runner.receipts[-1]['step'], 'poll install operation 1')
+
+    def test_install_poll_validates_recovery_apply_operation_id(self):
+        digest = 'a' * 64
+        busy = gate.CLIResult(20, {
+            'components': {'worker_active': False}, 'operation_id': 'first-install', 'retry_after_ms': 0,
+            'next_actions': [{'args': ['install', '--apply', '--plan-digest', digest]}],
+        })
+        ready = gate.CLIResult(0, {
+            'components': {'worker_active': False}, 'daemon': {'state': 'ready'},
+        })
+        for operation_id in ('bad/id', '', None):
+            with self.subTest(operation_id=operation_id):
+                runner = self.poll_runner()
+                expected = [runner.command('install', '--apply', '--plan-digest', digest, '--wait', '45')]
+                with patch.object(gate, 'run_cli') as run_cli, patch.object(gate.time, 'sleep'):
+                    if operation_id is None:
+                        active = gate.CLIResult(20, {
+                            'components': {'worker_active': True}, 'operation_id': None, 'retry_after_ms': 0,
+                        })
+                        run_cli.side_effect = [active, ready]
+                        self.assertIs(runner.poll(busy), ready)
+                        expected.append(runner.command('doctor', '--operation-id', 'first-install'))
+                    else:
+                        run_cli.return_value = gate.CLIResult(0, {**ready.payload, 'operation_id': operation_id})
+                        error = 'install poll requires a valid operation ID'
+                        with self.assertRaisesRegex(gate.VerificationError, f'^{error}$'):
+                            runner.poll(busy)
+                        self.assertEqual(runner.receipts[-1], {
+                            'step': 'poll install operation 1', 'status': 'failed', 'exit_code': 0, 'error': error,
+                        })
+                self.assertEqual([call.args[1] for call in run_cli.call_args_list], expected)
+
+    def test_install_poll_does_not_spawn_cli_if_deadline_expires_during_sleep(self):
+        for action, step in (
+            (['doctor', '--operation-id', 'first-install'], 'poll install operation 1'),
+            (['install', '--plan'], 'refresh installation plan 1'),
+            (['install', '--apply', '--plan-digest', 'a' * 64], 'poll install operation 1'),
+        ):
+            with self.subTest(action=action):
+                runner = self.poll_runner()
+                runner.options.poll_timeout = 2
+                busy = gate.CLIResult(20, {
+                    'components': {'worker_active': False}, 'operation_id': 'first-install', 'retry_after_ms': 1000,
+                    'next_actions': [{'args': action}],
+                })
+                with patch.object(gate, 'time') as clock, patch.object(gate, 'run_cli') as run_cli:
+                    clock.monotonic.return_value = 100
+                    clock.sleep.side_effect = lambda _: setattr(clock.monotonic, 'return_value', 102)
+                    with self.assertRaisesRegex(gate.VerificationError, '^install polling deadline exceeded$'):
+                        runner.poll(busy)
+                clock.sleep.assert_called_once_with(1)
+                run_cli.assert_not_called()
+                self.assertEqual(runner.receipts[-1], {
+                    'step': step, 'status': 'failed', 'error': 'install polling deadline exceeded',
+                })
+
+    def test_install_poll_does_not_spawn_apply_if_deadline_expires_during_plan(self):
+        runner = self.poll_runner()
+        runner.options.poll_timeout = 2
+        digest = 'a' * 64
+        busy = gate.CLIResult(20, {
+            'components': {'worker_active': False}, 'retry_after_ms': 0,
+            'next_actions': [{'args': ['install', '--plan']}],
+        })
+        refreshed = gate.CLIResult(10, {
+            'components': {'worker_active': False}, 'daemon': {'state': 'stopped'},
+            'artifacts': {'plan_digest': digest},
+            'next_actions': [{'args': ['install', '--apply', '--plan-digest', digest]}],
+        })
+        with patch.object(gate, 'time') as clock, patch.object(gate, 'run_cli') as run_cli:
+            clock.monotonic.return_value = 100
+
+            def run_plan(*args, **kwargs):
+                clock.monotonic.return_value = 103
+                return refreshed
+
+            run_cli.side_effect = run_plan
+            with self.assertRaisesRegex(gate.VerificationError, '^install polling deadline exceeded$'):
+                runner.poll(busy)
+        run_cli.assert_called_once_with(self.executable, runner.command('install', '--plan'),
+                                        env=runner.env, timeout=2)
+        self.assertEqual(runner.receipts[-1], {
+            'step': 'poll install operation 1', 'status': 'failed', 'error': 'install polling deadline exceeded',
+        })
+
+    def test_install_poll_rejects_other_failures_even_after_contention(self):
+        retryable = {'state': 'failed', 'error_code': 'upgrade_locked'}
+        for progress in ({'state': 'failed'}, {'state': 'failed', 'error_code': 'runtime_start_failed'}):
+            with self.subTest(progress=progress):
+                runner = self.poll_runner()
+                initial = gate.CLIResult(20, {
+                    'components': {'worker_active': False, 'progress': retryable},
+                    'operation_id': 'first-install', 'retry_after_ms': 0,
+                })
+                final = gate.CLIResult(0, {
+                    'components': {'worker_active': False, 'progress': progress},
+                    'operation_id': 'first-install', 'daemon': {'state': 'ready'},
+                })
+                with patch.object(gate, 'run_cli', return_value=final) as run_cli:
+                    with self.assertRaisesRegex(gate.VerificationError, 'install worker state is failed'):
+                        runner.poll(initial)
+                run_cli.assert_called_once()
+
+    def test_install_poll_accepts_historical_contention_without_seeing_it_live(self):
+        for exit_code in (0, 10):
+            with self.subTest(exit_code=exit_code):
+                runner = self.poll_runner()
+                final = gate.CLIResult(exit_code, {
+                    'components': {'worker_active': False, 'progress': {'state': 'failed', 'error_code': 'owner_busy'}},
+                    'operation_id': 'first-install', 'daemon': {'state': 'ready'},
+                })
+                with patch.object(gate, 'run_cli') as run_cli:
+                    self.assertIs(runner.poll(final, 'first-install'), final)
+                run_cli.assert_not_called()
+
+    def test_install_poll_accepts_daemon_only_startup(self):
+        components = {'worker_active': False, 'progress': None}
+        operation_id = 'first-install'
+        initial = gate.CLIResult(20, {
+            'components': components, 'operation_id': operation_id, 'retry_after_ms': 0,
+            'blockers': [{'code': 'daemon_starting'}],
+        })
+        for id_fields in ({}, {'operation_id': None}, {'operation_id': ''}):
+            with self.subTest(id_fields=id_fields):
+                runner = self.poll_runner()
+                final = gate.CLIResult(10, {
+                    'components': components, 'daemon': {'state': 'ready'}, **id_fields,
+                    'blockers': [{'code': 'connection_not_activated'}],
+                })
+                with patch.object(gate, 'run_cli', return_value=final) as run_cli:
+                    self.assertIs(runner.poll(final, operation_id), final)
+                    run_cli.assert_not_called()
+                    self.assertIs(runner.poll(initial), final)
+                run_cli.assert_called_once_with(self.executable, runner.command('doctor', '--operation-id', operation_id),
+                                                env=runner.env, timeout=65.0)
+
     def test_install_poll_rejects_inactive_running_worker_with_exit_zero(self):
         self.fixture('clean-install', poll_exit=0, poll_state='running')
         self.assert_gate('clean-install', error='installation completion unconfirmed after polling')
         self.assertEqual(sum(args[:2] == ['doctor', '--operation-id'] for args in self.calls()), 1)
         self.assertFalse(any(args[0] == 'verify' for args in self.calls()))
 
-    def test_install_poll_accepts_inactive_completed_worker_with_exit_twenty(self):
-        self.fixture('clean-install', poll_exit=20, poll_state='completed')
-        receipts = self.assert_gate('clean-install')
-        self.assertEqual([r['exit_code'] for r in receipts if r['step'].startswith('poll install operation')], [20])
-        self.assertEqual(sum(args[:2] == ['doctor', '--operation-id'] for args in self.calls()), 1)
+    def test_install_poll_waits_for_daemon_after_stale_completed_worker(self):
+        runner = self.poll_runner()
+        components = {'worker_active': False, 'progress': {'state': 'completed'}}
+        stale = gate.CLIResult(20, {
+            'components': components, 'operation_id': 'first-install', 'retry_after_ms': 0,
+            'daemon': {'state': 'ready'}, 'blockers': [{'code': 'daemon_starting'}],
+        })
+        final = gate.CLIResult(0, {**stale.payload, 'blockers': []})
+        with patch.object(gate, 'run_cli', side_effect=[stale, final]) as run_cli:
+            self.assertIs(runner.poll(stale), final)
+        self.assertEqual([call.args[1][:3] for call in run_cli.call_args_list],
+                         [['doctor', '--operation-id', 'first-install']] * 2)
+        with self.assertRaisesRegex(gate.VerificationError, 'installation completion unconfirmed after polling'):
+            runner.poll(gate.CLIResult(0, {**final.payload, 'daemon': {'state': 'starting'}}))
+
+    def test_install_poll_caps_apply_retries_independently_of_doctor_polls(self):
+        busy = gate.CLIResult(20, {
+            'components': {'worker_active': False, 'progress': {'state': 'failed', 'error_code': 'owner_busy'}},
+            'operation_id': 'first-install', 'retry_after_ms': 10000,
+            'next_actions': [{'args': ['install', '--apply', '--plan-digest', 'a' * 64]}],
+        })
+        active = gate.CLIResult(20, {
+            'components': {'worker_active': True, 'progress': {'state': 'running'}}, 'retry_after_ms': 1000,
+        })
+        final = gate.CLIResult(10, {
+            'components': {'worker_active': False, 'progress': {'state': 'completed'}},
+            'operation_id': 'first-install', 'daemon': {'state': 'ready'},
+        })
+        for resolves in (False, True):
+            with self.subTest(resolves=resolves):
+                runner = self.poll_runner()
+                runner.options.max_polls = 1 if resolves else 120
+                replies = [busy, busy, active, final] if resolves else [busy] * 3
+                with patch.object(gate, 'run_cli', side_effect=replies) as run_cli, patch.object(gate.time, 'sleep') as sleep:
+                    if resolves:
+                        self.assertIs(runner.poll(busy), final)
+                    else:
+                        with self.assertRaisesRegex(gate.VerificationError, 'install lock contention retry limit exceeded'):
+                            runner.poll(busy)
+                commands = [call.args[1][:2] for call in run_cli.call_args_list]
+                self.assertEqual(commands, [['install', '--apply']] * 3 + ([['doctor', '--operation-id']] if resolves else []))
+                self.assertEqual([call.args[0] for call in sleep.call_args_list], [10] * 3 + ([1] if resolves else []))
 
     def test_clean_install_stages_unprepared_hosts_and_rechecks_activation(self):
         self.fixture('clean-install', unprepared=True)
@@ -542,12 +1072,75 @@ class RunnerTests(unittest.TestCase):
         self.fail('mock detached worker failed to exit')
 
     def test_half_install_worker_survives_parent_kill(self):
-        self.fixture('half-installed')
+        self.fixture('half-installed', locked_runtime_start=True)
         self.addCleanup(self.wait_worker_cleanup)
-        receipts = self.assert_gate('half-installed')
+        with patch.object(gate, 'worker_process_alive') as worker_process_alive:
+            receipts = self.assert_gate('half-installed')
+        worker_process_alive.assert_not_called()
         self.assertIn(-9, [r.get('exit_code') for r in receipts])
         self.assertEqual([r['exit_code'] for r in receipts if r['step'].startswith('poll install operation')][-1], 10)
         self.assertTrue((self.root / 'worker-done').exists())
+
+    def test_half_install_worker_survives_during_runtime_start_without_install_lock(self):
+        self.fixture('half-installed', runtime_start=True)
+        self.addCleanup(self.wait_worker_cleanup)
+        run = subprocess.run
+
+        def run_with_sandbox_fallback(command, *args, **kwargs):
+            try:
+                return run(command, *args, **kwargs)
+            except PermissionError:
+                if command[:3] != ['/bin/ps', '-o', 'lstart=,stat=']:
+                    raise
+                # Some macOS sandboxes block ps. Identity parsing is covered by the ps unit tests.
+                os.kill(int(command[-1]), 0)
+                return subprocess.CompletedProcess(command, 0, 'Wed Nov 25 14:00:00 2026 S\n')
+
+        with patch.object(gate.subprocess, 'run', side_effect=run_with_sandbox_fallback):
+            receipts = self.assert_gate('half-installed')
+        self.assertEqual([r['exit_code'] for r in receipts if r['step'] == 'inspect surviving install worker'], [20])
+        self.assertTrue((self.root / 'worker-done').exists())
+
+    def test_worker_process_alive_checks_pid_and_start_identity(self):
+        for pid in (None, False, True, 1, -1, '42'):
+            with self.subTest(pid=pid), patch.object(gate.subprocess, 'run') as run:
+                self.assertFalse(gate.worker_process_alive({'pid': pid}))
+                run.assert_not_called()
+        started = 'Wed Nov 25 14:00:00 2026'
+        other = 'Wed Nov 25 14:00:01 2026'
+        for expected, outputs, alive in (
+            (started, [(0, f'  {started} S+\n')], True),
+            (' ' + started + ' ', [(0, f'{other} S'), (0, f'{started} S')], True),
+            (started, [(0, f'{other} S'), (0, f'{other} S')], False),
+            (started, [(0, f'{started} Z')], False),
+            (started, [(0, f'{started} Z+')], False),
+            (started, [(0, f'{other} S'), (0, f'{started} Z+')], False),
+            (started, [(0, f'{other} S'), (1, '')], False),
+            (started, [(1, '')], False),
+            (None, [(0, '')], False),
+            (None, [(0, f'{started} S\n{other} S\n')], False),
+            (started, [(0, 'invalid')], False),
+            (42, [(0, f'{started} S')], False),
+        ):
+            with self.subTest(expected=expected, outputs=outputs), patch.object(gate.subprocess, 'run') as run:
+                run.side_effect = [subprocess.CompletedProcess([], code, stdout) for code, stdout in outputs]
+                self.assertIs(gate.worker_process_alive({'pid': 42, 'started': expected}), alive)
+                self.assertEqual(run.call_count, len(outputs))
+                command = ['/bin/ps', '-o', 'lstart=,stat=', '-p', '42']
+                kwargs = dict(capture_output=True, encoding='utf-8', timeout=5, check=False)
+                self.assertEqual(run.call_args_list[0].args, (command,))
+                self.assertEqual(run.call_args_list[0].kwargs, kwargs)
+                if len(outputs) == 2:
+                    self.assertEqual(run.call_args_list[1].args, (command,))
+                    self.assertEqual(run.call_args_list[1].kwargs, {**kwargs, 'env': {**os.environ, 'LC_ALL': 'C'}})
+
+    def test_worker_process_alive_rejects_invalid_explicit_start_identity(self):
+        ps = subprocess.CompletedProcess([], 0, 'Wed Nov 25 14:00:00 2026 S\n')
+        with patch.object(gate.subprocess, 'run', return_value=ps):
+            self.assertTrue(gate.worker_process_alive({'pid': 42}))
+            for started in ('', '   ', 0, False, None):
+                with self.subTest(started=started):
+                    self.assertFalse(gate.worker_process_alive({'pid': 42, 'started': started}))
 
     def test_half_install_accepts_completed_worker_on_first_inspection(self):
         self.fixture('half-installed', completed_on_inspection=True)

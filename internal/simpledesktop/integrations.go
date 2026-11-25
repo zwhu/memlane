@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
 )
 
@@ -127,8 +128,10 @@ type AgentModelDefaults struct {
 	ServiceTier         string `json:"service_tier,omitempty"`
 }
 type GenerationDirectory struct {
-	AgentDefaults    map[string]AgentModelDefaults   `json:"agent_defaults"`
-	AgentBridges     map[string]GenerationProfile    `json:"agent_bridges"`
+	DetectedProcessingCLIs []string                      `json:"detected_processing_clis,omitempty"`
+	AgentDefaults          map[string]AgentModelDefaults `json:"agent_defaults"`
+	AgentBridges           map[string]GenerationProfile  `json:"agent_bridges"`
+
 	HandoffAvailable bool                            `json:"handoff_available"`
 	Revision         int64                           `json:"revision"`
 	Active           *GenerationRef                  `json:"active"`
@@ -137,6 +140,74 @@ type GenerationDirectory struct {
 	Validations      map[string]GenerationValidation `json:"validations"`
 	NextError        string                          `json:"next_error"`
 	StartupError     string                          `json:"startup_error"`
+}
+
+func isProcessingCLIKind(kind string) bool {
+	switch kind {
+	case "codex", "pi", "traex", "antigravity":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) isDetectedProcessingCLI(kind string) bool {
+	if !isProcessingCLIKind(kind) {
+		return false
+	}
+	s := &a.integrations
+	for _, detected := range s.Generation.DetectedProcessingCLIs {
+		if detected == kind {
+			return true
+		}
+	}
+	if s.GenerationLoaded && s.GenerationError == "" && s.Generation.DetectedProcessingCLIs != nil {
+		return false
+	}
+	for _, row := range s.Connections.Connections {
+		if row.Detected && row.Kind == kind {
+			return true
+		}
+	}
+	for _, host := range a.environment.Hosts {
+		if host.Detected && host.SupportsProcessingCLI && host.Executable != "" && host.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) hasDetectedProcessingCLI() bool {
+	s := &a.integrations
+	for _, kind := range s.Generation.DetectedProcessingCLIs {
+		if isProcessingCLIKind(kind) {
+			return true
+		}
+	}
+	if s.GenerationLoaded && s.GenerationError == "" && s.Generation.DetectedProcessingCLIs != nil {
+		return false
+	}
+	for _, row := range s.Connections.Connections {
+		if row.Detected && isProcessingCLIKind(row.Kind) {
+			return true
+		}
+	}
+	for _, host := range a.environment.Hosts {
+		if host.Detected && host.SupportsProcessingCLI && host.Executable != "" && isProcessingCLIKind(host.Kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) detectedUnconfiguredProcessingCLIs() []bootstrap.RecommendedProcessingCLI {
+	var unconfigured []bootstrap.RecommendedProcessingCLI
+	for _, cli := range bootstrap.RecommendedProcessingCLIs() {
+		if a.isDetectedProcessingCLI(cli.Kind) && !a.integrations.availableProcessingBridge(cli.Kind) {
+			unconfigured = append(unconfigured, cli)
+		}
+	}
+	return unconfigured
 }
 
 func (g GenerationDirectory) row(ref *GenerationRef) (GenerationRow, bool) {

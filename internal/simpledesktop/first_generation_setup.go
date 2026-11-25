@@ -32,6 +32,7 @@ func (a *App) firstGenerationEnableHint() string {
 
 func (a *App) firstGenerationEnableBlocker() string {
 	s := &a.integrations
+	missingProcessingCLI := s.Editor && s.DraftMode == "agent_bridge" && !s.availableProcessingBridge(s.BridgeKind)
 	switch {
 	case !a.environment.RuntimeStarted || a.environment.staleRuntimeOwner():
 		return "记忆服务尚未启动，请先返回上一步检查服务。"
@@ -47,7 +48,7 @@ func (a *App) firstGenerationEnableBlocker() string {
 		return "正在处理配置，请等待操作完成。"
 	case s.SaveOperation != "":
 		return "保存结果待确认，请核对原操作。"
-	case s.Editor && !s.cleanSaved():
+	case s.Editor && !missingProcessingCLI && !s.cleanSaved():
 		return "请先保存当前草稿。"
 	case s.Validation.Status == "failed" || s.Validation.Status == "result_unknown":
 		return "验证尚未通过，已保存的配置可继续使用。请重试或调整配置。"
@@ -55,8 +56,16 @@ func (a *App) firstGenerationEnableBlocker() string {
 		return "有操作结果待确认，请先核对原操作。"
 	}
 
-	if s.Editor && s.DraftMode == "agent_bridge" && !s.availableProcessingBridge(s.BridgeKind) {
-		return "请先安装或重新检测本机 CLI。"
+	if missingProcessingCLI {
+		if unconfigured := a.detectedUnconfiguredProcessingCLIs(); len(unconfigured) > 0 {
+			for _, cli := range unconfigured {
+				if s.BridgeKind == cli.Kind {
+					return fmt.Sprintf("已检测到 %s，请先在终端完成登录并选择默认模型后重新检测。", cli.DisplayName)
+				}
+			}
+			return "已检测到本机 CLI，请先在终端完成登录并选择默认模型后重新检测。"
+		}
+		return "请先安装或重新检测本机 CLI，或先进入 Memlane 稍后配置。"
 	}
 	if s.Editor && !s.Generation.validated(s.Saved) {
 		return "草稿已保存，请先进行真实验证。"

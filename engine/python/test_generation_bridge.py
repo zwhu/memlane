@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from generation_bridge import detected_bridge_kinds
 from generation_config import GenerationStore
 from generation_validation import GenerationValidation
 from process_groups import group_exists
@@ -101,6 +102,19 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
                     require_bridge_startup(
                         SimpleNamespace(state={'validations': {}, 'connected_agent_selections': {row['digest']: True}}),
                         runtime, row)
+
+    def test_detected_bridge_kinds_only_checks_for_executables(self):
+        kinds = ('codex', 'pi', 'traex', 'antigravity')
+        runtime = {'agent_hosts': {
+            kind: {'executable': str(self.root / kind), 'profile': str(self.root / (kind + '-profile'))}
+            for kind in kinds
+        }}
+        with patch.object(Path, 'open', side_effect=AssertionError('discovery must not read files')), \
+             patch('subprocess.Popen', side_effect=AssertionError('discovery must not run CLIs')):
+            self.assertEqual(detected_bridge_kinds(runtime), [])
+            for kind in kinds:
+                (self.root / kind).touch(mode=0o700)
+            self.assertEqual(detected_bridge_kinds(runtime), sorted(kinds))
 
     async def test_host_selection_and_model_discovery_do_not_read_authentication(self):
         from generation_bridge import bridge_choices, check_bridge_runtime

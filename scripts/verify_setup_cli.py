@@ -32,14 +32,17 @@ GUIDANCE = (
     'Execute read-only checks first. Show preview and ask user confirmation before any '
     'requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ '
     'paths, hooks.json raw contents, or memory data; never run xattr or edit host config files '
-    'directly. On exit 20 poll doctor --operation-id after retry_after_ms. Stop after 3 '
-    'retries (4th failure). On exit 11 hand human_steps to user.'
+    'directly. On exit 20 follow next_actions after retry_after_ms (poll doctor --operation-id '
+    'while active; retry install after confirmation on lock contention). Stop after 3 retries '
+    '(4th failure). On exit 11 hand human_steps to user.'
 )
 DEFAULT_MAX_POLLS = 120
 DEFAULT_POLL_TIMEOUT = 1500.0
 MAX_POLLS = DEFAULT_MAX_POLLS
+MAX_APPLY_RETRIES = 3
 POLL_TIMEOUT = DEFAULT_POLL_TIMEOUT
 WORKER_START_TIMEOUT = 10
+RETRYABLE_WORKER_ERRORS = ('upgrade_locked', 'owner_busy', 'install_worker_active')
 
 
 class VerificationError(RuntimeError):
@@ -233,6 +236,36 @@ def valid_operation_id(value):
     return isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}', value) is not None
 
 
+def worker_process_alive(state):
+    pid = state.get('pid')
+    if type(pid) is not int or pid <= 1:
+        return False
+
+    def process_start(**kwargs):
+        result = subprocess.run(['/bin/ps', '-o', 'lstart=,stat=', '-p', str(pid)],
+                                capture_output=True, encoding='utf-8', timeout=5, check=False, **kwargs)
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.strip().splitlines()
+        if len(lines) != 1:
+            return None
+        parts = lines[0].rsplit(None, 1)
+        if len(parts) != 2 or 'Z' in parts[1].strip():
+            return None
+        return parts[0].strip()
+
+    started = process_start()
+    if not started:
+        return False
+    if 'started' in state:
+        expected = state['started']
+        if not isinstance(expected, str) or not expected.strip():
+            return False
+        if started != expected.strip():
+            return process_start(env={**os.environ, 'LC_ALL': 'C'}) == expected.strip()
+    return True
+
+
 class Gate:
     def __init__(self, options):
         self.options = options
@@ -269,7 +302,9 @@ class Gate:
 
     def cli(self, label, *args, codes=(0,), validate=None, timeout=65):
         def execute(receipt):
-            result = run_cli(self.options.executable, self.command(*args), env=self.env, timeout=timeout)
+            command = self.command(*args)
+            limit = timeout() if callable(timeout) else timeout
+            result = run_cli(self.options.executable, command, env=self.env, timeout=limit)
             receipt['exit_code'] = result.returncode
             if validate:
                 validate(result)
@@ -283,48 +318,192 @@ class Gate:
         return artifact(result, 'plan_digest')
 
     def poll(self, result, operation_id=None):
-        def worker_status(result):
-            components = result.payload.get('components', {})
+        def daemon_ready(res):
+            return res.returncode != 20 and res.payload.get('daemon', {}).get('state') == 'ready'
+
+        def has_contention(res):
+            blockers = {item.get('code') for item in res.payload.get('blockers', [])}
+            progress = res.payload.get('components', {}).get('progress') or {}
+            return (res.returncode == 20 or bool(blockers.intersection(RETRYABLE_WORKER_ERRORS))
+                    or progress.get('error_code') in RETRYABLE_WORKER_ERRORS)
+
+        def find_install_action(actions, flag):
+            return next((action['args'] for action in actions
+                         if action.get('args', [])[:1] == ['install'] and flag in action['args']), None)
+
+        def built_flag_values(args, flag):
+            return [value for token, value in zip(args[2::2], args[3::2]) if token == flag]
+
+        def install_args(action, mode):
+            args = ['install', mode]
+            flags = iter(action[1:])
+            for flag in flags:
+                if flag in ('--plan-digest', '--component', '--operation-id'):
+                    args.extend((flag, next(flags, '')))
+                elif flag in ('--config', '--component-root', '--mirror', '--wait'):
+                    next(flags, None)
+            if mode == '--apply':
+                args.extend(('--wait', '45'))
+            return args
+
+        def worker_status(res, *, allow_plan_contention=False):
+            components = res.payload.get('components', {})
             worker_active = components.get('worker_active')
             progress = components.get('progress') or {}
             state = progress.get('state')
-            require(state not in ('failed', 'cancelled', 'needs_review'), f'install worker state is {state}')
-            return worker_active, state
+            lock_error = state == 'failed' and progress.get('error_code') in RETRYABLE_WORKER_ERRORS
+            contention = lock_error and res.returncode == 20
+            plan_contention = allow_plan_contention and lock_error and worker_active is False and res.returncode == 10
+            historical_contention = lock_error and worker_active is False and daemon_ready(res)
+            require(contention or plan_contention or historical_contention
+                    or state not in ('failed', 'cancelled', 'needs_review'),
+                    f'install worker state is {state}')
+            return worker_active, state, worker_active is False and contention
+
+        def completed():
+            progress = result.payload.get('components', {}).get('progress') or {}
+            return worker_active is False and daemon_ready(result) and (
+                state in (None, 'completed')
+                or (state == 'failed' and progress.get('error_code') in RETRYABLE_WORKER_ERRORS)
+            )
+
+        def validate_poll(res):
+            worker_status(res)
+            check_no_orphans(res)
+
+        def check_doctor_operation_id(res, expected):
+            if expected is None:
+                return
+            components = res.payload.get('components') or {}
+            has_worker = bool(components.get('worker_active')) or components.get('progress') is not None
+            reported = res.payload.get('operation_id')
+            # Go emits an empty ID only on the empty-receipt daemon-only path.
+            if not has_worker and reported in (None, ''):
+                return
+            require(reported == expected, 'install poll changed operation ID')
+
+        def inspect_initial_worker_state(_):
+            if operation_id is not None:
+                check_doctor_operation_id(result, operation_id)
+            return worker_status(result)
+
+        def validate_plan(res):
+            worker_status(res, allow_plan_contention=True)
+            check_no_orphans(res)
+            if res.returncode == 20 or res.payload.get('components', {}).get('worker_active') is True:
+                if 'operation_id' in res.payload:
+                    require(valid_operation_id(res.payload['operation_id']),
+                            'install poll requires a valid operation ID')
+
+        def cli_timeout():
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, 'install polling deadline exceeded')
+            return min(65.0, remaining)
 
         max_polls = getattr(self.options, 'max_polls', MAX_POLLS)
         deadline = time.monotonic() + getattr(self.options, 'poll_timeout', POLL_TIMEOUT)
-        worker_active, state = self.check('inspect initial install worker state', lambda _: worker_status(result))
+        worker_active, state, retryable_contention = self.check(
+            'inspect initial install worker state', inspect_initial_worker_state)
+        saw_contention = has_contention(result)
         worker_poll = (operation_id is not None or result.returncode == 20
                        or worker_active is True or state not in (None, 'completed'))
-        for round_number in range(1, max_polls + 1) if worker_poll else ():
-            if worker_active is False and state == 'completed':
-                break
+        poll_rounds = 0
+        apply_retries = 0
+        force_doctor_poll = False
+        while worker_poll and not completed():
+            forced_doctor = force_doctor_poll
+            force_doctor_poll = False
+            apply = None
+            plan = None
+            can_recover = (not forced_doctor and worker_active is False and saw_contention and result.returncode in (10, 20)
+                           and (state in (None, 'completed') or retryable_contention))
+            if can_recover:
+                actions = result.payload.get('next_actions', [])
+                apply = find_install_action(actions, '--apply')
+                if apply is None:
+                    plan = find_install_action(actions, '--plan')
+            recovering = apply is not None or plan is not None
+            if recovering:
+                self.check(f'check install retry limit {apply_retries + 1}', lambda _: require(
+                    apply_retries < MAX_APPLY_RETRIES, 'install lock contention retry limit exceeded'))
+                apply_retries += 1
+            else:
+                if poll_rounds >= max_polls:
+                    break
+                poll_rounds += 1
+            round_number = poll_rounds + apply_retries
+
             def poll_args(_):
-                require(worker_active is not False or result.returncode == 20,
+                require((recovering and result.returncode in (10, 20))
+                        or worker_active is not False or result.returncode == 20,
                         'installation completion unconfirmed after polling')
                 reported = result.payload.get('operation_id')
                 op = operation_id or reported
-                require(valid_operation_id(op), 'install poll requires a valid operation ID')
+                if not recovering or op is not None:
+                    require(valid_operation_id(op), 'install poll requires a valid operation ID')
                 require(not reported or reported == op, 'install poll changed operation ID')
-                retry = result.payload.get('retry_after_ms')
+                retry = result.payload.get('retry_after_ms', 0 if result.returncode == 10 else None)
                 require(type(retry) is int and retry >= 0, 'invalid install retry_after_ms')
                 remaining = deadline - time.monotonic()
                 delay = retry / 1000
                 require(delay < remaining, 'install polling deadline exceeded')
                 return op, delay
             operation_id, delay = self.check(f'review install retry {round_number}', poll_args)
-            time.sleep(delay)
-            def validate_poll(result):
-                worker_status(result)
-                check_no_orphans(result)
-            result = self.cli(f'poll install operation {round_number}', 'doctor', '--operation-id', operation_id,
-                              codes=(0, 10, 20), validate=validate_poll,
-                              timeout=min(65.0, max(0.001, deadline - time.monotonic())))
-            worker_active, state = worker_status(result)
-        self.check('confirm installation completed', lambda _: require(
-            worker_active is False and (state == 'completed' if worker_poll
-                                        else result.returncode == 0 and state in (None, 'completed')),
-            'installation completion unconfirmed after polling'))
+            if not recovering or result.returncode == 20 or delay > 0:
+                time.sleep(delay)
+
+            apply_args = install_args(apply, '--apply') if apply is not None else None
+            if plan is not None:
+                plan_args = install_args(plan, '--plan')
+                result = self.cli(f'refresh installation plan {round_number}', *plan_args,
+                                  codes=(0, 10, 20), validate=validate_plan, timeout=cli_timeout)
+                worker_active, state, retryable_contention = worker_status(result, allow_plan_contention=True)
+                saw_contention = saw_contention or has_contention(result)
+                if result.returncode == 0 and completed():
+                    continue
+                if worker_active is True or result.returncode == 20:
+                    if 'operation_id' in result.payload:
+                        operation_id = result.payload['operation_id']
+                    force_doctor_poll = True
+                    continue
+                if result.returncode != 10:
+                    break
+
+                def review_refreshed_plan(_):
+                    digest = artifact(result, 'plan_digest')
+                    action = find_install_action(result.payload.get('next_actions', []), '--apply')
+                    require(action is not None, 'refreshed installation plan did not provide an install apply action')
+                    args = install_args(action, '--apply')
+                    require(built_flag_values(args, '--plan-digest') == [digest],
+                            'refreshed install apply action plan_digest mismatch')
+                    require(built_flag_values(args, '--component') == built_flag_values(plan_args, '--component'),
+                            'refreshed install apply action changed component scope')
+                    return args
+
+                apply_args = self.check(f'review refreshed installation plan {round_number}', review_refreshed_plan)
+
+            args = ['doctor', '--operation-id', operation_id]
+            codes = (0, 10, 20)
+            if apply_args is not None:
+                args = apply_args
+                codes = (0, 20)
+
+            def validate_operation(res):
+                validate_poll(res)
+                if apply_args is None:
+                    check_doctor_operation_id(res, operation_id)
+                elif 'operation_id' in res.payload and res.payload['operation_id'] is not None:
+                    require(valid_operation_id(res.payload['operation_id']),
+                            'install poll requires a valid operation ID')
+
+            result = self.cli(f'poll install operation {round_number}', *args, codes=codes, validate=validate_operation,
+                              timeout=cli_timeout)
+            if apply_args is not None and 'operation_id' in result.payload and result.payload['operation_id'] is not None:
+                operation_id = result.payload['operation_id']
+            worker_active, state, retryable_contention = worker_status(result)
+            saw_contention = saw_contention or has_contention(result)
+        self.check('confirm installation completed', lambda _: require(completed(),
+                                                                      'installation completion unconfirmed after polling'))
         return result
 
     def setup_verified(self, *flags):
@@ -445,12 +624,15 @@ class Gate:
                     state = read_json(state_path)
                     state_name = state.get('state')
                     locked = flock_held(lock_path)
-                    if locked or state_name in ('completed', 'needs_review', 'failed', 'cancelled'):
+                    alive_runtime_start = (not locked and state_name in ('starting', 'running')
+                                           and state.get('stage') == 'starting_runtime'
+                                           and worker_process_alive(state))
+                    if locked or alive_runtime_start or state_name in ('completed', 'needs_review', 'failed', 'cancelled'):
                         operation_id = state.get('operation_id')
                         require(valid_operation_id(operation_id), 'detached worker did not retain a valid operation ID')
-                        return operation_id, locked or state_name == 'completed'
+                        return operation_id, locked or alive_runtime_start or state_name == 'completed'
                 time.sleep(0.05)
-            raise VerificationError('worker did not retain the install lock or complete after parent SIGKILL')
+            raise VerificationError('worker did not retain the install lock, start the runtime, or complete after parent SIGKILL')
         operation, survived = self.check('read detached worker state after parent SIGKILL', surviving_worker)
         result = self.cli('inspect surviving install worker', 'doctor', '--operation-id', operation,
                           codes=(0, 10, 20), validate=check_no_orphans)

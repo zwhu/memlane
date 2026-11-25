@@ -234,7 +234,8 @@ def _finish_repair(registry, adapter, journal):
             result.update(repaired=True, mode=journal['mode'], backup_path=journal['backup_path'],
                           operation_id=operation_id, reviewed_sha=live_sha, proposed_sha256=live_sha,
                           summary=journal['summary'], removed_events=journal['removed_events'],
-                          retained_events=journal['retained_events'])
+                          retained_events=journal['retained_events'],
+                          preserved_third_party_groups=journal.get('preserved_third_party_groups', 0))
         else:
             receipt.update(outcome='rejected', phase='pre_mutation', error_code='trae_ide_repair_did_not_apply')
         receipt.update(status='complete', result=copy.deepcopy(result))
@@ -301,6 +302,7 @@ def apply_trae_hooks_repair(registry, adapter, config, *, expected_revision, ope
                           target_proposal_sha256=proposed_sha, target_proposed_sha256=digest,
                           target_hooks=next_hooks, target_installation=copy.deepcopy(installation), backup_path='',
                           removed_events=plan['removed_events'], retained_events=plan['retained_events'],
+                          preserved_third_party_groups=plan['preserved_third_party_groups'],
                           summary=plan['repair_summary'])
     old_record = records.get(adapter.id)
     record = {**(old_record or {}), 'trae_ide_repair_journal': copy.deepcopy(repair_journal)}

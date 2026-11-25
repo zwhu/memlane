@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/zwhu/memlane/internal/bootstrap"
@@ -31,9 +32,7 @@ type Runner struct {
 	DetectOrphansFn            func(context.Context, string) ([]int, error)
 	LaunchWorkerFn             func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error)
 	RunWorkerFn                func(context.Context, *bootstrap.Environment, fs.FS, bootstrap.InstallWorkerConfig) error
-	PrepareRuntimeFn           func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error)
 	PrepareRuntimeForUpgradeFn func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error)
-	StartRuntimeDetachedFn     func(context.Context, bootstrap.FirstRuntime) error
 	RestartStaleOwnerFn        func(context.Context, bootstrap.FirstRuntime, string, fs.FS) error
 	RecoverStaleOwnerFn        func(context.Context, string) (supervisor.RecoverResult, error)
 	StopOwnerBoundFn           func(context.Context, supervisor.StopOwnerOptions, int, string) error
@@ -101,14 +100,8 @@ func (r *Runner) defaults() {
 	if r.RunWorkerFn == nil {
 		r.RunWorkerFn = bootstrap.RunInstallWorkerWith
 	}
-	if r.PrepareRuntimeFn == nil {
-		r.PrepareRuntimeFn = (*bootstrap.Environment).PrepareFirstRuntime
-	}
 	if r.PrepareRuntimeForUpgradeFn == nil {
 		r.PrepareRuntimeForUpgradeFn = (*bootstrap.Environment).PrepareFirstRuntimeForUpgrade
-	}
-	if r.StartRuntimeDetachedFn == nil {
-		r.StartRuntimeDetachedFn = bootstrap.StartFirstRuntimeDetached
 	}
 	if r.RestartStaleOwnerFn == nil {
 		r.RestartStaleOwnerFn = bootstrap.RestartStaleRuntimeOwnerDetached
@@ -187,7 +180,13 @@ func (s *session) action(requires string, args ...string) {
 			args = append(args, "--"+name, value)
 		}
 	}
-	s.NextActions = append(s.NextActions, nextAction{Args: append(args, "--json"), Requires: requires})
+	args = append(slices.Clone(args), "--json")
+	for _, action := range s.NextActions {
+		if action.Requires == requires && slices.Equal(action.Args, args) {
+			return
+		}
+	}
+	s.NextActions = append(s.NextActions, nextAction{Args: args, Requires: requires})
 }
 
 const readOnly = "read_only"

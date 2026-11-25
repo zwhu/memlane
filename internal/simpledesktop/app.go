@@ -76,10 +76,12 @@ type App struct {
 
 	readingInvalidators []namedReadingInvalidator
 
-	userProfiles          userProfilesState
-	environment           environmentSetupState
-	initialSetup          bool
-	setupDeferredMode     bool
+	userProfiles                userProfilesState
+	environment                 environmentSetupState
+	initialSetup                bool
+	setupDeferredMode           bool
+	setupDeferredToastDismissed bool
+
 	integrations          integrationState
 	layout                appLayoutState
 	projectUI             projectReadingState
@@ -1088,6 +1090,9 @@ func (a *App) View(c *ui.Context) {
 	}
 	root.Children(func() {
 		a.viewContent(c)
+		if a.showSetupDeferredToast() {
+			a.setupDeferredToast(c)
+		}
 		a.knowledgeDialog(c)
 		a.searchDialog(c)
 		a.projectCreateDialog(c)

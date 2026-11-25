@@ -85,7 +85,7 @@ var localHostSpecs = []localHostSpec{
 	},
 	{
 		kind: "traex", name: "TRAE CLI", primary: true,
-		commands: []string{"traecli", "traex"}, profile: ".trae", profileEnv: []string{"TRAE_HOME", "TRAECLI_HOME"},
+		commands: []string{"traecli", "traex", "trae-cli"}, profile: ".trae", profileEnv: []string{"TRAE_HOME", "TRAECLI_HOME"},
 		supportsCapture: true, supportsProcessingCLI: true,
 		installCommand: "curl -fsSL https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/cli/install.sh | bash",
 		docsURL:        "https://www.trae.cn/",

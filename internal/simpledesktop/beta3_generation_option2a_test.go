@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -250,6 +251,142 @@ func beta3SetupRuntimeConfig(t *testing.T) (Config, func(bool)) {
 	return config, writeConfig
 }
 
+func beta3RequireWindowLabels(t *testing.T, tt *ui.Tester, labels ...string) {
+	t.Helper()
+	for _, label := range labels {
+		r, ok := tt.Find(label)
+		if !ok || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 || r.X+r.W > 1200 || r.Y+r.H > 820 {
+			t.Errorf("element %q escaped the 1200×820 window: %+v, found=%v", label, r, ok)
+		}
+	}
+}
+
+func TestBeta3UnconfiguredProcessingCLIGuide(t *testing.T) {
+	const heading = "已检测到本机 CLI，请先完成登录与默认模型配置"
+	const setupDesc = "已检测到 Codex、pi、TRAE CLI，但尚未读到默认模型配置。请先在终端完成登录并选择默认模型后点击「已登录，重新检测」；也可以改用模型 API / Ollama，或先进入 Memlane 稍后配置。"
+	const settingsDesc = "已检测到 Codex、pi、TRAE CLI，但尚未读到默认模型配置。请先在终端完成登录并选择默认模型后点击「已登录，重新检测」，也可以改用模型 API / Ollama。"
+	for _, mode := range []string{"light", "dark"} {
+		t.Run(mode, func(t *testing.T) {
+			config, _ := beta3SetupRuntimeConfig(t)
+			a := New(config, nil)
+			a.appearance = appearanceState{mode: mode, loaded: true}
+			a.environment.RuntimeStarted = true
+			a.environment.Hosts = []bootstrap.DetectedHost{
+				{Kind: "pi", Detected: true, SupportsProcessingCLI: true, Executable: "/test/pi"},
+				{Kind: "antigravity", Detected: true, SupportsProcessingCLI: true},
+			}
+			s := &a.integrations
+			s.Loaded = true
+			if err := json.Unmarshal([]byte(`{"detected_processing_clis":["codex","codex","opencode"]}`), &s.Generation); err != nil {
+				t.Fatal(err)
+			}
+			s.Connections.Connections = []AgentConnection{
+				{ID: "traex", Kind: "traex", Detected: true},
+				{ID: "antigravity", Kind: "antigravity", Status: "configured_pending_new_session"},
+			}
+			if !a.isDetectedProcessingCLI("pi") || !a.isDetectedProcessingCLI("traex") || a.isDetectedProcessingCLI("antigravity") || a.isDetectedProcessingCLI("opencode") {
+				t.Fatal("startup fallback should detect TRAE CLI from connections and executable pi from hosts")
+			}
+			a.chooseGenerationSource("agent_bridge")
+			if got := a.firstGenerationEnableBlocker(); got != "已检测到 Codex，请先在终端完成登录并选择默认模型后重新检测。" {
+				t.Fatalf("wrong matching blocker: %q", got)
+			}
+			s.BridgeKind = "antigravity"
+			if got := a.firstGenerationEnableBlocker(); got != "已检测到本机 CLI，请先在终端完成登录并选择默认模型后重新检测。" {
+				t.Fatalf("wrong fallback blocker: %q", got)
+			}
+
+			preloadGuide := beta3GenerationTester(a)
+			beta3RequireWindowLabels(t, preloadGuide, heading, setupDesc, "已登录，重新检测")
+
+			s.GenerationLoaded = true
+			if !a.hasDetectedProcessingCLI() || !a.isDetectedProcessingCLI("codex") || a.isDetectedProcessingCLI("pi") || a.isDetectedProcessingCLI("traex") {
+				t.Fatal("successful generation response should detect only Codex")
+			}
+			s.Generation.DetectedProcessingCLIs = append(s.Generation.DetectedProcessingCLIs, "pi", "traex")
+			wizard := ui.NewTester(a.View, 1200, 820)
+			wizard.Advance(time.Second)
+			wizard.Scroll(600, 440, 0, 800)
+			beta3RequireWindowLabels(t, wizard, heading, setupDesc, "已登录，重新检测", "暂不配置提炼，先进入 Memlane")
+
+			clickProjectUI(t, wizard, "暂不配置提炼，先进入 Memlane")
+			if a.initialSetup || a.page != "总览" {
+				t.Fatal("unconfigured CLI blocked the user from deferring setup")
+			}
+			a.openSettingsFromDeferredBanner()
+			settings := ui.NewTester(a.View, 1200, 820)
+			settings.Advance(time.Second)
+			beta3RequireWindowLabels(t, settings, heading, settingsDesc, "已登录，重新检测", "改用模型 API / Ollama")
+			if settings.HasText("或先进入 Memlane 稍后配置") {
+				t.Fatal("settings offered to enter Memlane again")
+			}
+
+			guide := beta3GenerationTester(a)
+			beta3RequireWindowLabels(t, guide, "Codex", "pi", "TRAE CLI")
+			for _, forbidden := range []string{"未检测到可用于记忆提炼的本地 CLI 工具", "Antigravity", "OpenCode", "安装", "知识"} {
+				if guide.HasText(forbidden) {
+					t.Errorf("unexpected guide copy %q: %v", forbidden, guide.Texts())
+				}
+			}
+			s.Generation.AgentBridges = map[string]GenerationProfile{"pi": {}}
+			unconfigured := a.detectedUnconfiguredProcessingCLIs()
+			if len(unconfigured) != 2 || unconfigured[0].Kind != "codex" || unconfigured[1].Kind != "traex" {
+				t.Fatalf("available bridge was not filtered in recommendation order: %+v", unconfigured)
+			}
+			s.Generation.Profiles = map[string][]GenerationRow{
+				"agent-traex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "traex"}}},
+			}
+			guide.Frame()
+			beta3RequireWindowLabels(t, guide, "待登录配置")
+
+			s.Generation = GenerationDirectory{}
+			if err := json.Unmarshal([]byte(`{"detected_processing_clis":[]}`), &s.Generation); err != nil {
+				t.Fatal(err)
+			}
+			if s.Generation.DetectedProcessingCLIs == nil || len(s.Generation.DetectedProcessingCLIs) != 0 {
+				t.Fatal("explicit empty array should decode to a non-nil empty slice")
+			}
+			s.Connections.Connections[0] = AgentConnection{ID: "codex", Kind: "codex", Detected: true}
+			if a.hasDetectedProcessingCLI() || a.isDetectedProcessingCLI("codex") || a.isDetectedProcessingCLI("pi") {
+				t.Fatal("successful empty generation response should ignore stale Codex and pi detections")
+			}
+			guide.Frame()
+			beta3RequireWindowLabels(t, guide, "未检测到可用于记忆提炼的本地 CLI 工具")
+			a.navigate("总览", 0)
+			settings.Frame()
+			beta3RequireWindowLabels(t, settings, "尚未安装记忆提炼 CLI")
+
+			s.Generation = GenerationDirectory{}
+			if err := json.Unmarshal([]byte(`{}`), &s.Generation); err != nil {
+				t.Fatal(err)
+			}
+			if s.Generation.DetectedProcessingCLIs != nil {
+				t.Fatal("omitted field should decode to a nil slice")
+			}
+			if !a.hasDetectedProcessingCLI() || !a.isDetectedProcessingCLI("codex") || !a.isDetectedProcessingCLI("pi") {
+				t.Fatal("legacy response should detect Codex from connections and pi from hosts")
+			}
+
+			s.Generation.DetectedProcessingCLIs = []string{}
+			for _, state := range []struct {
+				name      string
+				loaded    bool
+				loadError string
+			}{
+				{name: "preload"},
+				{name: "load error", loaded: true, loadError: "offline"},
+			} {
+				t.Run(state.name, func(t *testing.T) {
+					s.GenerationLoaded, s.GenerationError = state.loaded, state.loadError
+					if !a.hasDetectedProcessingCLI() || !a.isDetectedProcessingCLI("codex") || !a.isDetectedProcessingCLI("pi") {
+						t.Fatal("fallback should detect Codex from connections and pi from hosts")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestBeta3SkipAndReopenOverview(t *testing.T) {
 	config, _ := beta3SetupRuntimeConfig(t)
 	a := New(config, nil)
@@ -257,11 +394,20 @@ func TestBeta3SkipAndReopenOverview(t *testing.T) {
 	if !a.initialSetup || a.environment.InitialStep != 3 {
 		t.Fatal("test requires a fresh Step 3")
 	}
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
+	a.chooseGenerationSource("agent_bridge")
 	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("未检测到可用于记忆提炼的本地 CLI 工具") ||
+		!tt.HasText("也可以点击「暂不配置提炼，先进入 Memlane」，稍后再配置。") ||
+		a.firstGenerationEnableBlocker() != "请先安装或重新检测本机 CLI，或先进入 Memlane 稍后配置。" {
+		t.Fatalf("missing CLI did not offer installation and defer guidance: %v", tt.Texts())
+	}
+	a.setupDeferredToastDismissed = true
 	clickProjectUI(t, tt, "暂不配置提炼，先进入 Memlane")
 	if a.initialSetup || !a.setupDeferredMode || a.page != "总览" {
 		t.Fatal("Skip did not open the main Overview")
 	}
+	beta3RequireWindowLabels(t, tt, "尚未安装记忆提炼 CLI")
 	if deferred, err := bootstrap.FirstSetupDeferred(config.ConfigFile); err != nil || !deferred {
 		t.Fatalf("defer receipt not saved: %v, %v", deferred, err)
 	}
@@ -269,8 +415,127 @@ func TestBeta3SkipAndReopenOverview(t *testing.T) {
 		t.Fatalf("Skip changed activation state: %v, %v", complete, err)
 	}
 	reopened := New(config, nil)
-	if reopened.initialSetup || !reopened.setupDeferredMode || reopened.page != "总览" {
+	if reopened.initialSetup || !reopened.setupDeferredMode || reopened.page != "总览" || reopened.integrations.GenerationLoaded {
 		t.Fatal("reopening did not restore deferred Overview")
+	}
+	reopenedView := ui.NewTester(reopened.View, 1200, 820)
+	beta3RequireWindowLabels(t, reopenedView, "尚未配置记忆提炼", "去配置", "知道了")
+	if _, shown := reopenedView.Find("尚未安装记忆提炼 CLI"); shown {
+		t.Fatal("reopened Overview showed an installation warning before generation loaded")
+	}
+	reopened.integrations.GenerationLoaded = true
+	reopenedView.Frame()
+	beta3RequireWindowLabels(t, reopenedView, "尚未安装记忆提炼 CLI")
+}
+
+func TestBeta3DeferredToastCopyAndActions(t *testing.T) {
+	const neutralTitle = "尚未配置记忆提炼"
+	const neutralDesc = "已先进入主界面，新会话暂不自动整理成记忆。完成 CLI 登录或配置模型 API 后即可开启。"
+	const missingTitle = "尚未安装记忆提炼 CLI"
+	for _, mode := range []string{"light", "dark"} {
+		for _, fixture := range []struct {
+			kind, title, desc, action string
+			loaded                    bool
+			loadError                 string
+			generation                GenerationDirectory
+		}{
+			{"loading", neutralTitle, neutralDesc, "知道了", false, "", GenerationDirectory{}},
+			{"load-error", neutralTitle, neutralDesc, "知道了", true, "offline", GenerationDirectory{}},
+			{"absent", missingTitle, "已先进入主界面，对话采集可正常使用；如需自动整理成记忆，请安装本机 CLI 或配置模型 API。", "知道了", true, "", GenerationDirectory{}},
+			{"unconfigured", neutralTitle, neutralDesc, "去配置", true, "", GenerationDirectory{DetectedProcessingCLIs: []string{"codex"}}},
+			{"bridge", neutralTitle, neutralDesc, "关闭记忆提炼提示", true, "", GenerationDirectory{AgentBridges: map[string]GenerationProfile{"codex": {}}}},
+		} {
+			t.Run(mode+"/"+fixture.kind, func(t *testing.T) {
+				a := New(Config{GenerationMode: "unconfigured"}, nil)
+				a.appearance = appearanceState{mode: mode, loaded: true}
+				a.integrations.Generation = fixture.generation
+				a.integrations.GenerationLoaded = fixture.loaded
+				a.integrations.GenerationError = fixture.loadError
+				if allocs := testing.AllocsPerRun(100, func() { _ = a.hasDetectedProcessingCLI() }); allocs != 0 {
+					t.Fatalf("processing CLI detection allocated %g times per call", allocs)
+				}
+				if allocs := testing.AllocsPerRun(100, func() { _ = a.isDetectedProcessingCLI("codex") }); allocs != 0 {
+					t.Fatalf("Codex detection allocated %g times per call", allocs)
+				}
+				tt := ui.NewTester(a.View, 1200, 820)
+				tt.Advance(time.Second)
+				beta3RequireWindowLabels(t, tt, fixture.title, fixture.desc, "去配置", "知道了", "关闭记忆提炼提示")
+				if closeButton, _ := tt.Find("关闭记忆提炼提示"); closeButton.W != 24 || closeButton.H != 24 {
+					t.Fatalf("close button is not 24×24: %+v", closeButton)
+				}
+				if _, shown := tt.Find(missingTitle); shown != (fixture.title == missingTitle) {
+					t.Fatal("unexpected installation warning visibility")
+				}
+				banner, _ := tt.Find("立即配置")
+				a.openSettingsFromDeferredBanner()
+				tt.Frame()
+				if _, shown := tt.Find(fixture.title); shown || a.setupDeferredToastDismissed {
+					t.Fatal("generation settings should hide the toast without dismissing it")
+				}
+				a.navigate("总览", 0)
+				tt.Frame()
+				a.integrations.Generation.Active = &GenerationRef{ID: "active", Revision: 1}
+				tt.Frame()
+				if _, shown := tt.Find(fixture.title); shown {
+					t.Fatal("toast remained visible with active generation")
+				}
+				a.integrations.Generation.Active = nil
+				tt.Frame()
+				clickProjectUI(t, tt, fixture.action)
+				if fixture.action == "去配置" {
+					if a.page != "设置" || a.access.SettingsSection != "记忆提炼" {
+						t.Fatal("configure did not open generation settings")
+					}
+					a.navigate("总览", 0)
+					tt.Frame()
+				}
+				if _, shown := tt.Find(fixture.title); a.page != "总览" || !a.setupDeferredToastDismissed || shown ||
+					!tt.HasText("尚未配置记忆提炼模型，新会话暂不自动提炼") {
+					t.Fatal("toast did not stay dismissed while preserving the Overview banner")
+				}
+				tt.Advance(time.Second)
+				if after, _ := tt.Find("立即配置"); after != banner {
+					t.Fatalf("toast shifted the Overview banner: before=%+v after=%+v", banner, after)
+				}
+			})
+		}
+	}
+}
+
+func TestBeta3DeferredToastContrast(t *testing.T) {
+	originalDark := tok.Dark
+	t.Cleanup(func() { applyAppearance(originalDark) })
+	linear := func(channel uint8) float64 {
+		srgb := float64(channel) / 255
+		if srgb <= 0.04045 {
+			return srgb / 12.92
+		}
+		return math.Pow((srgb+0.055)/1.055, 2.4)
+	}
+	luminance := func(color ui.Color) float64 {
+		return 0.2126*linear(color.R) + 0.7152*linear(color.G) + 0.0722*linear(color.B)
+	}
+	for _, mode := range []string{"light", "dark"} {
+		t.Run(mode, func(t *testing.T) {
+			applyAppearance(mode == "dark")
+			for _, pair := range []struct {
+				name   string
+				fg, bg ui.Color
+			}{
+				{"title", homeType[homePanelHeading].color, tok.BgElevated},
+				{"body", homeType[homeBody].color, tok.BgElevated},
+				{"知道了", tok.Text1, tok.BgElevated},
+				{"去配置", toastPrimaryButtonTextColor(), tok.Accent},
+				{"去配置 hover", toastPrimaryButtonTextColor(), tok.AccentHover},
+				{"close icon", tok.Text2, tok.BgElevated},
+			} {
+				fg, bg := luminance(pair.fg), luminance(pair.bg)
+				ratio := (max(fg, bg) + 0.05) / (min(fg, bg) + 0.05)
+				if ratio < 4.5 {
+					t.Errorf("%s contrast %.3f:1 is below 4.5:1", pair.name, ratio)
+				}
+			}
+		})
 	}
 }
 
@@ -328,6 +593,9 @@ func TestBeta3DeferredSettingsActivatesValidatedNextAndClearsReceipt(t *testing.
 	tt.Frame()
 	if tt.HasText("尚未配置记忆提炼模型") || tt.HasText("启用记忆提炼") {
 		t.Fatal("Settings still shows first-activation UI after completion")
+	}
+	if reopened.showSetupDeferredToast() {
+		t.Fatal("completed setup reopened with a deferred toast")
 	}
 }
 

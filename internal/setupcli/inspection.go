@@ -1,6 +1,7 @@
 package setupcli
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -63,6 +64,11 @@ func (s *session) detectPlan(env *bootstrap.Environment) (bootstrap.Plan, bool) 
 		s.block(ExitFatal, "component_probe_failed")
 		return plan, false
 	}
+	s.showPlan(plan)
+	return plan, true
+}
+
+func (s *session) showPlan(plan bootstrap.Plan) {
 	s.Components.Complete = plan.Complete()
 	s.Components.PlanDigest = plan.Digest()
 	s.Artifacts.PlanDigest = s.Components.PlanDigest
@@ -85,7 +91,6 @@ func (s *session) detectPlan(env *bootstrap.Environment) (bootstrap.Plan, bool) 
 		}
 		s.Components.Items = append(s.Components.Items, componentItem{item.Requirement.ID, status, reason, downloads, item.Requirement.InstalledBytes})
 	}
-	return plan, true
 }
 
 func (s *session) inspectOwner() (bootstrap.OwnerRuntimeStatus, bool) {
@@ -179,7 +184,7 @@ func (s *session) workerState(state bootstrap.InstallWorkerState, active bool) {
 			"acquiring_lock", "reusing", "syncing_dependencies", "verifying_model", "validating_runtime"),
 		Component: known(state.Component, componentIDs...),
 		ErrorCode: known(state.ErrorCode, "plan_changed", "cancelled", "consent_required", "operation_id_mismatch",
-			"orphan_install_process", "runtime_start_failed", "component_install_failed", "install_failed", "upgrade_locked"),
+			"orphan_install_process", "runtime_start_failed", "component_install_failed", "install_failed", "upgrade_locked", "owner_busy", "install_worker_active"),
 		BytesDone: state.BytesDone, BytesTotal: state.BytesTotal, Indeterminate: state.Indeterminate, ElapsedMS: state.ElapsedMs,
 		FallbackAttempt: state.FallbackAttempt, FallbackTotal: state.FallbackTotal, NetworkBytesDownloaded: state.NetworkBytesDownloaded,
 		RuntimeSyncRan: state.RuntimeSyncRan,
@@ -188,7 +193,16 @@ func (s *session) workerState(state bootstrap.InstallWorkerState, active bool) {
 	}
 	switch progress.State {
 	case "failed":
-		progress.SafeMessage = "组件安装失败。"
+		switch progress.ErrorCode {
+		case "upgrade_locked":
+			progress.SafeMessage = "运行环境升级正在进行中，请稍后重试。"
+		case "owner_busy":
+			progress.SafeMessage = "后台服务锁正在被占用，请稍后重试。"
+		case "install_worker_active":
+			progress.SafeMessage = "另一项组件安装正在进行中，请稍后重试。"
+		default:
+			progress.SafeMessage = "组件安装失败。"
+		}
 	case "cancelled":
 		progress.SafeMessage = "组件安装已取消。"
 	case "needs_review":
@@ -199,10 +213,14 @@ func (s *session) workerState(state bootstrap.InstallWorkerState, active bool) {
 
 func (s *session) inspectWorker() (bootstrap.InstallWorkerState, bool, bool) {
 	state, active, err := s.InspectWorkerFn(s.ctx, s.root)
-	s.workerState(state, active)
-	if s.installDeadlineReached("install_worker_active") {
+	if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(s.ctx.Err(), context.DeadlineExceeded)) &&
+		s.installDeadlineReached("install_worker_active") {
+		if active {
+			s.workerState(state, true)
+		}
 		return state, active, false
 	}
+	s.workerState(state, active)
 	if err != nil {
 		s.block(ExitFatal, "install_worker_status_unavailable")
 		return state, active, false
@@ -212,7 +230,8 @@ func (s *session) inspectWorker() (bootstrap.InstallWorkerState, bool, bool) {
 		return state, active, true
 	}
 	orphans, err := s.DetectOrphansFn(s.ctx, s.root)
-	if s.installDeadlineReached("install_worker_active") {
+	if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(s.ctx.Err(), context.DeadlineExceeded)) &&
+		s.installDeadlineReached("install_worker_active") {
 		return state, false, false
 	}
 	switch {

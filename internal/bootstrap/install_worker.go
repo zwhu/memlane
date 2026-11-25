@@ -20,6 +20,11 @@ import (
 
 const DefaultInstallOperationID = "first-install"
 
+// Kept in sync with setupcli.ExitInProgressOrBusy, the detached worker CLI exit code.
+const installWorkerBusyExitCode = 20
+
+var workerRuntimeStartTimeout = 180 * time.Second
+
 var (
 	ErrOrphanInstallProcess = errors.New("orphan install process detected targeting component root")
 	ErrInstallWorkerBusy    = errors.New("install worker already active")
@@ -156,8 +161,9 @@ func resolveInstallOperationID(installer Installer, requested string) (string, e
 }
 
 var (
-	workerProcessTableFn = supervisor.ProcessTable
-	workerProcessArgsFn  = supervisor.ProcessArgs
+	workerProcessStartTimeFn = supervisor.ProcessStartTime
+	workerProcessTableFn     = supervisor.ProcessTable
+	workerProcessArgsFn      = supervisor.ProcessArgs
 )
 
 // resolveWorkerPath resolves existing ancestors too, since a uv target may
@@ -366,6 +372,14 @@ func LaunchDetachedInstallWorker(ctx context.Context, executable string, workerA
 			if err == nil && state.PID == cmd.Process.Pid {
 				return state, nil
 			}
+			live, active, inspectErr := inspect(waitCtx)
+			if inspectErr != nil || active {
+				return live, inspectErr
+			}
+			var processErr *exec.ExitError
+			if errors.As(exitErr, &processErr) && processErr.ExitCode() == installWorkerBusyExitCode {
+				return InstallWorkerState{}, ErrInstallWorkerBusy
+			}
 			if exitErr != nil {
 				return InstallWorkerState{}, exitErr
 			}
@@ -436,14 +450,29 @@ func RunInstallWorkerWith(ctx context.Context, env *Environment, assets fs.FS, c
 	var startRuntime func(context.Context) error
 	if cfg.StartRuntime && cfg.ConfigPath != "" {
 		startRuntime = func(ctx context.Context) error {
-			prepared, err := env.PrepareFirstRuntime(ctx, cfg.ConfigPath, assets)
-			if err != nil {
-				return err
-			}
-			return StartFirstRuntimeDetached(ctx, prepared)
+			return runInstallWorkerRuntime(ctx, func(runCtx context.Context) error {
+				prepared, err := env.PrepareFirstRuntime(runCtx, cfg.ConfigPath, assets)
+				if err != nil {
+					return err
+				}
+				return StartFirstRuntimeDetached(runCtx, prepared)
+			})
 		}
 	}
 	return runInstallWorker(ctx, cfg, installer, env.Detect, startRuntime)
+}
+
+func runInstallWorkerRuntime(ctx context.Context, run func(context.Context) error) error {
+	runCtx, cancel := context.WithTimeout(ctx, workerRuntimeStartTimeout)
+	defer cancel()
+	err := run(runCtx)
+	if err != nil && errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return errors.New("detached runtime startup timed out before readiness")
+	}
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 type installWorkerReceipt struct {
@@ -470,12 +499,16 @@ func (w *installWorkerReceipt) fail(err error, code string) error {
 	switch {
 	case errors.Is(err, supervisor.ErrUpgradeLocked):
 		state, code, message = "failed", "upgrade_locked", "Runtime upgrade is in progress; retry shortly."
-	case code == "runtime_start_failed":
-		message = "Installed components could not start the runtime."
+	case errors.Is(err, supervisor.ErrOwnerBusy), errors.Is(err, supervisor.ErrOwnerLocked):
+		state, code, message = "failed", "owner_busy", "Runtime owner lock is busy; retry shortly."
+	case errors.Is(err, ErrInstallWorkerBusy):
+		state, code, message = "failed", "install_worker_active", "Another component installation is in progress; retry shortly."
 	case errors.Is(err, ErrOrphanInstallProcess):
 		state, code, message = "needs_review", "orphan_install_process", ErrOrphanInstallProcess.Error()
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		state, code, message = "cancelled", "cancelled", "Installation cancelled."
+	case code == "runtime_start_failed":
+		message = "Installed components could not start the runtime."
 	case errors.Is(err, ErrPlanChanged):
 		code, message = "plan_changed", ErrPlanChanged.Error()
 	case errors.Is(err, ErrConsent):
@@ -495,7 +528,7 @@ func (w *installWorkerReceipt) fail(err error, code string) error {
 func runInstallWorker(ctx context.Context, cfg InstallWorkerConfig, installer Installer, detect func(context.Context) (Plan, error), startRuntime func(context.Context) error) error {
 	cfg.Components = NormalizeWorkerComponents(cfg.Components)
 	cfg.ConfigPath = cleanOptionalPath(cfg.ConfigPath)
-	started, err := supervisor.ProcessStartTime(ctx, os.Getpid())
+	started, err := workerProcessStartTimeFn(ctx, os.Getpid())
 	if err != nil {
 		return err
 	}
@@ -551,7 +584,7 @@ func runInstallWorker(ctx context.Context, cfg InstallWorkerConfig, installer In
 		if err != nil {
 			return w.fail(err, "runtime_start_failed")
 		}
-		if err := w.writeWorkerState(func(s *InstallWorkerState) { s.Stage = "starting_runtime" }); err != nil {
+		if err := w.writeWorkerState(func(s *InstallWorkerState) { s.Component, s.Stage = "", "starting_runtime" }); err != nil {
 			return w.fail(err, "runtime_start_failed")
 		}
 		if err := startRuntime(ctx); err != nil {

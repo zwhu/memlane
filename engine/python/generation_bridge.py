@@ -15,7 +15,7 @@ from _runtime_common import private_write
 
 from agent_bridge_runtime import (resolve_bridge_runtime, check_bridge_runtime, bridge_choices,
                                   bridge_runtime_fingerprint, bridge_selection_authorized,
-                                  require_bridge_startup, require_bridge_validation)
+                                  require_bridge_startup, require_bridge_validation, detected_bridge_kinds)
 
 
 class ValidationBridge:

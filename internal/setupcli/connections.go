@@ -52,7 +52,18 @@ func (s *session) showConnections(dir controlplane.ConnectionsDirectory) {
 	}
 }
 
-func (s *session) showLocalHosts(offline bool) {
+func isProcessingCLI(kind string) bool {
+	return oneOf(kind, "codex", "pi", "traex", "antigravity")
+}
+
+func (s *session) addUnconfiguredProcessingCLI(kind string) {
+	if isProcessingCLI(kind) && !slices.Contains(s.Generation.AvailableBridges, kind) &&
+		!slices.Contains(s.Generation.DetectedUnconfiguredCLIs, kind) {
+		s.Generation.DetectedUnconfiguredCLIs = append(s.Generation.DetectedUnconfiguredCLIs, kind)
+	}
+}
+
+func (s *session) showLocalHosts(offline, populateUnconfigured bool) {
 	existing := map[string]bool{}
 	for _, host := range s.Connections.Hosts {
 		existing[host.Kind] = true
@@ -61,9 +72,12 @@ func (s *session) showLocalHosts(offline bool) {
 		if !isAgent(host.Kind) {
 			continue
 		}
-		if offline && host.Detected && host.SupportsProcessingCLI && host.Executable != "" &&
-			!slices.Contains(s.Generation.AvailableBridges, host.Kind) {
-			s.Generation.AvailableBridges = append(s.Generation.AvailableBridges, host.Kind)
+		if host.Detected && host.SupportsProcessingCLI && host.Executable != "" {
+			if populateUnconfigured {
+				s.addUnconfiguredProcessingCLI(host.Kind)
+			} else if offline && !slices.Contains(s.Generation.AvailableBridges, host.Kind) {
+				s.Generation.AvailableBridges = append(s.Generation.AvailableBridges, host.Kind)
+			}
 		}
 		if existing[host.Kind] || s.has("agent") && s.get("agent") != host.Kind {
 			continue
@@ -74,6 +88,7 @@ func (s *session) showLocalHosts(offline bool) {
 	if offline {
 		slices.Sort(s.Generation.AvailableBridges)
 	}
+	slices.Sort(s.Generation.DetectedUnconfiguredCLIs)
 }
 
 func (s *session) pendingOperations() ([]controlplane.UIOperation, bool) {
@@ -94,12 +109,16 @@ func (s *session) pendingOperations() ([]controlplane.UIOperation, bool) {
 }
 
 func receiptSummary(id string, res controlplane.ConnectionOperationReceipt) *operationSummary {
-	return &operationSummary{
+	summary := &operationSummary{
 		ID: id, InstanceID: safeInstanceID(res.InstanceID), Revision: res.Revision,
 		Kind:         known(res.Action, "prepare", "activate", "allow_capture", "defer_capture", "repair_trae_hooks", "repair-trae-hooks", "review"),
 		Reconcilable: res.Reconcilable, Phase: known(res.Phase, "pre_mutation", "post_mutation"), Status: known(res.Status, "unknown", "complete", "unrecorded"),
 		Recorded: res.Recorded, SafeToUnlock: res.SafeToUnlock, AlreadyComplete: res.AlreadyComplete, Reconciled: res.Reconciled,
 	}
+	if res.Result != nil && res.Result.PreservedThirdPartyGroups > 0 {
+		summary.PreservedThirdPartyGroups = res.Result.PreservedThirdPartyGroups
+	}
+	return summary
 }
 
 func previewReconcilable(res controlplane.ConnectionOperationReceipt) bool {
@@ -353,6 +372,7 @@ func (s *session) reviewConnection(client *controlplane.Client, dir controlplane
 			s.block(ExitNeedsReview, "connection_operation_unconfirmed")
 			continue
 		}
+		s.showHookRepairFromReceipt(receipt)
 		if err := controlplane.FinishUIOperation(s.opsDir, op.Operation); err != nil {
 			s.block(ExitNeedsReview, "connection_operation_unconfirmed")
 			continue
@@ -648,11 +668,11 @@ func revisionConflict(err error) bool {
 	return errors.As(err, &controlErr) && controlErr.IsCode(409, "revision_conflict")
 }
 
-func (s *session) generation(client *controlplane.Client) {
+func (s *session) generation(client *controlplane.Client) bool {
 	dir, err := client.GenerationState(s.ctx)
 	if err != nil {
 		s.controlFailure(err)
-		return
+		return false
 	}
 	if dir.Active != nil {
 		s.Generation.Active = &generationReference{Revision: dir.Active.Revision}
@@ -667,4 +687,8 @@ func (s *session) generation(client *controlplane.Client) {
 		}
 	}
 	slices.Sort(s.Generation.AvailableBridges)
+	for _, kind := range dir.DetectedProcessingCLIs {
+		s.addUnconfiguredProcessingCLI(kind)
+	}
+	return true
 }

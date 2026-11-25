@@ -51,6 +51,59 @@ func TestAntigravityVersionDetectionUsesAgyBinary(t *testing.T) {
 	}
 }
 
+func TestTraexVersionResolvesExecutableAliases(t *testing.T) {
+	for _, name := range []string{"traecli", "traex", "trae-cli"} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			bunBin := filepath.Join(home, ".bun", "bin")
+			if err := os.MkdirAll(bunBin, 0700); err != nil {
+				t.Fatal(err)
+			}
+			pathBin := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("PATH", pathBin)
+			bin := pathBin
+			if name == "trae-cli" {
+				bin = bunBin
+			}
+			binary := filepath.Join(bin, name)
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf 'traecli 0.216.0\\n'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			rows := []AgentConnection{{Kind: "traex", Detected: true}}
+			loadAgentVersions(context.Background(), Config{}, rows)
+			if rows[0].HostVersion != "0.216.0" {
+				t.Fatalf("expected %s version 0.216.0, got %q", name, rows[0].HostVersion)
+			}
+		})
+	}
+}
+
+func TestTraexVersionPrefersPATHAcrossAliases(t *testing.T) {
+	home := t.TempDir()
+	localBin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(localBin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pathBin := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathBin)
+	for path, version := range map[string]string{
+		filepath.Join(localBin, "traecli"): "0.100.0",
+		filepath.Join(pathBin, "traex"):    "0.216.0",
+	} {
+		script := "#!/bin/sh\n[ \"$1\" = --version ] || exit 7\nprintf 'traecli " + version + "\\n'\n"
+		if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := []AgentConnection{{Kind: "traex", Detected: true}}
+	loadAgentVersions(context.Background(), Config{}, rows)
+	if got := rows[0].HostVersion; got != "0.216.0" {
+		t.Fatalf("expected PATH alias version 0.216.0, got %q", got)
+	}
+}
+
 func TestTraeVersionReadsBundleWithoutLaunchingExecutable(t *testing.T) {
 	root := t.TempDir()
 	contents := filepath.Join(root, "Trae CN.app", "Contents")

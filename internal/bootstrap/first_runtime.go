@@ -654,7 +654,7 @@ func (e *Environment) prepareFirstRuntime(ctx context.Context, configPath string
 func loopbackJSON(ctx context.Context, origin, endpoint, tokenFile, header, prefix string) (map[string]any, error) {
 	validOrigin, err := supervisor.ValidateLoopbackURL(origin)
 	if err != nil {
-		return nil, errors.New("首次服务地址必须为明确的本机端口")
+		return nil, fatalFirstRuntimeReadiness{errors.New("首次服务地址必须为明确的本机端口")}
 	}
 	token, err := privateRead(tokenFile)
 	if err != nil {
@@ -677,20 +677,25 @@ func loopbackJSON(ctx context.Context, origin, endpoint, tokenFile, header, pref
 	return result, nil
 }
 
+// Configuration and identity errors cannot be resolved by waiting for the APIs.
+type fatalFirstRuntimeReadiness struct{ error }
+
+func (err fatalFirstRuntimeReadiness) Unwrap() error { return err.error }
+
 func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 	config, err := loadFirstRuntimeConfig(configPath)
 	if err != nil {
-		return false, err
+		return false, fatalFirstRuntimeReadiness{err}
 	}
 	owner, err := supervisor.VerifyOwnerRecord(ctx, config.Root, configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if errors.Is(err, supervisor.ErrOwnerMismatch) {
-		return false, errors.New("首次服务所有权记录不同，保留现场")
+		return false, fatalFirstRuntimeReadiness{fmt.Errorf("首次服务所有权记录不同，保留现场: %w", err)}
 	}
 	if errors.Is(err, supervisor.ErrOwnerProcessChanged) {
-		return false, errors.New("首次服务所有者已变化，保留原记录等待核对")
+		return false, fatalFirstRuntimeReadiness{fmt.Errorf("首次服务所有者已变化，保留原记录等待核对: %w", err)}
 	}
 	if err != nil {
 		return false, err
@@ -703,7 +708,7 @@ func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 		return false, err
 	}
 	if me["id"] != config.receipt.OwnerID {
-		return false, errors.New("首次官方服务 owner 身份不同")
+		return false, fatalFirstRuntimeReadiness{errors.New("首次官方服务 owner 身份不同")}
 	}
 	projects, err := loopbackJSON(ctx, config.Control.URL, "/v1/projects", config.Control.TokenFile, "Authorization", "Bearer ")
 	if err != nil {
@@ -1623,7 +1628,7 @@ func startFirstRuntimeDetachedLocked(ctx context.Context, prepared FirstRuntime,
 		return err
 	}
 	if inspection.Locked {
-		return waitFirstRuntimeDetached(ctx, prepared.ConfigPath, nil)
+		return waitFirstRuntimeDetached(ctx, prepared.StoreRoot, prepared.ConfigPath, nil)
 	}
 	if inspection.HasReceipt {
 		if _, err := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); err != nil {
@@ -1658,20 +1663,59 @@ func startFirstRuntimeDetachedLocked(ctx context.Context, prepared FirstRuntime,
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	return waitFirstRuntimeDetached(ctx, prepared.ConfigPath, exited)
+	return waitFirstRuntimeDetached(ctx, prepared.StoreRoot, prepared.ConfigPath, exited)
 }
 
-func waitFirstRuntimeDetached(ctx context.Context, configPath string, exited <-chan error) error {
+func waitFirstRuntimeDetached(ctx context.Context, storeRoot, configPath string, exited <-chan error) error {
 	ticker := time.NewTicker(defaultFirstRuntimeOptions().readyPollInterval)
 	defer ticker.Stop()
 	for {
-		if ready, _ := FirstRuntimeReady(ctx, configPath); ready {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if exited == nil {
+			insp, err := supervisor.InspectOwnerReadOnly(storeRoot)
+			switch {
+			case err != nil:
+				return err
+			case !insp.Locked:
+				return errors.New("competing runtime owner exited before readiness")
+			case insp.ReceiptErr != nil:
+				return insp.ReceiptErr
+			case insp.HasReceipt:
+				switch insp.Record.Phase {
+				case "", "starting", "first_install_setup", "ready":
+				default:
+					return fmt.Errorf("competing runtime owner entered unexpected phase %q before readiness", insp.Record.Phase)
+				}
+			}
+		}
+		ready, readyErr := FirstRuntimeReady(ctx, configPath)
+		if ready {
 			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var fatal fatalFirstRuntimeReadiness
+		if errors.As(readyErr, &fatal) {
+			return readyErr
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-exited:
+			if ready, _ := FirstRuntimeReady(ctx, configPath); ready {
+				return nil
+			}
+			insp, inspErr := supervisor.InspectOwnerReadOnly(storeRoot)
+			if inspErr == nil && insp.Locked && (!insp.HasReceipt || insp.ReceiptErr == nil) {
+				switch insp.Record.Phase {
+				case "", "starting", "first_install_setup", "ready":
+					exited = nil
+					continue
+				}
+			}
 			if err != nil {
 				return fmt.Errorf("detached runtime launcher exited before readiness: %w", err)
 			}

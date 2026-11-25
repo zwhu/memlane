@@ -220,6 +220,17 @@ func (s *session) showHookRepair(res controlplane.TraeHooksRepairResult) {
 	}
 }
 
+func (s *session) showHookRepairFromReceipt(res controlplane.ConnectionOperationReceipt) {
+	result := res.Result
+	if result == nil || !result.Repaired || !oneOf(res.Action, "repair-trae-hooks", "repair_trae_hooks") {
+		return
+	}
+	s.showHookRepair(controlplane.TraeHooksRepairResult{
+		Repaired: true, RemovedEvents: result.RemovedEvents, RetainedEvents: result.RetainedEvents,
+		PreservedThirdPartyGroups: result.PreservedThirdPartyGroups,
+	})
+}
+
 func (s *session) repairHooks() {
 	client := s.requireClient()
 	if client == nil {

@@ -11,7 +11,7 @@ DEFAULT_PROFILE_RELPATHS = {
 }
 
 COMMANDS = {
-    'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex'), 'trae_ide': (),
+    'codex': ('codex',), 'pi': ('pi',), 'traex': ('traecli', 'traex', 'trae-cli'), 'trae_ide': (),
     'claude_code': ('claude',), 'cursor': ('cursor',), 'opencode': ('opencode',),
     'antigravity': ('agy',),
 }

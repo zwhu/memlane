@@ -22,7 +22,9 @@ var statuses = map[int]string{
 	ExitNeedsReview: "needs_review", ExitFatal: "fatal", ExitInvalidArguments: "invalid_arguments",
 }
 
-const agentGuidance = "Execute read-only checks first. Show preview and ask user confirmation before any requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ paths, hooks.json raw contents, or memory data; never run xattr or edit host config files directly. On exit 20 poll doctor --operation-id after retry_after_ms. Stop after 3 retries (4th failure). On exit 11 hand human_steps to user."
+const agentGuidance = "Execute read-only checks first. Show preview and ask user confirmation before any requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ paths, hooks.json raw contents, or memory data; never run xattr or edit host config files directly. On exit 20 follow next_actions after retry_after_ms (poll doctor --operation-id while active; retry install after confirmation on lock contention). Stop after 3 retries (4th failure). On exit 11 hand human_steps to user."
+
+const unconfiguredProcessingHintFormat = "本机已检测到可用于后台记忆提炼的 %s，但尚未完成登录或未配置默认模型。请先在终端运行对应 CLI 完成登录与默认模型配置，或先进入 Memlane 稍后在设置中改用直连模型 API。"
 
 const processingHint = "本机尚未检测到可用于后台记忆提炼的 CLI（如 codex、traex、pi、agy），也未配置直连模型 API。对话自动采集仍可先接入，但把对话自动整理成记忆需要安装提炼 CLI 或在桌面端设置中配置直连模型 API。"
 
@@ -133,20 +135,22 @@ type capability struct {
 }
 
 type operationSummary struct {
-	ID              string `json:"operation_id"`
-	Kind            string `json:"kind,omitempty"`
-	InstanceID      string `json:"instance_id,omitempty"`
-	Revision        int64  `json:"revision"`
-	SafeToUnlock    bool   `json:"safe_to_unlock,omitempty"`
-	AlreadyComplete bool   `json:"already_complete,omitempty"`
-	Reconciled      bool   `json:"reconciled,omitempty"`
-	Recorded        bool   `json:"recorded,omitempty"`
-	Reconcilable    bool   `json:"reconcilable,omitempty"`
-	Phase           string `json:"phase,omitempty"`
-	Status          string `json:"status,omitempty"`
+	ID                        string `json:"operation_id"`
+	Kind                      string `json:"kind,omitempty"`
+	InstanceID                string `json:"instance_id,omitempty"`
+	Revision                  int64  `json:"revision"`
+	SafeToUnlock              bool   `json:"safe_to_unlock,omitempty"`
+	AlreadyComplete           bool   `json:"already_complete,omitempty"`
+	Reconciled                bool   `json:"reconciled,omitempty"`
+	Recorded                  bool   `json:"recorded,omitempty"`
+	Reconcilable              bool   `json:"reconcilable,omitempty"`
+	Phase                     string `json:"phase,omitempty"`
+	Status                    string `json:"status,omitempty"`
+	PreservedThirdPartyGroups int    `json:"preserved_third_party_groups,omitempty"`
 }
 
 type generationSummary struct {
+	DetectedUnconfiguredCLIs  []string                             `json:"detected_unconfigured_clis,omitempty"`
 	InitializationComplete    bool                                 `json:"initialization_complete"`
 	Deferred                  bool                                 `json:"deferred"`
 	Active                    *generationReference                 `json:"active"`

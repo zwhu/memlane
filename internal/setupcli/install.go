@@ -128,8 +128,21 @@ func (s *session) install() {
 		}
 	}
 	if plan.Complete() {
-		s.startRuntime(env)
-		return
+		owner, ok := s.inspectOwner()
+		if !ok {
+			return
+		}
+		switch {
+		case owner.State == "starting" || owner.OwnerPhase == "starting":
+			s.installBusy("daemon_starting")
+			return
+		case owner.State == "mismatch" || owner.State == "stale_owner" || owner.StaleVersionDetected:
+			s.ownerAdvice(owner)
+			return
+		case owner.State == "ready" && owner.OwnerLocked:
+			s.confirmRuntimeReady(owner)
+			return
+		}
 	}
 
 	args := []string{"__install-worker", "--component-root", s.root, "--config", s.configPath,
@@ -250,14 +263,19 @@ func (s *session) installDeadlineReached(reason string) bool {
 	return true
 }
 
+func retryableWorkerContention(state bootstrap.InstallWorkerState) bool {
+	return state.State == "failed" && oneOf(state.ErrorCode, "upgrade_locked", "owner_busy", "install_worker_active")
+}
+
 func (s *session) terminalWorker(state bootstrap.InstallWorkerState) {
 	switch state.State {
 	case "needs_review":
 		s.block(ExitNeedsReview, "install_worker_needs_review")
 	case "failed", "cancelled":
 		switch state.ErrorCode {
-		case "upgrade_locked":
-			s.installBusy("upgrade_locked")
+		case "upgrade_locked", "owner_busy", "install_worker_active":
+			s.busy(state.ErrorCode)
+			s.installAdvice()
 		case "plan_changed", "operation_id_mismatch":
 			s.block(ExitPreflightBlocked, state.ErrorCode)
 		default:
@@ -301,6 +319,16 @@ func (s *session) pollWorker(env *bootstrap.Environment, opID string, expectRunt
 			return
 		}
 		if !active && oneOf(state.State, "failed", "cancelled", "needs_review") {
+			if retryableWorkerContention(state) {
+				// The worker may have changed component availability before
+				// encountering contention during runtime startup.
+				plan, err := s.DetectPlanFn(env, s.ctx)
+				if err == nil {
+					s.showPlan(plan)
+				} else {
+					s.Components.PlanDigest, s.Artifacts.PlanDigest = "", ""
+				}
+			}
 			s.terminalWorker(state)
 			return
 		}
@@ -339,65 +367,6 @@ func (s *session) confirmRuntimeReady(owner bootstrap.OwnerRuntimeStatus) {
 	}
 	if err != nil || !ready {
 		s.block(ExitActionRequired, "daemon_not_ready")
-	}
-}
-
-func (s *session) startRuntime(env *bootstrap.Environment) {
-	owner, ok := s.inspectOwner()
-	if !ok {
-		return
-	}
-	switch {
-	case owner.State == "starting" || owner.OwnerPhase == "starting":
-		s.installBusy("daemon_starting")
-		return
-	case owner.State == "mismatch" || owner.State == "stale_owner":
-		s.ownerAdvice(owner)
-		return
-	case owner.StaleVersionDetected:
-		s.ownerAdvice(owner)
-		return
-	case owner.State == "ready" && owner.OwnerLocked:
-		s.confirmRuntimeReady(owner)
-		return
-	}
-
-	if s.installDeadlineReached("daemon_starting") {
-		return
-	}
-	prepared, err := s.PrepareRuntimeFn(env, s.ctx, s.configPath, s.runtimeAssets)
-	if s.installDeadlineReached("daemon_starting") {
-		return
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		s.installBusy("daemon_starting")
-		return
-	}
-	if errors.Is(err, bootstrap.ErrInstallWorkerBusy) || errors.Is(err, supervisor.ErrUpgradeLocked) ||
-		errors.Is(err, supervisor.ErrOwnerBusy) || errors.Is(err, supervisor.ErrOwnerLocked) {
-		s.installError(err)
-		return
-	}
-	if err != nil {
-		s.block(ExitFatal, "runtime_preparation_failed")
-		return
-	}
-	err = s.StartRuntimeDetachedFn(s.ctx, prepared)
-	switch {
-	case s.installDeadlineReached("daemon_starting"):
-		return
-	case err == nil:
-		if s.loadPaths() {
-			if owner, ok := s.inspectOwner(); ok {
-				s.confirmRuntimeReady(owner)
-			}
-		}
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, supervisor.ErrOwnerBusy),
-		errors.Is(err, supervisor.ErrOwnerLocked), errors.Is(err, supervisor.ErrUpgradeLocked):
-		s.Daemon.State = "starting"
-		s.installBusy("daemon_starting")
-	default:
-		s.block(ExitFatal, "runtime_start_failed")
 	}
 }
 

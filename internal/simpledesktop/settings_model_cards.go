@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -129,7 +130,11 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 								if isActive {
 									v4Badge(c, "使用中", "ok")
 								} else if !available {
-									homeText(c, "未检测到 CLI", homeMeta).SingleLine()
+									status := "未检测到 CLI"
+									if a.isDetectedProcessingCLI(iconKind) {
+										status = "待登录配置"
+									}
+									homeText(c, status, homeMeta).SingleLine()
 								} else if s.Generation.validated(ref) {
 									v4Badge(c, "已验证", "ok")
 								} else {
@@ -223,18 +228,50 @@ func (a *App) preferredExistingHostName() string {
 
 func (a *App) emptyProcessingCLIGuide(c *ui.Context) {
 	s := &a.integrations
-	host := a.preferredExistingHostName()
+	unconfigured := a.detectedUnconfiguredProcessingCLIs()
+	heading := "未检测到可用于记忆提炼的本地 CLI 工具"
+	desc := "把对话自动整理成记忆需要一个后台提炼工具。你可以安装下面任意一个 CLI（复用已有账号额度），或改用直接调用模型 API / Ollama。"
+	recheck := "已装好，重新检测"
+	if len(unconfigured) > 0 {
+		names := make([]string, 0, len(unconfigured))
+		for _, cli := range unconfigured {
+			names = append(names, cli.DisplayName)
+		}
+		heading = "已检测到本机 CLI，请先完成登录与默认模型配置"
+		if a.initialSetup {
+			desc = fmt.Sprintf("已检测到 %s，但尚未读到默认模型配置。请先在终端完成登录并选择默认模型后点击「已登录，重新检测」；也可以改用模型 API / Ollama，或先进入 Memlane 稍后配置。", strings.Join(names, "、"))
+		} else {
+			desc = fmt.Sprintf("已检测到 %s，但尚未读到默认模型配置。请先在终端完成登录并选择默认模型后点击「已登录，重新检测」，也可以改用模型 API / Ollama。", strings.Join(names, "、"))
+		}
+		recheck = "已登录，重新检测"
+	} else if a.initialSetup {
+		desc += "也可以点击「暂不配置提炼，先进入 Memlane」，稍后再配置。"
+	}
 	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Padding(sp3).Gap(sp2).
 		Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
-		homeText(c, "未检测到可用于记忆提炼的本地 CLI 工具", homeHeading)
-		homeText(c, "把对话自动整理成记忆需要一个后台提炼工具。你可以安装下面任意一个 CLI（复用已有账号额度），或改用直接调用模型 API / Ollama。", homeMeta).LineHeight(1.5)
-		a.recommendedProcessingCLIRows(c, &s.Message)
+		homeText(c, heading, homeHeading)
+		homeText(c, desc, homeMeta).LineHeight(1.5)
+		if len(unconfigured) == 0 {
+			a.recommendedProcessingCLIRows(c, &s.Message)
+		}
+		for _, cli := range unconfigured {
+			hint := strings.TrimPrefix(cli.LoginHint, "安装后")
+			hint = strings.TrimPrefix(hint, "安装并")
+			opts := v4RowOptions{Key: "detected-unconfigured-cli-" + cli.Kind, Title: cli.DisplayName, Desc: hint}
+			if cli.DocsURL != "" {
+				opts.Control = func() { a.processingCLIDocsButton(c, cli, &s.Message) }
+			}
+			v4Row(c, opts)
+		}
 		ui.Row(c).FillWidth().Gap(sp2).Children(func() {
-			v4SmallButton(c, "已装好，重新检测", v4IconRefresh, a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
-			v4SmallButton(c, "复制指令，让 "+host+" 帮我安装 CLI", v4IconCopy, func() {
-				c.WriteClipboard(agentTakeoverInstallCLIPrompt(host))
-				s.Message = "已复制 CLI 安装指令"
-			})
+			v4SmallButton(c, recheck, v4IconRefresh, a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
+			if len(unconfigured) == 0 {
+				host := a.preferredExistingHostName()
+				v4SmallButton(c, "复制指令，让 "+host+" 帮我安装 CLI", v4IconCopy, func() {
+					c.WriteClipboard(agentTakeoverInstallCLIPrompt(host))
+					s.Message = "已复制 CLI 安装指令"
+				})
+			}
 			v4SmallButton(c, "改用模型 API / Ollama", nil, func() { a.chooseGenerationSource("provider") }).Disabled(s.Busy)
 		})
 		if s.Message != "" {
@@ -260,15 +297,19 @@ func (a *App) recommendedProcessingCLIRows(c *ui.Context, message *string) {
 					}).Label("复制命令 " + cli.DisplayName)
 				}
 				if cli.DocsURL != "" {
-					v4SmallButton(c, "查看文档", nil, func() {
-						if a.OpenExternalURL != nil {
-							if err := a.OpenExternalURL(cli.DocsURL); err != nil {
-								*message = bootstrap.RedactInstallerText(err.Error())
-							}
-						}
-					}).Label("查看文档 " + cli.DisplayName).Disabled(a.OpenExternalURL == nil)
+					a.processingCLIDocsButton(c, cli, message)
 				}
 			},
 		})
 	}
+}
+
+func (a *App) processingCLIDocsButton(c *ui.Context, cli bootstrap.RecommendedProcessingCLI, message *string) {
+	v4SmallButton(c, "查看文档", nil, func() {
+		if a.OpenExternalURL != nil {
+			if err := a.OpenExternalURL(cli.DocsURL); err != nil {
+				*message = bootstrap.RedactInstallerText(err.Error())
+			}
+		}
+	}).Label("查看文档 " + cli.DisplayName).Disabled(a.OpenExternalURL == nil)
 }

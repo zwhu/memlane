@@ -71,6 +71,7 @@ func (a *App) deferFirstGenerationSetup() {
 		}
 	}
 	a.initialSetup, a.setupDeferredMode = false, true
+	a.setupDeferredToastDismissed = false
 	a.page = "总览"
 	a.Start()
 }

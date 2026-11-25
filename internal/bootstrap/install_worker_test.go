@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zwhu/memlane/engine"
@@ -212,6 +213,291 @@ func TestLaunchDetachedInstallWorkerRejectsIncompatibleActiveWorker(t *testing.T
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInstallWorkerStartsRuntimeWithCompletePlan(t *testing.T) {
+	oldStartTime, oldTable := workerProcessStartTimeFn, workerProcessTableFn
+	t.Cleanup(func() {
+		workerProcessStartTimeFn, workerProcessTableFn = oldStartTime, oldTable
+	})
+	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
+	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
+	for _, tc := range []struct {
+		name, state, stage, code string
+		err                      error
+	}{
+		{name: "ready", state: "completed", stage: "ready"},
+		{name: "owner busy", state: "failed", stage: "starting_runtime", code: "owner_busy", err: supervisor.ErrOwnerBusy},
+		{name: "owner locked", state: "failed", stage: "starting_runtime", code: "owner_busy", err: supervisor.ErrOwnerLocked},
+		{name: "installation locked", state: "failed", stage: "starting_runtime", code: "install_worker_active", err: ErrInstallWorkerBusy},
+		{name: "parent cancelled", state: "cancelled", stage: "starting_runtime", code: "cancelled", err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installer, driver, reqs := fixture(t)
+			root := filepath.Dir(installer.Root)
+			installer.Root = filepath.Join(root, "installation")
+			for _, req := range reqs {
+				driver.observed[req.ID] = Observation{Status: Available, Path: req.Destination}
+			}
+			detect := func(ctx context.Context) (Plan, error) { return installer.Detect(ctx, reqs) }
+			plan, err := detect(t.Context())
+			if err != nil || !plan.Complete() {
+				t.Fatalf("expected a complete plan: %+v, %v", plan, err)
+			}
+			check := func(wantState, stage, code string) {
+				t.Helper()
+				state, err := ReadInstallWorkerState(root)
+				if err != nil || state.State != wantState || state.Stage != stage || state.Component != "" ||
+					state.ErrorCode != code || state.NetworkBytesDownloaded != 0 || state.RuntimeSyncRan || len(driver.installs) != 0 {
+					t.Fatalf("worker receipt = %+v, %v, component installs = %v", state, err, driver.installs)
+				}
+			}
+			cfg := InstallWorkerConfig{
+				ComponentRoot: root, OperationID: DefaultInstallOperationID, PlanDigest: plan.Digest(), StartRuntime: true,
+			}
+			started := false
+			err = runInstallWorker(t.Context(), cfg, installer, detect, func(context.Context) error {
+				started = true
+				check("running", "starting_runtime", "")
+				return tc.err
+			})
+			if !errors.Is(err, tc.err) || !started {
+				t.Fatalf("runtime start invoked = %t, worker error = %v, want %v", started, err, tc.err)
+			}
+			check(tc.state, tc.stage, tc.code)
+		})
+	}
+}
+
+func TestInstallWorkerBoundsDetachedRuntimeStart(t *testing.T) {
+	oldTimeout, oldStartTime, oldTable := workerRuntimeStartTimeout, workerProcessStartTimeFn, workerProcessTableFn
+	t.Cleanup(func() {
+		workerRuntimeStartTimeout, workerProcessStartTimeFn, workerProcessTableFn = oldTimeout, oldStartTime, oldTable
+	})
+	workerRuntimeStartTimeout = 200 * time.Millisecond
+	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
+	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
+	prepared := newReadOnlyRuntimeFixture(t)
+	scripts := filepath.Join(prepared.Resources, "scripts")
+	if err := os.Mkdir(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scripts, "dev.py"), []byte("exec /bin/sleep 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	installer, driver, reqs := fixture(t)
+	root := filepath.Dir(installer.Root)
+	installer.Root = filepath.Join(root, "installation")
+	for _, req := range reqs {
+		driver.observed[req.ID] = Observation{Status: Available, Path: req.Destination}
+	}
+	cfg := InstallWorkerConfig{ComponentRoot: root, OperationID: DefaultInstallOperationID, StartRuntime: true}
+	done := make(chan error, 1)
+	go func() {
+		done <- runInstallWorker(context.Background(), cfg, installer, func(ctx context.Context) (Plan, error) {
+			return installer.Detect(ctx, reqs)
+		}, func(ctx context.Context) error {
+			return runInstallWorkerRuntime(ctx, func(runCtx context.Context) error {
+				return StartFirstRuntimeDetached(runCtx, prepared)
+			})
+		})
+	}()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "detached runtime startup timed out before readiness" {
+			t.Fatalf("worker returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not bound detached runtime startup")
+	}
+	state, err := ReadInstallWorkerState(root)
+	if err != nil || state.State != "failed" || state.ErrorCode != "runtime_start_failed" || state.Stage != "starting_runtime" {
+		t.Fatalf("worker receipt = %+v, %v", state, err)
+	}
+	upgrade, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		t.Fatalf("upgrade lock retained: %v", err)
+	}
+	upgrade.Release()
+}
+
+func TestInstallWorkerBoundsRuntimePreparation(t *testing.T) {
+	oldStartTime, oldTable := workerProcessStartTimeFn, workerProcessTableFn
+	t.Cleanup(func() { workerProcessStartTimeFn, workerProcessTableFn = oldStartTime, oldTable })
+	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
+	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
+	for _, mode := range []string{"deadline error", "killed subprocess", "parent cancellation"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				installer, driver, reqs := fixture(t)
+				root := filepath.Dir(installer.Root)
+				installer.Root = filepath.Join(root, "installation")
+				for _, req := range reqs {
+					driver.observed[req.ID] = Observation{Status: Available, Path: req.Destination}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				parent := context.Background()
+				if mode == "parent cancellation" {
+					parent = ctx
+				}
+				cfg := InstallWorkerConfig{ComponentRoot: root, OperationID: DefaultInstallOperationID, StartRuntime: true}
+				err := runInstallWorker(parent, cfg, installer, func(ctx context.Context) (Plan, error) {
+					return installer.Detect(ctx, reqs)
+				}, func(ctx context.Context) error {
+					return runInstallWorkerRuntime(ctx, func(runCtx context.Context) error {
+						if deadline, ok := runCtx.Deadline(); !ok || deadline.Sub(time.Now()) != 180*time.Second {
+							t.Fatalf("preparation deadline = %v, want 180 seconds", deadline)
+						}
+						if mode == "parent cancellation" {
+							cancel()
+						}
+						<-runCtx.Done()
+						if mode == "deadline error" {
+							return runCtx.Err()
+						}
+						return errors.New("signal: killed")
+					})
+				})
+				wantState, wantCode := "failed", "runtime_start_failed"
+				if mode == "parent cancellation" {
+					wantState, wantCode = "cancelled", "cancelled"
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("worker error = %v, want parent cancellation", err)
+					}
+				} else if err == nil || err.Error() != "detached runtime startup timed out before readiness" {
+					t.Fatalf("worker error = %v, want runtime timeout", err)
+				}
+				state, err := ReadInstallWorkerState(root)
+				if err != nil || state.State != wantState || state.ErrorCode != wantCode || state.Stage != "starting_runtime" {
+					t.Fatalf("worker receipt = %+v, %v", state, err)
+				}
+			})
+		})
+	}
+}
+
+func TestRunInstallWorkerWithTimesOutPreparingRuntime(t *testing.T) {
+	oldTimeout, oldStartTime, oldTable := workerRuntimeStartTimeout, workerProcessStartTimeFn, workerProcessTableFn
+	t.Cleanup(func() {
+		workerRuntimeStartTimeout, workerProcessStartTimeFn, workerProcessTableFn = oldTimeout, oldStartTime, oldTable
+	})
+	workerRuntimeStartTimeout = time.Second
+	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
+	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
+	prepared, env, assets := newRuntimePreparationFixture(t, `
+case "$3" in
+	-c) echo '{"mismatch":[]}' ;;
+	*/first_install_runtime.py)
+		: > preflight-started
+		exec /bin/sleep 5 ;;
+	*) exit 42 ;;
+esac`)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
+	defer cancel()
+	err := RunInstallWorkerWith(ctx, env, assets, InstallWorkerConfig{ConfigPath: prepared.ConfigPath, StartRuntime: true})
+	if err == nil || err.Error() != "detached runtime startup timed out before readiness" {
+		t.Fatalf("worker returned %v, want preparation timeout", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.StoreRoot, "preflight-started")); err != nil {
+		t.Fatalf("runtime preflight did not start: %v", err)
+	}
+	state, err := ReadInstallWorkerState(env.Options.Root)
+	if err != nil || state.State != "failed" || state.ErrorCode != "runtime_start_failed" || state.Stage != "starting_runtime" {
+		t.Fatalf("worker receipt = %+v, %v", state, err)
+	}
+}
+
+func TestLaunchDetachedInstallWorkerPreservesExitContention(t *testing.T) {
+	oldTable := workerProcessTableFn
+	t.Cleanup(func() { workerProcessTableFn = oldTable })
+	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
+	for _, tc := range []struct {
+		name, exit string
+		holdLock   bool
+	}{
+		{"held lock", "20", true},
+		{"released lock", "20", false},
+		{"fatal exit", "50", false},
+		{"reinspect competing lock", "50", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := workerTestRoot(t)
+			fifo := filepath.Join(root, "exit-worker")
+			if err := syscall.Mkfifo(fifo, 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			done := make(chan error, 1)
+			go func() {
+				_, err := LaunchDetachedInstallWorker(ctx, "/bin/sh",
+					[]string{"-c", `exec 3<> "$1"; read -r -t 5 line <&3; exit "$2"`, "worker", fifo, tc.exit},
+					InstallWorkerConfig{ComponentRoot: root})
+				done <- err
+			}()
+			signal := openDetachedTestSignal(t, ctx.Done(), fifo, done, ticker.C)
+			if tc.holdLock || tc.exit == "20" {
+				path := filepath.Join(root, "installation", "installation.lock")
+				lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { lock.Close() })
+				if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+					t.Fatal(err)
+				}
+				if !tc.holdLock {
+					if err := lock.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := signal.WriteString("\n"); err != nil {
+				t.Fatal(err)
+			}
+			if err := signal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			err := <-done
+			if tc.holdLock || tc.exit == "20" {
+				if !errors.Is(err, ErrInstallWorkerBusy) {
+					t.Fatalf("worker exit = %v, want retryable contention", err)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 50 {
+					t.Fatalf("worker exit = %v, want exit code 50", err)
+				}
+			}
+			if _, err := ReadInstallWorkerState(root); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("worker published unexpected state: %v", err)
+			}
+		})
+	}
+}
+
+func openDetachedTestSignal(t *testing.T, deadline <-chan struct{}, fifo string, done <-chan error, ticks <-chan time.Time) *os.File {
+	t.Helper()
+	for {
+		signal, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			t.Cleanup(func() { signal.Close() })
+			return signal
+		}
+		if !errors.Is(err, syscall.ENXIO) {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("launcher exited before opening the test FIFO: %v", err)
+		case <-deadline:
+			t.Fatal("launcher did not open the test FIFO")
+		case <-ticks:
+		}
 	}
 }
 

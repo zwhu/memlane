@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from agent_connections import Connections, detect_executable
-from agent_bridge_runtime import resolve_bridge_runtime
+from agent_bridge_runtime import detected_bridge_kinds, resolve_bridge_runtime
 from agent_discovery import default_profile, detect_executable as discover_executable
 from project_control import Registry
 
@@ -83,6 +83,27 @@ class LocalDiscoveryTests(unittest.TestCase):
 
 
 class AgentDiscoveryTests(unittest.TestCase):
+    def test_trae_cli_alias_on_path_and_in_user_bins(self):
+        for bin_dir in ('path-bin', '.local/bin', '.bun/bin'):
+            with self.subTest(bin_dir=bin_dir), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                executable = home / bin_dir / 'trae-cli'
+                executable.parent.mkdir(parents=True)
+                executable.touch(mode=0o700)
+                expected = str(executable)
+                which = Mock(side_effect=lambda command: expected
+                             if bin_dir == 'path-bin' and command == 'trae-cli' else None)
+                with patch.object(Path, 'is_file', autospec=True, side_effect=lambda path: path == executable), \
+                     patch('agent_bridge_runtime.Path.home', return_value=home), \
+                     patch('agent_bridge_runtime.shutil.which', which):
+                    self.assertEqual(discover_executable('traex', home=home, which=which), expected)
+                    order = ['traecli', 'traex', 'trae-cli']
+                    self.assertEqual([call.args[0] for call in which.call_args_list], order)
+                    which.reset_mock()
+                    self.assertEqual(resolve_bridge_runtime({}, {'bridge_kind': 'traex'})['executable'], expected)
+                    self.assertEqual([call.args[0] for call in which.call_args_list], order)
+                    self.assertEqual(detected_bridge_kinds({}), ['traex'])
+
     def test_bundle_and_user_bin_discovery(self):
         for kind, relative in (
             ('codex', 'Applications/Codex.app/Contents/Resources/codex-cli/bin/codex'),

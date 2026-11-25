@@ -337,6 +337,7 @@ class ConnectionReviewTests(unittest.IsolatedAsyncioTestCase):
         status, dry = await self.request('POST', repair, {'dry_run': True, 'expected_revision': preview['revision'], 'operation_id': 'repair-orphan'})
         self.assertEqual(status, 200)
         self.assertEqual(preview['reviewed_sha'], dry['reviewed_sha'])
+        self.assertEqual(dry['preserved_third_party_groups'], 2)
         self.assertEqual(before, self.paths())
         self.assertEqual(state, self.registry.state)
         payload = {'expected_revision': preview['revision'], 'operation_id': 'repair-orphan',
@@ -344,6 +345,7 @@ class ConnectionReviewTests(unittest.IsolatedAsyncioTestCase):
         status, result = await self.request('POST', repair, payload)
         self.assertEqual(status, 200)
         self.assertEqual(result['mode'], 'orphan_cleanup')
+        self.assertEqual(result['preserved_third_party_groups'], 2)
         self.assertEqual(result['operation_id'], payload['operation_id'])
         self.assertEqual(result['reviewed_sha'], preview['reviewed_sha'])
         self.assertEqual(result['proposed_sha256'], preview['proposed_sha256'])
@@ -354,6 +356,23 @@ class ConnectionReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.request('POST', repair, payload), (200, result))
         payload['proposed_sha256'] = 'different'
         self.assertEqual(await self.request('POST', repair, payload), (409, {'error': 'operation_id_conflict', 'phase': 'pre_mutation'}))
+
+    async def test_recover_legacy_repair_journal_without_preserved_group_count(self):
+        self.orphan()
+        operation = 'legacy-repair'
+        repair = f'/v1/connections/{self.identity}/repair-trae-hooks'
+        status, plan = await self.request('POST', repair, {'dry_run': True})
+        self.assertEqual(status, 200)
+        payload = {'expected_revision': plan['revision'], 'operation_id': operation, 'reviewed_sha': plan['reviewed_sha']}
+        with patch('trae_hooks_migration._finish_repair', side_effect=OSError('synthetic interruption')):
+            self.assertEqual((await self.request('POST', repair, payload))[0], 503)
+        journal = self.registry.state['connections'][self.identity]['trae_ide_repair_journal']
+        self.assertEqual(journal.pop('preserved_third_party_groups'), 2)
+        self.registry.save()
+        self.assertEqual((await self.review_repair(operation))[0], 200)
+        status, result = await self.request('POST', repair, payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(result['preserved_third_party_groups'], 0)
 
     async def test_empty_legacy_keys_require_current_revision_and_reviewed_hash(self):
         repair = f'/v1/connections/{self.identity}/repair-trae-hooks'
@@ -678,5 +697,10 @@ class ConnectionReviewTests(unittest.IsolatedAsyncioTestCase):
         record = self.registry.state['connections'][self.identity]
         self.assertEqual(record, {'status': 'not_connected'})
         self.assertEqual(self.registry.state['revision'], revision + 1)
-        self.assertEqual(self.connections.operation(operation)['status'], 'complete')
+        receipt = self.connections.operation(operation)
+        self.assertEqual(receipt['status'], 'complete')
+        self.assertEqual(receipt['result']['preserved_third_party_groups'], 2)
+        result = apply_trae_hooks_repair(self.registry, self.adapter, self.config, expected_revision=revision,
+                                         operation_id=operation, reviewed_sha=plan['reviewed_sha'])
+        self.assertEqual(result['preserved_third_party_groups'], 2)
         self.assertEqual(json.loads(live)['hooks'], {'Stop': [user], 'Custom': [user]})

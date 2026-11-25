@@ -112,16 +112,17 @@ type AgentModelDefaults struct {
 	ServiceTier         string `json:"service_tier,omitempty"`
 }
 type GenerationDirectory struct {
-	AgentDefaults    map[string]AgentModelDefaults   `json:"agent_defaults"`
-	AgentBridges     map[string]GenerationProfile    `json:"agent_bridges"`
-	HandoffAvailable bool                            `json:"handoff_available"`
-	Revision         int64                           `json:"revision"`
-	Active           *GenerationRef                  `json:"active"`
-	Next             *GenerationRef                  `json:"next"`
-	Profiles         map[string][]GenerationRow      `json:"profiles"`
-	Validations      map[string]GenerationValidation `json:"validations"`
-	NextError        string                          `json:"next_error"`
-	StartupError     string                          `json:"startup_error"`
+	DetectedProcessingCLIs []string                        `json:"detected_processing_clis,omitempty"`
+	AgentDefaults          map[string]AgentModelDefaults   `json:"agent_defaults"`
+	AgentBridges           map[string]GenerationProfile    `json:"agent_bridges"`
+	HandoffAvailable       bool                            `json:"handoff_available"`
+	Revision               int64                           `json:"revision"`
+	Active                 *GenerationRef                  `json:"active"`
+	Next                   *GenerationRef                  `json:"next"`
+	Profiles               map[string][]GenerationRow      `json:"profiles"`
+	Validations            map[string]GenerationValidation `json:"validations"`
+	NextError              string                          `json:"next_error"`
+	StartupError           string                          `json:"startup_error"`
 }
 
 type CodexConnectionPreview struct {
@@ -200,11 +201,16 @@ type ServiceMonitorSnapshot struct {
 }
 
 type ConnectionActionResult struct {
-	Revision    int64           `json:"revision"`
-	Connection  AgentConnection `json:"connection"`
-	OperationID string          `json:"operation_id,omitempty"`
-	Outcome     string          `json:"outcome,omitempty"`
-	Phase       string          `json:"phase,omitempty"`
+	Revision                  int64           `json:"revision"`
+	Connection                AgentConnection `json:"connection"`
+	OperationID               string          `json:"operation_id,omitempty"`
+	Outcome                   string          `json:"outcome,omitempty"`
+	Phase                     string          `json:"phase,omitempty"`
+	Repaired                  bool            `json:"repaired,omitempty"`
+	Mode                      string          `json:"mode,omitempty"`
+	RemovedEvents             []string        `json:"removed_events,omitempty"`
+	RetainedEvents            []string        `json:"retained_events,omitempty"`
+	PreservedThirdPartyGroups int             `json:"preserved_third_party_groups,omitempty"`
 }
 
 type BlockerDetail struct {

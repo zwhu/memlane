@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zwhu/memlane/engine"
@@ -88,36 +89,128 @@ func TestInstallPlanApplyAndPoll(t *testing.T) {
 }
 
 func TestInstallCompletesWithExistingComponents(t *testing.T) {
-	f := newFixture(t)
-	f.owner.State, f.owner.OwnerLocked = "stopped", false
-	f.r.PrepareRuntimeFn = func(env *bootstrap.Environment, _ context.Context, config string, assets fs.FS) (bootstrap.FirstRuntime, error) {
-		if env.Options.Root != f.root || env.Options.ProtectedStore != f.store || config != f.config {
-			t.Fatal("runtime preparation target mismatch")
-		}
-		if _, err := fs.ReadFile(assets, "scripts/dev.py"); err != nil {
-			t.Fatal("runtime preparation did not receive the full assets")
-		}
-		return bootstrap.FirstRuntime{ConfigPath: config}, nil
+	for _, tc := range []struct {
+		name string
+		wait string
+		exit int
+	}{
+		{"wait expires during polling", "1", ExitInProgressOrBusy},
+		{"finishes during wait", "2", ExitOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.owner.State, f.owner.OwnerLocked = "stopped", false
+			f.row.Detected = false
+			var workerCtx context.Context
+			f.r.LaunchWorkerFn = func(ctx context.Context, executable string, args []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+				if workerCtx != nil || executable != f.r.Executable || args[0] != "__install-worker" ||
+					!slices.Contains(args, "--start-runtime") || !cfg.StartRuntime || cfg.OperationID != "first-install" ||
+					cfg.ComponentRoot != f.root || cfg.ConfigPath != f.config || cfg.PlanDigest != f.plan.Digest() {
+					t.Fatalf("incorrect worker launch: %v, %+v", args, cfg)
+				}
+				// Model the detached process independently of the CLI's polling context.
+				workerCtx = context.WithoutCancel(ctx)
+				f.worker = bootstrap.InstallWorkerState{
+					State: "running", Stage: "starting_runtime", OperationID: cfg.OperationID, PID: 123,
+					ConfigPath: cfg.ConfigPath, PlanDigest: cfg.PlanDigest, StartRuntime: true,
+				}
+				f.workerActive = true
+				return f.worker, nil
+			}
+			finish := func() {
+				t.Helper()
+				if workerCtx == nil || workerCtx.Err() != nil {
+					t.Fatal("worker could not finish runtime startup")
+				}
+				f.worker.State, f.worker.Stage, f.workerActive = "completed", "ready", false
+				f.owner.State, f.owner.OwnerLocked = "ready", true
+			}
+			f.r.SleepFn = func(context.Context, time.Duration) error {
+				if tc.exit == ExitOK {
+					finish()
+				}
+				return nil
+			}
+			inspect := f.r.InspectWorkerFn
+			polls := 0
+			f.r.InspectWorkerFn = func(ctx context.Context, root string) (bootstrap.InstallWorkerState, bool, error) {
+				if f.workerActive && tc.exit == ExitInProgressOrBusy {
+					if _, waiting := ctx.Deadline(); waiting {
+						polls++
+						if polls > 1 {
+							<-ctx.Done()
+							return bootstrap.InstallWorkerState{}, false, ctx.Err()
+						}
+					}
+				}
+				return inspect(ctx, root)
+			}
+			e := f.command(tc.exit, "install", "--apply", "--plan-digest", f.plan.Digest(), "--wait", tc.wait)
+			if tc.exit == ExitInProgressOrBusy {
+				if polls != 2 || !e.Components.WorkerActive || e.Components.Progress == nil || e.Components.Progress.Stage != "starting_runtime" ||
+					e.RetryAfterMS != 10000 || !hasBlocker(e, "install_worker_active") {
+					t.Fatalf("runtime startup progress lost at deadline: %+v", e)
+				}
+				status := f.command(ExitInProgressOrBusy, "doctor", "--operation-id", e.OperationID)
+				if len(status.Blockers) != 1 || !hasBlocker(status, "install_worker_active") ||
+					len(status.NextActions) != 1 || !hasAction(status, "doctor", "--operation-id", e.OperationID, "--json") ||
+					status.RetryAfterMS != 10000 || status.Daemon.State != "stopped" || !status.Components.WorkerActive {
+					t.Fatalf("active runtime worker reported conflicting advice: %+v", status)
+				}
+				finish()
+			} else if e.Daemon.State != "ready" || e.Components.WorkerActive {
+				t.Fatalf("runtime did not become ready: %+v", e)
+			}
+			e = f.command(ExitOK, "doctor", "--operation-id", e.OperationID)
+			if e.OperationID != "first-install" || e.Daemon.State != "ready" || e.Components.WorkerActive ||
+				e.Components.Progress == nil || e.Components.Progress.Stage != "ready" {
+				t.Fatalf("doctor did not report the completed worker: %+v", e)
+			}
+		})
 	}
-	f.r.StartRuntimeDetachedFn = func(ctx context.Context, rt bootstrap.FirstRuntime) error {
-		deadline, ok := ctx.Deadline()
-		if !ok || time.Until(deadline) > 2*time.Second || time.Until(deadline) <= 0 || rt.ConfigPath != f.config {
-			t.Fatal("expected startup within the shared two-second deadline")
-		}
-		f.owner.State, f.owner.OwnerLocked = "ready", true
-		return nil
+}
+
+func TestInstallCompletePlanWithExistingDaemon(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, phase string
+		stale              bool
+		exit               int
+		blocker            string
+		actions            [][]string
+	}{
+		{name: "ready", state: "ready", exit: ExitOK},
+		{name: "stale version", state: "ready", stale: true, exit: ExitActionRequired, blocker: "stale_daemon_runtime",
+			actions: [][]string{{"repair", "stale-daemon", "--dry-run"}, {"repair", "stale-daemon", "--apply", "--owner-fingerprint", testFingerprint}}},
+		{name: "stale owner", state: "stale_owner", exit: ExitActionRequired, blocker: "stale_owner_receipt",
+			actions: [][]string{{"repair", "stale-owner", "--dry-run"}, {"repair", "stale-owner", "--apply"}}},
+		{name: "mismatch", state: "mismatch", exit: ExitNeedsReview, blocker: "owner_mismatch"},
+		{name: "starting state", state: "starting", exit: ExitInProgressOrBusy, blocker: "daemon_starting",
+			actions: [][]string{{"doctor", "--operation-id", "first-install"}}},
+		{name: "starting phase", state: "ready", phase: "starting", exit: ExitInProgressOrBusy, blocker: "daemon_starting",
+			actions: [][]string{{"doctor", "--operation-id", "first-install"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.owner.State, f.owner.OwnerPhase, f.owner.StaleVersionDetected = tc.state, tc.phase, tc.stale
+			f.r.LaunchWorkerFn = func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+				t.Fatal("unexpected worker for existing daemon")
+				return bootstrap.InstallWorkerState{}, nil
+			}
+			e := f.command(tc.exit, "install", "--apply", "--plan-digest", f.plan.Digest())
+			var actions [][]string
+			for _, action := range e.NextActions {
+				actions = append(actions, action.Args)
+			}
+			if (tc.blocker == "" && len(e.Blockers) != 0) ||
+				(tc.blocker != "" && (len(e.Blockers) != 1 || !hasBlocker(e, tc.blocker))) ||
+				!slices.EqualFunc(actions, tc.actions, func(got, want []string) bool {
+					return slices.Equal(got, append(slices.Clone(want), "--json"))
+				}) ||
+				tc.exit == ExitInProgressOrBusy && e.RetryAfterMS != 10000 {
+				t.Fatalf("unexpected daemon advice: %+v", e)
+			}
+		})
 	}
-	f.command(ExitOK, "install", "--apply", "--plan-digest", f.plan.Digest(), "--wait", "2")
-	f.owner.State, f.owner.OwnerLocked = "stopped", false
-	for _, startErr := range []error{context.DeadlineExceeded, supervisor.ErrUpgradeLocked} {
-		f.r.StartRuntimeDetachedFn = func(context.Context, bootstrap.FirstRuntime) error { return startErr }
-		e := f.command(ExitInProgressOrBusy, "install", "--apply", "--plan-digest", f.plan.Digest(), "--wait", "0")
-		if e.Daemon.State != "starting" || e.RetryAfterMS != 10000 || !hasBlocker(e, "daemon_starting") {
-			t.Fatalf("unexpected daemon startup state for %v: %+v", startErr, e)
-		}
-	}
-	f.r.DiskFreeFn = func(string) (uint64, error) { return diskMinimum - 1, nil }
-	f.command(ExitFatal, "install", "--apply", "--plan-digest", f.plan.Digest())
 }
 
 func TestHiddenWorkerAssetsAndExitMapping(t *testing.T) {
@@ -217,32 +310,25 @@ func TestCleanInstallLeavesProtectedStoreEmptyForPrepareFirstRuntime(t *testing.
 		}
 	}
 
-	var planEnv, workerEnv, prepareEnv *bootstrap.Environment
+	var planEnv, workerEnv *bootstrap.Environment
 	var prepareErr error
 	f.r.DetectPlanFn = func(env *bootstrap.Environment, _ context.Context) (bootstrap.Plan, error) {
 		planEnv = env
 		return f.plan, nil
 	}
-	f.r.RunWorkerFn = func(_ context.Context, env *bootstrap.Environment, _ fs.FS, _ bootstrap.InstallWorkerConfig) error {
+	f.r.RunWorkerFn = func(ctx context.Context, env *bootstrap.Environment, assets fs.FS, cfg bootstrap.InstallWorkerConfig) error {
 		workerEnv = env
-		return nil
-	}
-	f.r.PrepareRuntimeFn = func(env *bootstrap.Environment, ctx context.Context, config string, assets fs.FS) (bootstrap.FirstRuntime, error) {
-		prepareEnv = env
-		prepared, err := (*bootstrap.Environment).PrepareFirstRuntime(env, ctx, config, assets)
-		prepareErr = err
-		return prepared, err
+		if !cfg.StartRuntime {
+			t.Fatal("worker did not request runtime preparation")
+		}
+		_, prepareErr = env.PrepareFirstRuntime(ctx, cfg.ConfigPath, assets)
+		return prepareErr
 	}
 	digest := f.plan.Digest()
 	f.command(ExitActionRequired, append([]string{"install", "--plan"}, args...)...)
 	assertFreshEnvironment("install --plan", planEnv)
-	f.command(ExitOK, append([]string{"__install-worker", "--mirror", "official", "--operation-id", "first-install", "--plan-digest", digest, "--start-runtime", "--json"}, args...)...)
+	f.command(ExitFatal, append([]string{"__install-worker", "--mirror", "official", "--operation-id", "first-install", "--plan-digest", digest, "--start-runtime", "--json"}, args...)...)
 	assertFreshEnvironment("__install-worker", workerEnv)
-	e := f.command(ExitFatal, append([]string{"install", "--apply", "--plan-digest", digest}, args...)...)
-	if !hasBlocker(e, "runtime_preparation_failed") {
-		t.Fatalf("install --apply did not reach runtime preparation: %+v", e)
-	}
-	assertFreshEnvironment("PrepareFirstRuntime", prepareEnv)
 	if prepareErr == nil || prepareErr.Error() != "环境组件尚未全部准备完成" {
 		t.Fatalf("PrepareFirstRuntime on a clean install = %v, want incomplete component detection", prepareErr)
 	}
@@ -335,6 +421,119 @@ func TestDoctorNetworkGenerationAndOperationReceipt(t *testing.T) {
 	}
 }
 
+func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
+	const untrusted = "private-untrusted-host-value"
+	for _, tc := range []struct {
+		name                                    string
+		server, local, configured, wantDetected []string
+		active, unavailable                     bool
+	}{
+		{name: "server only", server: []string{"traex"}, wantDetected: []string{"traex"}},
+		{name: "local only", local: []string{"pi"}, wantDetected: []string{"pi"}},
+		{name: "merge and deduplicate", server: []string{"traex", "traex", "codex", untrusted, "cursor"},
+			local: []string{"traex", "pi", "pi", "cursor"}, wantDetected: []string{"codex", "pi", "traex"}},
+		{name: "absent"},
+		{name: "untrusted only", server: []string{untrusted, "cursor"}},
+		{name: "configured", server: []string{"pi"}, local: []string{"pi"}, configured: []string{"pi"}},
+		{name: "active", server: []string{"traex"}, wantDetected: []string{"traex"}, active: true},
+		{name: "generation unavailable", local: []string{"pi"}, unavailable: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.doc.First.Setup = false
+			f.writeConfig()
+			f.row.Status = "configured_pending_new_session"
+			f.row.Capture = &controlplane.AgentCaptureState{State: "healthy"}
+			f.r.DetectHostsFn = func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost {
+				hosts := []bootstrap.DetectedHost{
+					{Kind: "codex", Detected: true, SupportsProcessingCLI: true},
+					{Kind: "antigravity", SupportsProcessingCLI: true, Executable: "/bin/fake"},
+					{Kind: "trae_ide", Detected: true, Executable: "/bin/fake"},
+				}
+				for _, kind := range tc.local {
+					hosts = append(hosts, bootstrap.DetectedHost{
+						Kind: kind, Detected: true, SupportsProcessingCLI: true, Executable: "/bin/fake",
+					})
+				}
+				return hosts
+			}
+			f.handler = func(req *http.Request, _ requestBody) (*http.Response, error) {
+				if req.URL.Path != "/v1/generation" {
+					return nil, nil
+				}
+				if tc.unavailable {
+					return response(503, nil)
+				}
+				dir := controlplane.GenerationDirectory{
+					DetectedProcessingCLIs: tc.server, AgentBridges: map[string]controlplane.GenerationProfile{},
+				}
+				for _, kind := range tc.configured {
+					dir.AgentBridges[kind] = controlplane.GenerationProfile{BridgeKind: kind}
+				}
+				if tc.active {
+					dir.Active = &controlplane.GenerationRef{Revision: 2}
+				}
+				return response(200, dir)
+			}
+			exit := ExitOK
+			if tc.unavailable {
+				exit = ExitPreflightBlocked
+			}
+			out := f.rawCommand(exit, []string{"doctor"})
+			got := out.Generation
+			if !slices.Equal(got.AvailableBridges, tc.configured) || !slices.Equal(got.DetectedUnconfiguredCLIs, tc.wantDetected) ||
+				strings.Contains(out.raw, untrusted) || (got.Active != nil) != tc.active {
+				t.Fatalf("unexpected generation detection: %+v", got)
+			}
+			hint := got.MissingProcessingCLIHint
+			want := bootstrap.RecommendedProcessingCLIs()
+			switch {
+			case tc.unavailable:
+				if hint != "" || len(got.RecommendedProcessingCLIs) != 0 || len(got.DetectedUnconfiguredCLIs) != 0 ||
+					strings.Contains(out.raw, "detected_unconfigured_clis") {
+					t.Fatalf("generation failure supplied processing CLI guidance: %+v", got)
+				}
+				want = nil
+			case tc.active || len(tc.configured) > 0:
+				want = nil
+				if hint != "" {
+					t.Fatalf("unexpected guidance for configured generation: %q", hint)
+				}
+			case len(tc.wantDetected) == 0:
+				if hint != processingHint {
+					t.Fatalf("unexpected installation guidance: %q", hint)
+				}
+				if !slices.ContainsFunc(got.RecommendedProcessingCLIs, func(rec bootstrap.RecommendedProcessingCLI) bool {
+					return rec.InstallCommand != ""
+				}) {
+					t.Fatalf("missing installation guidance: %+v", got.RecommendedProcessingCLIs)
+				}
+			default:
+				want = slices.DeleteFunc(want, func(rec bootstrap.RecommendedProcessingCLI) bool {
+					return !slices.Contains(tc.wantDetected, rec.Kind)
+				})
+				if !strings.Contains(hint, "本机已检测到") || !strings.Contains(hint, "记忆") ||
+					!strings.Contains(hint, "尚未完成登录或未配置默认模型") ||
+					!strings.Contains(hint, strings.Join(tc.wantDetected, "、")) ||
+					strings.Contains(hint, "本机尚未检测到") || strings.Contains(hint, "知识") {
+					t.Fatalf("unexpected login guidance: %q", hint)
+				}
+				for _, rec := range got.RecommendedProcessingCLIs {
+					if rec.LoginHint == "" || rec.InstallCommand != "" {
+						t.Fatalf("expected login-only guidance for %s: %+v", rec.Kind, rec)
+					}
+				}
+				for i := range want {
+					want[i].InstallCommand = ""
+				}
+			}
+			if !slices.Equal(got.RecommendedProcessingCLIs, want) {
+				t.Fatalf("recommendations = %+v, want %+v", got.RecommendedProcessingCLIs, want)
+			}
+		})
+	}
+}
+
 func TestOfflineDoctorAvailableBridges(t *testing.T) {
 	gui := bootstrap.DetectedHost{Kind: "trae_ide", Detected: true, Executable: "/Applications/Trae CN.app/Contents/MacOS/Electron"}
 	codex := bootstrap.DetectedHost{Kind: "codex", Detected: true, SupportsProcessingCLI: true, Executable: "/usr/local/bin/codex"}
@@ -352,7 +551,7 @@ func TestOfflineDoctorAvailableBridges(t *testing.T) {
 			f.plan.Items[0].Observation.Status = bootstrap.Missing
 			f.r.DetectHostsFn = func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost { return tc.hosts }
 			generation := f.command(ExitActionRequired, "doctor", "--json").Generation
-			if !slices.Equal(generation.AvailableBridges, tc.bridges) {
+			if !slices.Equal(generation.AvailableBridges, tc.bridges) || len(generation.DetectedUnconfiguredCLIs) != 0 {
 				t.Fatalf("available bridges: %v, want %v", generation.AvailableBridges, tc.bridges)
 			}
 			missing := len(tc.bridges) == 0
@@ -369,10 +568,6 @@ func TestOwnerRepairAndStop(t *testing.T) {
 	f.owner.State, f.owner.StaleVersionDetected = "stale_runtime", true
 	configBefore := readTestFile(t, f.config)
 	preparations := 0
-	f.r.PrepareRuntimeFn = func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error) {
-		t.Fatal("upgrade invoked first-install preparation")
-		return bootstrap.FirstRuntime{}, nil
-	}
 	f.r.PrepareRuntimeForUpgradeFn = func(env *bootstrap.Environment, _ context.Context, config string, assets fs.FS) (bootstrap.FirstRuntime, error) {
 		preparations++
 		if env.Options.ProtectedStore != f.store || config != f.config || assets == nil {
@@ -733,8 +928,13 @@ func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
 						OperationID: filepath.Base(req.URL.Path), InstanceID: f.row.ID,
 					})
 				}
-				if !strings.HasSuffix(req.URL.Path, "/repair-trae-hooks") || body.DryRun {
+				if !strings.HasSuffix(req.URL.Path, "/repair-trae-hooks") {
 					return nil, nil
+				}
+				if body.DryRun {
+					return response(200, controlplane.TraeHooksRepairResult{
+						Revision: f.revision, ReviewedSHA: testSHA, NeedsHookRepair: true, Repairable: true, PreservedThirdPartyGroups: 2,
+					})
 				}
 				assertAtomicOperation(t, f, body, "connection_repair_trae_hooks")
 				if body.ReviewedSHA != testSHA {
@@ -743,9 +943,12 @@ func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
 				if tc.phase != "" {
 					return response(409, map[string]string{"code": "revision_conflict", "phase": tc.phase})
 				}
-				return response(200, controlplane.TraeHooksRepairResult{Repaired: true, Mode: "active_migration", RemovedEvents: []string{"SessionStart", "untrusted"}})
+				return response(200, controlplane.TraeHooksRepairResult{Repaired: true, Mode: "active_migration", PreservedThirdPartyGroups: 2, RemovedEvents: []string{"SessionStart", "untrusted"}})
 			}
-			f.command(ExitActionRequired, "repair", "trae-hooks")
+			dry := f.command(ExitActionRequired, "repair", "trae-hooks", "--dry-run")
+			if dry.Artifacts.HookRepair == nil || dry.Artifacts.HookRepair.PreservedThirdPartyGroups != 2 {
+				t.Fatalf("dry-run lost preserved group count: %+v", dry.Artifacts)
+			}
 			args := []string{"repair", "trae-hooks", "--apply", "--instance-id", testInstance, "--reviewed-sha"}
 			f.command(ExitPreflightBlocked, append(slices.Clone(args), "wrong")...)
 			if f.writes != 0 {
@@ -754,7 +957,7 @@ func TestRepairTraeHooksReviewedAndJournaled(t *testing.T) {
 			e := f.command(tc.code, append(slices.Clone(args), testSHA)...)
 			f.assertRetained(e.OperationID, tc.code == ExitNeedsReview)
 			if tc.code == 0 && (len(e.HumanSteps) == 0 || e.Artifacts.HookRepair == nil || !e.Artifacts.HookRepair.Repaired ||
-				!slices.Equal(e.Artifacts.HookRepair.RemovedEvents, []string{"SessionStart"})) {
+				e.Artifacts.HookRepair.PreservedThirdPartyGroups != 2 || !slices.Equal(e.Artifacts.HookRepair.RemovedEvents, []string{"SessionStart"})) {
 				t.Fatalf("missing safe repair summary: %+v", e.Artifacts)
 			}
 		})
@@ -1000,20 +1203,38 @@ func TestRepairOrphanTraeHooksOffersFreshConnection(t *testing.T) {
 	f.handler = func(req *http.Request, body requestBody) (*http.Response, error) {
 		if strings.HasSuffix(req.URL.Path, "/repair-trae-hooks") && !body.DryRun {
 			assertAtomicOperation(t, f, body, "connection_repair_trae_hooks")
-			return response(200, controlplane.TraeHooksRepairResult{Repaired: true, Mode: "orphan_cleanup"})
+			return response(200, controlplane.TraeHooksRepairResult{Repaired: true, Mode: "orphan_cleanup", PreservedThirdPartyGroups: 2})
 		}
 		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/operations/") {
-			return response(200, controlplane.ConnectionOperationReceipt{Recorded: true, Status: "complete", Action: "repair-trae-hooks"})
+			return response(200, controlplane.ConnectionOperationReceipt{
+				Recorded: true, Status: "complete", Action: "repair-trae-hooks",
+				Result: &controlplane.ConnectionActionResult{
+					Repaired: true, Mode: "orphan_cleanup", PreservedThirdPartyGroups: 2,
+					RemovedEvents: []string{"SessionEnd", "untrusted-removed"}, RetainedEvents: []string{"Stop", "untrusted-retained"},
+				},
+			})
 		}
 		return nil, nil
 	}
 	e := f.command(ExitOK, "repair", "trae-hooks", "--apply", "--instance-id", testInstance, "--reviewed-sha", testSHA)
-	if len(e.HumanSteps) != 0 || len(e.NextActions) != 1 || !hasAction(e, "connect", "--agent", "trae_ide", "--dry-run", "--json") {
+	if len(e.HumanSteps) != 0 || len(e.NextActions) != 1 || !hasAction(e, "connect", "--agent", "trae_ide", "--dry-run", "--json") ||
+		e.Artifacts.HookRepair == nil || e.Artifacts.HookRepair.PreservedThirdPartyGroups != 2 {
 		t.Fatalf("orphan cleanup did not offer fresh connection: %+v", e)
 	}
 	e = f.command(ExitActionRequired, "doctor", "--operation-id", e.OperationID)
-	if receipt := e.Artifacts.ConnectionOperation; receipt == nil || receipt.Kind != "repair-trae-hooks" || receipt.Status != "complete" {
+	if receipt := e.Artifacts.ConnectionOperation; receipt == nil || receipt.Kind != "repair-trae-hooks" ||
+		receipt.Status != "complete" || receipt.PreservedThirdPartyGroups != 2 {
 		t.Fatalf("missing real TRAE action in receipt: %+v", receipt)
+	}
+	assertRecoveredHookRepair(t, e)
+}
+
+func assertRecoveredHookRepair(t *testing.T, e envelope) {
+	t.Helper()
+	repair := e.Artifacts.HookRepair
+	if repair == nil || !repair.Repaired || repair.PreservedThirdPartyGroups != 2 ||
+		!slices.Equal(repair.RemovedEvents, []string{"SessionEnd"}) || !slices.Equal(repair.RetainedEvents, []string{"Stop"}) {
+		t.Fatalf("unexpected hook repair artifact: %+v", repair)
 	}
 }
 
@@ -1057,11 +1278,11 @@ func TestVerifyZeroDownloadsChecksRetainedWorkerAndJournal(t *testing.T) {
 }
 
 func TestInstallApplySharesWaitDeadline(t *testing.T) {
-	for _, phase := range []string{"prepare", "start", "launch"} {
+	for _, phase := range []string{"complete plan", "incomplete plan"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newFixture(t)
 			f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
-			if phase == "launch" {
+			if phase == "incomplete plan" {
 				f.plan.Items[0].Observation.Status = bootstrap.Missing
 			}
 			var deadline time.Time
@@ -1086,33 +1307,13 @@ func TestInstallApplySharesWaitDeadline(t *testing.T) {
 				checkDeadline(ctx)
 				return f.plan, nil
 			}
-			f.r.PrepareRuntimeFn = func(_ *bootstrap.Environment, ctx context.Context, _ string, _ fs.FS) (bootstrap.FirstRuntime, error) {
-				checkDeadline(ctx)
-				if phase == "prepare" {
-					<-ctx.Done()
-					return bootstrap.FirstRuntime{}, ctx.Err()
-				}
-				return bootstrap.FirstRuntime{}, nil
-			}
-			f.r.StartRuntimeDetachedFn = func(ctx context.Context, _ bootstrap.FirstRuntime) error {
-				if phase != "start" {
-					t.Fatal("runtime start exceeded preparation budget")
-				}
-				checkDeadline(ctx)
-				<-ctx.Done()
-				return ctx.Err()
-			}
 			f.r.LaunchWorkerFn = func(ctx context.Context, _ string, _ []string, _ bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
 				checkDeadline(ctx)
 				<-ctx.Done()
 				return bootstrap.InstallWorkerState{}, ctx.Err()
 			}
 			e := f.command(ExitInProgressOrBusy, "install", "--apply", "--wait", "2", "--plan-digest", f.plan.Digest())
-			reason := "daemon_starting"
-			if phase == "launch" {
-				reason = "install_worker_active"
-			}
-			if !hasBlocker(e, reason) || e.RetryAfterMS != retryMillis {
+			if !hasBlocker(e, "install_worker_active") || e.RetryAfterMS != retryMillis {
 				t.Fatalf("deadline did not return retry advice: %+v", e)
 			}
 		})
@@ -1302,6 +1503,10 @@ func TestReviewRecoversInterruptedTraeHookRepair(t *testing.T) {
 					receipt := controlplane.ConnectionOperationReceipt{
 						Recorded: true, Status: "complete", OperationID: testOperation, InstanceID: f.row.ID,
 						Action: "repair_trae_hooks", Reconciled: true, SafeToUnlock: true,
+						Result: &controlplane.ConnectionActionResult{
+							Repaired: true, PreservedThirdPartyGroups: 2,
+							RemovedEvents: []string{"SessionEnd", "untrusted-removed"}, RetainedEvents: []string{"Stop", "untrusted-retained"},
+						},
 					}
 					if tc.mutate != nil {
 						tc.mutate(&receipt)
@@ -1334,6 +1539,11 @@ func TestReviewRecoversInterruptedTraeHookRepair(t *testing.T) {
 				t.Fatalf("unexpected review outcome: %+v", e)
 			}
 			f.assertRetained(testOperation, want == ExitNeedsReview)
+			if want == ExitOK {
+				assertRecoveredHookRepair(t, e)
+			} else if e.Artifacts.HookRepair != nil {
+				t.Fatalf("unconfirmed receipt produced a hook repair artifact: %+v", e.Artifacts.HookRepair)
+			}
 		})
 	}
 }
@@ -1511,13 +1721,9 @@ func TestComponentInstallWithCompletePlan(t *testing.T) {
 		t.Fatal("component install checked daemon")
 		return bootstrap.OwnerRuntimeStatus{}, nil
 	}
-	f.r.PrepareRuntimeFn = func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error) {
-		t.Fatal("component install prepared daemon")
-		return bootstrap.FirstRuntime{}, nil
-	}
-	f.r.StartRuntimeDetachedFn = func(context.Context, bootstrap.FirstRuntime) error {
-		t.Fatal("component install started daemon")
-		return nil
+	f.r.LaunchWorkerFn = func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+		t.Fatal("component install launched a worker")
+		return bootstrap.InstallWorkerState{}, nil
 	}
 	args := []string{"install", "--apply", "--plan-digest", f.plan.Digest(), "--component"}
 	f.command(ExitOK, append(slices.Clone(args), "python")...)
@@ -1568,21 +1774,142 @@ func TestComponentInstallReprobesCompletedWorker(t *testing.T) {
 	}
 }
 
-func TestUpgradeLockedWorkerExit(t *testing.T) {
+func TestWorkerLockContentionExit(t *testing.T) {
+	for code, message := range map[string]string{
+		"upgrade_locked":        "运行环境升级正在进行中，请稍后重试。",
+		"owner_busy":            "后台服务锁正在被占用，请稍后重试。",
+		"install_worker_active": "另一项组件安装正在进行中，请稍后重试。",
+	} {
+		t.Run(code, func(t *testing.T) {
+			f := newFixture(t)
+			readyOwner := f.owner
+			f.row.Detected = false
+			f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
+			f.r.LaunchWorkerFn = func(_ context.Context, _ string, _ []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+				f.worker = bootstrap.InstallWorkerState{State: "failed", ErrorCode: code, OperationID: cfg.OperationID}
+				return f.worker, nil
+			}
+			for _, args := range [][]string{
+				{"install", "--apply", "--plan-digest", f.plan.Digest()},
+				{"doctor", "--operation-id", "first-install"},
+			} {
+				e := f.command(ExitInProgressOrBusy, args...)
+				if e.RetryAfterMS != 10000 || len(e.Blockers) != 1 || !hasBlocker(e, code) ||
+					e.Components.Progress == nil || e.Components.Progress.ErrorCode != code || e.Components.Progress.SafeMessage != message ||
+					len(e.NextActions) != 2 || !hasAction(e, "install", "--plan", "--json") ||
+					!hasAction(e, "install", "--apply", "--plan-digest", f.plan.Digest(), "--json") {
+					t.Fatalf("worker lock did not return its retry receipt: %+v", e)
+				}
+			}
+			f.owner = readyOwner
+			e := f.command(ExitOK, "doctor", "--operation-id", "first-install")
+			if len(e.Blockers) != 0 || len(e.NextActions) != 0 || e.OperationID != "first-install" ||
+				e.Components.Progress == nil || e.Components.Progress.ErrorCode != code {
+				t.Fatalf("stale contention blocked ready runtime or lost the receipt: %+v", e)
+			}
+		})
+	}
+}
+
+func TestInspectWorkerPreservesTerminalSnapshotAtDeadline(t *testing.T) {
+	for _, state := range []bootstrap.InstallWorkerState{
+		{State: "completed", Stage: "ready"},
+		{State: "failed", Stage: "starting_runtime", ErrorCode: "install_worker_active"},
+	} {
+		t.Run(state.State, func(t *testing.T) {
+			ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+			defer cancel()
+			s := session{ctx: ctx, envelope: &envelope{Command: "install"}, options: options{values: map[string]string{"apply": "true"}}}
+			s.InspectWorkerFn = func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
+				return state, false, nil
+			}
+			s.DetectOrphansFn = func(context.Context, string) ([]int, error) { return nil, nil }
+			got, active, ok := s.inspectWorker()
+			if !ok || active || got.State != state.State || s.Components.Progress == nil ||
+				s.Components.Progress.State != state.State || len(s.Blockers) != 0 {
+				t.Fatalf("terminal receipt lost at deadline: %+v, active = %t, ok = %t, envelope = %+v", got, active, ok, s.envelope)
+			}
+		})
+	}
+}
+
+func TestInstallApplyRetriesDeadlineKilledWorkerProbes(t *testing.T) {
+	for _, mode := range []string{"active snapshot", "prior active snapshot", "orphan probe"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newFixture(t)
+				f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
+				worker := bootstrap.InstallWorkerState{
+					OperationID: "first-install", ConfigPath: f.config, StartRuntime: true,
+					PlanDigest: f.plan.Digest(), State: "running", Stage: "starting_runtime",
+				}
+				wantActive, wantStage := true, worker.Stage
+				waitForDeadline := func(ctx context.Context) error {
+					if deadline, ok := ctx.Deadline(); !ok || !deadline.Equal(f.now.Add(time.Second)) {
+						t.Fatalf("probe deadline = %v, want --wait 1", deadline)
+					}
+					<-ctx.Done()
+					if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						t.Fatalf("probe context = %v", ctx.Err())
+					}
+					return errors.New("signal: killed")
+				}
+				if mode == "orphan probe" {
+					wantActive, wantStage = false, "ready"
+					f.worker = bootstrap.InstallWorkerState{State: "completed", Stage: wantStage}
+					f.r.DetectOrphansFn = func(ctx context.Context, _ string) ([]int, error) {
+						return nil, waitForDeadline(ctx)
+					}
+				} else {
+					calls := 0
+					f.r.InspectWorkerFn = func(ctx context.Context, _ string) (bootstrap.InstallWorkerState, bool, error) {
+						calls++
+						if mode == "prior active snapshot" {
+							if calls == 1 {
+								return worker, true, nil
+							}
+							return bootstrap.InstallWorkerState{}, false, waitForDeadline(ctx)
+						}
+						return worker, true, waitForDeadline(ctx)
+					}
+				}
+				e := f.command(ExitInProgressOrBusy, "install", "--apply", "--wait", "1", "--plan-digest", f.plan.Digest())
+				if len(e.Blockers) != 1 || e.Blockers[0].Code != "install_worker_active" || e.RetryAfterMS != 10000 ||
+					e.Components.WorkerActive != wantActive || e.Components.Progress == nil || e.Components.Progress.Stage != wantStage {
+					t.Fatalf("unexpected retry receipt: %+v", e)
+				}
+				if !strings.Contains(e.AgentGuidance, "On exit 20 follow next_actions after retry_after_ms") {
+					t.Fatalf("missing retry guidance: %q", e.AgentGuidance)
+				}
+			})
+		})
+	}
+}
+
+func TestInstallWorkerContentionOffersFreshPlanDigest(t *testing.T) {
 	f := newFixture(t)
+	f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
 	f.plan.Items[0].Observation.Status = bootstrap.Missing
-	f.worker = bootstrap.InstallWorkerState{State: "failed", ErrorCode: "upgrade_locked", OperationID: "first-install"}
-	f.r.LaunchWorkerFn = func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+	before := f.plan.Digest()
+	f.r.LaunchWorkerFn = func(_ context.Context, _ string, _ []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+		f.plan.Items[0].Observation.Status = bootstrap.Available
+		f.worker = bootstrap.InstallWorkerState{
+			State: "failed", Stage: "starting_runtime", ErrorCode: "install_worker_active", OperationID: cfg.OperationID,
+		}
 		return f.worker, nil
 	}
-	for _, args := range [][]string{
-		{"doctor", "--operation-id", "first-install"},
-		{"install", "--apply", "--plan-digest", f.plan.Digest()},
-	} {
-		e := f.command(ExitInProgressOrBusy, args...)
-		if e.RetryAfterMS != 10000 || !hasBlocker(e, "upgrade_locked") || e.Components.Progress.ErrorCode != "upgrade_locked" {
-			t.Fatalf("upgrade lock did not return its retry receipt: %+v", e)
-		}
+	e := f.command(ExitInProgressOrBusy, "install", "--apply", "--plan-digest", before)
+	after := f.plan.Digest()
+	if before == after || e.Artifacts.PlanDigest != after || len(e.NextActions) != 2 ||
+		!hasAction(e, "install", "--apply", "--plan-digest", after, "--json") {
+		t.Fatalf("contention advice did not use the updated plan: %+v", e)
+	}
+
+	f.plan.Items[0].Observation.Status = bootstrap.Missing
+	e = f.command(ExitInProgressOrBusy, "doctor", "--operation-id", "first-install")
+	if len(e.NextActions) != 2 || !hasAction(e, "install", "--plan", "--json") ||
+		!hasAction(e, "install", "--apply", "--plan-digest", before, "--json") {
+		t.Fatalf("component and contention advice duplicated the install commands: %+v", e)
 	}
 }
 
@@ -1604,13 +1931,11 @@ func TestInstallRuntimeRequiresAuthenticatedReadiness(t *testing.T) {
 				}
 				f.owner.GraphAssetsStale = tc.graphStale
 				starts, probes := 0, 0
-				f.r.PrepareRuntimeFn = func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error) {
-					return bootstrap.FirstRuntime{ConfigPath: f.config}, nil
-				}
-				f.r.StartRuntimeDetachedFn = func(context.Context, bootstrap.FirstRuntime) error {
+				f.r.LaunchWorkerFn = func(_ context.Context, _ string, _ []string, cfg bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
 					starts++
 					f.owner.State, f.owner.OwnerLocked = "ready", true
-					return nil
+					f.worker = bootstrap.InstallWorkerState{State: "completed", Stage: "ready", OperationID: cfg.OperationID}
+					return f.worker, nil
 				}
 				f.r.FirstRuntimeReadyFn = func(_ context.Context, config string) (bool, error) {
 					probes++
@@ -1652,10 +1977,8 @@ func TestRuntimePreparationLockContention(t *testing.T) {
 				return bootstrap.FirstRuntime{}, tc.err
 			}
 			f.owner.State, f.owner.OwnerLocked = "stopped", false
-			f.r.PrepareRuntimeFn = prepare
-			f.r.StartRuntimeDetachedFn = func(context.Context, bootstrap.FirstRuntime) error {
-				t.Fatal("attempted startup after lock contention")
-				return nil
+			f.r.LaunchWorkerFn = func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error) {
+				return bootstrap.InstallWorkerState{}, tc.err
 			}
 			check(tc.installReason, "install", "--apply", "--plan-digest", f.plan.Digest())
 			f.owner.State, f.owner.StaleVersionDetected = "stale_runtime", true

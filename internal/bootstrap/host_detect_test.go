@@ -4,8 +4,43 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
+
+func TestDetectTraeCLIAlias(t *testing.T) {
+	for _, bin := range []string{"path-bin", ".local/bin", ".bun/bin"} {
+		t.Run(bin, func(t *testing.T) {
+			home := t.TempDir()
+			executable := filepath.Join(home, bin, "trae-cli")
+			if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			wantOrder := []string{"traecli", "traex", "trae-cli"}
+			var lookups []string
+			hosts := DetectLocalHosts(HostDetectOptions{
+				Home: home, AppDirs: []string{}, Environ: func(string) string { return "" },
+				LookPath: func(name string) (string, error) {
+					if slices.Contains(wantOrder, name) {
+						lookups = append(lookups, name)
+					}
+					if bin == "path-bin" && name == "trae-cli" {
+						return executable, nil
+					}
+					return "", os.ErrNotExist
+				},
+			})
+			index := slices.IndexFunc(hosts, func(host DetectedHost) bool { return host.Kind == "traex" })
+			if !slices.Equal(lookups, wantOrder) || index < 0 || hosts[index].Executable != executable ||
+				!HasDetectedProcessingCLI(hosts[index:index+1]) {
+				t.Fatalf("Trae CLI discovery = %+v, looked up %v", hosts, lookups)
+			}
+		})
+	}
+}
 
 func TestHostDetectFixesTraeCN(t *testing.T) {
 	for _, variant := range []struct{ trae, codex string }{

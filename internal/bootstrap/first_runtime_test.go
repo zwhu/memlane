@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/zwhu/memlane/internal/supervisor"
@@ -1456,26 +1457,17 @@ func newReadOnlyRuntimeFixture(t *testing.T) FirstRuntime {
 	return FirstRuntime{ConfigPath: configPath, StoreRoot: store, Resources: home, Python: "/bin/sh", HostHome: home}
 }
 
-func TestPrepareFirstRuntimeForUpgradePreservesConfig(t *testing.T) {
+func newRuntimePreparationFixture(t *testing.T, probeScript string) (FirstRuntime, *Environment, fstest.MapFS) {
+	t.Helper()
 	prepared := newReadOnlyRuntimeFixture(t)
-	python := fakeDependencyPython(t, `
-case "$3" in
-	-c) echo '{"mismatch":[]}' ;;
-	*/first_install_runtime.py)
-		printf '%s\n' "$@" > preflight-argv
-		if [ -f fail-preflight ]; then exit 19; fi ;;
-	*) exit 42 ;;
-esac`)
+	python := fakeDependencyPython(t, probeScript)
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config.Python = python
+	prepared.Python = python
 	writeBootstrapTestJSON(t, prepared.ConfigPath, config)
-	wantConfig, err := os.ReadFile(prepared.ConfigPath)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	root := filepath.Join(prepared.HostHome, "components")
 	plugin := filepath.Join(root, "agent")
@@ -1507,6 +1499,22 @@ esac`)
 		"scripts/dev.py":                         {Data: []byte("# upgraded runtime")},
 		"engine/python/first_install_runtime.py": {Data: []byte("# preflight entry point")},
 	}
+	return prepared, &env, assets
+}
+
+func TestPrepareFirstRuntimeForUpgradePreservesConfig(t *testing.T) {
+	prepared, env, assets := newRuntimePreparationFixture(t, `
+case "$3" in
+	-c) echo '{"mismatch":[]}' ;;
+	*/first_install_runtime.py)
+		printf '%s\n' "$@" > preflight-argv
+		if [ -f fail-preflight ]; then exit 19; fi ;;
+	*) exit 42 ;;
+esac`)
+	wantConfig, err := os.ReadFile(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
 	if err != nil {
 		t.Fatal(err)
@@ -1516,7 +1524,7 @@ esac`)
 		t.Fatal(err)
 	}
 	if got.Resources != filepath.Join(env.Installer().Root, "runtime-"+hash) || !verifyPreparedRuntimeResources(got.Resources, assets) ||
-		got.ConfigPath != prepared.ConfigPath || got.StoreRoot != prepared.StoreRoot || got.Python != python || got.HostHome == "" || !got.Plan.Complete() {
+		got.ConfigPath != prepared.ConfigPath || got.StoreRoot != prepared.StoreRoot || got.Python != prepared.Python || got.HostHome == "" || !got.Plan.Complete() {
 		t.Fatalf("unexpected upgrade preparation: %+v", got)
 	}
 	assertConfigAndArgs := func(t *testing.T) {
@@ -2047,6 +2055,170 @@ func TestStartFirstRuntimeDetachedReportsEarlyExit(t *testing.T) {
 	var exitErr *exec.ExitError
 	if err := StartFirstRuntimeDetached(ctx, prepared); !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
 		t.Fatal(err)
+	}
+}
+
+func TestStartFirstRuntimeDetachedObservesOwnerAfterLauncherExit(t *testing.T) {
+	for _, mode := range []string{"releases lock", "different config"} {
+		t.Run(mode, func(t *testing.T) {
+			// FIFO rendezvous uses wall time while the launcher is blocked in a syscall.
+			signalCtx, stopSignal := context.WithTimeout(t.Context(), 3*time.Second)
+			defer stopSignal()
+			signalDeadline := signalCtx.Done()
+			ticker := time.NewTicker(time.Millisecond)
+			defer ticker.Stop()
+			synctest.Test(t, func(t *testing.T) {
+				prepared := newReadOnlyRuntimeFixture(t)
+				fifo := filepath.Join(prepared.HostHome, "launcher-exit")
+				if err := syscall.Mkfifo(fifo, 0600); err != nil {
+					t.Fatal(err)
+				}
+				script := filepath.Join(prepared.Resources, "scripts", "dev.py")
+				if err := os.Mkdir(filepath.Dir(script), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(script, []byte("exec 3<> \"$HOME/launcher-exit\"\nread -r -t 5 line <&3\nexit 1\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- StartFirstRuntimeDetached(ctx, prepared) }()
+				signal := openDetachedTestSignal(t, signalDeadline, fifo, done, ticker.C)
+				owner, err := supervisor.AcquireOwner(prepared.StoreRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Release()
+				if _, err := signal.WriteString("\n"); err != nil {
+					t.Fatal(err)
+				}
+				if err := signal.Close(); err != nil {
+					t.Fatal(err)
+				}
+				// The launcher has exited and readiness is waiting on the next tick.
+				synctest.Wait()
+				select {
+				case err := <-done:
+					t.Fatalf("launcher exit ended observation of the competing owner: %v", err)
+				default:
+				}
+				if mode == "releases lock" {
+					if err := owner.Release(); err != nil {
+						t.Fatal(err)
+					}
+					if err := <-done; err == nil || err.Error() != "competing runtime owner exited before readiness" {
+						t.Fatalf("detached startup = %v, want competing owner exit", err)
+					}
+				} else {
+					writeBootstrapTestJSON(t, filepath.Join(prepared.StoreRoot, ".memlane-dev-owner.json"), supervisor.OwnerRecord{
+						PID: os.Getpid(), Config: filepath.Join(prepared.HostHome, "foreign.json"),
+						OfficialData: prepared.StoreRoot, Phase: "starting",
+					})
+					if err := <-done; !errors.Is(err, supervisor.ErrOwnerMismatch) {
+						t.Fatalf("detached startup = %v, want owner mismatch", err)
+					}
+				}
+				upgrade, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+				if err != nil {
+					t.Fatalf("upgrade lock retained: %v", err)
+				}
+				upgrade.Release()
+			})
+		})
+	}
+}
+
+func TestStartFirstRuntimeDetachedCompetingOwner(t *testing.T) {
+	for _, mode := range []string{"releases lock", "different config", "different process", "invalid receipt", "unexpected phase"} {
+		t.Run(mode, func(t *testing.T) {
+			prepared := newReadOnlyRuntimeFixture(t)
+			lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { lock.Release() })
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+
+			receiptPath := filepath.Join(prepared.StoreRoot, ".memlane-dev-owner.json")
+			var want string
+			switch mode {
+			case "different config":
+				writeBootstrapTestJSON(t, receiptPath, supervisor.OwnerRecord{
+					PID: os.Getpid(), Config: filepath.Join(prepared.HostHome, "foreign.json"),
+					OfficialData: prepared.StoreRoot, Phase: "starting",
+				})
+				want = supervisor.ErrOwnerMismatch.Error()
+			case "different process":
+				writeBootstrapTestJSON(t, receiptPath, supervisor.OwnerRecord{
+					PID: os.Getpid(), Started: "different kernel identity", Config: prepared.ConfigPath,
+					OfficialData: prepared.StoreRoot, Phase: "starting",
+				})
+				want = supervisor.ErrOwnerProcessChanged.Error()
+			case "invalid receipt":
+				if err := os.WriteFile(receiptPath, []byte("{"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				want = "unexpected end of JSON input"
+			case "unexpected phase":
+				writeBootstrapTestJSON(t, receiptPath, supervisor.OwnerRecord{
+					PID: os.Getpid(), Config: prepared.ConfigPath,
+					OfficialData: prepared.StoreRoot, Phase: "stopping",
+				})
+				want = `competing runtime owner entered unexpected phase "stopping" before readiness`
+			default:
+				want = "competing runtime owner exited before readiness"
+			}
+			done := make(chan error, 1)
+			go func() { done <- StartFirstRuntimeDetached(ctx, prepared) }()
+			if mode == "releases lock" {
+				for {
+					locked, _, err := supervisor.ProbeFileLockedReadOnly(filepath.Join(prepared.StoreRoot, ".memlane-upgrade.lock"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if locked {
+						break
+					}
+					select {
+					case err := <-done:
+						t.Fatalf("detached startup exited before attaching: %v", err)
+					case <-ctx.Done():
+						t.Fatal("detached startup never acquired the upgrade lock")
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+				lock.Release()
+			}
+			select {
+			case err := <-done:
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("detached startup = %v, want %q", err, want)
+				}
+			case <-ctx.Done():
+				t.Fatal("detached startup did not return promptly")
+			}
+			upgrade, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+			if err != nil {
+				t.Fatalf("upgrade lock retained: %v", err)
+			}
+			upgrade.Release()
+		})
+	}
+}
+
+func TestWaitFirstRuntimeDetachedRejectsInvalidConfig(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	if err := os.WriteFile(prepared.ConfigPath, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	err := waitFirstRuntimeDetached(ctx, prepared.StoreRoot, prepared.ConfigPath, make(chan error))
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("detached readiness = %v, want invalid configuration error", err)
 	}
 }
 

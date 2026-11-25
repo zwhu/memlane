@@ -134,6 +134,12 @@ def resolve_bridge_runtime(runtime, profile=None):
     return resolve_host_runtime(kind, runtime, home=Path.home(), which=shutil.which)
 
 
+def detected_bridge_kinds(runtime):
+    """List processing CLIs using executable discovery only."""
+    return sorted(kind for kind in ('codex', 'pi', 'traex', 'antigravity')
+                  if resolve_bridge_runtime(runtime, {'bridge_kind': kind}).get('executable'))
+
+
 def check_bridge_runtime(runtime, profile=None):
     selected = resolve_bridge_runtime(runtime, profile)
     try:
