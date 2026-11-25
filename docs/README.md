@@ -35,6 +35,7 @@
 | [motion-implementation.md](design/motion-implementation.md) | MyGo 原生 UI 动效实施与复用契约（减少动态效果、帧率与内存守护） |
 | [visual-v4-implementation-20261120.md](design/visual-v4-implementation-20261120.md) | 视觉 V4 在 Native 客户端的分阶段实施账本与证据 |
 | [visual-v4-prototype/](design/visual-v4-prototype/) | V4 可交互 HTML 原型与自查截图脚本 |
+| [onboarding-prototype/](design/onboarding-prototype/) | 首次启动向导（2026-11-25 专注式重设计）可交互 HTML 原型与截图脚本 |
 
 ## 4. 专题技术调研 (`research/`)
 
@@ -45,16 +46,20 @@
 | [macos-updater-20261119.md](research/macos-updater-20261119.md) | macOS 应用更新机制调研与方案建议 |
 | [trae-ide-memory-processing-20261119.md](research/trae-ide-memory-processing-20261119.md) | TRAE IDE 场景下记忆整理模型执行入口调研 |
 | [native-first-screen-performance-20261122.md](research/native-first-screen-performance-20261122.md) | Native 客户端首屏 20× 性能基线拆解、启动并发风暴归因与优化路线研究 |
+| [install-dependency-slimming-20261125.md](research/install-dependency-slimming-20261125.md) | 首次安装 7 项依赖体积实测、171 包导入链路与零侵入分级瘦身研究 |
+| [docker-deployment-architecture-20261125.md](research/docker-deployment-architecture-20261125.md) | 本机/远程 Docker 部署边界选型、安全穿透、数据卷锁语义与分阶段落地路线图 |
 
 ## 5. 工程规范、复盘与模板 (`engineering/`)
 
 | 文档 | 说明 |
 | --- | --- |
-| [workflow.md](engineering/workflow.md) | 工程执行节奏、Go/MyGo 检查要求、模型参数留证契约与“四次失败停止”规则 |
+| [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
+| [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
 | [runtime-package-cleanup-incident-20261111.md](engineering/runtime-package-cleanup-incident-20261111.md) | 运行中后台所属运行包被误清理复盘与依赖保护规则 |
 | [task-brief-template.md](engineering/templates/task-brief-template.md) | 跨模块任务影响范围与验证说明填写模板 |
 | [testcase-template.md](engineering/templates/testcase-template.md) | 连续主流程集成/验收用例模板 |
+| [review-ledger-template.md](engineering/templates/review-ledger-template.md) | 双独立代码审核 Prompt、已确认契约例外账本与 2+1 收敛裁决模板 |
 | [incident-template.md](engineering/templates/incident-template.md) | 线上/验收问题复盘记录模板 |
 
 ## 6. 图表与参考截图 (`images/`)

@@ -18,6 +18,15 @@ import subprocess
 import sys
 import time
 
+if __package__:
+    from . import utm_guard
+else:
+    import utm_guard
+
+EXIT_PREFLIGHT_BLOCKED = utm_guard.EXIT_PREFLIGHT_BLOCKED
+EXIT_PROTECTED_PATH_VIOLATED = utm_guard.EXIT_PROTECTED_PATH_VIOLATED
+EXIT_ISOLATED_VERSION_MISMATCH = utm_guard.EXIT_ISOLATED_VERSION_MISMATCH
+
 SCENARIOS = {
     'clean-install': ('clean-codex-traecn', 'dirty-hooks-preexisting'),
     'half-installed': ('clean-codex-traecn',),
@@ -26,16 +35,8 @@ SCENARIOS = {
 AGENTS = ('codex', 'trae_ide')
 EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'}
 FORBIDDEN_EVENTS = {'SessionEnd', 'PostToolUseFailure'}
-SECRET_MARKERS = ('sk-', 'Bearer ', 'X-Api-Key', 'management.token', 'owner.token', '.local/')
-# This fixed CLI help text names the private path marker without disclosing a path.
-GUIDANCE = (
-    'Execute read-only checks first. Show preview and ask user confirmation before any '
-    'requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ '
-    'paths, hooks.json raw contents, or memory data; never run xattr or edit host config files '
-    'directly. On exit 20 follow next_actions after retry_after_ms (poll doctor --operation-id '
-    'while active; retry install after confirmation on lock contention). Stop after 3 retries '
-    '(4th failure). On exit 11 hand human_steps to user.'
-)
+SECRET_MARKERS = utm_guard.SECRET_MARKERS
+GUIDANCE = utm_guard.GUIDANCE
 DEFAULT_MAX_POLLS = 120
 DEFAULT_POLL_TIMEOUT = 1500.0
 MAX_POLLS = DEFAULT_MAX_POLLS
@@ -61,36 +62,11 @@ def require(condition, message):
 
 
 def json_object(raw):
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError('duplicate JSON key')
-            result[key] = value
-        return result
-
-    def invalid_constant(_):
-        raise ValueError('invalid JSON number')
-
-    try:
-        payload = json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_constant)
-    except (ValueError, RecursionError):
-        raise VerificationError('expected a single valid JSON object') from None
-    require(isinstance(payload, dict), 'expected a single JSON object')
-    return payload
+    return utm_guard.json_object(raw, error_cls=VerificationError)
 
 
 def check_output_privacy(raw, payload, extra_markers=()):
-    public_payload = payload.copy()
-    if public_payload.get('agent_guidance') == GUIDANCE:
-        public_payload.pop('agent_guidance')
-        raw = raw.replace(json.dumps(GUIDANCE), '""', 1)
-    # Check the wire response and the decoded strings, including escaped markers.
-    decoded = json.dumps(public_payload, ensure_ascii=False)
-    require(not any(marker.casefold() in output.casefold()
-                    for marker in (*SECRET_MARKERS, *extra_markers) if marker
-                    for output in (raw, decoded)),
-            'JSON output contains a private value or path')
+    utm_guard.check_output_privacy(raw, payload, tuple(extra_markers), guidance=GUIDANCE, error_cls=VerificationError)
 
 
 def clean_env():
@@ -775,8 +751,8 @@ def positive_float(value):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--executable', type=absolute_path, required=True)
-    parser.add_argument('--scenario', choices=(*SCENARIOS, 'all'), required=True)
+    parser.add_argument('--executable', type=absolute_path)
+    parser.add_argument('--scenario', choices=(*SCENARIOS, 'all'))
     for name in ('home', 'config', 'component-root', 'uninstall-script', 'hooks-path'):
         parser.add_argument('--' + name, type=absolute_path)
     parser.add_argument('--mirror', choices=('china', 'official'))
@@ -785,11 +761,24 @@ def parse_args(argv):
     parser.add_argument('--poll-timeout', type=positive_float, default=DEFAULT_POLL_TIMEOUT,
                         help='install polling deadline in seconds (default: %(default)s)')
     parser.add_argument('--agents', choices=AGENTS, nargs='+', default=[])
+    parser.add_argument('--require-host-login', choices=AGENTS, nargs='+', default=[],
+                        help='fail-fast if required host login state/JWT is missing or expired')
+    parser.add_argument('--probe-host', nargs='+', default=[],
+                        help='additional hostnames to resolve during fail-fast DNS preflight')
+    parser.add_argument('--preflight-only', action='store_true',
+                        help='run only the 3s fail-fast environment preflight probes and exit 0 or 31')
+    parser.add_argument('--skip-preflight', action='store_true',
+                        help='skip fail-fast preflight probes (recorded as skipped; rejected by release gate)')
     parser.add_argument('--run-uninstall-apply', action='store_true')
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     options = parser.parse_args(argv)
-    if options.scenario == 'all' and not options.dry_run:
+    if not options.preflight_only:
+        if options.executable is None:
+            parser.error('the following arguments are required: --executable')
+        if options.scenario is None:
+            parser.error('the following arguments are required: --scenario')
+    if options.scenario == 'all' and not options.dry_run and not options.preflight_only:
         parser.error('--scenario all requires --dry-run. The three UTM snapshots are mutually exclusive. Run one --scenario per snapshot.')
     options.home = options.home or Path.home()
     runtime = options.home / 'Library' / 'Application Support' / 'Memlane'
@@ -830,13 +819,50 @@ def plan_steps(scenario, uninstall_apply):
     return steps[scenario]
 
 
+def _execute_preflight(options):
+    return utm_guard.run_preflight(
+        home=options.home,
+        component_root=options.component_root,
+        mirror=options.mirror or 'china',
+        scenario=options.scenario or '',
+        check_network=True,
+        extra_probe_hosts=tuple(getattr(options, 'probe_host', ())),
+        require_login_agents=tuple(getattr(options, 'require_host_login', ())),
+    )
+
+
 def run_verification(options):
+    if getattr(options, 'preflight_only', False):
+        code, preflight = _execute_preflight(options)
+        return code, {
+            'status': preflight['status'],
+            'returncode': code,
+            'preflight': preflight,
+            'scenarios': [],
+            'summary': {'passed': 0, 'failed': 0},
+        }
     scenarios = tuple(SCENARIOS) if options.scenario == 'all' else (options.scenario,)
     if options.dry_run:
         return 0, {'status': 'planned', 'returncode': 0, 'scenarios': [
             {'scenario': name, 'snapshots': SCENARIOS[name], 'steps': plan_steps(name, options.run_uninstall_apply)}
             for name in scenarios
         ]}
+    if getattr(options, 'skip_preflight', False):
+        preflight = {'status': 'skipped', 'ok': True, 'returncode': 0, 'checks': []}
+    else:
+        preflight_code, preflight = _execute_preflight(options)
+        if preflight_code != 0:
+            return EXIT_PREFLIGHT_BLOCKED, {
+                'status': 'preflight_env_blocked',
+                'returncode': EXIT_PREFLIGHT_BLOCKED,
+                'preflight': preflight,
+                'scenarios': [],
+                'summary': {'passed': 0, 'failed': 0},
+            }
+
+    default_runtime = (options.home / 'Library' / 'Application Support' / 'Memlane').resolve(strict=False)
+    actual_runtime = options.config.parent.resolve(strict=False)
+    sentinel = utm_guard.HostStateSentinel(options.home, protect_memlane_dir=(actual_runtime != default_runtime))
     results = []
     for name in scenarios:
         gate = Gate(options)
@@ -847,9 +873,20 @@ def run_verification(options):
         else:
             status = 'passed'
         results.append({'scenario': name, 'status': status, 'steps': gate.receipts})
+    sentinel_report = sentinel.verify()
     passed = sum(item['status'] == 'passed' for item in results)
+    if not sentinel_report['ok']:
+        return EXIT_PROTECTED_PATH_VIOLATED, {
+            'status': 'protected_path_violated',
+            'returncode': EXIT_PROTECTED_PATH_VIOLATED,
+            'preflight': preflight,
+            'sentinel': sentinel_report,
+            'scenarios': results,
+            'summary': {'passed': passed, 'failed': len(results) - passed},
+        }
     code = int(passed != len(results))
-    return code, {'status': 'failed' if code else 'passed', 'scenarios': results,
+    return code, {'status': 'failed' if code else 'passed', 'preflight': preflight, 'sentinel': sentinel_report,
+                  'scenarios': results,
                   'summary': {'passed': passed, 'failed': len(results) - passed}, 'returncode': code}
 
 
@@ -859,11 +896,18 @@ def main(argv=None):
     if options.json or options.dry_run:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
+        if report.get('preflight') and not report['preflight'].get('ok', True):
+            print(f"preflight [{report['status']}] (exit {code})")
+            for check in report['preflight'].get('checks', []):
+                if not check.get('ok'):
+                    print(f"  failed: {check['check']} — {check.get('code')} ({check.get('remediation', '')})")
         for scenario in report['scenarios']:
             print(f"{scenario['scenario']} [{scenario['status']}]")
             for step in scenario['steps']:
                 suffix = f" — {step['error']}" if 'error' in step else ''
                 print(f"  {step['status']}: {step['step']}{suffix}")
+        if report.get('sentinel') and not report['sentinel'].get('ok', True):
+            print(f"sentinel [{report['status']}] (exit {code}): {report['sentinel'].get('violations')}")
     return code
 
 

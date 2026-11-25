@@ -308,6 +308,13 @@ class RunnerTests(unittest.TestCase):
         self.executable = self.root / 'Memlane'
         self.hooks = self.root / 'hooks.json'
         self.uninstall = self.root / 'uninstall.py'
+        preflight_patch = patch.object(
+            gate.utm_guard,
+            'run_preflight',
+            return_value=(0, {'status': 'passed', 'ok': True, 'returncode': 0, 'elapsed_ms': 1, 'checks': []}),
+        )
+        self._preflight_mock = preflight_patch.start()
+        self.addCleanup(preflight_patch.stop)
 
     def write_executable(self, body):
         self.executable.write_text(f'#!{sys.executable}\n' + body, encoding='utf-8')
@@ -1202,6 +1209,60 @@ class RunnerTests(unittest.TestCase):
     def test_beta2_upgrade_detects_lost_ambiguous_op(self):
         self.fixture('beta2-upgrade', dirty_hooks=True, lose_ambiguous=True)
         self.assert_gate('beta2-upgrade', error='journal retention differs')
+
+    def test_preflight_failure_returns_31_without_invoking_cli(self):
+        self.fixture('clean-install')
+        self._preflight_mock.return_value = (
+            gate.EXIT_PREFLIGHT_BLOCKED,
+            {
+                'status': 'preflight_env_blocked',
+                'ok': False,
+                'returncode': gate.EXIT_PREFLIGHT_BLOCKED,
+                'elapsed_ms': 120,
+                'checks': [{'check': 'dns', 'ok': False, 'code': 'PREFLIGHT_DNS_FAILED', 'failed_hosts': ['pypi.org']}],
+                'failed_codes': ['PREFLIGHT_DNS_FAILED'],
+            },
+        )
+        code, report = self.run_gate('clean-install')
+        self.assertEqual(code, gate.EXIT_PREFLIGHT_BLOCKED)
+        self.assertEqual(report['status'], 'preflight_env_blocked')
+        self.assertEqual(report['scenarios'], [])
+        self.assertFalse((self.root / 'calls.jsonl').exists())
+
+    def test_preflight_only_and_skip_preflight_modes(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            code = gate.main(['--preflight-only', '--home', str(self.root), '--mirror', 'china', '--json'])
+        report = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(report['status'], 'passed')
+        self.assertEqual(report['scenarios'], [])
+
+        self.fixture('clean-install')
+        self._preflight_mock.reset_mock()
+        code2, report2 = self.run_gate('clean-install', '--skip-preflight')
+        self.assertEqual(code2, 0, report2)
+        self.assertEqual(report2['preflight']['status'], 'skipped')
+        self._preflight_mock.assert_not_called()
+
+    def test_sentinel_returns_32_when_protected_login_state_is_deleted(self):
+        self.fixture('clean-install')
+        jwt_path = self.root / '.trae-cn' / 'trae-jwt-token'
+        jwt_path.parent.mkdir(parents=True, exist_ok=True)
+        jwt_path.write_text('jwt-present', encoding='utf-8')
+        # Inject a buggy CLI that deletes the protected Trae CN JWT during execution.
+        self.write_executable(
+            'from pathlib import Path\n'
+            'import os\n'
+            'p = Path(os.environ["HOME"]) / ".trae-cn" / "trae-jwt-token"\n'
+            'if p.exists(): p.unlink()\n'
+            + FAKE_CLI
+        )
+        code, report = self.run_gate('clean-install')
+        self.assertEqual(code, gate.EXIT_PROTECTED_PATH_VIOLATED)
+        self.assertEqual(report['status'], 'protected_path_violated')
+        self.assertFalse(report['sentinel']['ok'])
+        self.assertEqual(report['sentinel']['violations'][0]['label'], 'trae_cn_jwt')
 
 
 if __name__ == '__main__':

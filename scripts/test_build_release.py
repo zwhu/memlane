@@ -337,6 +337,79 @@ class BuildReleaseTests(unittest.TestCase):
                         prepare_sdk_fn=lambda: '/tmp/fake-patched.mod',
                     )
 
+    def _prepare_built_app_fixture(self, root: Path, out_dir: Path, version: str = '0.1.0-beta.3') -> Path:
+        self._write_fake_repo(root, version=version)
+        platform_dir = out_dir / 'darwin-arm64'
+        app = platform_dir / 'Memlane.app'
+        macos = app / 'Contents' / 'MacOS'
+        resources = app / 'Contents' / 'Resources'
+        macos.mkdir(parents=True)
+        resources.mkdir(parents=True)
+        with (app / 'Contents' / 'Info.plist').open('wb') as fh:
+            plistlib.dump({
+                'CFBundleIdentifier': 'io.github.zwhu.memlane',
+                'CFBundleShortVersionString': version,
+                'LSMinimumSystemVersion': '26.0',
+                'CFBundleExecutable': 'Memlane',
+            }, fh)
+        for name in build_release.REQUIRED_LICENSE_FILES:
+            (resources / name).write_bytes((root / name).read_bytes())
+        exe = macos / 'Memlane'
+        exe.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        exe.chmod(0o700)
+        return platform_dir
+
+    def test_execute_build_runs_contract_smoke_fail_closed_and_supports_skip(self):
+        for smoke_code in (0, 1, 2, 3):
+            with self.subTest(smoke_code=smoke_code):
+                with tempfile.TemporaryDirectory() as raw_tmp:
+                    root = Path(raw_tmp).resolve()
+                    out_dir = root / 'out'
+                    platform_dir = self._prepare_built_app_fixture(root, out_dir)
+                    smoke_result = {'status': 'passed' if smoke_code == 0 else 'failed', 'returncode': smoke_code}
+                    with patch.object(build_release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+                            patch.object(build_release, 'verify_packaged_first_store'), \
+                            patch.object(build_release, 'verify_packaged_cli_doctor', return_value={'status': 'passed'}), \
+                            patch.object(build_release, 'run_local_contract_smoke', return_value=(smoke_code, smoke_result)) as mock_smoke:
+                        if smoke_code == 0:
+                            code, res = build_release.run_build(
+                                ['--out-dir', str(out_dir), '--skip-dmg', '--json'],
+                                root=root,
+                                prepare_sdk_fn=lambda: '/tmp/fake.mod',
+                            )
+                            self.assertEqual(code, 0)
+                            self.assertEqual(res['contract_smoke']['status'], 'passed')
+                            self.assertTrue((platform_dir / 'SHA256SUMS.txt').is_file())
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, f'exit {smoke_code}'):
+                                build_release.run_build(
+                                    ['--out-dir', str(out_dir), '--skip-dmg', '--json'],
+                                    root=root,
+                                    prepare_sdk_fn=lambda: '/tmp/fake.mod',
+                                )
+                            self.assertFalse((platform_dir / 'SHA256SUMS.txt').exists())
+                        mock_smoke.assert_called_once()
+                        self.assertEqual(mock_smoke.call_args.kwargs.get('expected_version'), '0.1.0-beta.3')
+                        self.assertEqual(mock_smoke.call_args.kwargs.get('repo_root'), root)
+
+        # --skip-contract-smoke skips invocation and explicitly marks status as skipped.
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp).resolve()
+            out_dir = root / 'out'
+            self._prepare_built_app_fixture(root, out_dir)
+            with patch.object(build_release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')), \
+                    patch.object(build_release, 'verify_packaged_first_store'), \
+                    patch.object(build_release, 'verify_packaged_cli_doctor', return_value={'status': 'passed'}), \
+                    patch.object(build_release, 'run_local_contract_smoke') as mock_smoke:
+                code, res = build_release.run_build(
+                    ['--out-dir', str(out_dir), '--skip-dmg', '--skip-contract-smoke', '--json'],
+                    root=root,
+                    prepare_sdk_fn=lambda: '/tmp/fake.mod',
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(res['contract_smoke'], {'status': 'skipped', 'returncode': 0})
+            mock_smoke.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import signal
-import time
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +37,11 @@ def main():
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL); process.wait()
                     raise SystemExit(1)
-                time.sleep(2)
+                try:
+                    process.wait(timeout=2)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
             result = process
         finally:
             if process is not None:

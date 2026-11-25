@@ -17,5 +17,4 @@ if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
-"$PYTHON_BIN" scripts/task.py -- "$PYTHON_BIN" scripts/lint.py
-"$PYTHON_BIN" scripts/task.py -- "$PYTHON_BIN" -m unittest discover -s scripts -p "test_*.py"
+"$PYTHON_BIN" scripts/task.py -- "$PYTHON_BIN" scripts/check.py --pre-push

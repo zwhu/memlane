@@ -3,6 +3,9 @@
 通用方法见 [verify-continuous-scenarios](../../../.agents/skills/verify-continuous-scenarios/SKILL.md)；下列字段为本项目的包、授权及证据适配。
 
 - 所属[任务影响与验证说明](task-brief-template.md)及本场景消除的关键未知：
+- 验收分层标记（Level 0 本地无 Mock 契约冒烟 / Level 1 纯 CLI 非交互 / Level 2a 空库首装向导实窗 / Level 2b 热后台实窗与真实宿主）及热环境复用/收尾范围：
+- Level 0 本地契约冒烟前置回执（`scripts/smoke_release_contracts.py` 退出码 `0/1/2/3`、耗时与二进制摘要）：
+- 3 秒 Fail-Fast 环境探针（`scripts/utm_guard.py` `exit 31` 归属环境阻断不计入产品缺陷）与不可触碰白名单哨兵（`exit 32`）核对：
 - 上下游依赖及本轮不证明的范围：
 - 前置检查（实际包／根／来源／授权／夹具数量／有效滚动点），失败时不进入业务步骤：
 - 复用驱动与[连续场景计划](../../archive/scenario-runner.md)位置；本轮共享准备、采证和幂等收尾：

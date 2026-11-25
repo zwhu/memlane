@@ -21,8 +21,10 @@ import tempfile
 import time
 
 if __package__:
+    from .smoke_release_contracts import run_local_contract_smoke
     from .verify_setup_cli import check_output_privacy, json_object
 else:
+    from smoke_release_contracts import run_local_contract_smoke
     from verify_setup_cli import check_output_privacy, json_object
 
 
@@ -353,6 +355,7 @@ def _execute_build(
     out_dir_arg: str,
     platform: str,
     skip_dmg: bool,
+    skip_contract_smoke: bool = False,
     dry_run: bool,
     prepare_sdk_fn,
     git_ref: str = '',
@@ -435,6 +438,18 @@ def _execute_build(
     executable = app_path / 'Contents' / 'MacOS' / executable_name
     verify_packaged_first_store(executable)
     cli_doctor = verify_packaged_cli_doctor(executable, expected_version=manifest['version'])
+    if skip_contract_smoke:
+        contract_smoke = {'status': 'skipped', 'returncode': 0}
+    else:
+        smoke_code, contract_smoke = run_local_contract_smoke(
+            executable,
+            expected_version=manifest['version'],
+            repo_root=build_root,
+        )
+        if smoke_code != 0:
+            raise RuntimeError(
+                f'local contract smoke failed (exit {smoke_code}): {contract_smoke.get("status", "failed")}'
+            )
 
     checksum_targets: list[Path] = []
     dmg_path_str = ''
@@ -464,6 +479,7 @@ def _execute_build(
         'bundled_licenses': bundled_licenses,
         'packaged_first_store': 'passed',
         'packaged_cli_doctor': cli_doctor,
+        'contract_smoke': contract_smoke,
     }
     if git_ref:
         res['git_ref'] = git_ref
@@ -477,6 +493,8 @@ def run_build(argv: list[str] | None = None, *, root: Path = ROOT, prepare_sdk_f
     parser.add_argument('--platform', default='darwin/arm64', help='Target GOOS/GOARCH (default darwin/arm64).')
     parser.add_argument('--git-ref', default='', help='Build from a clean detached git worktree at this ref (e.g. HEAD).')
     parser.add_argument('--skip-dmg', action='store_true', help='Skip DMG creation (passed to mygo build).')
+    parser.add_argument('--skip-contract-smoke', action='store_true',
+                        help='Skip local Level 0 contract smoke (recorded as skipped; rejected by release gate).')
     parser.add_argument('--dry-run', action='store_true', help='Validate config/assets and print planned command without building.')
     parser.add_argument('--json', action='store_true', help='Emit machine-readable JSON result.')
     args = parser.parse_args(argv)
@@ -491,6 +509,7 @@ def run_build(argv: list[str] | None = None, *, root: Path = ROOT, prepare_sdk_f
                 out_dir_arg=args.out_dir,
                 platform=args.platform,
                 skip_dmg=args.skip_dmg,
+                skip_contract_smoke=args.skip_contract_smoke,
                 dry_run=args.dry_run,
                 prepare_sdk_fn=prepare_sdk_fn,
                 git_ref=git_ref,
@@ -503,6 +522,7 @@ def run_build(argv: list[str] | None = None, *, root: Path = ROOT, prepare_sdk_f
         out_dir_arg=args.out_dir,
         platform=args.platform,
         skip_dmg=args.skip_dmg,
+        skip_contract_smoke=args.skip_contract_smoke,
         dry_run=args.dry_run,
         prepare_sdk_fn=prepare_sdk_fn,
     )

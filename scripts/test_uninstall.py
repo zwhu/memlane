@@ -570,6 +570,33 @@ class UninstallScriptTests(unittest.TestCase):
             self.assertFalse(components_dir.exists())
             self.assertFalse(runtime_dir.exists())
 
+    def test_remove_data_never_touches_protected_host_login_state(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home, runtime_dir, components_dir, _ = self._build_fixture(tmp)
+            protected_files = {
+                home / 'Library' / 'Application Support' / 'Trae CN' / 'User' / 'state.db': 'trae-login-state',
+                home / '.trae-cn' / 'trae-jwt-token': 'jwt-must-remain',
+                home / '.codex' / 'auth.json': '{"token":"codex-keep"}',
+                home / '.codex' / 'state_1.sqlite': 'codex-threads',
+                home / '.pi' / 'agent' / 'auth.json': '{"token":"pi-keep"}',
+                home / '.trae' / 'cli' / 'auth.json': '{"token":"trae-keep"}',
+                home / '.traecli' / 'cli' / 'auth.json': '{"token":"traecli-keep"}',
+            }
+            for path, content in protected_files.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding='utf-8')
+                path.chmod(0o600)
+
+            code, res = uninstall.run_uninstall([
+                '--apply', '--remove-data', '--confirm-remove-data',
+                '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+            ])
+            self.assertEqual(code, 0, res)
+            for path, expected in protected_files.items():
+                self.assertTrue(path.is_file(), f'protected login file disappeared: {path}')
+                self.assertEqual(path.read_text(encoding='utf-8'), expected)
+
 
 if __name__ == '__main__':
     unittest.main()

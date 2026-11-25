@@ -51,7 +51,7 @@ func TestStaticLintGate(t *testing.T) {
 	python := resolveLintPython()
 	for _, args := range [][]string{
 		{"scripts/lint.py"},
-		{"-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"},
+		{"-m", "unittest", "discover", "-s", "scripts", "-p", "test_lint.py"},
 	} {
 		cmd := exec.Command(python, args...)
 		out, err := cmd.CombinedOutput()
