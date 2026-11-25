@@ -2,12 +2,92 @@ package simpledesktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
+
+type pendingMessageDetail struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Summary string `json:"summary"`
+	Unknown bool   `json:"unknown"`
+}
+
+type PendingMaterials struct {
+	Details          []pendingMessageDetail `json:"details,omitempty"`
+	Pending          int                    `json:"pending"`
+	UnknownEntryIDs  []string               `json:"unknown_entry_ids"`
+	Signature        string                 `json:"signature"`
+	Unknown          int                    `json:"unknown_outcomes"`
+	RetryableUnknown int                    `json:"retryable_unknown"`
+	Blocked          *struct {
+		Reason string `json:"reason"`
+	} `json:"blocked"`
+	Drained         int    `json:"drained"`
+	Discarded       int    `json:"discarded"`
+	Error           string `json:"error"`
+	Checked         bool   `json:"checked"`
+	Matched         int    `json:"matched_unknown"`
+	SessionID       string `json:"session_id"`
+	SessionInactive bool   `json:"session_inactive,omitempty"`
+}
+
+var pendingBufferObserveSeq atomic.Uint64
+
+type pendingBufferView struct {
+	Status           PendingMaterials
+	Loaded, Busy     bool
+	Message          string
+	ReadError        string
+	ReadCode         string
+	Details          []pendingMessageDetail
+	DetailsLoaded    bool
+	DetailsError     string
+	Observed         bool
+	Added            int
+	Action           string
+	CheckDetailsOpen bool
+	DiagnosticsOpen  bool
+	ExpandedMessages map[string]bool
+	AllMessagesOpen  bool
+}
+
+func (v *pendingBufferView) observe(status PendingMaterials) {
+	if v.Observed && status.Pending > v.Status.Pending {
+		v.Added += status.Pending - v.Status.Pending
+	}
+	if status.Signature == v.Status.Signature && v.Status.Checked {
+		status.Checked, status.Matched, status.SessionID = v.Status.Checked, v.Status.Matched, v.Status.SessionID
+	}
+	if status.Signature != v.Status.Signature {
+		v.Details = nil
+		v.DetailsLoaded = false
+		v.ExpandedMessages = nil
+		v.AllMessagesOpen = false
+	}
+	v.Status = status
+	if v.ReadError != "" && v.Message == v.ReadError {
+		v.Message = ""
+	}
+	v.ReadError = ""
+	v.ReadCode = ""
+	v.Loaded, v.Observed = true, true
+	pendingBufferObserveSeq.Add(1)
+}
+
+func shortSessionLabel(key string) string {
+	r := []rune(key)
+	if len(r) > 22 {
+		return string(r[:10]) + "…" + string(r[len(r)-8:])
+	}
+	return key
+}
 
 type queuedSession struct {
 	Agent   AccessAgent
@@ -48,6 +128,12 @@ type processingIssue struct {
 }
 
 type projectQueueState struct {
+	InboxPending                   int
+	InboxFailed                    int
+	LastError                      string
+	InboxRetryBusy                 bool
+	InboxRetryError                string
+	inboxRevision                  uint64
 	BufferReviews                  []bufferReview
 	noticeAckEpoch                 uint64
 	NoticeAcknowledgements         map[string]noticeAcknowledgement
@@ -71,9 +157,6 @@ type projectQueueState struct {
 	UnreadKnowledge                []Item
 	KnowledgeReadError             string
 	StateVersion                   uint64
-	Archives                       []pendingArchiveRow
-	ArchiveError                   string
-	ArchiveHistoryOpen             bool
 	Scroll                         ui.ScrollState
 	LocatedNoticeKey               string
 	DetailNoticeKey                string
@@ -149,7 +232,6 @@ func (a *App) projectQueueStateFor(p AccessProject) *projectQueueState {
 	q := a.access.Queues[key]
 	if q == nil {
 		q = &projectQueueState{}
-		q.Archives, q.ArchiveError = a.readPendingArchives(p)
 		q.NoticeAcknowledgements, q.NoticeAcknowledgementError = a.readNoticeAcknowledgements(p)
 		if path, err := a.knowledgeReadPath(p); err == nil {
 			if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
@@ -181,23 +263,16 @@ type projectQueueFetchInput struct {
 	project          AccessProject
 	client           Client
 	control          *ProjectControlConfig
-	sessions         []queuedSession
-	slots            chan struct{}
-	python           string
-	operator         PendingOperatorConfig
 	stateDir         string
 	migrationProject AccessProject
 	needLocalState   bool
-}
-
-type projectQueueSessionResult struct {
-	Status PendingMaterials
-	Error  error
+	setupOnly        bool
+	refreshInbox     bool
 }
 
 type projectQueueSnapshot struct {
 	setupOnly             bool
-	sessions              []projectQueueSessionResult
+	inbox                 *api.ProjectView
 	authDenied            bool
 	v2Summary             v2MessageSummaryResponse
 	v2SummaryOK           bool
@@ -211,8 +286,6 @@ type projectQueueSnapshot struct {
 	activityErr           error
 	notices               []processingNotice
 	noticeErr             error
-	localArchives         []pendingArchiveRow
-	localArchiveErr       string
 	localKnowledgeRead    knowledgeReadState
 	ackPath               string
 	noticeAckSeq          uint64
@@ -221,21 +294,16 @@ type projectQueueSnapshot struct {
 }
 
 type projectQueueApplyMeta struct {
-	request      uint64
-	authEpoch    uint64
-	ackEpoch     uint64
-	baseIdentity string
-	sessions     []queuedSession
+	request       uint64
+	authEpoch     uint64
+	ackEpoch      uint64
+	baseIdentity  string
+	inboxRevision uint64
 }
 
 func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	if q.Loading || a.access.Busy {
 		return
-	}
-	for _, row := range q.Sessions {
-		if row.View.Busy {
-			return
-		}
 	}
 	q.Loading = true
 	q.Request++
@@ -247,7 +315,6 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 	}
 	baseIdentity := a.cachedBaseReadingIdentity()
 	needLocalState := !q.localStateLoaded
-	sessions := a.projectQueueSessions(p)
 	var control *ProjectControlConfig
 	if ctrl, ok := a.accessClient(); ok {
 		cfg := ctrl.Config
@@ -262,66 +329,32 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 			break
 		}
 	}
-	if a.access.QueueReadSlots == nil {
-		a.access.QueueReadSlots = make(chan struct{}, 4)
-	}
 	in := projectQueueFetchInput{
-		project: p, client: a.Client, control: control, sessions: sessions, slots: a.access.QueueReadSlots,
-		python: a.Config.Python, operator: pendingOperatorConfig(a.Config),
-		stateDir: stateDir, migrationProject: migrationProject, needLocalState: needLocalState,
+		project: p, client: a.Client, control: control,
+		stateDir: stateDir, migrationProject: migrationProject, needLocalState: needLocalState, setupOnly: a.isSetupOnlyRuntime(), refreshInbox: q.inboxRevision > 0,
 	}
-	meta := projectQueueApplyMeta{request, authEpoch, ackEpoch, baseIdentity, sessions}
-	update, setupOnly := a.Update, a.isSetupOnlyRuntime()
+	meta := projectQueueApplyMeta{request, authEpoch, ackEpoch, baseIdentity, q.inboxRevision}
+	update := a.Update
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		snap := a.fetchProjectQueueSnapshot(ctx, in)
-		snap.setupOnly = setupOnly
 		rec := reconcileProjectQueueState(p, snap)
 		update(func() { a.applyProjectQueueResult(q, p, meta, snap, rec) })
 	}()
 }
 
-func (a *App) projectQueueSessions(p AccessProject) []queuedSession {
-	if a.access.Buffers == nil {
-		a.access.Buffers = map[string]*pendingBufferView{}
-	}
-	sessions := []queuedSession{}
-	for _, binding := range a.access.Directory.Bindings {
-		if binding.ProjectID != p.ID {
-			continue
-		}
-		for _, agent := range a.access.Directory.Agents {
-			if agent.ID != binding.AgentID || agent.Installation == nil {
-				continue
-			}
-			key := agent.ID + "/" + binding.HostSessionKey
-			view := a.access.Buffers[key]
-			if view == nil {
-				view = &pendingBufferView{}
-				a.access.Buffers[key] = view
-			}
-			sessions = append(sessions, queuedSession{agent, binding, view})
-		}
-	}
-	return sessions
-}
-
 func (a *App) fetchProjectQueueSnapshot(ctx context.Context, in projectQueueFetchInput) projectQueueSnapshot {
-	var snap projectQueueSnapshot
+	snap := projectQueueSnapshot{setupOnly: in.setupOnly}
 	var workers sync.WaitGroup
 	workers.Go(func() {
 		a.fetchProjectQueueSummary(ctx, in, &snap)
-	})
-	workers.Go(func() {
-		snap.sessions = fetchProjectQueueSessions(ctx, in)
 	})
 	workers.Go(func() {
 		p := in.project
 		snap.ackPath, _ = noticeAcknowledgementPath(in.stateDir, in.client, p)
 		snap.noticeAcks, snap.noticeAckErr, snap.noticeAckSeq = readNoticeAcknowledgementsWithSeq(snap.ackPath)
 		if in.needLocalState {
-			snap.localArchives, snap.localArchiveErr = readPendingArchives(in.stateDir, in.client, p)
 			if path, err := knowledgeReadPath(in.stateDir, in.client, p); err == nil {
 				if s, readErr := readKnowledgeState(path); readErr == nil && s.Initialized {
 					snap.localKnowledgeRead = s
@@ -329,11 +362,45 @@ func (a *App) fetchProjectQueueSnapshot(ctx context.Context, in projectQueueFetc
 			}
 		}
 	})
+
 	workers.Wait()
 
 	snap.authDenied = readingAuthDenied(snap.documentErr) || readingAuthDenied(snap.noticeErr) || readingAuthDenied(snap.activityErr) ||
 		isControlErrorCode(snap.documentErr, 503, "reading_contract_mismatch")
+	if !in.setupOnly && in.control != nil && !snap.authDenied && (!snap.v2SummaryOK || in.refreshInbox) {
+		var err error
+		snap.inbox, err = fetchProjectInbox(ctx, in)
+		if err != nil {
+			var apiErr *api.APIError
+			if errors.As(err, &apiErr) && (apiErr.IsUnauthorized() || apiErr.IsForbidden()) {
+				snap.authDenied = true
+				snap.documentErr = err
+			}
+		}
+	}
 	return snap
+}
+
+func fetchProjectInbox(ctx context.Context, in projectQueueFetchInput) (*api.ProjectView, error) {
+	identity, err := readingIdentity(in.client)
+	if err != nil {
+		return nil, err
+	}
+	manager := ProjectControlClient{Config: *in.control, HTTP: in.client.HTTP}
+	client, err := newInboxClient(manager, identity)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	inbox, err := client.GetProject(ctx, in.project.ID)
+	if err != nil {
+		return nil, err
+	}
+	if inbox.ID != in.project.ID || inbox.DatasetID != in.project.Dataset {
+		return nil, errors.New("inbox response does not match the requested project and dataset")
+	}
+	return &inbox, nil
 }
 
 func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetchInput, snap *projectQueueSnapshot) {
@@ -387,49 +454,6 @@ func (a *App) fetchProjectQueueSummary(ctx context.Context, in projectQueueFetch
 		return
 	}
 	snap.noticeErr, snap.documentErr, snap.activityErr = v2Err, v2Err, v2Err
-}
-
-func fetchProjectQueueSessions(ctx context.Context, in projectQueueFetchInput) []projectQueueSessionResult {
-	// Bounded worker pool (<=4 workers) avoids spawning thousands of goroutines
-	// when a project has hundreds or thousands of historical session bindings.
-	if len(in.sessions) == 0 {
-		return nil
-	}
-	results := make([]projectQueueSessionResult, len(in.sessions))
-	var workers sync.WaitGroup
-
-	poolSize := min(4, len(in.sessions))
-	jobs := make(chan int, len(in.sessions))
-	for n := range in.sessions {
-		jobs <- n
-	}
-	close(jobs)
-	for wIdx := 0; wIdx < poolSize; wIdx++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for n := range jobs {
-				row := in.sessions[n]
-				select {
-				case in.slots <- struct{}{}:
-				case <-ctx.Done():
-					results[n].Error = ctx.Err()
-					continue
-				}
-				results[n].Status, results[n].Error = runPendingMaterials(ctx, in.python, *row.Agent.Installation, row.Binding, in.project.Dataset, "show", "", in.operator)
-				if results[n].Error != nil && results[n].Status.Error == "pending_materials_changed_review_again" && ctx.Err() == nil {
-					results[n].Status, results[n].Error = runPendingMaterials(ctx, in.python, *row.Agent.Installation, row.Binding, in.project.Dataset, "show", "", in.operator)
-				}
-				<-in.slots
-				status := results[n].Status
-				if results[n].Error == nil && (status.Signature == "" || status.Pending < 0 || status.Unknown < 0 || status.Unknown > status.Pending) {
-					results[n].Error = fmt.Errorf("会话采集状态不完整")
-				}
-			}
-		}()
-	}
-	workers.Wait()
-	return results
 }
 
 type projectQueueReconciled struct {
@@ -526,6 +550,7 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 	}
 	q.Loading = false
 	if rec.AuthDenied {
+		q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
 		q.DocumentError = rec.AuthDeniedError
 		q.Activity = nil
 		a.InvalidateReading(p.Dataset)
@@ -536,15 +561,19 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 	}
 	_, current, _ := readingIdentityPair(Client{Config: a.Client.Config})
 	if meta.baseIdentity != current {
+		q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
 		q.Sessions = nil
 		q.Documents = nil
 		q.Loaded = false
 		return
 	}
-	if !q.localStateLoaded {
-		if len(q.Archives) == 0 && q.ArchiveError == "" {
-			q.Archives, q.ArchiveError = snap.localArchives, snap.localArchiveErr
+	if snap.inbox != nil && meta.inboxRevision == q.inboxRevision {
+		q.InboxPending, q.InboxFailed, q.LastError = snap.inbox.InboxPending, snap.inbox.InboxFailed, snap.inbox.LastError
+		if q.InboxFailed == 0 && q.LastError == "" {
+			q.InboxRetryError = ""
 		}
+	}
+	if !q.localStateLoaded {
 		if !q.KnowledgeRead.Initialized && snap.localKnowledgeRead.Initialized {
 			q.KnowledgeRead = snap.localKnowledgeRead
 		}
@@ -575,30 +604,10 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 	if rec.UpdateNotices {
 		q.ProcessingNotices = rec.Notices
 	}
-	wasLoaded := q.Loaded
 	q.Loaded = true
 	q.ActivityError = rec.ActivityError
 	if rec.ActivityError == "" {
 		q.Activity = rec.Activity
-	}
-	q.Sessions = meta.sessions
-	for n, row := range meta.sessions {
-		result := snap.sessions[n]
-		if result.Error != nil {
-			row.View.ReadCode = result.Status.Error
-			row.View.Details = nil
-			row.View.DetailsLoaded = false
-			row.View.ReadError = "采集状态暂时无法读取"
-			if result.Status.Error == "official_session_unconfirmed" {
-				row.View.ReadError = "尚未确认这次会话的采集状态；重新读取不会补采历史对话"
-			}
-			row.View.Loaded = false
-		} else {
-			if wasLoaded && !row.View.Observed {
-				row.View.Added = result.Status.Pending
-			}
-			row.View.observe(result.Status)
-		}
 	}
 	q.DocumentError = rec.DocumentError
 	prevCatalogVersion := q.KnowledgeCatalogVersion
@@ -658,4 +667,59 @@ func reconcileRecoveredNoticeKeys(p AccessProject, q *projectQueueState, v2Summa
 		recovered = append(recovered, "policy-sync")
 	}
 	return recovered
+}
+
+func newInboxClient(control ProjectControlClient, identity string) (*api.Client, error) {
+	return api.NewClient(api.Config{
+		BaseURL: control.Config.URL, ManagementTokenFile: control.Config.ManagementTokenFile,
+		ReadingIdentity: identity, HTTPClient: control.HTTP,
+	})
+}
+
+func (a *App) retryProjectInbox(q *projectQueueState, p AccessProject) {
+	if a.isSetupOnlyRuntime() || q.InboxRetryBusy || a.access.Busy || a.Update == nil {
+		return
+	}
+	control, ok := a.accessClient()
+	if !ok {
+		return
+	}
+	identity, baseIdentity, err := readingIdentityPair(a.Client)
+	if err != nil {
+		q.InboxRetryError = "读取身份暂不可用"
+		return
+	}
+	q.InboxRetryBusy = true
+	q.InboxRetryError = ""
+	authEpoch, update := a.authEpoch, a.Update
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		client, err := newInboxClient(control, identity)
+		if err == nil {
+			_, err = client.RetryProject(ctx, p.ID)
+		}
+		update(func() {
+			q.InboxRetryBusy = false
+			current, ok := a.accessClient()
+			currentIdentity, currentBase, identityErr := readingIdentityPair(a.Client)
+			if !ok || current.Config != control.Config || identityErr != nil || currentBase != baseIdentity ||
+				currentIdentity != identity || a.authEpoch != authEpoch || a.isSetupOnlyRuntime() {
+				return
+			}
+			if err != nil {
+				q.InboxRetryError = "重试结果未确认，请刷新后核对。"
+				var rejected *api.APIError
+				if errors.As(err, &rejected) && rejected.Message != "" {
+					q.InboxRetryError = "重试未确认：" + rejected.Message
+				}
+				return
+			}
+			q.inboxRevision++
+			q.Next = time.Time{}
+			if !q.Loading && !a.access.Busy {
+				a.loadProjectQueue(q, p)
+			}
+		})
+	}()
 }

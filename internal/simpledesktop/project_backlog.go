@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"time"
-
-	"github.com/egoist/mygo/ui"
 )
 
 type backlogJob struct {
@@ -401,82 +399,4 @@ func backlogReason(code string) string {
 	default:
 		return "后台任务已暂停，但没有返回明确原因。原消息仍保留，系统不会自动重发结果未知的消息。"
 	}
-}
-
-func (a *App) backlogControls(c *ui.Context, q *projectQueueState, p AccessProject) {
-	safe := 0
-	for _, row := range q.Sessions {
-		if row.View.Loaded && p.Overrides[row.Agent.ID].effective(a.access.Directory.Defaults).Access == "maintain" {
-			safe += row.View.Status.Pending - row.View.Status.Unknown
-		}
-	}
-	ui.Column(c).FillWidth().Padding(12, 20).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(homeBorder).Background(tok.Fill1).Children(func() {
-		j := q.Backlog
-		paused := j != nil && (j.Status == "paused" || j.Status == "stopped" || j.Status == "interrupted")
-		ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
-				title, detail := "会话等待采集", "采集已获授权的记录，采集结果未确认的条目会单独保留。"
-				switch {
-				case paused:
-					title, detail = "会话采集已暂停", backlogReason(j.Reason)
-				case q.projectAutoCapture(p) && q.AutomaticSave:
-					title, detail = "自动采集已开启", "新会话记录会在后台持续采集，状态待确认的记录不会重复发送。"
-				case j.active():
-					title, detail = "正在采集会话", "切换页面后会继续采集。"
-					if j.Status == "processing" {
-						title, detail = "正在提交记忆提炼", "会话已采集，提炼完成后才会产生记忆。"
-					}
-				case j != nil && j.Status == "completed":
-					title, detail = "上次采集已完成", "当前待采集数量见上方；新增记录单独统计。"
-				}
-				homeText(c, title, homeBody).FontSize(12).FontWeight(500).TextColor(homeInk)
-				homeText(c, detail, homeMeta).MaxLines(2)
-			})
-			switch {
-			case j.active():
-				label := "停止后续采集"
-				if j.Status == "stopping" {
-					label = "正在停止…"
-				}
-				queueAction(c, label, func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || j.Status == "stopping")
-			case paused && (j.Reason == "write_denied" || j.Reason == "policy_unconfirmed" || j.Reason == "backlog_write_denied"):
-				queueAction(c, "重新检查权限", a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
-			default:
-				label := "采集待处理记录"
-				if paused {
-					label = "继续采集"
-				}
-				queueAction(c, label, func() { a.changeBacklog(q, p, false) }).Disabled(!q.Loaded || q.Loading || q.BacklogBusy || (safe == 0 && (j == nil || !j.Automatic)) || a.Config.ProjectControl == nil)
-			}
-		})
-		if q.BacklogError != "" {
-			homeText(c, q.BacklogError, homeMeta)
-			queueAction(c, "核对后台任务", func() { a.refreshBacklog(q, p) }).AlignSelf(ui.Start)
-		}
-		if j != nil {
-			label := "采集详情 ›"
-			if q.SaveDetailsOpen {
-				label = "收起采集详情"
-			}
-			queueAction(c, label, func() { q.SaveDetailsOpen = !q.SaveDetailsOpen }).AlignSelf(ui.Start).Justify(ui.Start)
-			if q.SaveDetailsOpen {
-				ui.Column(c).Gap(5).Children(func() {
-					homeText(c, "以下为后台任务统计，不代表当前待采集数量。", homeMeta)
-					homeText(c, fmt.Sprintf("任务已采集 %d 条 · 任务内剩余 %d 条 · 待核对 %d 条", j.Saved, j.Remaining, j.Isolated), homeMeta)
-					if j.ProcessingPending > 0 {
-						homeText(c, fmt.Sprintf("%d 个会话等待提交记忆提炼", j.ProcessingPending), homeMeta)
-					}
-					if j.ProcessingSubmitted > 0 {
-						homeText(c, fmt.Sprintf("%d 个会话已提交记忆提炼，尚不代表提炼完成。", j.ProcessingSubmitted), homeMeta)
-					}
-					if j.ProcessingDisabled > 0 {
-						homeText(c, "部分会话未开启自动提炼，原始记录已保留。", homeMeta)
-					}
-					if j.ProcessingFailed > 0 {
-						homeText(c, "部分提炼请求的结果尚未确认。", homeMeta)
-					}
-				})
-			}
-		}
-	})
 }

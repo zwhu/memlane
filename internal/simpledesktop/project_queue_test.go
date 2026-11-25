@@ -485,3 +485,85 @@ func TestProjectQueueApplyAuthorizationFences(t *testing.T) {
 		t.Fatal("authorization denial failed to withdraw only the affected dataset")
 	}
 }
+
+func TestProjectInboxShowsFailureAndRetriesThroughGateway(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := a.access.Directory.Projects[0]
+	q.Sessions, q.Documents = nil, nil
+	q.BacklogNext = time.Now().Add(time.Hour)
+	const (
+		token  = "0123456789012345678901234567890123456789"
+		reason = "提炼服务连接超时"
+	)
+	retryCalls := make(chan struct{}, 4)
+	identity, err := readingIdentity(a.Client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			fmt.Fprint(w, `{"reading_contract":"catalog-cursor-v1","features":{"async_capture":true}}`)
+		case "/api/projects/p":
+			if r.Method != http.MethodGet {
+				t.Errorf("project read used %s", r.Method)
+			}
+			if len(retryCalls) < 2 {
+				fmt.Fprintf(w, `{"id":"p","dataset_id":"ds","inbox_pending":3,"inbox_failed":2,"last_error":%q}`, reason)
+			} else {
+				fmt.Fprint(w, `{"id":"p","dataset_id":"ds","inbox_pending":5,"inbox_failed":0,"last_error":""}`)
+			}
+		case "/api/projects/p/retry":
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer "+token ||
+				r.Header.Get("X-Memlane-Management") != token || r.Header.Get("X-Memlane-Reading-Identity") != identity {
+				t.Error("retry did not send the expected method and identity")
+			}
+			retryCalls <- struct{}{}
+			if len(retryCalls) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprint(w, `{"error":"engine_unavailable","message":"采集服务暂不可用"}`)
+				return
+			}
+			fmt.Fprint(w, `{"project_id":"p","retried_count":2,"item_ids":["first","second"]}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	a.Config.ProjectControl = readingControlConfig(t, "http://127.0.0.1:16529")
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+
+	a.loadProjectQueue(q, p)
+	drainReading(t, updates, func() bool { return !q.Loading })
+	if q.InboxPending != 3 || q.InboxFailed != 2 || q.LastError != reason {
+		t.Fatalf("queue did not load the gateway failure: pending=%d failed=%d reason=%q", q.InboxPending, q.InboxFailed, q.LastError)
+	}
+	tt := ui.NewTester(func(c *ui.Context) { a.projectQueueSection(c, p) }, 1200, 820)
+	for _, label := range []string{"采集队列有 2 项失败", reason, "一键重试", "自动采集"} {
+		if !tt.HasText(label) {
+			t.Fatalf("missing %q: %v", label, tt.Texts())
+		}
+	}
+	clickProjectUI(t, tt, "一键重试")
+	if !q.InboxRetryBusy {
+		t.Fatal("retry did not enter busy state")
+	}
+	a.retryProjectInbox(q, p)
+	drainReading(t, updates, func() bool { return !q.InboxRetryBusy })
+	tt.Frame()
+	if len(retryCalls) != 1 || !tt.HasText(reason) || !strings.Contains(q.InboxRetryError, "采集服务暂不可用") || !tt.HasText(q.InboxRetryError) {
+		t.Fatalf("failed retry did not retain the original reason and show the retry error: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "一键重试")
+	if !q.InboxRetryBusy || q.InboxRetryError != "" {
+		t.Fatal("another retry did not clear the previous retry error")
+	}
+	drainReading(t, updates, func() bool { return !q.InboxRetryBusy && !q.Loading })
+	tt.Frame()
+	if len(retryCalls) != 2 || q.InboxPending != 5 || q.InboxFailed != 0 || q.LastError != "" ||
+		q.InboxRetryError != "" || tt.HasText(reason) || tt.HasText("一键重试") {
+		t.Fatalf("successful retry did not refresh the failure row: pending=%d failed=%d texts=%v", q.InboxPending, q.InboxFailed, tt.Texts())
+	}
+}

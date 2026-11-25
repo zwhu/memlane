@@ -169,7 +169,6 @@ func New(c Config, err error) *App {
 	}
 	a.initReading(a.Client)
 	a.initDesktopPreferences()
-	a.configureColdPendingStoreFromConfig()
 	if err != nil {
 		a.configError = err.Error()
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))
@@ -421,19 +420,7 @@ func (a *App) FlushPendingState(timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
-	var readErr, coldErr error
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		readErr = a.flushKnowledgeReadWithTimeout(timeout)
-	}()
-	go func() {
-		defer wg.Done()
-		coldErr = flushColdPendingStoreWithTimeout(timeout)
-	}()
-	wg.Wait()
-	return errors.Join(readErr, coldErr)
+	return a.flushKnowledgeReadWithTimeout(timeout)
 }
 
 func (a *App) stepCommonKnowledgeV2(s *pane, delta int) {

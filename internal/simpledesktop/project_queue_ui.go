@@ -150,6 +150,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	}
 
 	hasAlerts := len(needs) > 0 || len(anomalies) > 0
+	hasInboxFailure := !setupOnly && (q.InboxFailed > 0 || q.LastError != "")
 	hasDocs := q.Loaded && len(q.Documents) > 0 && q.DocumentError == ""
 	hasProgress := len(progress) > 0 || hasDocs
 	autoCapture := q.projectAutoCapture(p)
@@ -180,7 +181,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			}
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
-	} else if !setupOnly && !q.Loaded && !hasProgress {
+	} else if hasInboxFailure || (!setupOnly && !q.Loaded && !hasProgress) {
 		headerActions = func() {
 			autoSaveControl("head", "自动采集")
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
@@ -194,6 +195,24 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			if q.AutoCaptureError != "" {
 				homeText(c, q.AutoCaptureError, homeMeta)
 			}
+			if hasInboxFailure {
+				title := "最近采集失败"
+				if q.InboxFailed > 0 {
+					title = fmt.Sprintf("采集队列有 %d 项失败", q.InboxFailed)
+				}
+				reason := q.LastError
+				if reason == "" {
+					reason = "最近一次采集或提炼未能完成，可重试失败记录。"
+				}
+				v4Row(c, v4RowOptions{
+					Key: "proj-inbox-failure-" + p.ID, Title: title, Desc: reason, Error: q.InboxRetryError,
+					Leading: func() { v4StatusDot(c, "fail") },
+					Control: func() {
+						v4SmallPrimaryButton(c, "一键重试", func() { a.retryProjectInbox(q, p) }).
+							Disabled(q.InboxRetryBusy || a.access.Busy || a.Config.ProjectControl == nil || a.Update == nil)
+					},
+				})
+			}
 			if setupOnly {
 				v4Row(c, v4RowOptions{
 					Key: "proj-queue-setup-" + p.ID, Title: "待配置记忆提炼",
@@ -201,9 +220,9 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 					Leading: func() { v4StatusDot(c, "neutral") },
 					Control: func() { v4SmallButton(c, "立即配置", nil, a.openSettingsFromDeferredBanner) },
 				})
-			} else if !q.Loaded && !hasAlerts && !hasProgress {
+			} else if !hasInboxFailure && !q.Loaded && !hasAlerts && !hasProgress {
 				v4SkeletonRow(c, 1, false, false)
-			} else if !hasAlerts {
+			} else if !hasInboxFailure && !hasAlerts {
 				// Healthy collapsed single-row state.
 				dotTone := "warn"
 				title := "自动采集已关闭"
@@ -302,11 +321,6 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 				}
 			}
 
-			if q.ArchiveError != "" {
-				ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
-					homeText(c, "历史异常记录读取失败；当前采集异常仍会显示。", homeMeta)
-				})
-			}
 		})
 	})
 
@@ -454,11 +468,6 @@ func (a *App) messageNoticeBucket(c *ui.Context, q *projectQueueState, p AccessP
 						switch n.Action {
 						case "permissions":
 							v4SmallPrimaryButton(c, "去授权", func() { q.Scroll.Y = 0 })
-						case "replay":
-							if n.Session != nil {
-								row := *n.Session
-								v4SmallPrimaryButton(c, "查看并补交", func() { q.openDetailDialog(n) }).Disabled(row.View.Busy || a.access.Busy || row.View.Status.Unknown > 0 || row.View.Status.Signature == "" || row.Agent.Installation == nil)
-							}
 						case "resume":
 							v4SmallPrimaryButton(c, "恢复采集", func() { a.changeBacklog(q, p, false) }).Disabled(q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil)
 						case "save":
@@ -508,17 +517,6 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 	var onConfirm func()
 
 	switch n.Action {
-	case "replay":
-		if n.Session != nil {
-			row := *n.Session
-			hideConfirm = false
-			confirmText = "确认补交这些消息"
-			confirmDisabled = row.View.Busy || a.access.Busy || row.View.Status.Unknown > 0 || row.View.Status.Signature == "" || row.Agent.Installation == nil
-			onConfirm = func() {
-				a.runPendingAction(row.View, p, row.Agent, row.Binding, "replay")
-				q.closeDetailDialog(&n)
-			}
-		}
 	case "permissions":
 		hideConfirm = false
 		confirmText = "前往权限设置"
@@ -664,18 +662,11 @@ func (a *App) messageNoticeDetails(c *ui.Context, q *projectQueueState, p Access
 			ui.Text(c, "会话："+shortSessionLabel(row.Binding.HostSessionKey)).
 				Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).Tooltip(row.Binding.HostSessionKey)
 			ui.Spacer(c)
-			if v.Loaded && v.Status.Pending > 0 {
-				if row.Agent.Installation != nil && row.Agent.Installation.HostKind != "opencode" {
-					queueAction(c, "查看本机消息", func() { a.runPendingAction(v, p, row.Agent, row.Binding, "details") }).Disabled(v.Busy || a.access.Busy)
-				}
-			}
+
 		})
 
 		if v.Status.Blocked != nil {
 			ui.Text(c, "暂停原因："+backlogReason(v.Status.Blocked.Reason)).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text1)
-		}
-		if v.Loaded && v.Status.Pending > 0 && (row.Agent.Installation == nil || row.Agent.Installation.HostKind == "opencode") {
-			ui.Text(c, "当前接入暂不支持读取本机消息摘要。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
 		}
 		if v.DetailsError != "" {
 			ui.Text(c, v.DetailsError).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Warning)

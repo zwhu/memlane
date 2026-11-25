@@ -1063,80 +1063,6 @@ func TestReviewFixChunkedProvenanceBackfillAndUnconfirmedRetention(t *testing.T)
 	}
 }
 
-// TestReviewFixColdStoreTruncationMaxDelayAndWriteErrors verifies GO-P1-08 & GO-P1-09.
-func TestReviewFixColdStoreTruncationMaxDelayAndWriteErrors(t *testing.T) {
-	// 1. Snapshot exceeding maxBytes trims LRU tail and preserves MRU head.
-	snap := persistedColdPendingSnapshot{SchemaVersion: coldPendingWatchSchemaVersion}
-	for i := 0; i < 200; i++ {
-		snap.Standard = append(snap.Standard, persistedColdPendingRecord{
-			Key:             coldPendingKey{AgentID: "a1", HostSessionKey: fmt.Sprintf("sess-%03d", i), Dataset: "ds-1"},
-			Signature:       "sig-" + strconv.Itoa(i),
-			SessionInactive: true,
-			ManifestPath:    "/tmp/manifest-" + strings.Repeat("x", 200),
-		})
-	}
-	bounded, err := marshalBoundedColdPendingSnapshot(snap, 4096)
-	if err != nil {
-		t.Fatalf("marshalBoundedColdPendingSnapshot failed: %v", err)
-	}
-	if len(bounded) > 4096 {
-		t.Fatalf("bounded snapshot exceeded limit: %d > 4096", len(bounded))
-	}
-	var decoded persistedColdPendingSnapshot
-	if err := json.Unmarshal(bounded, &decoded); err != nil {
-		t.Fatalf("invalid bounded json: %v", err)
-	}
-	if len(decoded.Standard) == 0 || decoded.Standard[0].Key.HostSessionKey != "sess-000" {
-		t.Fatalf("expected MRU prefix preserved, got len=%d first=%+v", len(decoded.Standard), decoded.Standard)
-	}
-
-	// 2. Continuous mutations cannot starve flush beyond maxDelay.
-	dir := t.TempDir()
-	storePath := filepath.Join(dir, "cold-pending-watch.json")
-	prevDebounce, prevMax := coldPendingStore.debounce, coldPendingStore.maxDelay
-	coldPendingStore.debounce = 500 * time.Millisecond
-	coldPendingStore.maxDelay = 80 * time.Millisecond
-	t.Cleanup(func() {
-		waitColdPendingStoreFlush()
-		configureColdPendingStore("")
-		resetColdPendingCachesForTest()
-		coldPendingStore.debounce = prevDebounce
-		coldPendingStore.maxDelay = prevMax
-	})
-	resetColdPendingCachesForTest()
-	configureColdPendingStore(storePath)
-	startWrites := coldPendingStore.writeCount
-
-	for i := 0; i < 6; i++ {
-		scheduleColdPendingFlush()
-		time.Sleep(25 * time.Millisecond)
-	}
-	waitColdPendingStoreFlush()
-	if coldPendingStore.writeCount <= startWrites {
-		t.Fatalf("continuous mutations starved flush past maxDelay: writes=%d start=%d", coldPendingStore.writeCount, startWrites)
-	}
-
-	// 3. Write error records lastWriteErr and does NOT increment writeCount.
-	blockedPath := filepath.Join(dir, "as-file")
-	if err := os.WriteFile(blockedPath, []byte("not-a-dir"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	badStorePath := filepath.Join(blockedPath, "cold-pending-watch.json")
-	configureColdPendingStore(badStorePath)
-	beforeErrWrites := coldPendingStore.writeCount
-	coldPendingStore.mu.Lock()
-	coldPendingStore.dirty = true
-	coldPendingStore.mu.Unlock()
-	flushColdPendingStoreNow()
-	coldPendingStore.mu.Lock()
-	gotErr := coldPendingStore.lastWriteErr
-	afterErrWrites := coldPendingStore.writeCount
-	coldPendingStore.mu.Unlock()
-	if gotErr == nil || afterErrWrites != beforeErrWrites {
-		t.Fatalf("write error must set lastWriteErr and not increment writeCount: err=%v before=%d after=%d", gotErr, beforeErrWrites, afterErrWrites)
-	}
-}
-
 // TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge verifies GO-P1-10.
 func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 	controlCapabilitiesCache.mu.Lock()
@@ -1570,26 +1496,7 @@ func TestReviewFixR2UnreadStateRevMonotonicFlushAndNoticeRace(t *testing.T) {
 		t.Fatalf("FlushPendingState retry after recovery must succeed, got %v", err)
 	}
 
-	// 3. FlushPendingState surfaces cold-pending store write failure.
-	blocked := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(blocked, []byte("x"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		configureColdPendingStore("")
-		resetColdPendingCachesForTest()
-	})
-	configureColdPendingStore(filepath.Join(blocked, "cold-pending-watch.json"))
-	coldPendingStore.mu.Lock()
-	coldPendingStore.dirty = true
-	coldPendingStore.mu.Unlock()
-	if err := a.FlushPendingState(2 * time.Second); err == nil {
-		t.Fatalf("FlushPendingState must return error when cold-pending store write fails")
-	}
-	configureColdPendingStore("")
-	resetColdPendingCachesForTest()
-
-	// 4. Double-click concurrent clearProjectNotificationsAsync under -race.
+	// 3. Double-click concurrent clearProjectNotificationsAsync under -race.
 	// Flush waits for writes, but their UI updates can still be buffered.
 	for len(updates) > 0 {
 		(<-updates)()

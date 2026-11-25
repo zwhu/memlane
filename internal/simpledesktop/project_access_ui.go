@@ -29,7 +29,6 @@ type projectAccessState struct {
 	CheckboxPending              map[string]*projectCheckboxPending
 	Buffers                      map[string]*pendingBufferView
 	SidebarQueueIndex            int
-	QueueReadSlots               chan struct{}
 }
 
 func (a *App) accessClient() (ProjectControlClient, bool) {
@@ -515,4 +514,17 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 			v4SmallButton(c, "重新核对", v4IconRefresh, a.RefreshProjectDirectory).Disabled(a.access.Loading).Tooltip(a.access.Message)
 		}
 	})
+}
+
+func agentDisplayName(name string) string {
+	for _, prefix := range []string{"本机 ", "本地 "} {
+		name = strings.TrimPrefix(name, prefix)
+	}
+	switch name {
+	case "TraeX":
+		return "TRAE CLI"
+	case "TRAE IDE":
+		return "TRAE CN"
+	}
+	return name
 }

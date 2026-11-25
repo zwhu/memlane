@@ -2,6 +2,7 @@ package simpledesktop
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -288,3 +289,5 @@ func (a *App) unacknowledgedNotificationKeys(q *projectQueueState, p AccessProje
 	}
 	return alertKeys, q.NoticeAcknowledgementError != ""
 }
+
+func validPendingHash(s string) bool { b, e := hex.DecodeString(s); return e == nil && len(b) == 32 }
