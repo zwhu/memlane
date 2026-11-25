@@ -1,43 +1,21 @@
 package setupcli
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
-	"strings"
 	"syscall"
 
+	"github.com/zwhu/memlane/core/setup"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
+	"github.com/zwhu/memlane/kit/aiinstaller/cli"
 )
 
 func secretInput(args []string, environ func(string) string) bool {
-	for _, arg := range args {
-		if !strings.HasPrefix(arg, "-") {
-			continue
-		}
-		name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "=")
-		name = strings.ReplaceAll(strings.ToLower(name), "_", "-")
-		if oneOf(name, "api-key", "apikey", "llm-api-key", "openai-api-key", "anthropic-api-key", "deepseek-api-key", "gemini-api-key",
-			"token", "access-token", "bearer", "x-api-key", "secret", "password", "passwd", "credential", "private-key") {
-			return true
-		}
-		for _, suffix := range []string{"-api-key", "-token", "-secret", "-password"} {
-			if strings.HasSuffix(name, suffix) {
-				return true
-			}
-		}
-	}
-	for _, name := range []string{"MEMLANE_API_KEY", "MEMLANE_LLM_API_KEY", "MEMLANE_TOKEN", "MEMLANE_OWNER_TOKEN", "MEMLANE_MANAGEMENT_TOKEN", "MEMLANE_SECRET", "MEMLANE_PASSWORD"} {
-		if environ(name) != "" {
-			return true
-		}
-	}
-	return false
+	guard := cli.SecretGuard{EnvPrefix: setup.MemlaneBrand().CLIEnvPrefix}
+	return guard.ContainsSecretInput(args, environ)
 }
 
 type runtimeConfig struct {
@@ -51,82 +29,18 @@ type runtimeConfig struct {
 	Control        controlplane.Config          `json:"project_control"`
 }
 
-var errUnsafePath = errors.New("unsafe path")
+var errUnsafePath = cli.ErrUnsafePath
 
 func checkPath(path string) error {
-	_, err := resolveSafePath(path)
-	return err
+	return cli.CheckPath(path)
 }
 
-// Validate lexical components before normalization so traversal cannot hide a symlink.
 func resolveSafePath(path string) (string, error) {
-	if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
-		return "", errUnsafePath
-	}
-	root := string(filepath.Separator)
-	current := root
-	for part := range strings.SplitSeq(path, root) {
-		switch part {
-		case "", ".":
-			continue
-		case "..":
-			return "", errUnsafePath
-		}
-		first := current == root
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		if runtime.GOOS != "darwin" || !first || !oneOf(current, "/tmp", "/var") {
-			return "", errUnsafePath
-		}
-		resolved, err := filepath.EvalSymlinks(current)
-		if err != nil || resolved != "/private"+current {
-			return "", errUnsafePath
-		}
-		current = resolved
-	}
-	return current, nil
+	return cli.ResolveSafePath(path)
 }
 
 func readBoundedJSON(path string, dst any) error {
-	path, err := resolveSafePath(path)
-	if err != nil {
-		return err
-	}
-	dir, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	f, err := dir.OpenFile(filepath.Base(path), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	const limit = 2 << 20
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
-		return errUnsafePath
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return err
-	}
-	if len(raw) > limit {
-		return errUnsafePath
-	}
-	return json.Unmarshal(raw, dst)
+	return cli.ReadBoundedJSON(path, dst)
 }
 
 func (cfg runtimeConfig) firstInstall() bool {

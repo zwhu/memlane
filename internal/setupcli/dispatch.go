@@ -2,7 +2,6 @@ package setupcli
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"io/fs"
 	"os"
@@ -12,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zwhu/memlane/core/setup"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
+	"github.com/zwhu/memlane/kit/aiinstaller/cli"
 )
 
-const DefaultVersion = "0.1.0-beta.3"
+const DefaultVersion = setup.DefaultVersion
 
 func Dispatch(args []string, runtimeAssets, bootstrapAssets fs.FS, version string) (bool, int) {
 	return DispatchIO(context.Background(), args, runtimeAssets, bootstrapAssets, version, os.Stdout, os.Stderr)
@@ -43,15 +44,15 @@ var specs = map[string]commandSpec{
 	"help":             {},
 }
 
-type manifest struct {
-	SchemaVersion int                 `json:"schema_version"`
-	Commands      map[string][]string `json:"commands"`
-	RepairTargets []string            `json:"repair_targets"`
-	ExitCodes     map[int]string      `json:"exit_codes"`
-}
+type manifest = cli.CommandManifest
 
 func commandManifest() *manifest {
-	m := &manifest{1, map[string][]string{}, slices.Clone(repairTargets), statuses}
+	m := &manifest{
+		SchemaVersion: 1,
+		Commands:      map[string][]string{},
+		RepairTargets: slices.Clone(repairTargets),
+		ExitCodes:     cli.StatusMap(),
+	}
 	for name := range specs {
 		if name == "__install-worker" {
 			continue
@@ -159,8 +160,8 @@ func (o *options) valid(command string) bool {
 		}
 		o.wait = wait
 	}
-	if o.has("instance-id") && !instanceID.MatchString(o.get("instance-id")) ||
-		o.has("operation-id") && !operationIdentifier.MatchString(o.get("operation-id")) {
+	if o.has("instance-id") && safeInstanceID(o.get("instance-id")) == "" ||
+		o.has("operation-id") && safeOperationID(o.get("operation-id")) == "" {
 		return false
 	}
 	// Digests supplied by users are compared to fresh values. A stale value
@@ -252,12 +253,9 @@ func (r Runner) DispatchIO(ctx context.Context, args []string, runtimeAssets, bo
 		s := session{Runner: r, ctx: ctx, runtimeAssets: runtimeAssets, bootstrapAssets: bootstrapAssets, options: o, envelope: &e}
 		s.run()
 	}
-	e.OK, e.Status = e.ExitCode == ExitOK, statuses[e.ExitCode]
+	e.finalize()
 	if command != "__install-worker" || o.has("json") || !valid || forbidden {
-		enc := json.NewEncoder(stdout)
-		enc.SetEscapeHTML(false)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(e); err != nil {
+		if err := cli.EncodeJSON(stdout, e); err != nil {
 			return true, ExitFatal
 		}
 	}
@@ -270,7 +268,7 @@ func (r Runner) app(version string, assets fs.FS) appSummary {
 		contents := filepath.Dir(macos)
 		bundle := filepath.Dir(contents)
 		if filepath.Base(macos) == "MacOS" && filepath.Base(contents) == "Contents" && strings.HasSuffix(bundle, ".app") {
-			if bundleVersion := bootstrap.ReadBundleVersion(bundle); versionPattern.MatchString(bundleVersion) {
+			if bundleVersion := bootstrap.ReadBundleVersion(bundle); cli.ValidVersion(bundleVersion) {
 				version = bundleVersion
 			}
 		}
@@ -279,7 +277,12 @@ func (r Runner) app(version string, assets fs.FS) appSummary {
 		}
 	}
 	hash, _ := bootstrap.BundledRuntimeHash(assets)
-	return appSummary{SanitizeString(version, ""), SanitizeString(r.Executable, r.HomeDir), hash, runtime.GOOS + "/" + runtime.GOARCH}
+	return appSummary{
+		Version:            SanitizeString(version, ""),
+		Executable:         SanitizeString(r.Executable, r.HomeDir),
+		BundledRuntimeHash: hash,
+		Platform:           runtime.GOOS + "/" + runtime.GOARCH,
+	}
 }
 
 func (s *session) run() {

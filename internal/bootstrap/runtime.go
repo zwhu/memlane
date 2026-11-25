@@ -7,12 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 // RuntimeDriver never syncs packages into a user's existing interpreter. A
@@ -159,17 +160,7 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-type CommandFailure struct {
-	ExitCode int
-	Output   string
-}
-
-func (e *CommandFailure) Error() string {
-	if e.ExitCode < 0 {
-		return "安装命令未能启动：" + e.Output
-	}
-	return fmt.Sprintf("安装命令退出 %d：%s", e.ExitCode, e.Output)
-}
+type CommandFailure = aiinstaller.CommandFailure
 
 func runManaged(ctx context.Context, root, executable string, args ...string) error {
 	home := filepath.Join(root, "home")
@@ -203,9 +194,9 @@ func runManaged(ctx context.Context, root, executable string, args ...string) er
 		if errors.As(err, &exit) {
 			code = exit.ExitCode()
 		} else {
-			return &CommandFailure{code, RedactInstallerText(err.Error() + "\n" + string(output.data))}
+			return &CommandFailure{ExitCode: code, Output: RedactInstallerText(err.Error() + "\n" + string(output.data))}
 		}
-		return &CommandFailure{code, RedactInstallerText(string(output.data))}
+		return &CommandFailure{ExitCode: code, Output: RedactInstallerText(string(output.data))}
 	}
 	return nil
 }

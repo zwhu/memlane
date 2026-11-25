@@ -1,19 +1,15 @@
 package bootstrap
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -22,6 +18,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 // PythonCandidates discovers candidates only. Preserve venv symlinks: resolving
@@ -69,17 +67,10 @@ var (
 	probeWaitDelay          = 2 * time.Second
 )
 
-type postInstallProbeKey struct{}
-
 func withPostInstallProbe(ctx context.Context) context.Context {
-	return context.WithValue(ctx, postInstallProbeKey{}, true)
+	return aiinstaller.WithPostInstallProbe(ctx)
 }
-
-func isPostInstallProbe(ctx context.Context) bool {
-	marked, _ := ctx.Value(postInstallProbeKey{}).(bool)
-	return marked
-}
-
+func isPostInstallProbe(ctx context.Context) bool { return aiinstaller.IsPostInstallProbe(ctx) }
 func probeTimeout(ctx context.Context) time.Duration {
 	if isPostInstallProbe(ctx) {
 		return postInstallProbeTimeout
@@ -227,138 +218,6 @@ func ProbePython(ctx context.Context, executable string) (Observation, error) {
 	return o, nil
 }
 
-// VerifySource implements the fixed archive contract without importing Cognee
-// or requiring Python. A package's version metadata alone is never sufficient.
 func VerifySource(archive, source, expectedSHA string, packages []string) error {
-	var err error
-	source, err = filepath.Abs(source)
-	if err != nil {
-		return err
-	}
-	if len(expectedSHA) != 64 || len(packages) == 0 {
-		return errors.New("fixed source digest required")
-	}
-	f, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return err
-	}
-	if hex.EncodeToString(h.Sum(nil)) != expectedSHA {
-		return errors.New("fixed official archive digest mismatch")
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return err
-	}
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-	bundle := tar.NewReader(gz)
-	allowed, found := map[string]bool{"pyproject.toml": true}, map[string]bool{}
-	for _, p := range packages {
-		if p == "" || path.Base(p) != p || p == "." || p == ".." {
-			return errors.New("invalid package name")
-		}
-		allowed[p] = true
-	}
-	names := map[string]bool{}
-	root := ""
-	for {
-		member, err := bundle.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		// GitHub codeload emits a global PAX metadata record before the tree.
-		// It is not a filesystem entry or a second archive root.
-		if member.Typeflag == tar.TypeXGlobalHeader {
-			continue
-		}
-		name := strings.TrimSuffix(member.Name, "/")
-		if path.IsAbs(name) || path.Clean(name) != name || strings.Contains(name, "\\") || name == ".." || strings.HasPrefix(name, "../") {
-			return errors.New("unsafe source archive path")
-		}
-		parts := strings.Split(name, "/")
-		if root == "" {
-			root = parts[0]
-		}
-		if parts[0] != root {
-			return errors.New("multiple archive roots")
-		}
-		if len(parts) < 2 || !allowed[parts[1]] {
-			continue
-		}
-		if member.Typeflag == tar.TypeDir {
-			continue
-		}
-		if member.Typeflag != tar.TypeReg {
-			return errors.New("linked source package is not supported")
-		}
-		relative := strings.Join(parts[1:], "/")
-		if names[relative] {
-			return errors.New("duplicate archive member")
-		}
-		names[relative], found[parts[1]] = true, true
-		target := filepath.Join(source, filepath.FromSlash(relative))
-		// Reject package-tree symlinks while allowing a user-selected parent path.
-		for current := target; current != source; current = filepath.Dir(current) {
-			info, err := os.Lstat(current)
-			if err != nil {
-				return err
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("linked source package is not supported")
-			}
-		}
-		file, err := os.Open(target)
-		if err != nil {
-			return err
-		}
-		actual := sha256.New()
-		_, err = io.Copy(actual, file)
-		file.Close()
-		if err != nil {
-			return err
-		}
-		pinned := sha256.New()
-		if _, err := io.Copy(pinned, bundle); err != nil {
-			return err
-		}
-		if !strings.EqualFold(hex.EncodeToString(actual.Sum(nil)), hex.EncodeToString(pinned.Sum(nil))) {
-			return fmt.Errorf("source differs from pinned archive: %s", relative)
-		}
-	}
-	for p := range allowed {
-		if !found[p] {
-			return fmt.Errorf("required source missing: %s", p)
-		}
-	}
-	for _, p := range packages {
-		err := filepath.WalkDir(filepath.Join(source, p), func(target string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.Type()&os.ModeSymlink != 0 {
-				return errors.New("linked source package is not supported")
-			}
-			if !entry.IsDir() && strings.HasSuffix(target, ".py") {
-				rel, _ := filepath.Rel(source, target)
-				if !names[filepath.ToSlash(rel)] {
-					return errors.New("unexpected official Python module")
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return aiinstaller.VerifyTarGzSource(archive, source, expectedSHA, packages)
 }

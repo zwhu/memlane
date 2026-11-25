@@ -1,26 +1,25 @@
 package setupcli
 
-import "github.com/zwhu/memlane/internal/bootstrap"
-
-const (
-	ExitOK               = 0
-	ExitActionRequired   = 10
-	ExitHumanRequired    = 11
-	ExitInProgressOrBusy = 20
-	ExitPreflightBlocked = 30
-	ExitNeedsReview      = 40
-	ExitFatal            = 50
-	ExitInvalidArguments = 64
-
-	diskMinimum = 2 << 30
-	retryMillis = 10000
+import (
+	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/kit/aiinstaller/cli"
 )
 
-var statuses = map[int]string{
-	ExitOK: "ok", ExitActionRequired: "action_required", ExitHumanRequired: "human_required",
-	ExitInProgressOrBusy: "in_progress_or_busy", ExitPreflightBlocked: "preflight_blocked",
-	ExitNeedsReview: "needs_review", ExitFatal: "fatal", ExitInvalidArguments: "invalid_arguments",
-}
+const (
+	ExitOK               = cli.ExitOK
+	ExitActionRequired   = cli.ExitActionRequired
+	ExitHumanRequired    = cli.ExitHumanRequired
+	ExitInProgressOrBusy = cli.ExitInProgressOrBusy
+	ExitPreflightBlocked = cli.ExitPreflightBlocked
+	ExitNeedsReview      = cli.ExitNeedsReview
+	ExitFatal            = cli.ExitFatal
+	ExitInvalidArguments = cli.ExitInvalidArguments
+
+	diskMinimum = 2 << 30
+	retryMillis = cli.DefaultRetryMillis
+)
+
+var statuses = cli.StatusMap()
 
 const agentGuidance = "Execute read-only checks first. Show preview and ask user confirmation before any requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ paths, hooks.json raw contents, or memory data; never run xattr or edit host config files directly. On exit 20 follow next_actions after retry_after_ms (poll doctor --operation-id while active; retry install after confirmation on lock contention). Stop after 3 retries (4th failure). On exit 11 hand human_steps to user."
 
@@ -51,12 +50,7 @@ type envelope struct {
 	AgentGuidance string             `json:"agent_guidance"`
 }
 
-type appSummary struct {
-	Version            string `json:"version"`
-	Executable         string `json:"executable"`
-	BundledRuntimeHash string `json:"bundled_runtime_hash"`
-	Platform           string `json:"platform"`
-}
+type appSummary = cli.AppSummary
 
 type environmentSummary struct {
 	ConfigPath     string   `json:"config_path"`
@@ -163,15 +157,8 @@ type generationReference struct {
 	Revision int64 `json:"revision"`
 }
 
-type blocker struct {
-	Code   string `json:"code"`
-	Status string `json:"status"`
-}
-
-type nextAction struct {
-	Args     []string `json:"args"`
-	Requires string   `json:"requires"`
-}
+type blocker = cli.Blocker
+type nextAction = cli.NextAction
 
 type artifacts struct {
 	PlanDigest          string             `json:"plan_digest"`
@@ -193,35 +180,44 @@ type hookRepairSummary struct {
 }
 
 func newEnvelope(command, mode string) envelope {
+	common := cli.NewEnvelope(command, mode, agentGuidance)
 	return envelope{
-		SchemaVersion: 1, Command: command, Mode: mode, AgentGuidance: agentGuidance,
-		Environment: environmentSummary{StoreMode: "uninitialized", DownloadSource: "china", DiskMinBytes: diskMinimum, SelectedAgents: []string{}},
-		Components:  componentSummary{Items: []componentItem{}},
-		Daemon:      daemonSummary{State: "unknown", Endpoints: map[string]string{}},
-		Connections: connectionSummary{Pending: []operationSummary{}, Hosts: []hostSummary{}},
-		Generation:  generationSummary{AvailableBridges: []string{}, RecommendedProcessingCLIs: []bootstrap.RecommendedProcessingCLI{}},
-		Blockers:    []blocker{}, NextActions: []nextAction{}, HumanSteps: []string{},
+		SchemaVersion: common.SchemaVersion,
+		Command:       common.Command,
+		Mode:          common.Mode,
+		AgentGuidance: common.AgentGuidance,
+		Environment:   environmentSummary{StoreMode: "uninitialized", DownloadSource: "china", DiskMinBytes: diskMinimum, SelectedAgents: []string{}},
+		Components:    componentSummary{Items: []componentItem{}},
+		Daemon:        daemonSummary{State: "unknown", Endpoints: map[string]string{}},
+		Connections:   connectionSummary{Pending: []operationSummary{}, Hosts: []hostSummary{}},
+		Generation:    generationSummary{AvailableBridges: []string{}, RecommendedProcessingCLIs: []bootstrap.RecommendedProcessingCLI{}},
+		Blockers:      common.Blockers,
+		NextActions:   common.NextActions,
+		HumanSteps:    common.HumanSteps,
 	}
-}
-
-var exitPriority = map[int]int{
-	ExitOK: 0, ExitHumanRequired: 1, ExitActionRequired: 2, ExitPreflightBlocked: 3,
-	ExitInProgressOrBusy: 4, ExitNeedsReview: 5, ExitFatal: 6, ExitInvalidArguments: 7,
 }
 
 func (e *envelope) block(code int, reason string) {
-	e.Blockers = append(e.Blockers, blocker{Code: reason, Status: statuses[code]})
-	if exitPriority[code] > exitPriority[e.ExitCode] {
-		e.ExitCode = code
-	}
+	common := cli.Envelope{Blockers: e.Blockers, ExitCode: e.ExitCode}
+	common.Block(code, reason)
+	e.Blockers, e.ExitCode = common.Blockers, common.ExitCode
 }
 
 func (e *envelope) busy(reason string) {
-	e.block(ExitInProgressOrBusy, reason)
-	e.RetryAfterMS = retryMillis
+	common := cli.Envelope{Blockers: e.Blockers, ExitCode: e.ExitCode}
+	common.Busy(reason)
+	e.Blockers, e.ExitCode, e.RetryAfterMS = common.Blockers, common.ExitCode, common.RetryAfterMS
 }
 
 func (e *envelope) operation(id string) {
-	e.OperationID = id
+	common := cli.Envelope{}
+	common.SetOperation(id)
+	e.OperationID = common.OperationID
 	e.Artifacts.OperationID = id
+}
+
+func (e *envelope) finalize() {
+	common := cli.Envelope{ExitCode: e.ExitCode}
+	common.Finalize()
+	e.OK, e.Status = common.OK, common.Status
 }

@@ -2,9 +2,6 @@ package bootstrap
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -12,6 +9,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/zwhu/memlane/core/setup"
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 type EnvironmentOptions struct {
@@ -40,12 +40,6 @@ type Environment struct {
 	requirements     []Requirement
 }
 
-type toolPins struct {
-	Version string   `json:"version"`
-	ARM     Artifact `json:"darwin_arm64"`
-	Intel   Artifact `json:"darwin_amd64"`
-}
-
 func NewEnvironment(ctx context.Context, assets fs.FS, options EnvironmentOptions) (*Environment, error) {
 	if runtime.GOOS != "darwin" {
 		return nil, errors.New("此安装入口需要 macOS")
@@ -55,77 +49,10 @@ func NewEnvironment(ctx context.Context, assets fs.FS, options EnvironmentOption
 		return nil, err
 	}
 	options.Root = root
-	var pins struct {
-		Schema    int            `json:"schema"`
-		Python    toolPins       `json:"python"`
-		UV        toolPins       `json:"uv"`
-		NativeARM *NativeSupport `json:"native_openssl_arm64"`
-	}
-	var service struct {
-		Service struct {
-			SourceSpec
-			SDKVersion string `json:"sdk_version"`
-		} `json:"service"`
-		Plugin struct {
-			SourceSpec
-			Version  string `json:"version"`
-			Manifest string `json:"managed_patch_manifest"`
-		} `json:"plugin"`
-	}
-	var model ModelSpec
-	for name, target := range map[string]any{"first-install-components.json": &pins, "coding-memory-components.json": &service, "embedding-components.json": &model} {
-		b, err := fs.ReadFile(assets, name)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(b, target); err != nil {
-			return nil, err
-		}
-	}
-	if pins.Schema != 1 {
-		return nil, errors.New("unsupported bootstrap manifest")
-	}
-	if len(service.Service.Commit) != 40 || len(service.Service.SHA256) != 64 || len(service.Service.Packages) == 0 {
-		return nil, errors.New("invalid fixed Cognee manifest")
-	}
-	if len(service.Plugin.Commit) != 40 || len(service.Plugin.SHA256) != 64 || filepath.Base(service.Plugin.Manifest) != service.Plugin.Manifest || service.Plugin.Manifest == "" {
-		return nil, errors.New("invalid fixed Agent plugin manifest")
-	}
-	pluginManifest, err := fs.ReadFile(assets, service.Plugin.Manifest)
-	if err != nil {
-		return nil, err
-	}
-	var pluginIdentity struct {
-		Commit string `json:"plugin_commit"`
-	}
-	if err := json.Unmarshal(pluginManifest, &pluginIdentity); err != nil || pluginIdentity.Commit != service.Plugin.Commit {
-		return nil, errors.New("fixed Agent plugin source and patch receipt differ")
-	}
-	pluginDigest := sha256.Sum256(pluginManifest)
-	pluginVersion := service.Plugin.Version + " · " + service.Plugin.Commit[:7] + " · " + hex.EncodeToString(pluginDigest[:])[:8]
-	service.Plugin.Packages = []string{"integrations"}
 	if err := validateComponentLocation(options); err != nil {
 		return nil, err
 	}
-	lock, err := fs.ReadFile(assets, "python/requirements.lock")
-	if err != nil {
-		return nil, err
-	}
-	choose := func(p toolPins) (Artifact, error) {
-		switch runtime.GOARCH {
-		case "arm64":
-			return p.ARM, nil
-		case "amd64":
-			return p.Intel, nil
-		default:
-			return Artifact{}, errors.New("不支持的 macOS 架构")
-		}
-	}
-	pythonArtifact, err := choose(pins.Python)
-	if err != nil {
-		return nil, err
-	}
-	uvArtifact, err := choose(pins.UV)
+	m, err := setup.LoadManifests(assets, runtime.GOARCH)
 	if err != nil {
 		return nil, err
 	}
@@ -146,37 +73,18 @@ func NewEnvironment(ctx context.Context, assets fs.FS, options EnvironmentOption
 	}
 	sourceMode := NormalizeDownloadSource(options.DownloadSource)
 	options.DownloadSource = sourceMode
-	e := &Environment{Options: options, CogneeSDKVersion: service.Service.SDKVersion}
-	e.Python = ToolDriver{ID: "python", Version: pins.Python.Version, Executable: "bin/python3.12", Artifact: pythonArtifact, ReusePath: options.Python, DownloadSource: sourceMode}
-	e.UV = ToolDriver{ID: "uv", Version: pins.UV.Version, Executable: "uv", Artifact: uvArtifact, ReusePath: options.UV, DownloadSource: sourceMode}
-	e.Runtime = RuntimeDriver{Lock: lock, ExistingPython: options.Python, Python: e.basePython, UV: e.uvPath, DownloadSource: sourceMode}
-	if runtime.GOARCH == "arm64" && pins.NativeARM != nil {
-		native := *pins.NativeARM
-		native.DownloadSource = sourceMode
-		e.Runtime.Native = &native
+	e := &Environment{Options: options, CogneeSDKVersion: m.Service.SDKVersion}
+	e.Python = ToolDriver{ID: "python", Version: m.Python.Version, Executable: "bin/python3.12", Artifact: Artifact(m.Python.Artifact), ReusePath: options.Python, DownloadSource: sourceMode}
+	e.UV = ToolDriver{ID: "uv", Version: m.UV.Version, Executable: "uv", Artifact: Artifact(m.UV.Artifact), ReusePath: options.UV, DownloadSource: sourceMode}
+	e.Runtime = RuntimeDriver{Lock: m.Lock, ExistingPython: options.Python, Python: e.basePython, UV: e.uvPath, DownloadSource: sourceMode}
+	if n := m.Native; n != nil {
+		e.Runtime.Native = &NativeSupport{Version: n.Version, Artifact: Artifact(n.Artifact), ArchivePrefix: n.ArchivePrefix, DownloadSource: sourceMode}
 	}
-	e.Source = sourceLocations{Managed: SourceDriver{Spec: service.Service.SourceSpec, DownloadSource: sourceMode}, ExistingSource: options.Source, ExistingArchive: options.Archive}
-	e.Model = ModelDriver{Spec: model, ExistingRoot: options.ModelCache, Python: e.runtimePython, DownloadSource: sourceMode}
-	e.Plugin = PluginDriver{Spec: service.Plugin.SourceSpec, Version: pluginVersion, Manifest: pluginManifest,
+	e.Source = sourceLocations{Managed: SourceDriver{Spec: m.Service.SourceSpec, DownloadSource: sourceMode}, ExistingSource: options.Source, ExistingArchive: options.Archive}
+	e.Model = ModelDriver{Spec: bootstrapModelSpec(m.Model), ExistingRoot: options.ModelCache, Python: e.runtimePython, DownloadSource: sourceMode}
+	e.Plugin = PluginDriver{Spec: m.Plugin.SourceSpec, Version: m.Plugin.Version, Manifest: m.Plugin.Patch,
 		ExistingPath: options.Plugin, ResourceRoot: filepath.Join(options.Root, "installation"), Python: e.runtimePython, DownloadSource: sourceMode}
-	officialPyPI := "https://pypi.org/simple/"
-	officialModel := "https://huggingface.co/Qdrant/bge-small-zh-v1.5"
-	e.requirements = []Requirement{
-		{ID: "uv", Name: "安装工具", Purpose: "下载并校验锁定的运行依赖", Version: pins.UV.Version, Source: DisplaySourceURL("uv", uvArtifact.URL, uvArtifact.SHA256, sourceMode), OfficialSource: uvArtifact.URL, Digest: uvArtifact.SHA256, DownloadBytes: uvArtifact.DownloadBytes, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "uv-"+pins.UV.Version), SizeNote: "占用为预估上限，兼容的现有工具直接复用"},
-		{ID: "python", Name: "Python", Purpose: "运行本地记忆引擎", Version: pins.Python.Version, Source: DisplaySourceURL("python", pythonArtifact.URL, pythonArtifact.SHA256, sourceMode), OfficialSource: pythonArtifact.URL, Digest: pythonArtifact.SHA256, DownloadBytes: pythonArtifact.DownloadBytes, InstalledBytes: 100 << 20, Destination: filepath.Join(options.Root, "python-"+pins.Python.Version), SizeNote: "占用为预估上限，兼容的现有解释器直接复用"},
-		{ID: "runtime", Name: "引擎运行库", Purpose: "提供本地数据库、向量计算及服务能力", Version: "requirements.lock", Source: DisplaySourceURL("runtime", officialPyPI, e.Runtime.Digest(), sourceMode), OfficialSource: officialPyPI, Digest: e.Runtime.Digest(), DownloadBytes: 2 << 30, InstalledBytes: 4 << 30, Destination: filepath.Join(options.Root, "runtime-"+e.Runtime.Digest()[:12]), SizeNote: "下载和占用为估算预算，按随附锁文件及哈希安装；不会修改已有 Python 环境"},
-		{ID: "cognee-source", Name: "Cognee", Purpose: "提供官方记忆提炼与检索", Version: service.Service.Commit, Source: DisplaySourceURL("cognee-source", service.Service.URL, service.Service.SHA256, sourceMode), OfficialSource: service.Service.URL, Digest: service.Service.SHA256, DownloadBytes: 150 << 20, InstalledBytes: 300 << 20, Destination: filepath.Join(options.Root, "cognee-"+service.Service.Commit[:12]), SizeNote: "下载和占用为估算预算，固定提交及归档 SHA256"},
-		{ID: "embedding", Name: "本地向量模型", Purpose: "在本机将文本转换为检索向量", Version: model.Model, Source: DisplaySourceURL("embedding", officialModel, model.Digest(), sourceMode), OfficialSource: officialModel, Digest: model.Digest(), DownloadBytes: model.Bytes(), InstalledBytes: model.Bytes(), Destination: filepath.Join(options.Root, "embedding-"+model.Digest()[:12]), SizeNote: "含固定 ONNX 模型及官方分词文件，复用原有向量空间"},
-		{ID: "agent-plugin", Name: "Agent 插件", Purpose: "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配", Version: pluginVersion, Source: DisplaySourceURL("agent-plugin", service.Plugin.URL, service.Plugin.SHA256, sourceMode), OfficialSource: service.Plugin.URL, Digest: service.Plugin.SHA256, DownloadBytes: 20 << 20, InstalledBytes: 60 << 20, Destination: filepath.Join(options.Root, "plugin-integrations-"+service.Plugin.Commit[:7]+"-"+hex.EncodeToString(pluginDigest[:])[:8]), SizeNote: "下载和占用为预估预算；固定官方归档及补丁，不包含账号或登录信息"},
-	}
-	if e.Runtime.Native != nil {
-		for i := range e.requirements {
-			if e.requirements[i].ID == "runtime" {
-				e.requirements[i].Version = "requirements.lock + OpenSSL " + e.Runtime.Native.Version
-				e.requirements[i].SizeNote += "; 包含独立 OpenSSL 原生库，官方 Homebrew 归档 " + e.Runtime.Native.Artifact.URL + " SHA256 " + e.Runtime.Native.Artifact.SHA256
-			}
-		}
-	}
+	e.requirements = setup.BuildRequirements(options.Root, m, e.Runtime.Digest(), sourceMode, m.Native)
 
 	return e, nil
 }
@@ -270,48 +178,29 @@ func (e *Environment) runtimePython(ctx context.Context) (string, error) {
 	return o.Path, nil
 }
 
+func (e *Environment) driverRouter() setup.DriverRouter {
+	return setup.DriverRouter{
+		Specs: e.requirements,
+		Drivers: map[string]aiinstaller.Driver{
+			"python":        installerDriver{&e.Python},
+			"uv":            installerDriver{&e.UV},
+			"runtime":       installerDriver{&e.Runtime},
+			"cognee-source": installerDriver{&e.Source},
+			"embedding":     installerDriver{&e.Model},
+			"agent-plugin":  installerDriver{&e.Plugin},
+		},
+	}
+}
+
 func (e *Environment) Probe(ctx context.Context, r Requirement) (Observation, error) {
-	expected, err := e.Requirement(r.ID)
-	if err != nil || expected != r {
-		return Observation{}, errors.New("installation scope differs from fixed environment plan")
-	}
-	switch r.ID {
-	case "python":
-		return e.Python.Probe(ctx, r)
-	case "uv":
-		return e.UV.Probe(ctx, r)
-	case "runtime":
-		return e.Runtime.Probe(ctx, r)
-	case "cognee-source":
-		return e.Source.Probe(ctx, r)
-	case "embedding":
-		return e.Model.Probe(ctx, r)
-	case "agent-plugin":
-		return e.Plugin.Probe(ctx, r)
-	}
-	return Observation{}, errors.New("unknown bootstrap component")
+	observation, err := e.driverRouter().Probe(ctx, r)
+	return observationFromInstaller(observation), err
 }
+
 func (e *Environment) Install(ctx context.Context, r Requirement) error {
-	expected, err := e.Requirement(r.ID)
-	if err != nil || expected != r {
-		return errors.New("installation scope differs from fixed environment plan")
-	}
-	switch r.ID {
-	case "python":
-		return e.Python.Install(ctx, r)
-	case "uv":
-		return e.UV.Install(ctx, r)
-	case "runtime":
-		return e.Runtime.Install(ctx, r)
-	case "cognee-source":
-		return e.Source.Managed.Install(ctx, r)
-	case "embedding":
-		return e.Model.Install(ctx, r)
-	case "agent-plugin":
-		return e.Plugin.Install(ctx, r)
-	}
-	return errors.New("unknown bootstrap component")
+	return e.driverRouter().Install(ctx, r)
 }
+
 func (e *Environment) Installer() Installer {
 	return Installer{Root: filepath.Join(e.Options.Root, "installation"), Driver: e}
 }
@@ -330,17 +219,6 @@ func (e *Environment) Detect(ctx context.Context) (Plan, error) {
 		reqs = append(reqs, r)
 	}
 	return e.Installer().Detect(ctx, reqs)
-}
-func (p Plan) Complete() bool {
-	if len(p.Items) == 0 {
-		return false
-	}
-	for _, item := range p.Items {
-		if item.Observation.Status != Available {
-			return false
-		}
-	}
-	return true
 }
 
 type sourceLocations struct {
@@ -361,6 +239,28 @@ func (d sourceLocations) Probe(ctx context.Context, r Requirement) (Observation,
 		}
 	}
 	return o, nil
+}
+
+func (d sourceLocations) Install(ctx context.Context, r Requirement) error {
+	return d.Managed.Install(ctx, r)
+}
+
+func bootstrapModelSpec(source setup.ModelSpec) ModelSpec {
+	spec := ModelSpec{Schema: source.Schema, Model: source.Model, Provider: source.Provider, Dimensions: source.Dimensions}
+	if source.Repositories != nil {
+		spec.Repositories = make([]ModelRepository, len(source.Repositories))
+		for index, repo := range source.Repositories {
+			target := ModelRepository{Repo: repo.Repo, Revision: repo.Revision}
+			if repo.Files != nil {
+				target.Files = make([]ModelFile, len(repo.Files))
+				for fileIndex, file := range repo.Files {
+					target.Files[fileIndex] = ModelFile(file)
+				}
+			}
+			spec.Repositories[index] = target
+		}
+	}
+	return spec
 }
 
 func discoverUV() string {
