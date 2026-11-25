@@ -24,6 +24,20 @@ class TierClassificationTests(unittest.TestCase):
         self.assertFalse(diff_guard.is_tier_a_production('scripts/diff_guard.py'))
         self.assertFalse(diff_guard.is_tier_a_production('docs/engineering/workflow.md'))
 
+    def test_wave_zero_layers(self):
+        for directory in ('kit', 'core', 'app'):
+            with self.subTest(directory=directory):
+                self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/sample.go'))
+                self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/nested/sample.go'))
+                self.assertFalse(diff_guard.is_tier_a_production(f'{directory}/nested/sample_test.go'))
+        for directory in ('engine/python', 'engines/cognee'):
+            with self.subTest(directory=directory):
+                self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/sample.py'))
+                self.assertTrue(diff_guard.is_tier_a_production(f'{directory}/nested/sample.py'))
+                self.assertFalse(diff_guard.is_tier_a_production(f'{directory}/nested/test_sample.py'))
+                self.assertFalse(diff_guard.is_tier_a_production(f'{directory}/nested/testdata/sample.py'))
+                self.assertFalse(diff_guard.is_tier_a_production(f'{directory}/fixtures/sample.py'))
+
 
 class PythonDiffAnalysisTests(unittest.TestCase):
     def test_blocks_added_silent_broad_except_and_allows_explicit_handling(self):
@@ -140,6 +154,99 @@ class GoDiffAnalysisTests(unittest.TestCase):
         self.assertTrue(any(a['kind'] == 'go_err_swallow_candidate' and a['line'] == 10 for a in audits))
         self.assertTrue(any(a['kind'] == 'fallback_or_sleep' and a['line'] == 13 for a in audits))
         self.assertTrue(any(a['kind'] == 'new_import' and a['line'] == 2 for a in audits))
+
+    def test_go_import_boundaries(self):
+        root = 'github.com/zwhu/memlane'
+        cognee = f'{root}/core/engine/cognee'
+        cases = [
+            ('kit/sample.go', root, True),
+            ('kit/sample.go', f'{root}/core', True),
+            ('kit/sample.go', f'{root}/core/domain', True),
+            ('kit/sample.go', f'{root}/app', True),
+            ('kit/sample.go', f'{root}/app/shell', True),
+            ('kit/sample.go', f'{root}/internal', True),
+            ('kit/sample.go', f'{root}/internal/setup', True),
+            ('kit/sample.go', f'{root}/kit/ui', False),
+            ('kit/sample.go', f'{root}/coreutils', False),
+            ('kit/sample.go', f'{root}-other/core', False),
+            ('core/domain/sample.go', f'{root}/app', True),
+            ('core/domain/sample.go', f'{root}/app/shell', True),
+            ('core/domain/sample.go', f'{root}/kit/ui', True),
+            ('core/domain/sample.go', f'{root}/kit/ui/theme', True),
+            ('core/domain/sample.go', f'{root}/kit/uikit', False),
+            ('core/domain/sample.go', f'{root}/kit/agents', False),
+            ('core/domain/sample.go', cognee, True),
+            ('core/gateway/sample.go', f'{cognee}/client', True),
+            ('core/engine/other/sample.go', cognee, True),
+            ('core/engine/cognee_extra/sample.go', cognee, True),
+            ('app/sample.go', cognee, True),
+            ('kit/sample.go', cognee, True),
+            ('internal/sample.go', cognee, True),
+            ('internal/sample.go', f'{cognee}tools', False),
+            ('core/engine/cognee/sample.go', f'{cognee}/client', False),
+            ('core/engine/cognee/client/sample.go', cognee, False),
+            ('core/engine/factory.go', cognee, False),
+            ('cmd/memlane/main.go', f'{cognee}/client', False),
+            ('app/sample.go', f'{root}/core/domain', False),
+            ('kit/sample_test.go', f'{root}/core/domain', False),
+        ]
+        for rel, imported, blocked in cases:
+            for declaration, lineno in [
+                (f'import "{imported}"', 2),
+                (f'import alias "{imported}" // trailing comment', 2),
+                (f'import (\n . "{imported}" // trailing comment\n)', 3),
+                (f'import (\n _ /* alias comment */ "{imported}"\n)', 3),
+            ]:
+                with self.subTest(file=rel, imported=imported, declaration=declaration):
+                    blocks, audits = diff_guard.analyze_go_diff(
+                        rel, f'package sample\n{declaration}\n', {lineno},
+                    )
+                    self.assertEqual(
+                        [(item['code'], item['line']) for item in blocks],
+                        [('DG006', lineno)] if blocked else [],
+                    )
+                    self.assertEqual([(item['kind'], item['line']) for item in audits], [('new_import', lineno)])
+
+    def test_go_import_scanner_skips_non_imports_and_tracks_physical_lines(self):
+        source = (
+            'package sample\n'
+            '// import "ignored"\n'
+            '/*\n'
+            'import "ignored"\n'
+            '*/\n'
+            'import (alias /* interleaved */ "fmt"; _ "time")\n'
+            'import `net/http`\n'
+            'import "github.com/zwhu/memlane/\\x63ore"\n'
+            'func run() {\n'
+            '    _ = "import \\"github.com/zwhu/memlane/core\\""\n'
+            '    _ = `\n'
+            'import "github.com/zwhu/memlane/core"\n'
+            '"github.com/zwhu/memlane/app"\n'
+            '`\n'
+            '}\n'
+        )
+        self.assertEqual(diff_guard._extract_go_imports(source), [
+            (6, 'fmt'), (6, 'time'), (7, 'net/http'), (8, 'github.com/zwhu/memlane/core'),
+        ])
+        blocks, audits = diff_guard.analyze_go_diff('kit/sample.go', source, set(range(1, 16)))
+        self.assertEqual([(item['code'], item['line']) for item in blocks], [('DG006', 8)])
+        self.assertEqual([item['line'] for item in audits if item['kind'] == 'new_import'], [6, 7, 8])
+
+    def test_only_added_imports_are_blocked_even_with_allow_guard(self):
+        source = (
+            'package sample\n'
+            'import (\n'
+            '    "github.com/zwhu/memlane/core"\n'
+            '    // memlane:allow-guard(previous review)\n'
+            '    _ "github.com/zwhu/memlane/app" // memlane:allow-guard(reviewed)\n'
+            ')\n'
+        )
+        blocks, audits = diff_guard.analyze_go_diff('kit/sample.go', source, {4, 5})
+        self.assertEqual([(item['code'], item['line']) for item in blocks], [('DG006', 5)])
+        self.assertEqual(
+            {(item['kind'], item['line']) for item in audits},
+            {('allow_guard', 4), ('allow_guard', 5), ('new_import', 5)},
+        )
 
 
 class ScopeLockAndGitIntegrationTests(unittest.TestCase):

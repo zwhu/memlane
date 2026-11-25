@@ -3,7 +3,7 @@
 
 Designed for Memlane's Swarm + check.py + pre-commit workflow:
 - Inspects ONLY added/changed lines in Tier-A production code (Python & Go).
-- Blocks high-confidence anti-patterns (DG001-DG004) with zero-dependency stdlib AST/tokenizer analysis.
+- Blocks high-confidence anti-patterns (DG001-DG006) with zero-dependency stdlib AST/tokenizer analysis.
 - Prints a compact audit summary (new try/except, fallbacks, sleep calls, allow-guard exemptions,
   and new imports) so reviewers can strip unnecessary defensive code without manual hunting.
 """
@@ -23,6 +23,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MODULE_PREFIX = 'github.com/zwhu/memlane'
 
 # Scripts that belong to Tier-B test/verification scaffolds rather than Tier-A production code.
 TIER_B_SCRIPTS = {
@@ -50,7 +51,13 @@ FALLBACK_AUDIT_RE = re.compile(
 GO_EMPTY_ERR_RE = re.compile(r'\bif\s+err\s*!=\s*nil\s*\{\s*\}')
 GO_ERR_BLOCK_START_RE = re.compile(r'\bif\s+err\s*!=\s*nil\s*\{')
 GO_SWALLOW_STMT_RE = re.compile(r'^\s*(?:continue|break|return\s*(?:nil|false|""|0)?)\s*$')
-GO_IMPORT_LINE_RE = re.compile(r'^\s*(?:import\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\s+|\.\s+|_\s+)?"[^"]+"')
+GO_TOKEN_RE = re.compile(
+    r'(?P<trivia>\s+|//[^\n]*|/\*[\s\S]*?(?:\*/|$))'
+    r'|(?P<string>"(?:\\.|[^"\\\n])*"|\x60[^\x60]*\x60)'
+    r"|(?P<rune>'(?:\\.|[^'\\\n])*')"
+    r'|(?P<word>\w+)|(?P<symbol>.)'
+)
+GO_IMPORT_ESCAPE_RE = re.compile(r'\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[0-7]{3}|.)')
 PY_IMPORT_LINE_RE = re.compile(r'^\s*(?:import\s+\S|from\s+\S+\s+import\s+)')
 HUNK_HEADER_RE = re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
 
@@ -72,13 +79,13 @@ def is_tier_a_production(rel_path: str) -> bool:
     """Return True when rel_path is a Tier-A Python or Go production source file."""
     rel = normalize_rel(rel_path)
     name = Path(rel).name
-    if rel.startswith('engine/python/') and rel.endswith('.py'):
+    if rel.startswith(('engine/python/', 'engines/cognee/')) and rel.endswith('.py'):
         return not name.startswith('test_') and '/testdata/' not in rel and '/fixtures/' not in rel
     if rel.startswith('scripts/') and rel.endswith('.py'):
         if name.startswith('test_') or name.startswith('probe_'):
             return False
         return rel not in TIER_B_SCRIPTS
-    if (rel.startswith('internal/') or rel.startswith('cmd/')) and rel.endswith('.go'):
+    if rel.startswith(('internal/', 'cmd/', 'kit/', 'core/', 'app/')) and rel.endswith('.go'):
         return not name.endswith('_test.go')
     return False
 
@@ -451,6 +458,64 @@ def _extract_go_comments(source: str) -> list[tuple[int, str]]:
     return comments
 
 
+def _extract_go_imports(source: str) -> list[tuple[int, str]]:
+    """Return the physical line and decoded path of each Go import spec."""
+    imports: list[tuple[int, str]] = []
+    line = 1
+    pending = grouped = False
+    for match in GO_TOKEN_RE.finditer(source):
+        token = match.group()
+        token_line = line
+        line += token.count('\n')
+        if match.lastgroup == 'trivia':
+            continue
+        if token == 'import':
+            pending = True
+        elif pending and token == '(':
+            grouped = True
+            pending = False
+        elif grouped and token == ')':
+            grouped = False
+        elif (pending or grouped) and match.lastgroup == 'string':
+            path = token[1:-1]
+            if token.startswith('"'):
+                # Decode numeric escapes so they cannot hide a module path.
+                def decode_escape(escape: re.Match[str]) -> str:
+                    value = escape[1]
+                    if len(value) == 1:
+                        return {'\\': '\\', '"': '"'}.get(value, escape[0])
+                    if value[0] in 'xuU':
+                        codepoint = int(value[1:], 16)
+                        return chr(codepoint) if codepoint <= 0x10FFFF else escape[0]
+                    return chr(int(value, 8))
+
+                path = GO_IMPORT_ESCAPE_RE.sub(decode_escape, path)
+            else:
+                path = path.replace('\r', '')
+            imports.append((token_line, path))
+            pending = False
+    return imports
+
+
+def _check_go_import_boundary(rel_path: str, import_path: str) -> str | None:
+    def in_package(package: str) -> bool:
+        prefix = f'{MODULE_PREFIX}/{package}'
+        return import_path == prefix or import_path.startswith(prefix + '/')
+
+    if in_package('core/engine/cognee') and not (
+        rel_path.startswith(('core/engine/cognee/', 'cmd/'))
+        or Path(rel_path).parent.as_posix() == 'core/engine'
+    ):
+        return f'只有 Cognee 适配器、引擎工厂和 cmd 可以导入 {import_path}'
+    if rel_path.startswith('kit/') and (
+        import_path == MODULE_PREFIX or any(in_package(pkg) for pkg in ('core', 'app', 'internal'))
+    ):
+        return f'kit 禁止导入 {import_path}'
+    if rel_path.startswith('core/') and any(in_package(pkg) for pkg in ('app', 'kit/ui')):
+        return f'core 禁止导入 {import_path}'
+    return None
+
+
 def analyze_go_diff(
     rel_path: str,
     source: str,
@@ -491,7 +556,25 @@ def analyze_go_diff(
                 'message': f'新增生产代码包含临时补丁/TODO 注释: {first_line}',
             })
 
-    # 2. Go empty `if err != nil {}` block check (DG002) & audits.
+    # 2. Import audits and hard architecture blocks (DG006).
+    added_import_lines = set()
+    for lineno, import_path in _extract_go_imports(source):
+        if lineno not in added_lines:
+            continue
+        if lineno not in added_import_lines:
+            audits.append({
+                'kind': 'new_import',
+                'path': rel_path,
+                'line': lineno,
+                'detail': lines[lineno - 1].strip(),
+            })
+            added_import_lines.add(lineno)
+        if is_tier_a_production(rel_path):
+            violation = _check_go_import_boundary(normalize_rel(rel_path), import_path)
+            if violation:
+                blocks.append({'code': 'DG006', 'path': rel_path, 'line': lineno, 'message': violation})
+
+    # 3. Go empty `if err != nil {}` block check (DG002) & audits.
     for lineno in sorted(added_lines):
         if lineno < 1 or lineno > len(lines):
             continue
@@ -543,14 +626,7 @@ def analyze_go_diff(
                     'detail': f'{code_part} {body_lines[0]} }}',
                 })
 
-        if GO_IMPORT_LINE_RE.match(raw):
-            audits.append({
-                'kind': 'new_import',
-                'path': rel_path,
-                'line': lineno,
-                'detail': stripped,
-            })
-        elif FALLBACK_AUDIT_RE.search(code_part):
+        if lineno not in added_import_lines and FALLBACK_AUDIT_RE.search(code_part):
             audits.append({
                 'kind': 'fallback_or_sleep',
                 'path': rel_path,
