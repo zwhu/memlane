@@ -37,17 +37,18 @@ try {
   process.env.HOME = join(root, 'home');
   process.env.XDG_CACHE_HOME = join(root, 'cache');
   await mkdir(process.env.HOME);
-  await cp(join(repository, 'engine/agents/pi'), join(root, 'extension'), { recursive: true });
+  const extensionDir = join(root, 'extensions', 'memlane-cognee');
+  await cp(join(repository, 'engine/agents/pi'), extensionDir, { recursive: true });
   const tokenFile = join(root, 'agent.key');
   await writeFile(tokenFile, 'synthetic-key\n', { mode: 0o600 });
-  await writeFile(join(root, 'host-binding.json'), JSON.stringify({
+  await writeFile(join(extensionDir, 'host-binding.json'), JSON.stringify({
     gateway_url: `http://127.0.0.1:${server.address().port}`, token_file: tokenFile,
   }));
   for (const file of ['index.ts', 'tools.ts']) {
-    assert.doesNotMatch(await readFile(join(root, 'extension', file), 'utf8'), /child_process|\bspawn\b|agent_memory_adapter\.py/);
+    assert.doesNotMatch(await readFile(join(extensionDir, file), 'utf8'), /child_process|\bspawn\b|agent_memory_adapter\.py/);
   }
   const { loadExtensions } = await import(pathToFileURL(join(packageRoot, 'dist/core/extensions/loader.js')).href);
-  const loaded = await loadExtensions([join(root, 'extension/index.ts')], process.env.HOME);
+  const loaded = await loadExtensions([join(extensionDir, 'index.ts')], process.env.HOME);
   assert.deepEqual(loaded.errors, []);
   assert.equal(loaded.extensions.length, 1);
   const extension = loaded.extensions[0];

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,64 @@ func TestHookEvents(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCaptureQAPreservesDates(t *testing.T) {
+	const date = "2026-11-20"
+	const promptTime = "2026-11-24T23:55:00Z"
+	const eventTime = "2026-11-24T23:59:00Z"
+	for _, tc := range []struct {
+		name       string
+		context    any
+		promptTime string
+		eventTime  string
+		want       object
+	}{
+		{"explicit date in map", object{"date": date, "source": "host"}, promptTime, eventTime, object{"date": date, "source": "host"}},
+		{"explicit date in JSON", `{"date":"2026-11-20","source":"host"}`, "", "", object{"date": date, "source": "host"}},
+		{"prompt time", object{"source": "host"}, promptTime, "", object{"source": "host"}},
+		{"event time", nil, "", eventTime, nil},
+		{"default date", object{"source": "host"}, "", "", object{"source": "host"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fields := object{"question": "q", "answer": "a", "context": tc.context}
+			if tc.promptTime != "" {
+				fields["prompt_time"] = tc.promptTime
+			}
+			if tc.eventTime != "" {
+				fields["time"] = tc.eventTime
+			}
+			kind, _, content := capture(fields, Stop)
+			if kind != "capture_qa" {
+				t.Fatalf("kind = %q, want capture_qa", kind)
+			}
+			if got := stringField(content, "prompt_time"); got != tc.promptTime {
+				t.Errorf("prompt_time = %q, want %q", got, tc.promptTime)
+			}
+			gotTime := stringField(content, "time")
+			capturedAt, err := time.Parse(time.RFC3339, gotTime)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.eventTime != "" && gotTime != tc.eventTime {
+				t.Errorf("time = %q, want %q", gotTime, tc.eventTime)
+			}
+			if tc.name == "default date" {
+				tc.want["date"] = capturedAt.Local().Format("2006-01-02")
+				if _, ok := tc.context.(object)["date"]; ok {
+					t.Error("capture mutated the incoming context")
+				}
+			}
+			gotContext, present := content["context"]
+			if tc.want == nil {
+				if present {
+					t.Errorf("unexpected context = %#v", gotContext)
+				}
+			} else if !reflect.DeepEqual(gotContext, tc.want) {
+				t.Errorf("context = %#v, want %#v", gotContext, tc.want)
+			}
+		})
 	}
 }
 

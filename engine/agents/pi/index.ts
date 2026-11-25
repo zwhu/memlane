@@ -1,7 +1,7 @@
 /** Managed pi lifecycle adapter. */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { registerTools, type MemoryCall } from "./tools.js";
 
 const customType = "memlane-cognee-context";
@@ -15,7 +15,9 @@ const call: MemoryCall = async (path, payload, signal) => {
     let binding: { gateway_url?: string; token_file?: string } = {};
     const { MEMLANE_GATEWAY_URL, MEMLANE_AGENT_KEY_FILE } = process.env;
     if (!MEMLANE_GATEWAY_URL || !MEMLANE_AGENT_KEY_FILE) {
-      binding = JSON.parse(readFileSync(new URL("../host-binding.json", import.meta.url), "utf8"));
+      const adjacentBinding = new URL("./host-binding.json", import.meta.url);
+      const bindingPath = existsSync(adjacentBinding) ? adjacentBinding : new URL("../host-binding.json", import.meta.url);
+      binding = JSON.parse(readFileSync(bindingPath, "utf8"));
     }
     const url = MEMLANE_GATEWAY_URL || binding.gateway_url || "";
     const tokenFile = MEMLANE_AGENT_KEY_FILE || binding.token_file;

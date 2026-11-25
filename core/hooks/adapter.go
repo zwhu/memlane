@@ -189,9 +189,33 @@ func capture(in object, event string) (kind, id string, content object) {
 	if question == "" || answer == "" {
 		return "", "", nil
 	}
-	content = object{"question": question, "answer": answer, "time": timestamp, "context": object{"date": now.Format("2006-01-02")}}
-	if promptTime := stringField(fields, "prompt_time"); promptTime != "" {
+	var ctxMap object
+	switch incoming := fields["context"].(type) {
+	case object:
+		ctxMap = maps.Clone(incoming)
+	case string:
+		if err := json.Unmarshal([]byte(incoming), &ctxMap); err != nil {
+			// Discard any partially decoded optional context.
+			ctxMap = nil
+		}
+	}
+	promptTime := stringField(fields, "prompt_time")
+	eventTime := stringField(fields, "time")
+	content = object{"question": question, "answer": answer, "time": timestamp}
+	if promptTime != "" {
 		content["prompt_time"] = promptTime
+	}
+	if eventTime != "" {
+		content["time"] = eventTime
+	}
+	if stringField(ctxMap, "date") == "" && promptTime == "" && eventTime == "" {
+		if ctxMap == nil {
+			ctxMap = object{}
+		}
+		ctxMap["date"] = now.Format("2006-01-02")
+	}
+	if len(ctxMap) > 0 {
+		content["context"] = ctxMap
 	}
 	return "capture_qa", id, content
 }
