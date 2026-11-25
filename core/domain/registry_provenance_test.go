@@ -71,6 +71,72 @@ func TestRegistryAgentGrantsAndCaptureScope(t *testing.T) {
 	}
 }
 
+func TestRegistryACLRejectsInactiveAgents(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	must(t, s.UpsertProject(ctx, Project{ID: "p", Name: "Project", AutoCapture: true}))
+	must(t, s.UpsertCommonConfig(ctx, CommonConfig{ID: "common", Name: "Common"}))
+	must(t, s.UpsertAgent(ctx, Agent{ID: "archived", Name: "Archived", DefaultAccess: AccessMaintain, Archived: true}))
+	must(t, s.UpsertAgent(ctx, Agent{ID: "retired", Name: "Retired", DefaultAccess: AccessMaintain, RetiredAt: "2026-11-25T00:00:00Z"}))
+
+	maintain, enabled := AccessMaintain, true
+	for _, id := range []string{"unknown", "archived", "retired"} {
+		t.Run(id, func(t *testing.T) {
+			for _, target := range []struct {
+				kind, id string
+				evaluate func() (EffectiveACL, error)
+			}{
+				{"project", "p", func() (EffectiveACL, error) { return s.EvaluateProjectACL(ctx, "p", id) }},
+				{"common", "common", func() (EffectiveACL, error) { return s.EvaluateCommonACL(ctx, id) }},
+			} {
+				t.Run(target.kind, func(t *testing.T) {
+					must(t, s.SetACLOverride(ctx, ACLOverride{TargetKind: target.kind, TargetID: target.id,
+						AgentID: id, Access: &maintain, Capture: &enabled, AutoProcess: &enabled}))
+					acl, err := target.evaluate()
+					wantError(t, err, ErrForbidden)
+					if !reflect.DeepEqual(acl, EffectiveACL{}) {
+						t.Fatalf("denied agent received an ACL: %+v", acl)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRegistryCommonACLIsReadOnly(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	must(t, s.UpsertCommonConfig(ctx, CommonConfig{ID: "common", Name: "Common"}))
+	must(t, s.UpsertRegistryDefaults(ctx, RegistryDefaults{Access: AccessMaintain, Capture: true, AutoProcess: true}))
+	must(t, s.UpsertAgent(ctx, Agent{ID: "agent", Name: "Agent", DefaultAccess: AccessMaintain}))
+
+	read, maintain, none, enabled := AccessRead, AccessMaintain, AccessNone, true
+	for _, tc := range []struct {
+		name        string
+		override    *AccessLevel
+		access      AccessLevel
+		permissions []string
+	}{
+		{"inherited maintain", nil, AccessRead, []string{"read"}},
+		{"read override", &read, AccessRead, []string{"read"}},
+		{"maintain override", &maintain, AccessRead, []string{"read"}},
+		{"none override", &none, AccessNone, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.override != nil {
+				must(t, s.SetACLOverride(ctx, ACLOverride{TargetKind: "common", TargetID: "common", AgentID: "agent",
+					Access: tc.override, Capture: &enabled, AutoProcess: &enabled}))
+			}
+			acl, err := s.EvaluateCommonACL(ctx, "agent")
+			must(t, err)
+			want := EffectiveACL{Access: tc.access, Permissions: tc.permissions, CaptureScope: "project", AutoCaptureVersion: 1}
+			if !reflect.DeepEqual(acl, want) {
+				t.Fatalf("common ACL = %+v, want %+v", acl, want)
+			}
+		})
+	}
+}
+
 func TestRegistryProjectPathAndSessionLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

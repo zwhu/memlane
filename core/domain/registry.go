@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 type AccessLevel string
@@ -349,7 +350,7 @@ func (s *Store) EvaluateCommonACL(ctx context.Context, agentID string) (Effectiv
 			return rowError(err)
 		}
 		var err error
-		result, err = evaluateACL(ctx, tx, "common", id, agentID, Project{AutoCapture: true, AutoCaptureVersion: 1})
+		result, err = evaluateACL(ctx, tx, "common", id, agentID, Project{AutoCaptureVersion: 1})
 		return err
 	})
 	return result, err
@@ -364,8 +365,18 @@ func evaluateACL(ctx context.Context, tx *sql.Tx, kind, id, agentID string, p Pr
 		d.Access, d.Capture, d.AutoProcess = AccessNone, false, false
 	}
 	var agentDefault AccessLevel
-	if err := tx.QueryRowContext(ctx, `SELECT default_access FROM agents WHERE id=?`, agentID).Scan(&agentDefault); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var archived bool
+	var retiredAt string
+	err = tx.QueryRowContext(ctx, `SELECT default_access, archived, retired_at FROM agents WHERE id=?`, agentID).
+		Scan(&agentDefault, &archived, &retiredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EffectiveACL{}, fmt.Errorf("agent not registered: %w", ErrForbidden)
+	}
+	if err != nil {
 		return EffectiveACL{}, err
+	}
+	if archived || strings.TrimSpace(retiredAt) != "" {
+		return EffectiveACL{}, fmt.Errorf("agent archived or retired: %w", ErrForbidden)
 	}
 	o, err := getACL(ctx, tx, kind, id, agentID)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -375,6 +386,14 @@ func evaluateACL(ctx context.Context, tx *sql.Tx, kind, id, agentID string, p Pr
 		d.Access = *o.Access
 	} else if agentDefault == AccessNone {
 		d.Access = AccessNone
+	}
+	if kind == "common" {
+		acl := EffectiveACL{Access: AccessNone, Permissions: []string{}, CaptureScope: "project", AutoCaptureVersion: p.AutoCaptureVersion}
+		if d.Access != AccessNone {
+			acl.Access = AccessRead
+			acl.Permissions = []string{"read"}
+		}
+		return acl, nil
 	}
 	if o.Capture != nil {
 		d.Capture = *o.Capture

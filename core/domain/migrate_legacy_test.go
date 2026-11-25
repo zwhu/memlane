@@ -2,6 +2,7 @@ package domain
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -261,6 +262,53 @@ func TestImportLegacyDailyStore(t *testing.T) {
 		if got != check.want {
 			t.Errorf("%s = %q, want %q", check.query, got, check.want)
 		}
+	}
+}
+
+func TestImportLegacyAgentRetirements(t *testing.T) {
+	dir := t.TempDir()
+	writeLegacyJSON(t, dir, "project-registry.json", `{
+		"defaults":{"access":"maintain","capture":true,"auto_process":true},
+		"projects":{"p":{"name":"Project","overrides":{"pending":{"access":"maintain"}}}},
+		"common":{"id":"common","name":"Common","overrides":{"pending":{"access":"maintain"}}},
+		"agents":{
+			"pending":{"name":"Pending"},
+			"complete":{"name":"Complete","retired_at":" "},
+			"undated":{"name":"Undated"},
+			"already-retired":{"name":"Already retired","retired_at":"2026-11-25T00:00:00Z"},
+			"active":{"name":"Active"}
+		},
+		"agent_retirements":{
+			"pending":{"started_at":123.5},
+			"complete":{"started_at":123,"completed_at":456},
+			"undated":{"started_at":null,"completed_at":""},
+			"already-retired":{"completed_at":456}
+		}
+	}`)
+	target := filepath.Join(dir, "target.sqlite3")
+	_, err := ImportLegacyDailyStore(dir, target)
+	must(t, err)
+	s := Store{db: openReadOnlyTestDB(t, target)}
+	ctx := context.Background()
+	for id, want := range map[string]string{
+		"pending": "123.5", "complete": "456", "undated": "retiring", "already-retired": "2026-11-25T00:00:00Z",
+	} {
+		t.Run(id, func(t *testing.T) {
+			agent, err := s.GetAgent(ctx, id)
+			must(t, err)
+			if agent.Archived || agent.RetiredAt != want {
+				t.Fatalf("agent archived = %t, retired_at = %q, want active record with retired_at = %q", agent.Archived, agent.RetiredAt, want)
+			}
+			_, err = s.EvaluateProjectACL(ctx, "p", id)
+			wantError(t, err, ErrForbidden)
+			_, err = s.EvaluateCommonACL(ctx, id)
+			wantError(t, err, ErrForbidden)
+		})
+	}
+	active, err := s.EvaluateProjectACL(ctx, "p", "active")
+	must(t, err)
+	if active.Access != AccessMaintain {
+		t.Fatalf("active migrated agent received access %q, want %q", active.Access, AccessMaintain)
 	}
 }
 

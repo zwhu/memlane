@@ -161,6 +161,26 @@ func (m *legacyImport) overrides(kind, id string, raw json.RawMessage) {
 	}
 }
 
+func (m *legacyImport) hasTimestamp(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	if raw[0] == '"' {
+		return strings.TrimSpace(legacyDecode[string](m, raw)) != ""
+	}
+	return true
+}
+
+func (m *legacyImport) retirementTimestamp(raw json.RawMessage) json.RawMessage {
+	retirement := m.object(raw)
+	for _, key := range []string{"completed_at", "started_at"} {
+		if timestamp := retirement[key]; m.hasTimestamp(timestamp) {
+			return timestamp
+		}
+	}
+	return json.RawMessage(`"retiring"`)
+}
+
 func (m *legacyImport) registry() {
 	root, mtime := m.readObject("project-registry.json", false)
 	for id, raw := range m.object(root["projects"]) {
@@ -185,12 +205,18 @@ func (m *legacyImport) registry() {
 			obj, "skind sdataset_id sdataset_name bcode_enabled sstatus ndesired_revision soperation_id japplied=applied_json")
 		m.overrides("common", id, obj["overrides"])
 	}
+	retirements := m.object(root["agent_retirements"])
 	for archived, key := range []string{"agents", "archived_agents"} {
 		for id, raw := range m.object(root[key]) {
 			obj := m.object(raw)
-			if archived == 0 && obj != nil && (len(obj["default_access"]) == 0 || string(obj["default_access"]) == "null") {
-				// Legacy agents without a default grant field inherited registry defaults.
-				obj["default_access"] = json.RawMessage(`"maintain"`)
+			if archived == 0 && obj != nil {
+				if len(obj["default_access"]) == 0 || string(obj["default_access"]) == "null" {
+					// Legacy agents without a default grant field inherited registry defaults.
+					obj["default_access"] = json.RawMessage(`"maintain"`)
+				}
+				if rawRetirement, found := retirements[id]; found && !m.hasTimestamp(obj["retired_at"]) {
+					obj["retired_at"] = m.retirementTimestamp(rawRetirement)
+				}
 			}
 			m.mapped("agents", "id,name,archived,extra_json", []any{id, legacyDecode[string](m, obj["name"]), archived, m.extra(obj,
 				"id name kind principal_id key_file control_token_file default_access host_profile host_profile_fingerprint capabilities entrypoints installation retired_at archived")},
