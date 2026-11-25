@@ -9,6 +9,48 @@ import lint
 from lint import check_source
 
 
+class CogneeRunnerLintTests(unittest.TestCase):
+    def test_factory_and_parameter_rules_are_path_scoped(self):
+        factory = """from cognee.infrastructure.llm.config import LLMConfig
+def native_llm_configuration(environment):
+    return LLMConfig(**native_llm_kwargs(environment))
+"""
+        actual = '/outside/repo/engines/cognee/llm_config.py'
+        self.assertEqual(check_source(factory, actual), [])
+        for path in ('engine/python/llm_config.py', 'engines/other/llm_config.py'):
+            self.assertIn('ML001', {code for _, code, _ in check_source(factory, path)})
+        defaults = "options['temperature'] = 0\noptions['llm_args'] = configured or {}"
+        self.assertEqual({code for _, code, _ in check_source(defaults, actual)}, {'ML002', 'ML003'})
+
+    def test_environment_allowlist_does_not_leak_to_other_runner_paths(self):
+        source = "import os\nos.environ['LLM_MODEL'] = 'example'"
+        for path in lint.ENGINES_COGNEE_ENVIRON_ALLOWLIST:
+            self.assertEqual(check_source(source, '/outside/repo/' + path), [])
+        for path in ('engine/python/user_profiles/runner.py', 'engines/other/runner.py',
+                     'engines/cognee/not_allowed.py'):
+            self.assertEqual({code for _, code, _ in check_source(source, path)}, {'ML007'})
+
+    def test_main_scans_runner_production_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runner = root / 'engines/cognee'
+            runner.mkdir(parents=True)
+            source = ("import os\nos.environ['LLM_MODEL'] = 'example'\nLLMConfig()\n"
+                      "settings['temperature'] = 0\nsettings['llm_args'] = current or {}\n")
+            (runner / 'worker.py').write_text(source)
+            (runner / 'test_worker.py').write_text(source)
+            (runner / '__pycache__').mkdir()
+            (runner / '__pycache__/worker.py').write_text(source)
+            console = io.StringIO()
+            with patch.object(lint, 'ROOT', root), contextlib.redirect_stdout(console):
+                self.assertTrue(lint.main())
+            matches = [line for line in console.getvalue().splitlines() if line.startswith('engines/cognee/')]
+            self.assertEqual(len(matches), 4)
+            for line, code in enumerate(('ML007', 'ML001', 'ML002', 'ML003'), start=2):
+                self.assertTrue(any(match.startswith(f'engines/cognee/worker.py:{line}: {code} ')
+                                    for match in matches))
+
+
 class ModelParameterLintTests(unittest.TestCase):
     def codes(self, source, name='generation_handoff_runtime.py'):
         return {code for _, code, _ in check_source(source, name)}

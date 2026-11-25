@@ -23,6 +23,10 @@ ENVIRON_MUTATION_ALLOWLIST = {
     'antigravity_hook_policy.py': 'single-invocation Antigravity hook script for upstream _plugin_common',
     'project_plugin_policy.py': 'single-invocation plugin hook script for upstream _plugin_common',
 }
+ENGINES_COGNEE_ENVIRON_ALLOWLIST = {
+    'engines/cognee/runner.py', 'engines/cognee/handoff.py',
+    'engines/cognee/probe.py', 'engines/cognee/first_install_store.py',
+}
 ENVIRON_SCOPED_ALLOWLIST = {
     'project_backlog_worker.py': '_scoped_improve_cooldown',
 }
@@ -566,7 +570,8 @@ def _compute_scoped_allow_nodes(tree, filename, parent_map):
 def _check_environ_mutations(tree, path, ast_index, report):
     path_obj = Path(path)
     filename = path_obj.name
-    if path_obj.parent.name == 'scripts' or filename in ENVIRON_MUTATION_ALLOWLIST:
+    if (path_obj.parent.name == 'scripts' or filename in ENVIRON_MUTATION_ALLOWLIST
+            or _normalize_rel_path(path) in ENGINES_COGNEE_ENVIRON_ALLOWLIST):
         return
     parent_map = ast_index['parent_map']
     scope_nodes_map = ast_index['scope_nodes']
@@ -629,7 +634,7 @@ def _check_model_boundaries(tree, path, ast_index, report):
     scope_children_map = ast_index['scope_children']
     filename = Path(path).name
     allowed_factory = None
-    if filename == 'generation_config.py':
+    if filename == 'generation_config.py' or _normalize_rel_path(path) == 'engines/cognee/llm_config.py':
         allowed_factory = next(
             (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'native_llm_configuration'),
             None,
@@ -767,7 +772,7 @@ def _normalize_rel_path(path):
                 return path_obj.relative_to(ROOT).as_posix()
             except ValueError:
                 parts = path_obj.parts
-                for anchor in ('engine', 'scripts', 'internal'):
+                for anchor in ('engine', 'engines', 'scripts', 'internal'):
                     if anchor in parts:
                         idx = parts.index(anchor)
                         return Path(*parts[idx:]).as_posix()
@@ -2823,6 +2828,9 @@ def iter_formal_markdown_docs(docs_dir):
 def main():
     failures = 0
     paths = sorted((ROOT / 'engine/python').rglob('*.py'))
+    cognee_dir = ROOT / 'engines/cognee'
+    if cognee_dir.is_dir():
+        paths.extend(sorted(cognee_dir.rglob('*.py')))
     for path in paths:
         if '__pycache__' in path.parts or path.name.startswith('test_'):
             continue
