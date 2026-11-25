@@ -21,6 +21,7 @@ import (
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
 	"github.com/zwhu/memlane/internal/supervisor"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 func TestInstallPlanApplyAndPoll(t *testing.T) {
@@ -140,7 +141,7 @@ func TestInstallCompletesWithExistingComponents(t *testing.T) {
 				polls := 0
 				f.r.InspectWorkerFn = func(ctx context.Context, root string) (bootstrap.InstallWorkerState, bool, error) {
 					if f.workerActive && tc.exit == ExitInProgressOrBusy {
-						if _, waiting := ctx.Deadline(); waiting {
+						if deadline, waiting := ctx.Deadline(); waiting && time.Until(deadline) <= time.Second {
 							polls++
 							if polls > 1 {
 								<-ctx.Done()
@@ -240,7 +241,7 @@ func TestHiddenWorkerAssetsAndExitMapping(t *testing.T) {
 		{supervisor.ErrUpgradeLocked, ExitInProgressOrBusy}, {bootstrap.ErrPlanChanged, ExitPreflightBlocked}, {bootstrap.ErrOperationIDMismatch, ExitPreflightBlocked}, {errors.New("private failure"), ExitFatal},
 	} {
 		f.r.RunWorkerFn = func(_ context.Context, env *bootstrap.Environment, assets fs.FS, cfg bootstrap.InstallWorkerConfig) error {
-			if _, err := fs.ReadFile(assets, "scripts/dev.py"); err != nil || !cfg.StartRuntime || cfg.ConfigPath != f.config ||
+			if _, err := fs.ReadFile(assets, "engines/cognee/runner.py"); err != nil || !cfg.StartRuntime || cfg.ConfigPath != f.config ||
 				cfg.RuntimeHash != f.owner.RunningRuntimeHash || env.Options.Root != f.root {
 				t.Fatalf("worker inputs invalid: %+v %v", cfg, err)
 			}
@@ -459,14 +460,14 @@ func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
 			f.writeConfig()
 			f.row.Status = "configured_pending_new_session"
 			f.row.Capture = &controlplane.AgentCaptureState{State: "healthy"}
-			f.r.DetectHostsFn = func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost {
-				hosts := []bootstrap.DetectedHost{
+			f.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+				hosts := []agents.DetectedHost{
 					{Kind: "codex", Detected: true, SupportsProcessingCLI: true},
 					{Kind: "antigravity", SupportsProcessingCLI: true, Executable: "/bin/fake"},
 					{Kind: "trae_ide", Detected: true, Executable: "/bin/fake"},
 				}
 				for _, kind := range tc.local {
-					hosts = append(hosts, bootstrap.DetectedHost{
+					hosts = append(hosts, agents.DetectedHost{
 						Kind: kind, Detected: true, SupportsProcessingCLI: true, Executable: "/bin/fake",
 					})
 				}
@@ -551,22 +552,22 @@ func TestOnlineDoctorProcessingCLIGuidance(t *testing.T) {
 
 func TestOfflineDoctorAvailableBridges(t *testing.T) {
 	t.Parallel()
-	gui := bootstrap.DetectedHost{Kind: "trae_ide", Detected: true, Executable: "/Applications/Trae CN.app/Contents/MacOS/Electron"}
-	codex := bootstrap.DetectedHost{Kind: "codex", Detected: true, SupportsProcessingCLI: true, Executable: "/usr/local/bin/codex"}
+	gui := agents.DetectedHost{Kind: "trae_ide", Detected: true, Executable: "/Applications/Trae CN.app/Contents/MacOS/Electron"}
+	codex := agents.DetectedHost{Kind: "codex", Detected: true, SupportsProcessingCLI: true, Executable: "/usr/local/bin/codex"}
 	for _, tc := range []struct {
 		name    string
-		hosts   []bootstrap.DetectedHost
+		hosts   []agents.DetectedHost
 		bridges []string
 	}{
-		{"processing CLI", []bootstrap.DetectedHost{gui, codex, codex}, []string{"codex"}},
-		{"GUI only", []bootstrap.DetectedHost{gui}, nil},
+		{"processing CLI", []agents.DetectedHost{gui, codex, codex}, []string{"codex"}},
+		{"GUI only", []agents.DetectedHost{gui}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
 			f.owner = bootstrap.OwnerRuntimeStatus{State: "stopped"}
 			f.plan.Items[0].Observation.Status = bootstrap.Missing
-			f.r.DetectHostsFn = func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost { return tc.hosts }
+			f.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost { return tc.hosts }
 			generation := f.command(ExitActionRequired, "doctor", "--json").Generation
 			if !slices.Equal(generation.AvailableBridges, tc.bridges) || len(generation.DetectedUnconfiguredCLIs) != 0 {
 				t.Fatalf("available bridges: %v, want %v", generation.AvailableBridges, tc.bridges)
@@ -2345,6 +2346,99 @@ func TestCorruptUpgradeReceiptOnlyBlocksZeroDownloadVerification(t *testing.T) {
 					t.Fatal("inspection mutated the corrupt receipt or sent a mutating request")
 				}
 			})
+		})
+	}
+}
+
+func TestOptionCHostConfiguration(t *testing.T) {
+	for _, kind := range []string{agents.HostCodex, agents.HostPi, agents.HostTraeIDE} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFixture(t)
+			f.doc.Control.PluginDir = ""
+			f.writeConfig()
+			profile := filepath.Join(f.base, "host-profile")
+			f.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+				return []agents.DetectedHost{{Kind: kind, Detected: true, ProfileDir: profile}}
+			}
+			f.handler = func(req *http.Request, _ requestBody) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/api/generation":
+					return response(200, map[string]any{"state": map[string]int{"active_revision": 1}})
+				case "/api/agents":
+					return response(200, map[string]any{"registered_agents": []any{}})
+				}
+				return nil, nil
+			}
+			args := []string{"connect", "--agent", kind}
+			var config string
+			switch kind {
+			case agents.HostCodex:
+				config = filepath.Join(profile, "config.toml")
+				original := "[mcp_servers.memlane-cognee]\ncommand = \"legacy helper\"\n[mcp_servers.user]\nurl = \"http://localhost:9910\"\n"
+				conflicting := original + "[mcp_servers.third-party-cognee]\ncommand = \"external-cognee --token raw-test-canary\"\n"
+				writeFile(t, config, []byte(conflicting))
+				f.command(ExitPreflightBlocked, append(slices.Clone(args), "--dry-run")...)
+				out := f.rawCommand(ExitPreflightBlocked, []string{"doctor", "--json"})
+				if !strings.Contains(out.raw, "third_party_cognee_conflict") || strings.Contains(out.raw, "raw-test-canary") {
+					t.Fatalf("unsafe or missing conflict information: %s", out.raw)
+				}
+				if raw, err := os.ReadFile(config); err != nil || string(raw) != conflicting {
+					t.Fatal("third-party integration was changed", err)
+				}
+				writeFile(t, config, []byte(original))
+				if e := f.command(ExitActionRequired, "doctor"); !hasBlocker(e, "hook_repair_required") || !slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
+					t.Fatal("legacy entry did not get migration guidance")
+				}
+			case agents.HostTraeIDE:
+				args = []string{"repair", "trae-hooks"}
+				config = filepath.Join(profile, "hooks.json")
+				writeFile(t, config, []byte(`{"version":1,"hooks":{"SessionStart":[{"hooks":[{"command":"/tmp/memlane-cognee/old"}]},{"hooks":[{"command":"keep-user-command"}]}]}}`))
+			case agents.HostPi:
+				config = filepath.Join(profile, "extensions", "memlane-cognee", "host-binding.json")
+			}
+			preview := f.command(ExitActionRequired, append(slices.Clone(args), "--dry-run")...)
+			if len(preview.Artifacts.ReviewedSHA) != 64 || f.writes != 0 {
+				t.Fatal("dry-run did not return a digest or issued a write")
+			}
+			if kind == agents.HostTraeIDE && (preview.Artifacts.HookRepair == nil || preview.Artifacts.HookRepair.PreservedThirdPartyGroups != 1) {
+				t.Fatal("repair did not account for the user hook")
+			}
+			keyDir := filepath.Join(f.store, "agent-keys")
+			f.command(ExitPreflightBlocked, append(slices.Clone(args), "--apply", "--reviewed-sha", strings.Repeat("0", 64))...)
+			if _, err := os.Stat(keyDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("preview or mismatched apply created key directory: %v", err)
+			}
+			f.command(ExitHumanRequired, append(slices.Clone(args), "--apply", "--reviewed-sha", preview.Artifacts.ReviewedSHA)...)
+			keys, err := os.ReadDir(keyDir)
+			if err != nil || len(keys) != 1 {
+				t.Fatalf("managed agent key missing: %v", err)
+			}
+			if info, err := keys[0].Info(); err != nil || info.Mode().Perm() != 0600 {
+				t.Fatalf("managed agent key mode: %v, %v", info, err)
+			}
+			raw, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case agents.HostCodex:
+				hooks, err := os.ReadFile(filepath.Join(profile, "hooks.json"))
+				if err != nil || !strings.Contains(string(hooks), " hook codex ") || !bytes.Contains(raw, []byte("/mcp")) ||
+					!bytes.Contains(raw, []byte("mcp_servers.user")) || bytes.Contains(raw, []byte("memlane-cognee")) {
+					t.Fatal("Codex hook/MCP migration was not applied")
+				}
+			case agents.HostTraeIDE:
+				if !bytes.Contains(raw, []byte(" hook trae-ide ")) || !bytes.Contains(raw, []byte("keep-user-command")) ||
+					bytes.Contains(raw, []byte("memlane-cognee/old")) {
+					t.Fatal("TRAE migration altered the wrong hook or omitted the new hook")
+				}
+			case agents.HostPi:
+				if !bytes.Contains(raw, []byte("managed_by")) || !bytes.Contains(raw, []byte("token_file")) {
+					t.Fatal("Pi binding was not applied")
+				}
+			}
+			f.command(ExitOK, append(slices.Clone(args), "--dry-run")...)
+			f.command(ExitOK, "verify", "--stage", "connection", "--agent", kind)
 		})
 	}
 }

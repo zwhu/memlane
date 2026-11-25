@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -58,23 +59,25 @@ func TestLoadManifestsValidatesSyntheticAssets(t *testing.T) {
 	assets := fstest.MapFS{
 		"first-install-components.json": {Data: []byte(`{"schema":1,"python":` + pin + `,"uv":` + pin + `}`)},
 		"coding-memory-components.json": {Data: []byte(`{
-			"service":{"commit":"` + commit + `","archive_sha256":"` + digest + `","archive_url":"https://example.test/service","packages":["engine"]},
-			"plugin":{"version":"1.2.3","commit":"` + commit + `","archive_sha256":"` + digest + `","archive_url":"https://example.test/plugin","managed_patch_manifest":"plugin.json"}
+			"service":{"commit":"` + commit + `","archive_sha256":"` + digest + `","archive_url":"https://example.test/service","packages":["engine"]}
 		}`)},
 		"embedding-components.json": {Data: []byte(`{
 			"schema":1,"model":"example/model","dimensions":64,"repositories":[{"repo":"example/model","revision":"` + commit + `","files":[]}]
 		}`)},
-		"plugin.json":              {Data: []byte(`{"plugin_commit":"` + commit + `"}`)},
-		"python/requirements.lock": {Data: []byte("example==1.0 --hash=sha256:" + digest + "\n")},
+		"requirements.lock": {Data: []byte("example==1.0 --hash=sha256:" + digest + "\n")},
 	}
 	m, err := LoadManifests(assets, "arm64")
-	if err != nil || m.UV.Artifact.SHA256 != digest || !strings.HasPrefix(m.Plugin.Version, "1.2.3 · 1111111 · ") || string(m.Lock) != string(assets["python/requirements.lock"].Data) {
+	if err != nil || m.UV.Artifact.SHA256 != digest || string(m.Lock) != string(assets["requirements.lock"].Data) {
 		t.Fatalf("LoadManifests = %+v, %v", m, err)
 	}
-	assets["plugin.json"] = &fstest.MapFile{Data: []byte(`{"plugin_commit":"other"}`)}
-	_, err = LoadManifests(assets, "arm64")
-	if err == nil || err.Error() != "fixed Agent plugin source and patch receipt differ" {
-		t.Fatalf("LoadManifests error = %v", err)
+	delete(assets, "requirements.lock")
+	m, err = LoadManifests(assets, "arm64")
+	if err != nil || !bytes.Equal(m.Lock, defaultRequirementsLock) || len(m.Lock) == 0 {
+		t.Fatalf("embedded requirements fallback failed: %v", err)
+	}
+	assets["requirements.lock"] = &fstest.MapFile{Data: []byte(" \n")}
+	if _, err := LoadManifests(assets, "arm64"); err == nil {
+		t.Fatal("empty explicit requirements lock accepted")
 	}
 }
 

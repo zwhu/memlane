@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -80,22 +81,16 @@ type ServiceSpec struct {
 	SDKVersion string `json:"sdk_version"`
 }
 
-type PluginSpec struct {
-	SourceSpec
-	Version     string `json:"version"`
-	Manifest    string `json:"managed_patch_manifest"`
-	Patch       []byte `json:"-"`
-	PatchDigest string `json:"-"`
-}
-
 type ManifestSet struct {
 	Python, UV ToolSpec
 	Native     *NativeSupportSpec
 	Service    ServiceSpec
-	Plugin     PluginSpec
 	Model      ModelSpec
 	Lock       []byte
 }
+
+//go:embed requirements.lock
+var defaultRequirementsLock []byte
 
 type ToolPins struct {
 	Version string   `json:"version"`
@@ -113,7 +108,6 @@ func LoadManifests(assets fs.FS, goarch string) (ManifestSet, error) {
 	}
 	var sources struct {
 		Service ServiceSpec `json:"service"`
-		Plugin  PluginSpec  `json:"plugin"`
 	}
 	for _, entry := range []struct {
 		name   string
@@ -134,32 +128,17 @@ func LoadManifests(assets fs.FS, goarch string) (ManifestSet, error) {
 	if pins.Schema != 1 {
 		return ManifestSet{}, errors.New("unsupported bootstrap manifest")
 	}
-	m.Service, m.Plugin = sources.Service, sources.Plugin
+	m.Service = sources.Service
 	if len(m.Service.Commit) != 40 || len(m.Service.SHA256) != 64 || len(m.Service.Packages) == 0 {
 		return ManifestSet{}, errors.New("invalid fixed Cognee manifest")
 	}
-	if len(m.Plugin.Commit) != 40 || len(m.Plugin.SHA256) != 64 || filepath.Base(m.Plugin.Manifest) != m.Plugin.Manifest || m.Plugin.Manifest == "" {
-		return ManifestSet{}, errors.New("invalid fixed Agent plugin manifest")
-	}
-	pluginManifest, err := fs.ReadFile(assets, m.Plugin.Manifest)
-	if err != nil {
+	lock, err := fs.ReadFile(assets, "requirements.lock")
+	if errors.Is(err, fs.ErrNotExist) {
+		lock = bytes.Clone(defaultRequirementsLock)
+	} else if err != nil {
 		return ManifestSet{}, err
 	}
-	var pluginIdentity struct {
-		Commit string `json:"plugin_commit"`
-	}
-	if err := json.Unmarshal(pluginManifest, &pluginIdentity); err != nil || pluginIdentity.Commit != m.Plugin.Commit {
-		return ManifestSet{}, errors.New("fixed Agent plugin source and patch receipt differ")
-	}
-	pluginDigest := sha256.Sum256(pluginManifest)
-	m.Plugin.PatchDigest = hex.EncodeToString(pluginDigest[:])
-	m.Plugin.Version += " · " + m.Plugin.Commit[:7] + " · " + m.Plugin.PatchDigest[:8]
-	m.Plugin.Packages = []string{"integrations"}
-	m.Plugin.Patch = pluginManifest
-	m.Lock, err = fs.ReadFile(assets, "python/requirements.lock")
-	if err != nil {
-		return ManifestSet{}, err
-	}
+	m.Lock = lock
 	m.Python.Version, m.UV.Version = pins.Python.Version, pins.UV.Version
 	switch goarch {
 	case "arm64":
@@ -231,14 +210,6 @@ func BuildRequirements(root string, m ManifestSet, runtimeDigest, downloadSource
 			OfficialSource: officialModel, Digest: modelDigest,
 			DownloadBytes: modelBytes, InstalledBytes: modelBytes,
 			Destination: filepath.Join(root, "embedding-"+modelDigest[:12]), SizeNote: "含固定 ONNX 模型及官方分词文件，复用原有向量空间",
-		},
-		{
-			ID: "agent-plugin", Name: "Agent 插件", Purpose: "为已有 Agent 准备官方 Cognee 接入插件及固定权限适配", Version: m.Plugin.Version,
-			Source:         DisplaySourceURL("agent-plugin", m.Plugin.URL, m.Plugin.SHA256, downloadSource),
-			OfficialSource: m.Plugin.URL, Digest: m.Plugin.SHA256,
-			DownloadBytes: 20 << 20, InstalledBytes: 60 << 20,
-			Destination: filepath.Join(root, "plugin-integrations-"+m.Plugin.Commit[:7]+"-"+m.Plugin.PatchDigest[:8]),
-			SizeNote:    "下载和占用为预估预算；固定官方归档及补丁，不包含账号或登录信息",
 		},
 	}
 }

@@ -36,7 +36,7 @@ var specs = map[string]commandSpec{
 	"doctor":           {[]string{"check-network", "include-logs"}, []string{"mirror", "agent", "operation-id"}},
 	"install":          {[]string{"plan", "apply"}, []string{"plan-digest", "component", "mirror", "wait", "operation-id"}},
 	"connect":          {[]string{"dry-run", "apply"}, []string{"agent", "phase", "instance-id", "profile", "reviewed-sha"}},
-	"repair":           {[]string{"dry-run", "apply"}, []string{"owner-fingerprint", "operation-id", "instance-id", "reviewed-sha"}},
+	"repair":           {[]string{"dry-run", "apply"}, []string{"owner-fingerprint", "operation-id", "instance-id", "profile", "reviewed-sha"}},
 	"verify":           {[]string{"expect-zero-downloads", "expect-runtime-current"}, []string{"stage", "agent"}},
 	"stop":             {[]string{"dry-run", "apply"}, []string{"owner-fingerprint"}},
 	"__install-worker": {[]string{"start-runtime"}, []string{"mirror", "operation-id", "plan-digest", "component"}},
@@ -71,7 +71,7 @@ func commandManifest() *manifest {
 }
 
 var repairTargets = []string{"stale-daemon", "pending-ops", "trae-hooks", "stale-owner"}
-var componentIDs = []string{"uv", "python", "runtime", "cognee-source", "embedding", "agent-plugin"}
+var componentIDs = setup.ComponentIDs()
 
 func flagsFor(command string) commandSpec {
 	spec := specs[command]
@@ -185,7 +185,7 @@ func (o *options) valid(command string) bool {
 		case "pending-ops":
 			return !o.has("apply") || o.has("operation-id")
 		case "trae-hooks":
-			return !o.has("apply") || o.has("instance-id") && o.has("reviewed-sha")
+			return !o.has("apply") || o.has("reviewed-sha")
 		}
 	case "verify":
 		return oneOf(o.get("stage"), "", "components", "setup", "connection")
@@ -305,7 +305,11 @@ func (s *session) run() {
 	case "repair":
 		s.repair()
 	case "verify":
-		s.verify()
+		if s.get("stage") == "connection" && (s.config.Control.PluginDir == "" || s.has("agent") && s.useHostHooks(s.get("agent"))) {
+			s.verifyHostHooks()
+		} else {
+			s.verify()
+		}
 	case "stop":
 		s.stop()
 	}

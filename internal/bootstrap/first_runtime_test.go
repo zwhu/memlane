@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +53,10 @@ func TestFirstRuntimeReadinessRequiresLiveOwnerAndBothAuthenticatedAPIs(t *testi
 	}))
 	defer service.Close()
 	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/projects" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer synthetic-management-token" {
 			http.Error(w, "unauthorized", 401)
 			return
@@ -240,7 +243,7 @@ func TestFirstRuntimeHelperProcess(t *testing.T) {
 		}
 	}
 
-	// Launcher modes: emulate scripts/dev.py or first_install_runtime.py activation contract.
+	// Launcher modes: emulate engines/cognee/runner.py or first_install_runtime.py activation contract.
 	storeRoot := os.Getenv("MEMLANE_BOOTSTRAP_STORE")
 	configPath := os.Getenv("MEMLANE_BOOTSTRAP_CONFIG")
 	serviceAddr := os.Getenv("MEMLANE_BOOTSTRAP_SERVICE_ADDR")
@@ -379,18 +382,22 @@ func TestFirstRuntimeHelperProcess(t *testing.T) {
 		updatedCfg, _ := json.Marshal(cfgMap)
 		_ = os.WriteFile(configPath, updatedCfg, 0o600)
 
-		gen := map[string]any{
-			"schema_version": 2,
-			"active":         map[string]any{"id": "cand", "revision": 1},
-			"profiles": map[string]any{
-				"cand": []any{map[string]any{
-					"revision": 1,
-					"profile":  map[string]any{"mode": "provider", "model": "synthetic-model"},
-				}},
-			},
+		generationPath := filepath.Join(storeRoot, "generation.json")
+		if _, err := os.Stat(generationPath); err == nil {
+			if err := updateActivationJSON(generationPath, map[string]any{"active": FirstGenerationReference{ID: "cand", Revision: 1}}); err != nil {
+				os.Exit(9)
+			}
+		} else {
+			gen := map[string]any{
+				"schema_version": 2, "active": FirstGenerationReference{ID: "cand", Revision: 1},
+				"profiles": map[string]any{"cand": []any{map[string]any{
+					"revision": 1, "profile": map[string]string{"mode": "provider", "model": "synthetic-model"},
+				}}},
+			}
+			if err := writeFirstRuntimeJSON(generationPath, gen); err != nil {
+				os.Exit(9)
+			}
 		}
-		genBytes, _ := json.Marshal(gen)
-		_ = os.WriteFile(filepath.Join(storeRoot, "generation.json"), genBytes, 0o600)
 
 		clientState := map[string]any{
 			"schema_version":              1,
@@ -545,6 +552,7 @@ func newSyntheticFirstRuntimeFixture(t *testing.T, mode string, extraEnv map[str
 		StoreRoot:  storeRoot,
 		Resources:  resourcesDir,
 		Python:     wrapperPath,
+		Executable: wrapperPath,
 		HostHome:   hostHome,
 	}
 	return fix, prepared
@@ -1099,6 +1107,20 @@ func TestStartFirstRuntimeOwnerLockHandoffFromSupervisedToActivationLauncher(t *
 	// Hand off to activation launcher: Go-owned setup supervisor must release .service-owner first,
 	// allowing the activation launcher to acquire .service-owner and transition to ready + complete.
 	prepared.ActivationFile = filepath.Join(fix.storeRoot, "first-install-activation.json")
+	writeBootstrapTestJSON(t, prepared.ActivationFile, FirstActivationRequest{
+		Schema: 1, StoreID: fix.storeID, Operation: "first-handoff", Status: "approved",
+		Reference: FirstGenerationReference{ID: "cand", Revision: 1}, Digest: strings.Repeat("a", 64), Revision: 1,
+	})
+	writeBootstrapTestJSON(t, filepath.Join(fix.storeRoot, "generation.json"), map[string]any{
+		"schema_version": 2, "revision": 1, "next": FirstGenerationReference{ID: "cand", Revision: 1},
+		"profiles": map[string]any{"cand": []any{map[string]any{
+			"revision": 1, "digest": strings.Repeat("a", 64),
+			"profile": map[string]string{"mode": "provider", "model": "synthetic-model"},
+		}}},
+		"validations": map[string]any{"validated": map[string]any{
+			"digest": strings.Repeat("a", 64), "status": "passed", "plain_passed": true, "schema_passed": true, "quality_passed": true,
+		}},
+	})
 	activatedHandle, err := StartFirstRuntimeHandle(
 		ctx,
 		prepared,
@@ -1132,25 +1154,6 @@ func TestStartFirstRuntimeCompletedActivationReplay(t *testing.T) {
 		t.Run(fmt.Sprintf("owner running=%t", running), func(t *testing.T) {
 			t.Parallel()
 			fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher_activate", nil)
-			const replay = `for arg do
-  if [ "$arg" = "--activate-file" ]; then exit 0; fi
-done
-`
-			bodyPath := fix.wrapperPath + ".body.sh"
-			if body, err := os.ReadFile(bodyPath); err == nil {
-				if err := os.WriteFile(bodyPath, append([]byte(replay), body...), 0600); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				wrapper, err := os.ReadFile(fix.wrapperPath)
-				if err != nil {
-					t.Fatal(err)
-				}
-				wrapper = []byte(strings.Replace(string(wrapper), "#!/bin/sh\n", "#!/bin/sh\n"+replay, 1))
-				if err := os.WriteFile(fix.wrapperPath, wrapper, 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			defer cancel()
 			t.Cleanup(func() {
@@ -1468,64 +1471,53 @@ func newReadOnlyRuntimeFixture(t *testing.T) FirstRuntime {
 		Root: store, Commit: "fixed", Python: "/bin/sh", TokenFile: filepath.Join(store, "owner.token"),
 		First: &FirstInstallation{Schema: 1, StoreID: storeID, Setup: true},
 	})
-	return FirstRuntime{ConfigPath: configPath, StoreRoot: store, Resources: home, Python: "/bin/sh", HostHome: home}
+	return FirstRuntime{
+		ConfigPath: configPath, StoreRoot: store, Resources: home, Python: "/bin/sh", HostHome: home,
+		Executable: filepath.Join(home, "nonexistent-launcher"),
+	}
 }
 
 func newRuntimePreparationFixture(t *testing.T, probeScript string) (FirstRuntime, *Environment, fstest.MapFS) {
 	t.Helper()
 	prepared := newReadOnlyRuntimeFixture(t)
+	root := filepath.Join(prepared.HostHome, "components")
+	statePath, err := WorkerStatePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeScript = strings.NewReplacer(
+		"@WORKER_STATE@", fmt.Sprintf("%q", statePath),
+		"@WORKER_MARKER@", fmt.Sprintf("%q", filepath.Join(prepared.StoreRoot, "preflight-started")),
+	).Replace(probeScript)
 	python := fakeDependencyPython(t, probeScript)
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config.Python = python
+	config.GenerationFile = filepath.Join(prepared.StoreRoot, "generation.json")
 	prepared.Python = python
 	writeBootstrapTestJSON(t, prepared.ConfigPath, config)
 
-	root := filepath.Join(prepared.HostHome, "components")
-	plugin := filepath.Join(root, "agent")
-	if err := os.MkdirAll(plugin, 0700); err != nil {
-		t.Fatal(err)
-	}
-	const pluginFile = "plugin.txt"
-	if err := os.WriteFile(filepath.Join(plugin, pluginFile), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	manifest := []byte(`{"files":{"plugin.txt":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}`)
-	if err := os.WriteFile(filepath.Join(plugin, ".memlane-project-access.json"), manifest, 0600); err != nil {
-		t.Fatal(err)
-	}
-	spec := SourceSpec{URL: "https://example.test/plugin", SHA256: "plugin-digest"}
+	writeFirstStoreInputFixture(t, prepared, config)
 	env := Environment{
 		Options: EnvironmentOptions{Root: root, ProtectedStore: prepared.StoreRoot},
 		Runtime: RuntimeDriver{ExistingPython: python, Lock: []byte("locked==1\n")},
 		Source:  sourceLocations{Managed: SourceDriver{Spec: SourceSpec{Commit: config.Commit}}},
-		Plugin:  PluginDriver{Spec: spec, Version: "fixed", ExistingPath: plugin, Manifest: manifest},
 	}
 	env.requirements = []Requirement{
 		{ID: "runtime", Name: "Runtime", Purpose: "Dependencies", Version: "fixed", Source: "https://example.test/lock",
 			Digest: env.Runtime.Digest(), Destination: filepath.Join(root, "runtime")},
-		{ID: "agent-plugin", Name: "Plugin", Purpose: "Agent integration", Version: "fixed", Source: spec.URL,
-			Digest: spec.SHA256, Destination: filepath.Join(root, "plugin-component")},
 	}
 	assets := fstest.MapFS{
-		"scripts/dev.py":                         {Data: []byte("# upgraded runtime")},
-		"engine/python/first_install_runtime.py": {Data: []byte("# preflight entry point")},
+		"engines/cognee/runner.py": {Data: []byte("# upgraded runtime")},
 	}
 	return prepared, &env, assets
 }
 
 func TestPrepareFirstRuntimeForUpgradePreservesConfig(t *testing.T) {
 	t.Parallel()
-	prepared, env, assets := newRuntimePreparationFixture(t, `
-case "$3" in
-	-c) echo '{"mismatch":[]}' ;;
-	*/first_install_runtime.py)
-		printf '%s\n' "$@" > preflight-argv
-		if [ -f fail-preflight ]; then exit 19; fi ;;
-	*) exit 42 ;;
-esac`)
+	prepared, env, assets := newRuntimePreparationFixture(t, `echo '{"mismatch":[]}'`)
 	wantConfig, err := os.ReadFile(prepared.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1542,54 +1534,31 @@ esac`)
 		got.ConfigPath != prepared.ConfigPath || got.StoreRoot != prepared.StoreRoot || got.Python != prepared.Python || got.HostHome == "" || !got.Plan.Complete() {
 		t.Fatalf("unexpected upgrade preparation: %+v", got)
 	}
-	assertConfigAndArgs := func(t *testing.T) {
+	assertConfig := func(t *testing.T) {
 		t.Helper()
 		if data, err := os.ReadFile(prepared.ConfigPath); err != nil || !bytes.Equal(data, wantConfig) {
 			t.Fatalf("upgrade preparation changed runtime.json: %v", err)
 		}
-		raw, err := os.ReadFile(filepath.Join(prepared.StoreRoot, "preflight-argv"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		args := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
-		installRoot := slices.Index(args, "--installation-root")
-		if !slices.Contains(args, "--prepare-only") || !slices.Contains(args, "--skip-graph-refresh") ||
-			installRoot < 0 || installRoot+1 >= len(args) || args[installRoot+1] != env.Installer().Root {
-			t.Fatalf("unexpected upgrade preflight argv: %q", args)
-		}
 	}
-	assertConfigAndArgs(t)
-	if err := os.Remove(filepath.Join(prepared.StoreRoot, "preflight-argv")); err != nil {
-		t.Fatal(err)
-	}
+	assertConfig(t)
 	if err := env.Installer().withLock(func() error {
 		reused, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
 		if err != nil || reused.Resources != got.Resources {
 			t.Fatalf("upgrade preflight with installation.lock held = %+v, %v", reused, err)
 		}
-		assertConfigAndArgs(t)
+		assertConfig(t)
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	t.Run("preflight failure", func(t *testing.T) {
-		if err := os.Remove(filepath.Join(prepared.StoreRoot, "preflight-argv")); err != nil {
+	t.Run("missing inputs", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(prepared.StoreRoot, "first-install-input.json")); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(prepared.StoreRoot, "fail-preflight"), nil, 0600); err != nil {
-			t.Fatal(err)
+		if _, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("upgrade accepted a store without its inputs: %v", err)
 		}
-		_, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
-		var failure *CommandFailure
-		if !errors.As(err, &failure) || failure.ExitCode != 19 {
-			t.Fatalf("upgrade preflight failure = %v", err)
-		}
-		assertConfigAndArgs(t)
-	})
-	t.Run("missing assets", func(t *testing.T) {
-		if _, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, nil); err == nil || !strings.Contains(err.Error(), "runtime assets missing") {
-			t.Fatalf("upgrade preparation without assets = %v", err)
-		}
+		assertConfig(t)
 	})
 	if err := os.WriteFile(filepath.Join(got.Resources, "unexpected.py"), nil, 0600); err != nil {
 		t.Fatal(err)
@@ -1668,7 +1637,7 @@ func TestEvaluateZeroDownloads(t *testing.T) {
 func TestInspectOwnerRuntimeStatusReadOnly(t *testing.T) {
 	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("new runtime")}}
 	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1720,7 +1689,7 @@ func TestInspectOwnerRuntimeStatusFiltersUpgradeReceipt(t *testing.T) {
 	if err := prepareInstallationDir(filepath.Dir(path)); err != nil {
 		t.Fatal(err)
 	}
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("new runtime")}}
 	hash, err := BundledRuntimeHash(assets)
 	if err != nil {
 		t.Fatal(err)
@@ -1757,7 +1726,7 @@ func TestInspectOwnerRuntimeStatusSurvivesCorruptUpgradeReceipt(t *testing.T) {
 	t.Parallel()
 	const token = "sk-upgrade-receipt-fixture"
 	const oldHash = "1111111111111111"
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("new runtime")}}
 	for _, mode := range []string{"corrupt JSON", "symlink"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
@@ -1845,7 +1814,7 @@ func TestInspectOwnerRuntimeStatusLiveBeta2Argv(t *testing.T) {
 	component := filepath.Join(prepared.HostHome, "components with spaces")
 	install := filepath.Join(component, "installation")
 	old := filepath.Join(install, "runtime-1111111111111111")
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("new runtime")}}
 	lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -1857,8 +1826,8 @@ func TestInspectOwnerRuntimeStatusLiveBeta2Argv(t *testing.T) {
 		name, script string
 		developer    bool
 	}{
-		{"managed", filepath.Join(old, "scripts/dev.py"), false},
-		{"checkout", filepath.Join(prepared.HostHome, "developer repo", "engine/python/service.py"), true},
+		{"managed", filepath.Join(old, "engines/cognee/runner.py"), false},
+		{"checkout", filepath.Join(prepared.HostHome, "developer repo", "engines/cognee/service.py"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command("/bin/sh", "-c", "read -r line", "fixture", tc.script)
@@ -1914,7 +1883,7 @@ func TestDetectOwnerRuntimeUsesServiceChildAndRejectsCheckout(t *testing.T) {
 	t.Cleanup(func() { processArgsFn = original })
 	processArgsFn = func(pid int) ([]string, error) {
 		if pid == 43 {
-			return []string{"/bin/python3", filepath.Join(old, "engine/python/control.py")}, nil
+			return []string{"/bin/python3", filepath.Join(old, "engines/cognee/control.py")}, nil
 		}
 		return nil, os.ErrNotExist
 	}
@@ -1933,7 +1902,7 @@ func TestDetectOwnerRuntimeUsesServiceChildAndRejectsCheckout(t *testing.T) {
 	}
 
 	processArgsFn = func(int) ([]string, error) {
-		return []string{"/bin/python3", filepath.Join(prepared.HostHome, "installation with spaces-other", "scripts/dev.py")}, nil
+		return []string{"/bin/python3", filepath.Join(prepared.HostHome, "installation with spaces-other", "engines/cognee/runner.py")}, nil
 	}
 	status = OwnerRuntimeStatus{}
 	detectOwnerRuntime(&status, install, rec)
@@ -2026,15 +1995,10 @@ func TestVerifyRestartedRuntimeGeneration(t *testing.T) {
 func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
 	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
-	scripts := filepath.Join(prepared.Resources, "scripts")
-	if err := os.Mkdir(scripts, 0700); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(scripts, "dev.py")
+	script := filepath.Join(prepared.HostHome, "launcher.sh")
 	childPID := filepath.Join(prepared.HostHome, "launcher.pid")
-	if err := os.WriteFile(script, []byte("echo $$ > \"$HOME/launcher.pid\"\necho launcher-ready-to-wait\nexec /bin/sleep 30\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	writeWarmBootstrapScript(t, script, "echo $$ > \"$HOME/launcher.pid\"\necho launcher-ready-to-wait\nexec /bin/sleep 30\n")
+	prepared.Executable = script
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	err := StartFirstRuntimeDetached(ctx, prepared)
@@ -2068,14 +2032,9 @@ func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
 func TestStartFirstRuntimeDetachedReportsEarlyExit(t *testing.T) {
 	t.Parallel()
 	prepared := newReadOnlyRuntimeFixture(t)
-	scripts := filepath.Join(prepared.Resources, "scripts")
-	if err := os.Mkdir(scripts, 0700); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(scripts, "dev.py")
-	if err := os.WriteFile(script, []byte("exit 7\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	script := filepath.Join(prepared.HostHome, "launcher.sh")
+	writeWarmBootstrapScript(t, script, "exit 7\n")
+	prepared.Executable = script
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var exitErr *exec.ExitError
@@ -2101,13 +2060,9 @@ func TestStartFirstRuntimeDetachedObservesOwnerAfterLauncherExit(t *testing.T) {
 				if err := syscall.Mkfifo(fifo, 0600); err != nil {
 					t.Fatal(err)
 				}
-				script := filepath.Join(prepared.Resources, "scripts", "dev.py")
-				if err := os.Mkdir(filepath.Dir(script), 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(script, []byte("exec 3<> \"$HOME/launcher-exit\"\nread -r -t 5 line <&3\nexit 1\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
+				script := filepath.Join(prepared.HostHome, "launcher.sh")
+				writeWarmBootstrapScript(t, script, "exec 3<> \"$HOME/launcher-exit\"\nread -r -t 5 line <&3\nexit 1\n")
+				prepared.Executable = script
 				ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 				defer cancel()
 				done := make(chan error, 1)
@@ -2274,8 +2229,8 @@ func TestRestartStaleRuntimeOwnerReplacesVerifiedOwner(t *testing.T) {
 	requireRuntimeOwnerTestSupport(t)
 	_, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", nil)
 	install := filepath.Join(prepared.HostHome, "components", "installation")
-	oldAssets := fstest.MapFS{"scripts/dev.py": {Data: []byte("# old runtime")}}
-	newAssets := fstest.MapFS{"scripts/dev.py": {Data: []byte("# new runtime")}}
+	oldAssets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("# old runtime")}}
+	newAssets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("# new runtime")}}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	oldResources, err := PrepareRuntimeResources(ctx, install, oldAssets)
@@ -2311,7 +2266,7 @@ func TestRestartStaleRuntimeOwnerReplacesVerifiedOwner(t *testing.T) {
 	t.Cleanup(func() { processArgsFn = original })
 	processArgsFn = func(pid int) ([]string, error) {
 		if pid == oldOwner.PID {
-			return []string{prepared.Python, filepath.Join(oldResources, "scripts/dev.py")}, nil
+			return []string{prepared.Python, filepath.Join(oldResources, "engines/cognee/runner.py")}, nil
 		}
 		return nil, os.ErrNotExist
 	}
@@ -2375,4 +2330,13 @@ func TestRestartStaleRuntimeOwnerReplacesVerifiedOwner(t *testing.T) {
 	if check := EvaluateZeroDownloads(plan, Journal{}, false, historical, true, bundledHash, status.UpgradeReceipt); !check.Satisfied {
 		t.Fatalf("zero-download check = %+v", check)
 	}
+}
+
+func writeFirstStoreInputFixture(t *testing.T, prepared FirstRuntime, config firstRuntimeConfig) {
+	t.Helper()
+	writeBootstrapTestJSON(t, filepath.Join(prepared.StoreRoot, "first-install-input.json"), firstStoreInput{
+		StoreIdentity: StoreIdentity{Schema: 1, StoreID: config.First.StoreID, SourceCommit: config.Commit},
+		Root:          prepared.StoreRoot, Source: filepath.Join(prepared.HostHome, "source"),
+		Archive: filepath.Join(prepared.HostHome, "source.tar.gz"), ModelCache: filepath.Join(prepared.HostHome, "model-cache"),
+	})
 }

@@ -82,8 +82,6 @@ func NewEnvironment(ctx context.Context, assets fs.FS, options EnvironmentOption
 	}
 	e.Source = sourceLocations{Managed: SourceDriver{Spec: m.Service.SourceSpec, DownloadSource: sourceMode}, ExistingSource: options.Source, ExistingArchive: options.Archive}
 	e.Model = ModelDriver{Spec: bootstrapModelSpec(m.Model), ExistingRoot: options.ModelCache, Python: e.runtimePython, DownloadSource: sourceMode}
-	e.Plugin = PluginDriver{Spec: m.Plugin.SourceSpec, Version: m.Plugin.Version, Manifest: m.Plugin.Patch,
-		ExistingPath: options.Plugin, ResourceRoot: filepath.Join(options.Root, "installation"), Python: e.runtimePython, DownloadSource: sourceMode}
 	e.requirements = setup.BuildRequirements(options.Root, m, e.Runtime.Digest(), sourceMode, m.Native)
 
 	return e, nil
@@ -187,7 +185,6 @@ func (e *Environment) driverRouter() setup.DriverRouter {
 			"runtime":       installerDriver{&e.Runtime},
 			"cognee-source": installerDriver{&e.Source},
 			"embedding":     installerDriver{&e.Model},
-			"agent-plugin":  installerDriver{&e.Plugin},
 		},
 	}
 }

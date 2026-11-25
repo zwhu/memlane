@@ -286,13 +286,9 @@ func TestInstallWorkerBoundsDetachedRuntimeStart(t *testing.T) {
 	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
 	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
 	prepared := newReadOnlyRuntimeFixture(t)
-	scripts := filepath.Join(prepared.Resources, "scripts")
-	if err := os.Mkdir(scripts, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scripts, "dev.py"), []byte("exec /bin/sleep 1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	script := filepath.Join(prepared.HostHome, "launcher.sh")
+	writeWarmBootstrapScript(t, script, "exec /bin/sleep 1\n")
+	prepared.Executable = script
 	installer, driver, reqs := fixture(t)
 	root := filepath.Dir(installer.Root)
 	installer.Root = filepath.Join(root, "installation")
@@ -394,13 +390,12 @@ func TestRunInstallWorkerWithTimesOutPreparingRuntime(t *testing.T) {
 	workerProcessStartTimeFn = func(context.Context, int) (string, error) { return "worker-start", nil }
 	workerProcessTableFn = func(context.Context) (map[int]supervisor.ProcessInfo, error) { return nil, nil }
 	prepared, env, assets := newRuntimePreparationFixture(t, `
-case "$3" in
-	-c) echo '{"mismatch":[]}' ;;
-	*/first_install_runtime.py)
-		: > preflight-started
-		exec /bin/sleep 5 ;;
-	*) exit 42 ;;
-esac`)
+if /usr/bin/grep -q starting_runtime @WORKER_STATE@ 2>/dev/null; then
+  : > @WORKER_MARKER@
+  exec /bin/sleep 5
+fi
+echo '{"mismatch":[]}'`)
+
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
 	err := RunInstallWorkerWith(ctx, env, assets, InstallWorkerConfig{ConfigPath: prepared.ConfigPath, StartRuntime: true})

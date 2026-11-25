@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	}
 	flag.Parse()
 
-	// Compile cmd/memlane-app once per package test invocation so real binary tests
+	// Compile cmd/memlane once per package test invocation so real binary tests
 	// stay fast and reuse a single artifact inside a disposable temp directory.
 	var tmpDir string
 	if !testing.Short() {
@@ -48,12 +48,12 @@ func TestMain(m *testing.M) {
 		} else {
 			tmpDir = dir
 			outBin := filepath.Join(dir, "Memlane")
-			buildCmd := exec.Command("go", "build", "-o", outBin, "../../cmd/memlane-app")
+			buildCmd := exec.Command("go", "build", "-o", outBin, "../../cmd/memlane")
 			buildCmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 			if out, err := buildCmd.CombinedOutput(); err == nil {
 				compiledAppBinary = outBin
 			} else {
-				compiledAppBuildErr = fmt.Errorf("go build ../../cmd/memlane-app failed: %w (%s)", err, strings.TrimSpace(string(out)))
+				compiledAppBuildErr = fmt.Errorf("go build ../../cmd/memlane failed: %w (%s)", err, strings.TrimSpace(string(out)))
 			}
 		}
 	}
@@ -73,7 +73,7 @@ func runSmokeHelperCLI(args []string) int {
 		}
 	}
 	readyFile := os.Getenv(smokeReadyFlagEnv)
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("runtime")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("runtime")}}
 	bootstrapAssets := fstest.MapFS{"first-install-components.json": {Data: []byte("bootstrap")}}
 	completePlan := bootstrap.Plan{Items: []bootstrap.Item{
 		{Requirement: bootstrap.Requirement{ID: "runtime", DownloadBytes: 100}, Observation: bootstrap.Observation{Status: bootstrap.Available}},
@@ -354,8 +354,12 @@ func TestRealCompiledAppBinaryDispatch(t *testing.T) {
 	if code, env := runApp(nil, "version", "--json"); code != ExitOK || env.Capabilities == nil {
 		t.Fatalf("version failed: code=%d env=%+v", code, env)
 	}
-	if code, env := runApp(nil, "doctor", "--json"); code != ExitActionRequired || env.Command != "doctor" {
+	started := time.Now()
+	if code, env := runApp(nil, "doctor", "--json"); code != ExitActionRequired || env.Command != "doctor" || len(env.Components.Items) != 5 {
 		t.Fatalf("cold doctor failed: code=%d env=%+v", code, env)
+	}
+	if elapsed := time.Since(started); elapsed >= 5*time.Second {
+		t.Fatalf("cold doctor took %s", elapsed)
 	}
 	if code, env := runApp(nil, "install", "--plan", "--json"); code != ExitActionRequired || len(env.Artifacts.PlanDigest) != 64 {
 		t.Fatalf("install --plan failed: code=%d env=%+v", code, env)

@@ -1,17 +1,25 @@
 package setupcli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/zwhu/memlane/core/hooks"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 func (s *session) doctor() {
+	ctx, cancel := context.WithTimeout(s.ctx, 4*time.Second)
+	defer cancel()
+	s.ctx = ctx
 	s.checkDisk()
 	if s.loadSelections() {
 		if s.has("check-network") {
@@ -63,7 +71,7 @@ func (s *session) doctor() {
 		}
 	}
 	genOK := false
-	if client != nil {
+	if client != nil && s.config.Control.PluginDir != "" {
 		dir, err := client.Connections(s.ctx, false)
 		if err != nil {
 			s.controlFailure(err)
@@ -99,13 +107,17 @@ func (s *session) doctor() {
 				s.showHookRepairFromReceipt(res)
 			}
 		}
+	} else if client != nil {
+		genOK = s.gatewayGeneration(client)
 	} else if owner.OwnerLocked && oneOf(owner.State, "ready", "stale_runtime") {
 		s.block(ExitNeedsReview, "control_origin_unavailable")
 	}
 	if s.has("include-logs") {
 		s.showLogs(owner, client)
 	}
-	s.showLocalHosts(client == nil, client != nil && genOK)
+	hosts := s.localHosts()
+	s.showLocalHosts(hosts, client == nil, client != nil && genOK)
+	s.inspectHostConflicts(hosts)
 	if (client == nil || genOK) && len(s.Generation.AvailableBridges) == 0 && s.Generation.Active == nil {
 		detected := s.Generation.DetectedUnconfiguredCLIs
 		recommendations := bootstrap.RecommendedProcessingCLIs()
@@ -122,6 +134,79 @@ func (s *session) doctor() {
 				rec.InstallCommand = ""
 				s.Generation.RecommendedProcessingCLIs = append(s.Generation.RecommendedProcessingCLIs, rec)
 			}
+		}
+	}
+}
+
+func (s *session) gatewayGeneration(client *controlplane.Client) bool {
+	var data struct {
+		State struct {
+			ActiveRevision int64 `json:"active_revision"`
+		} `json:"state"`
+		Profiles []struct {
+			Mode       string `json:"mode"`
+			BridgeKind string `json:"bridge_kind"`
+			Removed    bool   `json:"removed"`
+		} `json:"profiles"`
+	}
+	err := client.Request(s.ctx, "GET", "/api/generation", nil, &data)
+	var status *controlplane.ControlError
+	if errors.As(err, &status) && status.Status == 404 {
+		return s.generation(client)
+	}
+	if err != nil {
+		s.controlFailure(err)
+		return false
+	}
+	if data.State.ActiveRevision > 0 {
+		s.Generation.Active = &generationReference{Revision: data.State.ActiveRevision}
+	}
+	for _, profile := range data.Profiles {
+		if profile.Mode == "agent_bridge" && !profile.Removed && isProcessingCLI(profile.BridgeKind) &&
+			!slices.Contains(s.Generation.AvailableBridges, profile.BridgeKind) {
+			s.Generation.AvailableBridges = append(s.Generation.AvailableBridges, profile.BridgeKind)
+		}
+	}
+	slices.Sort(s.Generation.AvailableBridges)
+	return true
+}
+
+func (s *session) inspectHostConflicts(hosts []agents.DetectedHost) {
+	for _, host := range hosts {
+		if !host.Detected || hooks.CanonicalHost(host.Kind) == "" || !filepath.IsAbs(host.ProfileDir) ||
+			s.has("agent") && s.get("agent") != host.Kind {
+			continue
+		}
+		report, err := s.ScanConflictsFn(host, hookConflictPolicy)
+		if err != nil {
+			s.block(ExitNeedsReview, "connection_config_unreadable")
+			continue
+		}
+		if report.Blocked {
+			s.showHookConflict(host, report)
+			continue
+		}
+		if len(report.ManagedLegacy) == 0 {
+			continue
+		}
+		// Current managed entries also carry the Memlane marker.
+		opts, ok := s.hostHookOptions(host)
+		if ok {
+			result, err := s.InstallHostConfigFn(opts)
+			if err == nil && len(result.Previews) == 0 {
+				continue
+			}
+		}
+		for i := range s.Connections.Hosts {
+			if s.Connections.Hosts[i].Kind == host.Kind {
+				s.Connections.Hosts[i].NeedsHookRepair = true
+			}
+		}
+		s.block(ExitActionRequired, "hook_repair_required")
+		if host.Kind == agents.HostTraeIDE {
+			s.action(readOnly, "repair", "trae-hooks", "--dry-run")
+		} else {
+			s.action(readOnly, "connect", "--agent", host.Kind, "--dry-run")
 		}
 	}
 }

@@ -67,7 +67,7 @@ func readRuntimeAssets(ctx context.Context, assets fs.FS) (string, map[string][]
 		if entry.IsDir() {
 			return nil
 		}
-		if strings.HasPrefix(name, "engine/python/") && strings.HasPrefix(path.Base(name), "test_") {
+		if strings.HasPrefix(name, "engines/cognee/") && strings.HasPrefix(path.Base(name), "test_") {
 			return nil
 		}
 		if !fs.ValidPath(name) || entry.Type()&fs.ModeSymlink != 0 {

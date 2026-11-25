@@ -34,8 +34,8 @@ func TestPackagedFirstStoreResources(t *testing.T) {
 	// Reproduce the original split resource package using the real scripts.
 	partial := fstest.MapFS{}
 	for _, name := range []string{
-		"engine/python/first_install_store.py",
-		"engine/python/official_service_dev.py",
+		"engines/cognee/first_install_store.py",
+		"engines/cognee/__init__.py",
 		"engine/coding-memory-components.json",
 	} {
 		data, err := fs.ReadFile(memlane.RuntimeAssets, name)
@@ -44,7 +44,7 @@ func TestPackagedFirstStoreResources(t *testing.T) {
 		}
 		partial[name] = &fstest.MapFile{Data: data}
 	}
-	if err := CheckFirstStoreResources(context.Background(), python, partial); err == nil || !strings.Contains(err.Error(), "ModuleNotFoundError: No module named '_runtime_common'") {
-		t.Fatalf("expected the original missing module error, got %v", err)
+	if err := CheckFirstStoreResources(context.Background(), python, partial); err == nil || !strings.Contains(err.Error(), "ModuleNotFoundError: No module named 'engines.cognee.ladybug_extension'") {
+		t.Fatalf("expected the missing packaged dependency error, got %v", err)
 	}
 }

@@ -113,13 +113,7 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if err := claimComponentRoot(root, ".memlane-first-store.json", b); err != nil {
 			return err
 		}
-		spec := struct {
-			StoreIdentity
-			Root       string `json:"root"`
-			Source     string `json:"source"`
-			Archive    string `json:"archive"`
-			ModelCache string `json:"model_cache"`
-		}{identity, root, sourcePath, archive, model.Path}
+		spec := firstStoreInput{StoreIdentity: identity, Root: root, Source: sourcePath, Archive: archive, ModelCache: model.Path}
 		b, err = json.MarshalIndent(spec, "", "  ")
 		if err != nil {
 			return err
@@ -152,8 +146,8 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 }
 
 func runFirstStore(ctx context.Context, root, python, resources string, args ...string) error {
-	command := []string{"-I", "-B", filepath.Join(resources, "engine/python/first_install_store.py")}
-	return runManaged(ctx, root, python, append(command, args...)...)
+	command := []string{"-s", "-B", "-m", "engines.cognee.first_install_store"}
+	return runManagedInDir(ctx, root, resources, python, []string{"PYTHONPATH=" + resources, "PYTHONNOUSERSITE=1"}, append(command, args...)...)
 }
 
 // CheckFirstStoreResources exercises the packaged initializer in a disposable

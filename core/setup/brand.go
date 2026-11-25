@@ -28,7 +28,7 @@ func MemlaneBrand() aiinstaller.AppBrand {
 }
 
 func ComponentIDs() []string {
-	return []string{"uv", "python", "runtime", "cognee-source", "embedding", "agent-plugin"}
+	return []string{"uv", "python", "runtime", "cognee-source", "embedding"}
 }
 
 func DisplaySourceURL(id, officialURL, officialSHA, downloadSource string) string {
@@ -41,7 +41,7 @@ func DisplaySourceURL(id, officialURL, officialSHA, downloadSource string) strin
 		return aiinstaller.ToolCandidates(id, officialURL, officialSHA, mode)[0].URL
 	case "runtime":
 		return aiinstaller.PyPIIndexURLs(mode)[0]
-	case "cognee-source", "agent-plugin":
+	case "cognee-source":
 		return aiinstaller.SourceCandidates(officialURL, officialSHA, mode)[0].URL
 	case "embedding":
 		return "https://modelscope.cn/models/Qdrant/bge-small-zh-v1.5/resolve/master/model_optimized.onnx"
@@ -85,7 +85,6 @@ func NewDownloader() aiinstaller.Downloader {
 
 // ManualCommandContext describes the manifests needed to render individual commands.
 type ManualCommandContext struct {
-	PluginSpec *SourceSpec
 	ModelSpec  *ModelSpec
 	NativeSpec *NativeSupportSpec
 }
@@ -122,18 +121,7 @@ func ManualInstallCommand(item aiinstaller.Item, ctx ManualCommandContext, downl
 			"uv python install 3.12.12",
 			"# 或 Homebrew：brew install python@3.12",
 		}, "\n")
-	case "cognee-source", "agent-plugin":
-		if ctx.PluginSpec != nil && r.ID == "agent-plugin" {
-			target := filepath.Join(r.Destination, "integrations-upstream", "service.tar.gz")
-			url := aiinstaller.SourceCandidates(ctx.PluginSpec.URL, ctx.PluginSpec.SHA256, mode)[0].URL
-			lines := []string{
-				"curl -fL --create-dirs -o " + aiinstaller.ShellLiteral(target) + " " + aiinstaller.ShellLiteral(url),
-			}
-			if mode == aiinstaller.DownloadSourceChina {
-				lines = append(lines, "# 国外官方地址："+ctx.PluginSpec.URL)
-			}
-			return strings.Join(lines, "\n")
-		}
+	case "cognee-source":
 		target := filepath.Join(r.Destination, "service.tar.gz")
 		official := r.OfficialSource
 		if official == "" {

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -25,34 +24,36 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := []string{
-		"engine/python/user_profiles/__init__.py",
-		"engine/python/user_profiles/providers/antigravity.py",
-		"engine/python/tool_graph_control.py",
-		"engine/python/traex_hook.py",
-		"web/official-graph/dist/assets.json",
-		"web/official-graph/dist/index.html",
-		"web/official-graph/dist/app.js",
-		"web/official-graph/dist/app.css",
-		"web/official-graph/dist/host.css",
-		"web/official-graph/dist/app.js.LEGAL.txt",
-		"web/official-graph/dist/COGNEE-LICENSE",
-		"web/official-graph/dist/THIRD-PARTY-LICENSES.txt",
-		"web/official-graph/dist/build.json",
-		"scripts/dev.py",
-		"scripts/dev_recovery.py",
-		"scripts/local_prepare.py",
-		"scripts/build_project_plugin.py",
-		"scripts/task.py",
-		"scripts/disk-space.py",
-		"scripts/uninstall.py",
-	}
-	for _, rel := range expected {
-		if _, err := os.Stat(filepath.Join(destination, filepath.FromSlash(rel))); err != nil {
-			t.Fatalf("missing materialized asset %s: %v", rel, err)
+	for _, pattern := range []string{
+		"engines/cognee/*.py", "engine/first-install-components.json", "engine/coding-memory-components.json",
+		"engine/embedding-components.json", "engine/agents/pi/*.ts",
+		"engine/agents/pi/LICENSE.pi-cognee", "engine/prompts/*",
+		"web/official-graph/dist/*", "deps/models/*.json", "deps/cognee-rs/patches.json",
+		"deps/cognee-rs/Cargo.lock", "deps/cognee-rs/onnx-input-contract.patch",
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			t.Fatalf("missing asset group %s: %v", pattern, err)
+		}
+		for _, name := range matches {
+			if strings.HasPrefix(filepath.Base(name), "test_") {
+				continue
+			}
+			disk, err := os.Stat(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if disk.IsDir() {
+				continue
+			}
+			if _, err := fs.Stat(memlane.RuntimeAssets, filepath.ToSlash(name)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(destination, name)); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-
 	// Verify embedded graph build.json reports zero missing distribution license texts.
 	buildRaw, err := fs.ReadFile(memlane.RuntimeAssets, "web/official-graph/dist/build.json")
 	if err != nil {
@@ -68,32 +69,25 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 		t.Fatalf("embedded graph build.json still has missingLicenseTexts: %v", buildMeta.MissingLicenseTexts)
 	}
 
-	// Verify Python test modules stay excluded from the embedded binary while all
-	// production engine/python/*.py modules remain embedded.
+	forbidden := []string{
+		path.Join("engine", "python") + "/", path.Join("engine", "agents", "opencode") + "/",
+		path.Join("engine", "patches") + "/", "engine/" + "managed-project" + "-plugin", "scripts/",
+	}
 	if err := fs.WalkDir(memlane.RuntimeAssets, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+		if walkErr != nil || entry.IsDir() {
 			return walkErr
 		}
-		if !entry.IsDir() && strings.HasPrefix(name, "engine/python/") && strings.HasPrefix(path.Base(name), "test_") {
-			t.Errorf("test module must not be embedded in RuntimeAssets: %s", name)
+		for _, prefix := range forbidden {
+			if strings.HasPrefix(name, prefix) {
+				t.Errorf("forbidden asset embedded: %s", name)
+			}
+		}
+		if strings.HasPrefix(path.Base(name), "test_") && strings.HasSuffix(name, ".py") {
+			t.Errorf("test module embedded: %s", name)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-
-	diskEntries, err := os.ReadDir(filepath.Join("engine", "python"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range diskEntries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".py") || strings.HasPrefix(entry.Name(), "test_") {
-			continue
-		}
-		embeddedPath := "engine/python/" + entry.Name()
-		if _, statErr := fs.Stat(memlane.RuntimeAssets, embeddedPath); statErr != nil {
-			t.Fatalf("production Python module %s is missing from RuntimeAssets (update //go:embed pattern): %v", embeddedPath, statErr)
-		}
 	}
 
 	second, err := bootstrap.PrepareRuntimeResources(context.Background(), root, memlane.RuntimeAssets)
@@ -104,38 +98,4 @@ func TestRuntimeAssetsMaterializeAndEmbedLocalScriptImports(t *testing.T) {
 		t.Fatalf("idempotent destination mismatch: got %q, want %q", second, destination)
 	}
 
-	// Dev-only UI watcher module is excluded intentionally from the App runtime bundle.
-	devOnly := map[string]bool{"mygo_sdk": true}
-	fromImport := regexp.MustCompile(`(?m)^\s*from\s+([A-Za-z_][A-Za-z0-9_]*)\s+import\b`)
-	plainImport := regexp.MustCompile(`(?m)^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)`)
-
-	entries, err := fs.ReadDir(memlane.RuntimeAssets, "scripts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".py") {
-			continue
-		}
-		raw, err := fs.ReadFile(memlane.RuntimeAssets, "scripts/"+entry.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		src := string(raw)
-		for _, re := range []*regexp.Regexp{fromImport, plainImport} {
-			for _, match := range re.FindAllStringSubmatch(src, -1) {
-				mod := match[1]
-				if devOnly[mod] {
-					continue
-				}
-				repoModule := filepath.Join("scripts", mod+".py")
-				if _, err := os.Stat(repoModule); err == nil {
-					if _, err := fs.Stat(memlane.RuntimeAssets, "scripts/"+mod+".py"); err != nil {
-						t.Fatalf("embedded scripts/%s imports %s (%s), which is missing from RuntimeAssets: %v",
-							entry.Name(), mod, repoModule, err)
-					}
-				}
-			}
-		}
-	}
 }

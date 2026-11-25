@@ -21,6 +21,7 @@ import (
 
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 const (
@@ -76,7 +77,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{
 		t: t, base: base, root: filepath.Join(base, "components"), config: filepath.Join(base, "runtime.json"),
 		store: filepath.Join(base, "library"), now: time.Now(), revision: 9,
-		assets:          fstest.MapFS{"scripts/dev.py": {Data: []byte("runtime")}},
+		assets:          fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("runtime")}},
 		bootstrapAssets: fstest.MapFS{"first-install-components.json": {Data: []byte("bootstrap")}},
 	}
 	const origin = "http://127.0.0.1:12345"
@@ -84,7 +85,7 @@ func newFixture(t *testing.T) *fixture {
 		First: &bootstrap.FirstInstallation{Schema: 1, StoreID: strings.Repeat("a", 32), Setup: true},
 		Root:  f.store, ServiceCommit: "test-commit", ServiceURL: "http://127.0.0.1:12346",
 		OwnerTokenFile: filepath.Join(f.store, "owner.token"), GenerationFile: filepath.Join(f.store, "generation.json"),
-		Control: controlplane.Config{URL: origin, ManagementTokenFile: filepath.Join(f.store, "management.token")},
+		Control: controlplane.Config{URL: origin, PluginDir: filepath.Join(base, "legacy"), ManagementTokenFile: filepath.Join(f.store, "management.token")},
 	}
 	f.ops = controlplane.OperationsDir(f.doc.GenerationFile, f.doc.Control.ManagementTokenFile)
 	f.writeConfig()
@@ -111,8 +112,8 @@ func newFixture(t *testing.T) *fixture {
 		DefaultComponentRootFn: func() (string, error) { return f.root, nil },
 		DiskFreeFn:             func(string) (uint64, error) { return 3 << 30, nil },
 		CheckDNSFn:             func(context.Context, string) bool { return true },
-		DetectHostsFn: func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost {
-			return []bootstrap.DetectedHost{{Kind: testAgent, Detected: true}}
+		DetectAgentsFn: func(agents.DiscoveryOptions) []agents.DetectedHost {
+			return []agents.DetectedHost{{Kind: testAgent, Detected: true}}
 		},
 		NewEnvFn: func(_ context.Context, _ fs.FS, options bootstrap.EnvironmentOptions) (*bootstrap.Environment, error) {
 			return &bootstrap.Environment{Options: options}, nil

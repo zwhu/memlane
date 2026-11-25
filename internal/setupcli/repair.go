@@ -232,6 +232,10 @@ func (s *session) showHookRepairFromReceipt(res controlplane.ConnectionOperation
 }
 
 func (s *session) repairHooks() {
+	if s.useHostHooks("trae_ide") {
+		s.configureHostHooks("trae_ide", true)
+		return
+	}
 	client := s.requireClient()
 	if client == nil {
 		return

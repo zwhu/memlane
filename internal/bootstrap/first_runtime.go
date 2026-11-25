@@ -2,10 +2,13 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +31,7 @@ type FirstRuntime struct {
 	ConfigPath, StoreRoot, Resources, Python, HostHome string
 	Plan                                               Plan
 	ActivationFile                                     string
+	Executable                                         string
 }
 
 type firstRuntimeConfig struct {
@@ -46,7 +50,6 @@ type firstRuntimeConfig struct {
 		URL          string `json:"url"`
 		RegistryFile string `json:"registry_file"`
 		TokenFile    string `json:"management_token_file"`
-		PluginDir    string `json:"plugin_dir"`
 	} `json:"project_control"`
 
 	receipt StoreReceipt
@@ -603,52 +606,239 @@ func (e *Environment) prepareFirstRuntime(ctx context.Context, configPath string
 	if err != nil {
 		return prepared, err
 	}
-	pluginRequirement, err := e.Requirement("agent-plugin")
+	executable, err := os.Executable()
 	if err != nil {
 		return prepared, err
 	}
-	plugin, err := e.Plugin.Probe(ctx, pluginRequirement)
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return prepared, err
-	}
-	if plugin.Status != Available {
-		return prepared, errors.New("固定 Agent 插件尚未准备完成")
 	}
 	var resources string
 	if existing {
+		if _, err := readFirstStoreInput(root, config.receipt); err != nil {
+			return prepared, err
+		}
+		if config.GenerationFile != filepath.Join(root, "generation.json") {
+			return prepared, errors.New("首次运行的提炼配置位置不同")
+		}
 		resources, err = PrepareRuntimeResources(ctx, e.Installer().Root, assets)
 		if err != nil {
 			return prepared, err
+		}
+		if !upgrade {
+			if _, err := RefreshManagedGraphAssets(configPath, e.Installer().Root, resources); err != nil {
+				return prepared, err
+			}
 		}
 	} else {
 		store, err := e.InitializeStore(ctx, root, assets)
 		if err != nil {
 			return prepared, err
 		}
-		resources = store.Resources
+		resources, python = store.Resources, store.Python
+		if err := writeFirstRuntimeConfig(configPath, store); err != nil {
+			return prepared, err
+		}
 	}
-	home, err := os.UserHomeDir()
+	return FirstRuntime{ConfigPath: configPath, StoreRoot: root, Resources: resources, Python: python, HostHome: home, Executable: executable, Plan: plan}, nil
+}
+
+type firstStoreInput struct {
+	StoreIdentity
+	Root       string `json:"root"`
+	Source     string `json:"source"`
+	Archive    string `json:"archive"`
+	ModelCache string `json:"model_cache"`
+}
+
+func readFirstStoreInput(root string, receipt StoreReceipt) (firstStoreInput, error) {
+	var input firstStoreInput
+	raw, err := privateRead(filepath.Join(root, "first-install-input.json"))
 	if err != nil {
-		return prepared, err
+		return input, err
 	}
-	args := []string{
-		"-I", "-B", filepath.Join(resources, "engine/python/first_install_runtime.py"),
-		"--store-root", root,
-		"--runtime-config", configPath,
-		"--plugin", plugin.Path,
-		"--host-home", home,
-		"--python-executable", python,
-		"--graph-assets", filepath.Join(resources, "web/official-graph/dist"),
-		"--installation-root", e.Installer().Root,
-		"--prepare-only",
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return input, err
 	}
-	if upgrade {
-		args = append(args, "--skip-graph-refresh")
+	if input.Schema != 1 || !receipt.StorageInitialized || input.Root != root || input.StoreID != receipt.StoreID ||
+		input.SourceCommit != receipt.SourceCommit || !filepath.IsAbs(input.Source) || !filepath.IsAbs(input.Archive) || !filepath.IsAbs(input.ModelCache) {
+		return input, errors.New("首次安装输入与官方库身份不同")
 	}
-	if err := runManaged(ctx, root, python, args...); err != nil {
-		return prepared, err
+	return input, nil
+}
+
+func writeFirstRuntimeConfig(configPath string, store StoreResult) error {
+	root := store.Root
+	owner, err := supervisor.AcquireOwner(root)
+	if err != nil {
+		return err
 	}
-	return FirstRuntime{ConfigPath: configPath, StoreRoot: root, Resources: resources, Python: python, HostHome: home, Plan: plan}, nil
+	defer owner.Release()
+	if _, err := os.Lstat(configPath); err == nil {
+		config, err := loadFirstRuntimeConfig(configPath)
+		if err != nil {
+			return err
+		}
+		if config.Root != root || config.First.StoreID != store.Receipt.StoreID || config.GenerationFile != filepath.Join(root, "generation.json") {
+			return errors.New("首次运行配置已绑定到不同的内容库")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	raw, err := privateRead(filepath.Join(root, "store-identity.json"))
+	if err != nil {
+		return err
+	}
+	var receipt StoreReceipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		return err
+	}
+	if receipt != store.Receipt || !receipt.StorageInitialized {
+		return errors.New("首次安装内容库身份已变化")
+	}
+	input, err := readFirstStoreInput(root, store.Receipt)
+	if err != nil {
+		return err
+	}
+	if err := validatePrivateToken(store.TokenFile); err != nil {
+		return err
+	}
+	environment := filepath.Join(root, "service-environment.json")
+	if err := prepareFirstServiceEnvironment(environment, input.ModelCache); err != nil {
+		return err
+	}
+
+	completionToken, managementToken := filepath.Join(root, "completion.token"), filepath.Join(root, "management.token")
+	for _, name := range []string{completionToken, managementToken} {
+		if err := validatePrivateToken(name); errors.Is(err, os.ErrNotExist) {
+			token, err := firstRuntimeSecret()
+			if err != nil {
+				return err
+			}
+			if err := atomicPrivateFile(name, []byte(token)); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+
+	var origins [3]string
+	for i := range origins {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+		origins[i] = "http://" + listener.Addr().String()
+	}
+	service, gateway, completion := origins[0], origins[1], origins[2]
+	return writeFirstRuntimeJSON(configPath, map[string]any{
+		"first_install": FirstInstallation{Schema: 1, StoreID: input.StoreID, Setup: true},
+		"store_root":    root, "official_data": root, "official_source": input.Source, "official_archive": input.Archive,
+		"engine_work_dir": store.Resources, "python": store.Python, "service_commit": input.SourceCommit,
+		"token_file": store.TokenFile, "service_environment_file": environment, "service_url": service, "engine_url": service,
+		"completion_url": completion, "completion_token_file": completionToken, "management_token_file": managementToken, "gateway_url": gateway,
+		"generation_file": filepath.Join(root, "generation.json"), "generation_mode": "unconfigured", "model": "",
+		"client_state_file": filepath.Join(root, "client-state.json"), "graph_assets": filepath.Join(store.Resources, "web/official-graph/dist"),
+		"projects": []any{}, "common_datasets": []any{},
+		"project_control": map[string]any{
+			"url": gateway, "registry_file": filepath.Join(root, "projects.json"), "management_token_file": managementToken,
+			"agent_control_token_files": map[string]string{},
+		},
+	})
+}
+
+func readFirstRuntimeSecretFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode() != 0600 {
+		return nil, errors.New("首次运行凭据文件需要权限 0600")
+	}
+	return privateRead(path)
+}
+
+func validatePrivateToken(path string) error {
+	raw, err := readFirstRuntimeSecretFile(path)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return errors.New("首次运行凭据为空")
+	}
+	return nil
+}
+
+func firstRuntimeSecret() (string, error) {
+	var secret [48]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(secret[:]), nil
+}
+
+func writeFirstRuntimeJSON(path string, doc any) error {
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicPrivateFile(path, raw)
+}
+
+func prepareFirstServiceEnvironment(path, modelCache string) error {
+	expected := map[string]string{
+		"EMBEDDING_PROVIDER": "fastembed", "EMBEDDING_MODEL": "BAAI/bge-small-zh-v1.5",
+		"EMBEDDING_DIMENSIONS": "512", "EMBEDDING_MAX_TOKENS": "512", "HF_HOME": modelCache,
+		"HF_HUB_OFFLINE": "1", "DEFAULT_USER_EMAIL": "memlane-local@example.com",
+	}
+	secretNames := []string{"FASTAPI_USERS_JWT_SECRET", "FASTAPI_USERS_RESET_PASSWORD_TOKEN_SECRET", "FASTAPI_USERS_VERIFICATION_TOKEN_SECRET"}
+	raw, err := readFirstRuntimeSecretFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		for _, name := range secretNames {
+			secret, err := firstRuntimeSecret()
+			if err != nil {
+				return err
+			}
+			expected[name] = secret
+		}
+		return writeFirstRuntimeJSON(path, expected)
+	}
+	if err != nil {
+		return err
+	}
+	var existing map[string]string
+	if err := json.Unmarshal(raw, &existing); err != nil {
+		return err
+	}
+	if len(existing) != len(expected)+len(secretNames) {
+		return errors.New("首次运行环境字段不同")
+	}
+	for name, value := range expected {
+		if existing[name] != value {
+			return errors.New("首次运行向量模型配置不同")
+		}
+	}
+	for _, name := range secretNames {
+		if strings.TrimSpace(existing[name]) == "" {
+			return errors.New("首次运行环境凭据缺失")
+		}
+	}
+	return nil
+}
+
+func firstRuntimeLaunchCommand(prepared FirstRuntime) (command string, args []string, err error) {
+	command = prepared.Executable
+	if command == "" {
+		command, err = os.Executable()
+	}
+	if err == nil && !filepath.IsAbs(command) {
+		err = errors.New("首次运行入口必须为绝对路径")
+	}
+	return command, []string{"daemon", "--config", prepared.ConfigPath}, err
 }
 
 func loopbackJSON(ctx context.Context, origin, endpoint, tokenFile, header, prefix string) (map[string]any, error) {
@@ -670,7 +860,7 @@ func loopbackJSON(ctx context.Context, origin, endpoint, tokenFile, header, pref
 	if err != nil {
 		var statusErr *supervisor.HTTPStatusError
 		if errors.As(err, &statusErr) {
-			return nil, fmt.Errorf("首次服务身份核对返回 %d", statusErr.StatusCode)
+			return nil, fmt.Errorf("首次服务身份核对返回 %d: %w", statusErr.StatusCode, err)
 		}
 		return nil, err
 	}
@@ -702,6 +892,14 @@ func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 	}
 	if owner.Phase != "first_install_setup" && owner.Phase != "ready" {
 		return false, nil
+	}
+	health, err := loopbackJSON(ctx, config.Control.URL, "/api/health", config.Control.TokenFile, "Authorization", "Bearer ")
+	if err == nil {
+		return health["ok"] == true && health["engine_ok"] == true, nil
+	}
+	var statusErr *supervisor.HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != 404 {
+		return false, err
 	}
 	me, err := loopbackJSON(ctx, config.ServiceURL, "/api/v1/users/me", config.TokenFile, "X-Api-Key", "")
 	if err != nil {
@@ -759,39 +957,11 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 
 // startFirstRuntimeHandleLocked requires both the store mutex and upgrade lock.
 func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, config firstRuntimeConfig, cfgOpts firstRuntimeOptions, canonicalStore string) (*FirstRuntimeHandle, error) {
-	var sup *supervisor.Supervisor
-	var completedReplay bool
 	if prepared.ActivationFile != "" {
-		var request FirstActivationRequest
-		if b, err := privateRead(prepared.ActivationFile); err == nil && json.Unmarshal(b, &request) == nil {
-			completedReplay = request.Schema == 1 && request.StoreID == config.First.StoreID && request.Status == "completed"
-		}
+		return startFirstRuntimeActivation(ctx, prepared, config, cfgOpts, canonicalStore)
 	}
 	readyCheck := func(checkCtx context.Context) (bool, error) {
-		if prepared.ActivationFile != "" {
-			services := sup.Snapshot().Services
-			if len(services) == 1 && services[0].State == supervisor.StateStopped &&
-				services[0].ExitCode != nil && *services[0].ExitCode == 0 && services[0].Signal == "" {
-				return true, nil
-			}
-			// A completed replay must finish checking its receipt, even if another
-			// launcher is already serving this store.
-			if completedReplay {
-				return false, nil
-			}
-		}
-		ready, readyErr := FirstRuntimeReady(checkCtx, prepared.ConfigPath)
-		if readyErr != nil && prepared.ActivationFile == "" {
-			return false, readyErr
-		}
-		if prepared.ActivationFile != "" {
-			complete, stateErr := FirstInitializationComplete(prepared.ConfigPath)
-			if stateErr != nil {
-				return false, stateErr
-			}
-			ready = ready && complete
-		}
-		return ready, nil
+		return FirstRuntimeReady(checkCtx, prepared.ConfigPath)
 	}
 	healthCheck := func(checkCtx context.Context) error {
 		ready, readyErr := FirstRuntimeReady(checkCtx, prepared.ConfigPath)
@@ -805,83 +975,68 @@ func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, c
 	}
 
 	existing := firstRuntimeHandles.get(canonicalStore)
-	if prepared.ActivationFile != "" && !completedReplay && existing != nil && existing.sup != nil && !existing.sup.ExternalOwner() {
-		// Release an in-process Go-owned setup supervisor cleanly before handing off to first_install_runtime.py,
-		// so dev.py stop never signals the Go host process itself.
-		if err := existing.Shutdown(ctx); err != nil {
-			return nil, err
-		}
-		existing = nil
-	}
-
 	inspection, err := supervisor.InspectOwner(prepared.StoreRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	if prepared.ActivationFile == "" {
-		if existing != nil && existing.Owned() {
-			snap := existing.Snapshot()
-			if snap.State == supervisor.StateStarting || snap.State == supervisor.StateReady || snap.State == supervisor.StateDegraded {
-				// Reuse this process's in-flight or live handle instead of spawning a duplicate
-				// launcher (even if an earlier attempt timed out before dev.py acquired the flock).
-				if err := existing.sup.WaitReady(ctx, readyCheck); err != nil {
-					if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-						return existing, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
-					}
-					var exitErr *supervisor.ExitedBeforeReadyError
-					if errors.As(err, &exitErr) {
-						_ = existing.Shutdown(context.Background())
-						return nil, fmt.Errorf("首次运行入口退出，保留日志与原库：%v", exitErr)
-					}
-					return nil, err
+	if existing != nil && existing.Owned() {
+		snap := existing.Snapshot()
+		if snap.State == supervisor.StateStarting || snap.State == supervisor.StateReady || snap.State == supervisor.StateDegraded {
+			// Reuse this process's in-flight or live handle instead of spawning a duplicate
+			// launcher (even if an earlier attempt timed out before the daemon acquired the flock).
+			if err := existing.sup.WaitReady(ctx, readyCheck); err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+					return existing, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
 				}
-				return existing, nil
+				var exitErr *supervisor.ExitedBeforeReadyError
+				if errors.As(err, &exitErr) {
+					_ = existing.Shutdown(context.Background())
+					return nil, fmt.Errorf("首次运行入口退出，保留日志与原库：%v", exitErr)
+				}
+				return nil, err
 			}
-			// Reap any dead monitor before inspecting and recovering the store.
-			_ = existing.Shutdown(context.Background())
-			existing = nil
+			return existing, nil
 		}
-		if inspection.Locked {
-			// An active external owner already holds .service-owner; never duplicate it,
-			// but register an attached handle so explicit stop-and-quit can cleanly stop it.
-			waitCtx, waitCancel := context.WithCancel(ctx)
-			attached := &FirstRuntimeHandle{
-				configPath:  prepared.ConfigPath,
-				storeRoot:   canonicalStore,
-				owned:       false,
-				attached:    true,
-				stopGrace:   cfgOpts.stopGrace,
-				killWait:    cfgOpts.killWait,
-				cancelStart: waitCancel,
-			}
-			firstRuntimeHandles.set(attached)
-			waitErr := supervisor.WaitReady(waitCtx, nil, readyCheck, 0, cfgOpts.readyPollInterval, false)
-			attached.clearCancelStart()
-			waitCancel()
-			if waitErr != nil {
-				if attached.isShutdownRequested() {
-					firstRuntimeHandles.unregister(attached)
-					return nil, context.Canceled
-				}
-				if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
-					return attached, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
-				}
+		// Reap any dead monitor before inspecting and recovering the store.
+		_ = existing.Shutdown(context.Background())
+		existing = nil
+	}
+	if inspection.Locked {
+		// An active external owner already holds .service-owner; never duplicate it,
+		// but register an attached handle so explicit stop-and-quit can cleanly stop it.
+		waitCtx, waitCancel := context.WithCancel(ctx)
+		attached := &FirstRuntimeHandle{
+			configPath:  prepared.ConfigPath,
+			storeRoot:   canonicalStore,
+			owned:       false,
+			attached:    true,
+			stopGrace:   cfgOpts.stopGrace,
+			killWait:    cfgOpts.killWait,
+			cancelStart: waitCancel,
+		}
+		firstRuntimeHandles.set(attached)
+		waitErr := supervisor.WaitReady(waitCtx, nil, readyCheck, 0, cfgOpts.readyPollInterval, false)
+		attached.clearCancelStart()
+		waitCancel()
+		if waitErr != nil {
+			if attached.isShutdownRequested() {
 				firstRuntimeHandles.unregister(attached)
-				return nil, waitErr
+				return nil, context.Canceled
 			}
-			return attached, nil
-		}
-		if existing != nil && !existing.Owned() {
-			firstRuntimeHandles.unregister(existing)
-			existing = nil
-		}
-		if inspection.HasReceipt {
-			if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); recErr != nil {
-				return nil, fmt.Errorf("首次服务所有权恢复未通过，保留现场：%w", recErr)
+			if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
+				return attached, errors.New("首次服务就绪尚未确认，进度及所有权记录已保留")
 			}
+			firstRuntimeHandles.unregister(attached)
+			return nil, waitErr
 		}
-	} else if !inspection.Locked && inspection.HasReceipt {
+		return attached, nil
+	}
+	if existing != nil && !existing.Owned() {
+		firstRuntimeHandles.unregister(existing)
+		existing = nil
+	}
+	if inspection.HasReceipt {
 		if _, recErr := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); recErr != nil {
 			return nil, fmt.Errorf("首次服务所有权恢复未通过，保留现场：%w", recErr)
 		}
@@ -890,25 +1045,16 @@ func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, c
 	logsDir := filepath.Join(filepath.Dir(prepared.ConfigPath), "runtime-logs")
 	logPath := filepath.Join(logsDir, "launcher.log")
 
-	arguments := []string{filepath.Join(prepared.Resources, "scripts/dev.py"), "start", "--config", prepared.ConfigPath, "--no-ui"}
+	command, arguments, err := firstRuntimeLaunchCommand(prepared)
+	if err != nil {
+		return nil, err
+	}
 	phaseOnReady := "ready"
-	if config.First != nil && config.First.Setup && prepared.ActivationFile == "" {
+	if config.First.Setup {
 		phaseOnReady = "first_install_setup"
 	}
-	allowCleanExit := false
-	if prepared.ActivationFile != "" {
-		arguments = []string{
-			"-I", "-B", filepath.Join(prepared.Resources, "engine/python/first_install_runtime.py"),
-			"--store-root", prepared.StoreRoot,
-			"--runtime-config", prepared.ConfigPath,
-			"--plugin", config.Control.PluginDir,
-			"--host-home", prepared.HostHome,
-			"--activate-file", prepared.ActivationFile,
-		}
-		allowCleanExit = true
-	}
 
-	sup = supervisor.New(supervisor.Config{
+	sup := supervisor.New(supervisor.Config{
 		StoreRoot:         prepared.StoreRoot,
 		ConfigPath:        prepared.ConfigPath,
 		PhaseOnReady:      phaseOnReady,
@@ -928,18 +1074,17 @@ func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, c
 	})
 
 	spec := supervisor.ServiceSpec{
-		Role:           "launcher",
-		Command:        prepared.Python,
-		Args:           arguments,
-		Dir:            prepared.Resources,
-		Env:            firstRuntimeLauncherEnv(prepared.HostHome),
-		LogPath:        logPath,
-		LogLimitBytes:  cfgOpts.logLimitBytes,
-		ReadyCheck:     readyCheck,
-		HealthCheck:    healthCheck,
-		AllowCleanExit: allowCleanExit,
-		StopGrace:      cfgOpts.stopGrace,
-		KillWait:       cfgOpts.killWait,
+		Role:          "launcher",
+		Command:       command,
+		Args:          arguments,
+		Dir:           prepared.Resources,
+		Env:           firstRuntimeLauncherEnv(prepared.HostHome, prepared.Resources),
+		LogPath:       logPath,
+		LogLimitBytes: cfgOpts.logLimitBytes,
+		ReadyCheck:    readyCheck,
+		HealthCheck:   healthCheck,
+		StopGrace:     cfgOpts.stopGrace,
+		KillWait:      cfgOpts.killWait,
 	}
 
 	startCtx, startCancel := context.WithCancel(ctx)
@@ -979,55 +1124,7 @@ func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, c
 		return nil, startErr
 	}
 
-	// A completed activation replay can exit without starting a daemon.
-	snap := sup.Snapshot()
-	if allowCleanExit && len(snap.Services) == 1 && snap.Services[0].State == supervisor.StateStopped {
-		firstRuntimeHandles.unregister(handle)
-		_ = sup.Stop(context.Background())
-		insp, err := supervisor.InspectOwnerReadOnly(prepared.StoreRoot)
-		if err != nil {
-			return nil, err
-		}
-		ready, readyErr := FirstRuntimeReady(ctx, prepared.ConfigPath)
-		if existing != nil && existing.Owned() {
-			exSnap := existing.Snapshot()
-			if exSnap.State != supervisor.StateStopped && exSnap.State != supervisor.StateExited && ready && readyErr == nil {
-				return existing, nil
-			}
-		}
-		if !insp.Locked || !ready || readyErr != nil {
-			normalPrepared := prepared
-			normalPrepared.ActivationFile = ""
-			reloaded, err := validateFirstRuntimeLaunch(normalPrepared)
-			if err != nil {
-				return nil, err
-			}
-			return startFirstRuntimeHandleLocked(ctx, normalPrepared, reloaded, cfgOpts, canonicalStore)
-		}
-		if existing != nil && existing.Attached() {
-			return existing, nil
-		}
-		attached := &FirstRuntimeHandle{
-			configPath: prepared.ConfigPath,
-			storeRoot:  canonicalStore,
-			owned:      false,
-			attached:   true,
-			stopGrace:  cfgOpts.stopGrace,
-			killWait:   cfgOpts.killWait,
-		}
-		firstRuntimeHandles.set(attached)
-		return attached, nil
-	}
-
 	firstRuntimeHandles.set(handle)
-	if existing != nil && existing != handle {
-		// Old setup launcher was already stopped during activation; clean up its monitor goroutine.
-		if existing.Owned() {
-			_ = existing.Shutdown(context.Background())
-		} else {
-			firstRuntimeHandles.unregister(existing)
-		}
-	}
 	return handle, nil
 }
 
@@ -1161,13 +1258,14 @@ func resolveFirstRuntimeOptions(opts []FirstRuntimeOption) firstRuntimeOptions {
 	return cfgOpts
 }
 
-func firstRuntimeLauncherEnv(home string) []string {
+func firstRuntimeLauncherEnv(home, resources string) []string {
 	envPath := os.Getenv("PATH")
 	if envPath == "" {
 		envPath = "/usr/bin:/bin:/usr/sbin:/sbin"
 	}
 	return []string{
 		"HOME=" + home,
+		"MEMLANE_RUNTIME_RESOURCES=" + resources,
 		"PATH=" + filepath.Join(home, ".local/bin") + ":" + envPath,
 		"LANG=en_US.UTF-8",
 		"PYTHONDONTWRITEBYTECODE=1",
@@ -1406,7 +1504,7 @@ func detectOwnerRuntime(status *OwnerRuntimeStatus, root string, rec supervisor.
 				continue
 			}
 			clean := filepath.Clean(arg)
-			if !strings.HasSuffix(clean, "/scripts/dev.py") && !strings.Contains(clean, "/engine/python/") {
+			if !strings.Contains(clean, "/engines/cognee/") {
 				continue
 			}
 			resolved, err := resolveRuntimePath(clean)
@@ -1509,7 +1607,7 @@ func restartStaleRuntimeOwner(ctx context.Context, prepared FirstRuntime, finger
 		return errors.New("restart requires a stale managed runtime owner that has finished starting")
 	}
 	if assets == nil {
-		script, err := os.Stat(filepath.Join(prepared.Resources, "scripts/dev.py"))
+		script, err := os.Stat(filepath.Join(prepared.Resources, "engines/cognee/runner.py"))
 		if err != nil || !script.Mode().IsRegular() {
 			return errors.New("prepared runtime launcher is missing or invalid")
 		}
@@ -1636,7 +1734,7 @@ func startFirstRuntimeDetachedLocked(ctx context.Context, prepared FirstRuntime,
 		}
 	}
 	logPath := filepath.Join(filepath.Dir(prepared.ConfigPath), "runtime-logs", "launcher.log")
-	if err := rejectSymlinkAncestors(filepath.Dir(logPath)); err != nil {
+	if err := validateManagedResourcePath(filepath.Dir(logPath)); err != nil {
 		return err
 	}
 	logFile, err := supervisor.OpenPrivateLog(logPath)
@@ -1648,9 +1746,14 @@ func startFirstRuntimeDetachedLocked(ctx context.Context, prepared FirstRuntime,
 		return err
 	}
 
-	cmd := exec.Command(prepared.Python, filepath.Join(prepared.Resources, "scripts/dev.py"), "start", "--config", prepared.ConfigPath, "--no-ui")
+	command, args, err := firstRuntimeLaunchCommand(prepared)
+	if err != nil {
+		logFile.Close()
+		return err
+	}
+	cmd := exec.Command(command, args...)
 	cmd.Dir = prepared.Resources
-	cmd.Env = firstRuntimeLauncherEnv(prepared.HostHome)
+	cmd.Env = firstRuntimeLauncherEnv(prepared.HostHome, prepared.Resources)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	err = ctx.Err()

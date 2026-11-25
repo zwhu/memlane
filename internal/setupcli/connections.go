@@ -1,12 +1,23 @@
 package setupcli
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/zwhu/memlane/core/hooks"
 	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/kit/agents"
 
 	"github.com/zwhu/memlane/internal/controlplane"
 )
@@ -63,12 +74,12 @@ func (s *session) addUnconfiguredProcessingCLI(kind string) {
 	}
 }
 
-func (s *session) showLocalHosts(offline, populateUnconfigured bool) {
+func (s *session) showLocalHosts(hosts []agents.DetectedHost, offline, populateUnconfigured bool) {
 	existing := map[string]bool{}
 	for _, host := range s.Connections.Hosts {
 		existing[host.Kind] = true
 	}
-	for _, host := range s.DetectHostsFn(bootstrap.HostDetectOptions{Home: s.HomeDir, Environ: s.Environ}) {
+	for _, host := range hosts {
 		if !isAgent(host.Kind) {
 			continue
 		}
@@ -234,11 +245,24 @@ func (s *session) target(dir controlplane.ConnectionsDirectory, kind string) (co
 }
 
 func (s *session) connect() {
+	kind, phase := s.get("agent"), s.get("phase")
+	if hooks.CanonicalHost(kind) != "" && s.useHostHooks(kind) && (phase == "" || s.config.Control.PluginDir == "") {
+		if oneOf(phase, "", "prepare", "activate", "review") {
+			s.configureHostHooks(kind, false)
+		} else {
+			s.block(ExitInvalidArguments, "unsupported_connection_phase")
+			s.action(readOnly, "connect", "--agent", kind, "--dry-run")
+		}
+		return
+	}
+	if s.config.Control.PluginDir == "" {
+		s.unavailableConnectionTarget(kind)
+		return
+	}
 	client := s.requireClient()
 	if client == nil {
 		return
 	}
-	kind, phase := s.get("agent"), s.get("phase")
 	captureReview := oneOf(phase, "allow-capture", "defer-capture")
 	dir, err := client.Connections(s.ctx, captureReview)
 	if err != nil {
@@ -691,4 +715,299 @@ func (s *session) generation(client *controlplane.Client) bool {
 		s.addUnconfiguredProcessingCLI(kind)
 	}
 	return true
+}
+
+var hookConflictPolicy = agents.ConflictPolicy{
+	ManagedMarkers:   []string{"memlane-cognee", "memlane_cognee", "memlane-memory", "memlane hook", "memlane", "managed-marketplaces/trae_ide-"},
+	ConflictKeywords: []string{"cognee"},
+}
+
+func (s *session) localHosts() []agents.DetectedHost {
+	return s.DetectAgentsFn(agents.DiscoveryOptions{Home: s.HomeDir, Environ: s.Environ})
+}
+
+func (s *session) detectedHost(kind string) (agents.DetectedHost, bool) {
+	for _, host := range s.localHosts() {
+		if host.Kind == kind && host.Detected && filepath.IsAbs(host.ProfileDir) {
+			return host, true
+		}
+	}
+	return agents.DetectedHost{}, false
+}
+
+func (s *session) useHostHooks(kind string) bool {
+	if s.config.Control.PluginDir == "" || s.has("profile") {
+		return true
+	}
+	_, ok := s.detectedHost(kind)
+	return ok
+}
+
+func (s *session) showHookConflict(host agents.DetectedHost, report agents.ConflictReport) {
+	s.block(ExitPreflightBlocked, "third_party_cognee_conflict")
+	for _, item := range report.ThirdPartyConflicts {
+		surface := known(item.Surface, "hook", "plugin", "mcp_server", "extension", "package")
+		name := "名称已隐藏"
+		if conflictEntryName.MatchString(item.EntryName) &&
+			strings.Contains(strings.ToLower(item.EntryName), "cognee") && SanitizeString(item.EntryName, "") == item.EntryName {
+			name = item.EntryName
+		}
+		s.HumanSteps = append(s.HumanSteps, fmt.Sprintf("%s 的 %s 项 %s 与 Memlane 接入冲突。", host.Kind, surface, name))
+	}
+	s.HumanSteps = append(s.HumanSteps, "在宿主配置中检查并停用第三方 Cognee 接入，然后重新运行预览。")
+}
+
+var conflictEntryName = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,48}$`)
+
+func (s *session) hostHookOptions(host agents.DetectedHost) (hooks.InstallOptions, bool) {
+	root := s.config.Root
+	if !filepath.IsAbs(root) || checkPath(root) != nil || hooks.ValidateGatewayURL(s.config.Control.URL) != nil {
+		return hooks.InstallOptions{}, false
+	}
+	sum := sha256.Sum256([]byte(host.ProfileDir))
+	keyName := host.Kind + "-" + hex.EncodeToString(sum[:12])
+	return hooks.InstallOptions{
+		Host: host.Kind, ProfileDir: host.ProfileDir, BinaryPath: s.Executable,
+		GatewayURL: s.config.Control.URL, KeyFile: filepath.Join(root, "agent-keys", keyName+".token"),
+		ConflictPolicy: &hookConflictPolicy,
+	}, true
+}
+
+func (s *session) previewHostHooks(host agents.DetectedHost) (hooks.InstallOptions, hooks.InstallResult, bool) {
+	opts, ok := s.hostHookOptions(host)
+	if !ok {
+		s.block(ExitActionRequired, "runtime_config_required")
+		s.action(readOnly, "install", "--plan")
+		return opts, hooks.InstallResult{}, false
+	}
+	report, err := s.ScanConflictsFn(host, hookConflictPolicy)
+	if err != nil {
+		s.block(ExitNeedsReview, "connection_config_unreadable")
+		return opts, hooks.InstallResult{}, false
+	}
+	if report.Blocked {
+		s.showHookConflict(host, report)
+		return opts, hooks.InstallResult{}, false
+	}
+	res, err := s.InstallHostConfigFn(opts)
+	if !s.hookResultOK(host, res, err) {
+		return opts, res, false
+	}
+	res.Conflicts = &report
+	return opts, res, true
+}
+
+func (s *session) hookResultOK(host agents.DetectedHost, result hooks.InstallResult, err error) bool {
+	if result.Blocked || errors.Is(err, hooks.ErrConflictBlocked) {
+		var report agents.ConflictReport
+		if result.Conflicts != nil {
+			report = *result.Conflicts
+		}
+		s.showHookConflict(host, report)
+		return false
+	}
+	if err != nil {
+		s.block(ExitNeedsReview, "connection_config_unreadable")
+		return false
+	}
+	return true
+}
+
+func hookPreviewSHA(previews []agents.EditPreview) string {
+	type digest struct{ Path, Before, After string }
+	rows := make([]digest, 0, len(previews))
+	for _, p := range previews {
+		rows = append(rows, digest{p.Path, p.BeforeSHA256, p.AfterSHA256})
+	}
+	slices.SortFunc(rows, func(a, b digest) int {
+		for _, comparison := range []int{strings.Compare(a.Path, b.Path), strings.Compare(a.Before, b.Before), strings.Compare(a.After, b.After)} {
+			if comparison != 0 {
+				return comparison
+			}
+		}
+		return 0
+	})
+	data, _ := json.Marshal(rows)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *session) configureHostHooks(kind string, repair bool) {
+	host, ok := s.detectedHost(kind)
+	if profile := s.get("profile"); profile != "" {
+		resolved, err := resolveSafePath(profile)
+		if err != nil {
+			s.block(ExitFatal, "unsafe_local_path")
+			return
+		}
+		host, ok = agents.DetectedHost{Kind: kind, ProfileDir: resolved, Detected: true}, true
+	}
+	if !ok {
+		s.unavailableConnectionTarget(kind)
+		return
+	}
+	opts, res, ok := s.previewHostHooks(host)
+	if !ok {
+		return
+	}
+	sha := hookPreviewSHA(res.Previews)
+	s.Artifacts.ReviewedSHA = sha
+	needsEdit := len(res.Previews) != 0
+	if repair {
+		s.Artifacts.HookRepair = &hookRepairSummary{
+			NeedsHookRepair: needsEdit, Repairable: true, PreservedThirdPartyGroups: res.Conflicts.UnrelatedCount,
+		}
+	}
+	if s.has("apply") && s.get("reviewed-sha") != sha {
+		s.block(ExitPreflightBlocked, "reviewed_sha_mismatch")
+		return
+	}
+	if !s.has("apply") {
+		if needsEdit {
+			code, args := "connection_confirmation_required", []string{"connect", "--agent", kind}
+			if repair {
+				code, args = "trae_hooks_repair_required", []string{"repair", "trae-hooks"}
+			}
+			s.block(ExitActionRequired, code)
+			if s.has("profile") {
+				if SanitizeString(s.get("profile"), "") != s.get("profile") {
+					s.HumanSteps = append(s.HumanSteps, "使用原 --profile 参数和本次 reviewed_sha 重新运行 --apply。")
+					return
+				}
+				args = append(args, "--profile", s.get("profile"))
+			}
+			s.action(confirmation, append(args, "--apply", "--reviewed-sha", sha)...)
+		}
+		return
+	}
+	if err := ensureAgentKey(opts.KeyFile); err != nil {
+		s.block(ExitFatal, "agent_key_unavailable")
+		return
+	}
+	opts.Apply = true
+	applied, err := s.InstallHostConfigFn(opts)
+	if !s.hookResultOK(host, applied, err) {
+		return
+	}
+	if repair {
+		s.Artifacts.HookRepair.Repaired = needsEdit
+		s.Artifacts.HookRepair.NeedsHookRepair = false
+	}
+	registered := s.registerHookAgent(host, opts.KeyFile)
+	if needsEdit || !registered {
+		s.block(ExitHumanRequired, "connection_receipt_required")
+		s.reloadSteps(kind)
+	}
+}
+
+// Registration grants the Agent a principal with default access set to none.
+func (s *session) registerHookAgent(host agents.DetectedHost, keyFile string) bool {
+	owner, ok := s.inspectOwner()
+	if !ok {
+		return false
+	}
+	client := s.liveClient(owner)
+	if client == nil {
+		s.HumanSteps = append(s.HumanSteps, "启动 Memlane 服务后，重新预览并确认接入，以登记 Agent 身份。")
+		return false
+	}
+	id := strings.TrimSuffix(filepath.Base(keyFile), ".token")
+	var directory struct {
+		Agents []struct {
+			ID        string `json:"id"`
+			Kind      string `json:"kind"`
+			Archived  bool   `json:"archived"`
+			RetiredAt string `json:"retired_at"`
+		} `json:"registered_agents"`
+	}
+	if err := client.Request(s.ctx, "GET", "/api/agents", nil, &directory); err != nil {
+		return false
+	}
+	for _, row := range directory.Agents {
+		if row.ID == id {
+			return row.Kind == host.Kind && !row.Archived && row.RetiredAt == ""
+		}
+	}
+	err := client.Request(s.ctx, "POST", "/api/agents", map[string]string{
+		"id": id, "kind": host.Kind, "key_file": keyFile, "host_profile": host.ProfileDir,
+	}, nil)
+	if err != nil {
+		s.HumanSteps = append(s.HumanSteps, "Memlane 尚未确认 Agent 登记，请检查服务后重新预览接入。")
+	}
+	return false
+}
+
+func ensureAgentKey(path string) error {
+	if err := checkPath(path); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		_, readErr := hooks.ReadPrivateKey(path)
+		return readErr
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	var secret [48]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(dir, ".agent-key-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err := file.WriteString(base64.RawURLEncoding.EncodeToString(secret[:])); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(file.Name(), path); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	_, err = hooks.ReadPrivateKey(path)
+	return err
+}
+
+func (s *session) verifyHostHooks() {
+	if !s.loadSelections() {
+		return
+	}
+	targets := s.Environment.SelectedAgents
+	if kind := s.get("agent"); kind != "" {
+		targets = []string{kind}
+	} else if len(targets) == 0 {
+		for _, host := range s.localHosts() {
+			if host.Detected && hooks.CanonicalHost(host.Kind) != "" {
+				targets = append(targets, host.Kind)
+			}
+		}
+	}
+	if len(targets) == 0 {
+		s.block(ExitActionRequired, "connection_target_unavailable")
+	}
+	for _, kind := range targets {
+		host, ok := s.detectedHost(kind)
+		if !ok || hooks.CanonicalHost(kind) == "" {
+			s.unavailableConnectionTarget(kind)
+			continue
+		}
+		_, result, ok := s.previewHostHooks(host)
+		if !ok {
+			continue
+		}
+		s.Connections.Hosts = append(s.Connections.Hosts, hostSummary{
+			Kind: kind, Detected: true, NeedsHookRepair: len(result.Previews) != 0,
+		})
+		if len(result.Previews) != 0 {
+			s.block(ExitActionRequired, "connection_confirmation_required")
+			s.action(readOnly, "connect", "--agent", kind, "--dry-run")
+		}
+	}
 }

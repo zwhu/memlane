@@ -21,7 +21,7 @@ func TestManualInstallCommandsReflectSourceModeAndExcludeSecrets(t *testing.T) {
 		t.Fatalf("NewEnvironment failed: %v", err)
 	}
 	var items []Item
-	for _, id := range []string{"uv", "python", "runtime", "cognee-source", "embedding", "agent-plugin"} {
+	for _, id := range []string{"uv", "python", "runtime", "cognee-source", "embedding"} {
 		r, reqErr := env.Requirement(id)
 		if reqErr != nil {
 			t.Fatalf("Requirement(%s): %v", id, reqErr)

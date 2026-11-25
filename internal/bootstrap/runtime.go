@@ -163,13 +163,18 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 type CommandFailure = aiinstaller.CommandFailure
 
 func runManaged(ctx context.Context, root, executable string, args ...string) error {
+	return runManagedInDir(ctx, root, root, executable, nil, args...)
+}
+
+func runManagedInDir(ctx context.Context, root, dir, executable string, env []string, args ...string) error {
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0700); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, executable, args...)
-	cmd.Dir = root
+	cmd.Dir = dir
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "TMPDIR=" + root, "LANG=en_US.UTF-8", "UV_NO_CONFIG=1", "UV_PYTHON_DOWNLOADS=never", "PYTHONDONTWRITEBYTECODE=1", "HF_HUB_OFFLINE=1"}
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Env = append(cmd.Env, proxyEnvVars(ctx)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {

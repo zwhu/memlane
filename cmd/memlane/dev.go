@@ -38,15 +38,19 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := cfg.validateStore(); err != nil {
 		return reportError(stderr, err)
 	}
+	ownerConfig, err := daemonOwnerConfig(cfg, nil)
+	if err != nil {
+		return reportError(stderr, err)
+	}
 	switch args[0] {
 	case "start":
-		err = startDev(ctx, cfg, *noUI)
+		err = startDev(ctx, cfg, ownerConfig.LockConfig, *noUI)
 		if err == nil {
 			return printResult(stdout, stderr, *jsonOut, "ready", map[string]string{"status": "ready"})
 		}
 	case "status":
 		var inspection daemon.OwnerInspection
-		inspection, err = daemon.InspectOwnerReadOnly(cfg.StoreRoot)
+		inspection, err = ownerConfig.LockConfig.InspectOwnerReadOnly(cfg.StoreRoot)
 		if err == nil {
 			ready := inspection.Locked && gatewayReady(ctx, cfg)
 			status := "stopped"
@@ -71,7 +75,7 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	case "recover":
 		var recovery daemon.RecoverResult
-		recovery, err = daemon.RecoverStaleOwner(ctx, daemon.RecoverOptions{StoreRoot: cfg.StoreRoot, ConfigPath: cfg.Path, CheckURLs: []string{cfg.GatewayURL}})
+		recovery, err = daemon.RecoverStaleOwner(ctx, daemon.RecoverOptions{LockConfig: ownerConfig.LockConfig, StoreRoot: cfg.StoreRoot, ConfigPath: cfg.Path, CheckURLs: []string{cfg.GatewayURL}})
 		if err == nil {
 			return printResult(stdout, stderr, *jsonOut, recovery.Status, recovery)
 		}
@@ -84,7 +88,11 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func stopOwner(ctx context.Context, cfg runtimeConfig) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	return daemon.StopVerifiedOwner(ctx, cfg.StoreRoot, cfg.Path, 38*time.Second, 3*time.Second)
+	ownerConfig, err := daemonOwnerConfig(cfg, nil)
+	if err != nil {
+		return err
+	}
+	return ownerConfig.LockConfig.StopVerifiedOwner(ctx, cfg.StoreRoot, cfg.Path, 38*time.Second, 3*time.Second)
 }
 
 func printResult(stdout, stderr io.Writer, jsonOut bool, label string, result any) int {
@@ -108,13 +116,13 @@ func gatewayReady(ctx context.Context, cfg runtimeConfig) bool {
 	return err == nil && state["ok"] == true
 }
 
-func startDev(ctx context.Context, cfg runtimeConfig, noUI bool) error {
-	inspection, err := daemon.InspectOwnerReadOnly(cfg.StoreRoot)
+func startDev(ctx context.Context, cfg runtimeConfig, lockConfig daemon.LockConfig, noUI bool) error {
+	inspection, err := lockConfig.InspectOwnerReadOnly(cfg.StoreRoot)
 	if err != nil {
 		return err
 	}
 	if inspection.Locked {
-		if _, err := daemon.VerifyOwnerRecord(ctx, cfg.StoreRoot, cfg.Path); err != nil {
+		if _, err := lockConfig.VerifyOwnerRecord(ctx, cfg.StoreRoot, cfg.Path); err != nil {
 			return err
 		}
 		if !gatewayReady(ctx, cfg) {
@@ -146,7 +154,7 @@ func startDev(ctx context.Context, cfg runtimeConfig, noUI bool) error {
 				}
 				return errors.Join(wait.Err(), signalErr)
 			case <-ticker.C:
-				if owner, err := daemon.VerifyOwnerRecord(wait, cfg.StoreRoot, cfg.Path); err == nil && owner.PID == cmd.Process.Pid && gatewayReady(wait, cfg) {
+				if owner, err := lockConfig.VerifyOwnerRecord(wait, cfg.StoreRoot, cfg.Path); err == nil && owner.PID == cmd.Process.Pid && gatewayReady(wait, cfg) {
 					break ready
 				}
 			}

@@ -15,7 +15,7 @@ import (
 func TestPrepareRuntimeResourcesLockFreeWhenStaged(t *testing.T) {
 	installer := Installer{Root: filepath.Join(workerTestRoot(t), "installation")}
 	ctx := t.Context()
-	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("# bundled launcher")}}
+	assets := fstest.MapFS{"engines/cognee/runner.py": {Data: []byte("# bundled launcher")}}
 	wantBusy := func() {
 		t.Helper()
 		if dir, err := PrepareRuntimeResources(ctx, installer.Root, assets); !errors.Is(err, ErrInstallWorkerBusy) || dir != "" {
@@ -72,21 +72,21 @@ func TestRuntimeResourcesRejectChangedAndExtraModules(t *testing.T) {
 	}
 	root := filepath.Join(parent, "resources")
 	assets := fstest.MapFS{
-		"engine/python/service.py":      {Data: []byte("# fixed adapter\n")},
-		"engine/python/test_service.py": {Data: []byte("# never materialize tests\n")},
-		"engine/components.json":        {Data: []byte("{}")},
+		"engines/cognee/service.py":      {Data: []byte("# fixed adapter\n")},
+		"engines/cognee/test_service.py": {Data: []byte("# never materialize tests\n")},
+		"engine/components.json":         {Data: []byte("{}")},
 	}
 	directory, err := PrepareRuntimeResources(context.Background(), root, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(directory, "engine/python/test_service.py")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(directory, "engines/cognee/test_service.py")); !os.IsNotExist(err) {
 		t.Fatal("test module materialized", err)
 	}
 	if same, err := PrepareRuntimeResources(context.Background(), root, assets); err != nil || same != directory {
 		t.Fatal(same, err)
 	}
-	injected := filepath.Join(directory, "engine/python/extra.py")
+	injected := filepath.Join(directory, "engines/cognee/extra.py")
 	if err := os.WriteFile(injected, []byte("# foreign import"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestRuntimeResourcesRejectChangedAndExtraModules(t *testing.T) {
 	if err := os.Remove(injected); err != nil {
 		t.Fatal(err)
 	}
-	service := filepath.Join(directory, "engine/python/service.py")
+	service := filepath.Join(directory, "engines/cognee/service.py")
 	if err := os.WriteFile(service, []byte("# modified"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -117,17 +117,17 @@ func TestRuntimeResourcesVersionChangesDoNotRewritePreviousGeneration(t *testing
 		t.Fatal(err)
 	}
 	root := filepath.Join(parent, "resources")
-	assets := fstest.MapFS{"engine/python/service.py": {Data: []byte("# first")}}
+	assets := fstest.MapFS{"engines/cognee/service.py": {Data: []byte("# first")}}
 	first, err := PrepareRuntimeResources(context.Background(), root, assets)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assets["engine/python/service.py"].Data = []byte("# second")
+	assets["engines/cognee/service.py"].Data = []byte("# second")
 	second, err := PrepareRuntimeResources(context.Background(), root, assets)
 	if err != nil || first == second {
 		t.Fatal(first, second, err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(first, "engine/python/service.py")); string(b) != "# first" {
+	if b, _ := os.ReadFile(filepath.Join(first, "engines/cognee/service.py")); string(b) != "# first" {
 		t.Fatal("previous generation changed")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

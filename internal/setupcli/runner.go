@@ -2,6 +2,7 @@ package setupcli
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"net"
 	"os"
@@ -9,9 +10,11 @@ import (
 	"slices"
 	"time"
 
+	"github.com/zwhu/memlane/core/hooks"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	"github.com/zwhu/memlane/internal/controlplane"
 	"github.com/zwhu/memlane/internal/supervisor"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 // Runner allows offline callers to substitute system probes and mutation entry
@@ -24,7 +27,9 @@ type Runner struct {
 	DefaultComponentRootFn     func() (string, error)
 	DiskFreeFn                 func(string) (uint64, error)
 	CheckDNSFn                 func(context.Context, string) bool
-	DetectHostsFn              func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost
+	DetectAgentsFn             func(agents.DiscoveryOptions) []agents.DetectedHost
+	ScanConflictsFn            func(agents.DetectedHost, agents.ConflictPolicy) (agents.ConflictReport, error)
+	InstallHostConfigFn        func(hooks.InstallOptions) (hooks.InstallResult, error)
 	NewEnvFn                   func(context.Context, fs.FS, bootstrap.EnvironmentOptions) (*bootstrap.Environment, error)
 	DetectPlanFn               func(*bootstrap.Environment, context.Context) (bootstrap.Plan, error)
 	InspectOwnerStatusFn       func(context.Context, string, string, fs.FS) (bootstrap.OwnerRuntimeStatus, error)
@@ -76,8 +81,14 @@ func (r *Runner) defaults() {
 	if r.CheckDNSFn == nil {
 		r.CheckDNSFn = checkDNS
 	}
-	if r.DetectHostsFn == nil {
-		r.DetectHostsFn = bootstrap.DetectLocalHosts
+	if r.DetectAgentsFn == nil {
+		r.DetectAgentsFn = agents.DetectHosts
+	}
+	if r.ScanConflictsFn == nil {
+		r.ScanConflictsFn = agents.ScanHostConflicts
+	}
+	if r.InstallHostConfigFn == nil {
+		r.InstallHostConfigFn = hooks.InstallHostConfig
 	}
 	if r.NewEnvFn == nil {
 		r.NewEnvFn = bootstrap.NewEnvironment
@@ -92,7 +103,14 @@ func (r *Runner) defaults() {
 		r.InspectWorkerFn = bootstrap.InspectInstallWorker
 	}
 	if r.DetectOrphansFn == nil {
-		r.DetectOrphansFn = bootstrap.DetectOrphanInstallProcesses
+		r.DetectOrphansFn = func(ctx context.Context, root string) ([]int, error) {
+			if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			} else if err != nil {
+				return nil, err
+			}
+			return bootstrap.DetectOrphanInstallProcesses(ctx, root)
+		}
 	}
 	if r.LaunchWorkerFn == nil {
 		r.LaunchWorkerFn = bootstrap.LaunchDetachedInstallWorker

@@ -17,7 +17,7 @@ func manualCommandContext(env *Environment) setup.ManualCommandContext {
 		return setup.ManualCommandContext{}
 	}
 	model := setupModelSpec(env.Model.Spec)
-	ctx := setup.ManualCommandContext{PluginSpec: &env.Plugin.Spec, ModelSpec: &model}
+	ctx := setup.ManualCommandContext{ModelSpec: &model}
 	if n := env.Runtime.Native; n != nil {
 		ctx.NativeSpec = &setup.NativeSupportSpec{
 			Version:       n.Version,

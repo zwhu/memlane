@@ -26,6 +26,7 @@ import (
 	"github.com/zwhu/memlane/core/hooks"
 	"github.com/zwhu/memlane/core/profiles"
 	"github.com/zwhu/memlane/internal/bootstrap"
+	owners "github.com/zwhu/memlane/internal/supervisor"
 	"github.com/zwhu/memlane/kit/daemon"
 )
 
@@ -180,6 +181,15 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 	if cfg.CompletionTokenFile != "" {
 		stackCfg.BridgeEndpoint = cfg.GatewayURL
 	}
+	if resources := os.Getenv("MEMLANE_RUNTIME_RESOURCES"); resources != "" {
+		if !filepath.IsAbs(resources) {
+			return errors.New("runtime resource directory must be absolute")
+		}
+		if _, ok := bootstrap.RuntimeHashFromDir(resources); !ok {
+			return errors.New("runtime resource directory must be a managed generation")
+		}
+		cfg.EngineWorkDir = resources
+	}
 	if cfg.EngineWorkDir == "" && (!attach || cfg.Python != "") {
 		folder, tempErr := os.MkdirTemp("", "memlane-engine-code-")
 		if tempErr != nil {
@@ -210,9 +220,11 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		stackCfg.Engine.StorePath = firstNonempty(cfg.OfficialData, cfg.StoreRoot)
 		endpoints = append(endpoints, cfg.EngineURL)
 	}
-	supervisor := daemon.New(daemon.Config{
-		StoreRoot: cfg.StoreRoot, ConfigPath: cfg.Path, Endpoints: endpoints, LogDir: filepath.Join(cfg.StoreRoot, "logs"),
-	})
+	daemonConfig, err := daemonOwnerConfig(cfg, endpoints)
+	if err != nil {
+		return err
+	}
+	supervisor := daemon.New(daemonConfig)
 	if err := supervisor.Start(ctx, specs); err != nil {
 		return err
 	}
@@ -252,6 +264,48 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		return err
 	}
 	return stack.Gateway.ListenAndServeLoopback(ctx, address)
+}
+
+// daemonOwnerConfig keeps first-install owners visible to bootstrap across process boundaries.
+func daemonOwnerConfig(cfg runtimeConfig, endpoints []string) (daemon.Config, error) {
+	config := daemon.Config{StoreRoot: cfg.StoreRoot, ConfigPath: cfg.Path, Endpoints: endpoints, LogDir: filepath.Join(cfg.StoreRoot, "logs")}
+	var first struct {
+		Installation        *bootstrap.FirstInstallation `json:"first_install"`
+		CompletionURL       string                       `json:"completion_url"`
+		GenerationMode      string                       `json:"generation_mode"`
+		GenerationReference *owners.GenerationReference  `json:"generation_reference"`
+	}
+	if err := json.Unmarshal(cfg.raw, &first); err != nil {
+		return config, err
+	}
+	if first.Installation == nil {
+		return config, nil
+	}
+	hash, _ := bootstrap.RuntimeHashFromDir(cfg.EngineWorkDir)
+	if first.Installation.Setup {
+		config.PhaseOnReady = "first_install_setup"
+	}
+	config.Endpoints = []string{cfg.EngineURL, first.CompletionURL, cfg.GatewayURL}
+	config.LockConfig = daemon.LockConfig{
+		OwnerReceiptFilename: ".memlane-dev-owner.json", RecoveredReceiptPrefix: ".memlane-dev-owner-recovered-",
+		UpgradeLockFilename: ".memlane-upgrade.lock", ActivationLockFilename: "first-install-activation.lock",
+		Codec: daemon.ReceiptCodec{
+			Marshal: func(rec daemon.OwnerRecord) ([]byte, error) {
+				return json.Marshal(owners.OwnerRecord{PID: rec.PID, Started: rec.Started, Phase: rec.Phase, Config: rec.ConfigPath,
+					OfficialData: rec.StoreRoot, ServiceURL: cfg.EngineURL, CompletionURL: first.CompletionURL, ProjectControlURL: cfg.GatewayURL,
+					ResourcesDir: cfg.EngineWorkDir, ResourcesHash: hash, GenerationMode: first.GenerationMode, GenerationReference: first.GenerationReference,
+					Children: rec.Children, ServiceChildren: rec.ServiceChildren, ChildStartTimes: rec.ChildStartTimes, ObservedDescendants: rec.ObservedDescendants})
+			},
+			Unmarshal: func(raw []byte) (daemon.OwnerRecord, error) {
+				var rec owners.OwnerRecord
+				err := json.Unmarshal(raw, &rec)
+				return daemon.OwnerRecord{PID: rec.PID, Started: rec.Started, Phase: rec.Phase, ConfigPath: rec.Config, StoreRoot: rec.OfficialData,
+					Endpoints: []string{rec.ServiceURL, rec.CompletionURL, rec.ProjectControlURL},
+					Children:  rec.Children, ServiceChildren: rec.ServiceChildren, ChildStartTimes: rec.ChildStartTimes, ObservedDescendants: rec.ObservedDescendants}, err
+			},
+		},
+	}
+	return config, nil
 }
 
 func loopbackAddress(raw string) (string, error) {
@@ -346,7 +400,7 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		return fail(err)
 	}
 	return daemon.ServiceSpec{
-		Role: "cognee-engine", Command: cfg.Python, Args: []string{"-B", "-m", "engines.cognee.runner", "--config", path},
+		Role: "cognee-engine", Command: cfg.Python, Args: []string{"-s", "-B", "-m", "engines.cognee.runner", "--config", path},
 		Dir: cfg.EngineWorkDir, BindURL: cfg.EngineURL, HealthURL: cfg.EngineURL + "/internal/v1/health",
 		HealthHeaders: map[string]string{"Authorization": "Bearer " + token}, LogPath: filepath.Join(cfg.StoreRoot, "logs", "cognee-engine.log"),
 		ReadyTimeout: 90 * time.Second, StopGrace: 16 * time.Second, KillWait: 2 * time.Second,
