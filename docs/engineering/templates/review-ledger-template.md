@@ -13,7 +13,7 @@
   - **A 类（生产核心代码，含 `scripts/check.py`、`scripts/utm_guard.py`、`lint_gate_test.go`）**：`<files>`
   - **B 类（测试与验收脚手架，含 `verify_setup_cli.py`、`smoke_release_contracts.py`、`utm_isolated_env.py`）**：`<files>`
   - **C 类（文档与规范）**：`<files>`
-- **开审前定向门禁回执**：`python3 scripts/task.py -- python3 scripts/check.py --changed`（退出码 `0`、耗时 `<Ns>`；此阶段不跑全量）
+- **开审前定向门禁与 `diff_guard` 回执**：`python3 scripts/task.py -- python3 scripts/check.py --changed [--lock ... --allow ...]`（退出码 `0`、耗时 `<Ns>`；此阶段不跑全量；将 `diff_guard` 吐出的新增防御/兜底/豁免/跨层 `import` 关注清单贴入 R1 指令）
 
 ---
 
@@ -42,9 +42,10 @@
 
 ### 审查硬约束
 1. 重点核对 Memlane 红线（Cognee 零侵入、`.local/daily` 隔离、禁清 `build/`、`ML001–ML022`、模型参数契约、并发与锁安全）及本切片核心契约。
-2. **禁止运行全量测试套件**（`check.py --full`、`go test ./...`）；单次只读核实命令 ≤10 秒。
-3. B 类文件提 P1 必须勾选 `[①假绿 / ②掩盖缺陷 / ③污染环境 / ④泄密]` 并给出真实（非合成 mock）触发路径，否则必须归为 P2。
-4. **固定输出结构**（≤600 字）：
+2. **反过度防御与架构贴合核查**：逐条过堂 `diff_guard` 拎出的新增 `except`/兜底分支/`memlane:allow-guard`/新增跨层 `import`；凡是违背原设计的绕路补丁、上游已保证还多写的防御、或为过测塞进生产代码的临时特判，按 A 类 P1 直接打回要求删掉。
+3. **禁止运行全量测试套件**（`check.py --full`、`go test ./...`）；单次只读核实命令 ≤10 秒。
+4. B 类文件提 P1 必须勾选 `[①假绿 / ②掩盖缺陷 / ③污染环境 / ④泄密]` 并给出真实（非合成 mock）触发路径，否则必须归为 P2。
+5. **固定输出结构**（≤600 字）：
    - `### P0 / P1 阻断项`（`[ID | 文件:行号 | A/B/C | P0/P1 | B类依据①-④ | 真实影响与修复建议]`；无则写 `无`）
    - `### P2 备注（不阻断）`
    - `### 结论`：`APPROVE` 或 `REQUEST_CHANGES`

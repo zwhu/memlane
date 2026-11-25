@@ -112,6 +112,14 @@ SCRIPT_EXTRA_TESTS: dict[str, tuple[str, ...]] = {
         'scripts/test_runtime_hygiene.py',
         'scripts/test_check.py',
     ),
+    'scripts/diff_guard.py': (
+        'scripts/test_diff_guard.py',
+        'scripts/test_check.py',
+    ),
+    'scripts/check.py': (
+        'scripts/test_check.py',
+        'scripts/test_diff_guard.py',
+    ),
     'scripts/utm_guard.py': (
         'scripts/test_utm_guard.py',
         'scripts/test_verify_setup_cli.py',
@@ -506,6 +514,7 @@ def plan_changed(
     root: Path = ROOT,
     *,
     race_pkgs: list[str] | None = None,
+    diff_guard_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map changed paths to minimal required verification steps with fail-safe escalation."""
     normalized = [(normalize_rel(p), s) for p, s in changes if normalize_rel(p)]
@@ -838,6 +847,8 @@ def plan_changed(
 
     if plan['escalated_to_full']:
         plan['stages'] = build_full_stages(root, include_release=False, race_pkgs=race_pkgs)
+        if diff_guard_cfg and plan['stages'] and plan['stages'][0].get('kind') == 'lint':
+            plan['stages'][0]['diff_guard'] = diff_guard_cfg
         return plan
 
     if engine_reverse_stems:
@@ -853,6 +864,8 @@ def plan_changed(
                 'no engine/python tests matched stems: ' + ', '.join(still_unmatched)
             )
             plan['stages'] = build_full_stages(root, include_release=False, race_pkgs=race_pkgs)
+            if diff_guard_cfg and plan['stages'] and plan['stages'][0].get('kind') == 'lint':
+                plan['stages'][0]['diff_guard'] = diff_guard_cfg
             return plan
 
     if needs_all_scripts_tests:
@@ -862,18 +875,19 @@ def plan_changed(
     stages: list[dict[str, Any]] = []
     stage_num = 1
 
-    if run_lint or run_lint_tests or hook_syntax_files:
-        stages.append(
-            {
-                'stage': stage_num,
-                'name': 'lint_and_hooks',
-                'kind': 'lint',
-                'run_lint': run_lint,
-                'run_lint_tests': run_lint_tests,
-                'hook_syntax_files': sorted(hook_syntax_files),
-                'description': 'Static lint / hook syntax gate',
-            }
-        )
+    if run_lint or run_lint_tests or hook_syntax_files or diff_guard_cfg:
+        lint_stage: dict[str, Any] = {
+            'stage': stage_num,
+            'name': 'lint_and_hooks',
+            'kind': 'lint',
+            'run_lint': run_lint,
+            'run_lint_tests': run_lint_tests,
+            'hook_syntax_files': sorted(hook_syntax_files),
+            'description': 'Static lint / diff guard / hook syntax gate',
+        }
+        if diff_guard_cfg:
+            lint_stage['diff_guard'] = diff_guard_cfg
+        stages.append(lint_stage)
         stage_num += 1
 
     vet_list = _existing_go_packages(root, go_vet_pkgs)
@@ -1314,6 +1328,34 @@ def execute_stages(
                         'steps': sub_results,
                     })
                     return res['exit_code'] or 1, results
+            dg_cfg = stage.get('diff_guard')
+            dg_script = root / 'scripts/diff_guard.py'
+            if dg_cfg and dg_script.is_file():
+                dg_cmd = [py, str(dg_script)]
+                if dg_cfg.get('staged'):
+                    dg_cmd.append('--staged')
+                elif dg_cfg.get('base_ref'):
+                    dg_cmd.extend(['--base', str(dg_cfg['base_ref'])])
+                for pat in dg_cfg.get('lock') or []:
+                    dg_cmd.extend(['--lock', str(pat)])
+                for pat in dg_cfg.get('allow') or []:
+                    dg_cmd.extend(['--allow', str(pat)])
+                for pat in dg_cfg.get('allow_new_py') or []:
+                    dg_cmd.extend(['--allow-new-py', str(pat)])
+                res = _run_cmd(dg_cmd, cwd=root, quiet_on_success=json_mode)
+                sub_results.append(res)
+                if not res['ok']:
+                    if not json_mode and res['output']:
+                        print(res['output'], file=sys.stderr)
+                    results.append({
+                        'stage': stage['stage'], 'name': name, 'kind': kind,
+                        'ok': False, 'exit_code': res['exit_code'],
+                        'elapsed_s': round(time.perf_counter() - stage_start, 3),
+                        'steps': sub_results,
+                    })
+                    return res['exit_code'] or 1, results
+                if not json_mode and res.get('output') and '审查关注清单' in res['output']:
+                    print(res['output'], flush=True)
             results.append({
                 'stage': stage['stage'], 'name': name, 'kind': kind,
                 'ok': True, 'exit_code': 0,
@@ -1438,6 +1480,27 @@ def build_parser() -> argparse.ArgumentParser:
         help='追加 go test -race 的目标包（可多次指定）',
     )
     parser.add_argument(
+        '--lock',
+        action='append',
+        default=[],
+        metavar='PATH_OR_GLOB',
+        help='--changed/--staged 模式下锁定不准修改的骨架/契约文件（透传给 scripts/diff_guard.py）',
+    )
+    parser.add_argument(
+        '--allow',
+        action='append',
+        default=[],
+        metavar='PATH_OR_GLOB',
+        help='--changed/--staged 模式下限定允许修改的文件或目录范围（透传给 scripts/diff_guard.py）',
+    )
+    parser.add_argument(
+        '--allow-new-py',
+        action='append',
+        default=[],
+        metavar='PATH_OR_GLOB',
+        help='--changed/--staged 模式下人工批准放行的新增 Python 文件（透传给 scripts/diff_guard.py）',
+    )
+    parser.add_argument(
         '--app',
         default='',
         metavar='PATH',
@@ -1499,11 +1562,25 @@ def main(
     if args.staged:
         mode_name = 'staged'
         changes = collect_git_changes(root, staged=True)
-        plan = plan_changed(changes, root=root, race_pkgs=args.race_pkg)
+        dg_cfg = {
+            'staged': True,
+            'base_ref': '',
+            'lock': list(args.lock),
+            'allow': list(args.allow),
+            'allow_new_py': list(args.allow_new_py),
+        } if changes else None
+        plan = plan_changed(changes, root=root, race_pkgs=args.race_pkg, diff_guard_cfg=dg_cfg)
     elif args.changed is not None:
         mode_name = 'changed'
         changes = collect_git_changes(root, staged=False, base_ref=args.changed)
-        plan = plan_changed(changes, root=root, race_pkgs=args.race_pkg)
+        dg_cfg = {
+            'staged': False,
+            'base_ref': args.changed,
+            'lock': list(args.lock),
+            'allow': list(args.allow),
+            'allow_new_py': list(args.allow_new_py),
+        } if changes else None
+        plan = plan_changed(changes, root=root, race_pkgs=args.race_pkg, diff_guard_cfg=dg_cfg)
     elif args.pre_push:
         mode_name = 'pre-push'
         plan = {

@@ -47,6 +47,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
+| [architecture-governance-and-py-freeze.md](engineering/architecture-governance-and-py-freeze.md) | 防过度防御硬门禁（`diff_guard.py`）、非 Cognee Python 新增冻结（`DG005`）、旧回退清理清单及定时 Loop 架构/僵尸规则巡检规划 |
 | [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
 | [defect-postmortems.md](engineering/defect-postmortems.md) | 近期关键缺陷复盘汇总（登录启动窗、画像文档误入项目队列、Codex 重试通知） |

@@ -56,6 +56,7 @@
 - [ ] **首次安装依赖瘦身**：按 [安装依赖瘦身调研](../research/install-dependency-slimming-20261125.md) 推进零侵入分级瘦身，压缩首次安装下载量与运行库解压体积。
 - [ ] **首屏性能深度演进**：按 [首屏 20× 性能调研](../research/native-first-screen-performance-20261122.md) 继续优化冷启动与大库列表渲染路径。
 - [ ] **工程测试提速（Phase P1）与 UTM 热复用**：按 [多 Agent 耗时复盘](../engineering/agent-workflow-efficiency-retrospective-20261125.md) 重构 Go/Python Top 慢测将 `scripts/check.py --full` 压入 60 秒内，并落地同版本 UTM 隔离热环境复用。
+- [ ] **架构治理、旧回退清理与定时 Loop 架构巡检（2026-11-25）**：见 [架构守护、Python 扩张冻结与定时架构巡检规划](../engineering/architecture-governance-and-py-freeze.md)——在已落地的 `diff_guard.py`（`DG001–DG005`，含非 Cognee Python 新增冻结）基础上，单开切片清掉 `internal/simpledesktop/` 残留的 7 处 `overviewDocuments` / `overviewSessions` 旧回退并同步移除 `ML019`，并设计定时 Loop 巡检架构漂移、Python 存量瘦身与僵尸 lint 规则。
 
 ---
 

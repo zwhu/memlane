@@ -545,6 +545,30 @@ class ParallelRunnerAndTaskTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertLess(elapsed, 1.8, f'task.py short command still slept ~2s: {elapsed:.2f}s')
 
+    def test_changed_wires_diff_guard_with_lock_and_allow_flags(self):
+        buf = io.StringIO()
+        with patch.object(check, 'collect_git_changes', return_value=[('engine/python/v2_api.py', 'M')]), \
+             redirect_stdout(buf):
+            code = check.main(
+                ['--changed', '--lock', 'internal/core/contract.go', '--allow', 'engine/python/', '--dry-run', '--json'],
+                root=check.ROOT,
+                allow_task_wrap=False,
+            )
+        self.assertEqual(code, 0)
+        receipt = json.loads(buf.getvalue())
+        lint_stage = _stage(receipt, 'lint')
+        self.assertIsNotNone(lint_stage)
+        self.assertEqual(
+            lint_stage.get('diff_guard'),
+            {
+                'staged': False,
+                'base_ref': '',
+                'lock': ['internal/core/contract.go'],
+                'allow': ['engine/python/'],
+                'allow_new_py': [],
+            },
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

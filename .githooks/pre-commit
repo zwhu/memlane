@@ -12,6 +12,7 @@ STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
 
 NEEDS_LINT=0
 RUN_LINT_TESTS=0
+NEEDS_DIFF_GUARD=0
 OLD_IFS="$IFS"
 IFS='
 '
@@ -28,25 +29,47 @@ for relpath in $STAGED; do
             echo "pre-commit: 禁止提交过程文档目录产物 ($relpath)，仅允许 docs/process/README.md 入库" >&2
             exit 1
             ;;
-        engine/python/*.py|scripts/*.py|internal/simpledesktop/*.go|docs/*.md)
+        engine/python/*.py|scripts/*.py)
+            NEEDS_LINT=1
+            NEEDS_DIFF_GUARD=1
+            ;;
+        *.py)
+            NEEDS_DIFF_GUARD=1
+            ;;
+        internal/simpledesktop/*.go)
+            NEEDS_LINT=1
+            NEEDS_DIFF_GUARD=1
+            ;;
+        internal/*.go|cmd/*.go)
+            NEEDS_DIFF_GUARD=1
+            ;;
+        docs/*.md)
             NEEDS_LINT=1
             ;;
     esac
 done
 IFS="$OLD_IFS"
 
-[ "$NEEDS_LINT" -eq 1 ] || exit 0
+if [ "$NEEDS_LINT" -eq 0 ] && [ "$NEEDS_DIFF_GUARD" -eq 0 ]; then
+    exit 0
+fi
 
 PYTHON_BIN="$REPO_ROOT/.local/cognee-python/bin/python"
 if [ ! -x "$PYTHON_BIN" ]; then
     PYTHON_BIN="python3"
 fi
 
-TMPDIR_INDEX="$(mktemp -d "${TMPDIR:-/tmp}/memlane-lint-index.XXXXXX")"
-trap 'rm -rf "$TMPDIR_INDEX"' EXIT INT TERM
+if [ "$NEEDS_LINT" -eq 1 ]; then
+    TMPDIR_INDEX="$(mktemp -d "${TMPDIR:-/tmp}/memlane-lint-index.XXXXXX")"
+    trap 'rm -rf "$TMPDIR_INDEX"' EXIT INT TERM
 
-git checkout-index --all --prefix="$TMPDIR_INDEX/"
-"$PYTHON_BIN" "$TMPDIR_INDEX/scripts/lint.py"
-if [ "$RUN_LINT_TESTS" -eq 1 ]; then
-    (cd "$TMPDIR_INDEX" && "$PYTHON_BIN" -m unittest discover -s scripts -p test_lint.py)
+    git checkout-index --all --prefix="$TMPDIR_INDEX/"
+    "$PYTHON_BIN" "$TMPDIR_INDEX/scripts/lint.py"
+    if [ "$RUN_LINT_TESTS" -eq 1 ]; then
+        (cd "$TMPDIR_INDEX" && "$PYTHON_BIN" -m unittest discover -s scripts -p test_lint.py)
+    fi
+fi
+
+if [ "$NEEDS_DIFF_GUARD" -eq 1 ] && [ -f "$REPO_ROOT/scripts/diff_guard.py" ]; then
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/diff_guard.py" --staged
 fi
