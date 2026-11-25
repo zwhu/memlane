@@ -95,7 +95,28 @@ func matchesMarkers(value string, markers []string) bool {
 	return false
 }
 
-func (r *ConflictReport) add(f ConflictFinding, value any, policy ConflictPolicy) {
+func isDisabledEntry(hostKind, configPath, surface string, fromMap bool, value any) bool {
+	if enabled, ok := value.(bool); ok && !enabled {
+		return true
+	}
+	obj, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, hasEnabled := obj["enabled"].(bool)
+	if hasEnabled && !enabled {
+		return true
+	}
+	if disabled, ok := obj["disabled"].(bool); ok && disabled {
+		return true
+	}
+	if (hostKind == HostCodex || hostKind == HostTraeX) && filepath.Ext(configPath) == ".toml" && surface == "plugin" && fromMap {
+		return !hasEnabled
+	}
+	return false
+}
+
+func (r *ConflictReport) add(f ConflictFinding, fromMap bool, value any, policy ConflictPolicy) {
 	encoded, err := json.Marshal(value)
 	candidate := f.EntryName
 	if err == nil {
@@ -105,7 +126,8 @@ func (r *ConflictReport) add(f ConflictFinding, value any, policy ConflictPolicy
 	case matchesMarkers(candidate, policy.ManagedMarkers):
 		f.Tier, f.Action = TierManagedLegacy, ActionMigrate
 		r.ManagedLegacy = append(r.ManagedLegacy, f)
-	case matchesMarkers(candidate, policy.ConflictKeywords):
+	case matchesMarkers(candidate, policy.ConflictKeywords) &&
+		(f.directoryEntry || !isDisabledEntry(f.HostKind, f.ConfigPath, f.Surface, fromMap, value)):
 		f.Tier, f.Action, f.Blocked = TierThirdPartyConflict, ActionBlock, true
 		r.Blocked = true
 		r.ThirdPartyConflicts = append(r.ThirdPartyConflicts, f)
@@ -129,22 +151,22 @@ func arrayEntryName(index int, value any) string {
 }
 
 func (r *ConflictReport) scanEntries(path, surface string, keys []string, value any, policy ConflictPolicy) {
-	add := func(name, key string, entry any) {
+	add := func(name, key string, fromMap bool, entry any) {
 		r.add(ConflictFinding{HostKind: r.HostKind, Surface: surface, EntryName: name, ConfigPath: path,
-			Detail: "configured " + surface, path: append(slices.Clone(keys), key)}, entry, policy)
+			Detail: "configured " + surface, path: append(slices.Clone(keys), key)}, fromMap, entry, policy)
 	}
 	switch entries := value.(type) {
 	case map[string]any:
 		for _, name := range sortedKeys(entries) {
-			add(name, name, entries[name])
+			add(name, name, true, entries[name])
 		}
 	case []any:
 		for i, entry := range entries {
-			add(arrayEntryName(i, entry), strconv.Itoa(i), entry)
+			add(arrayEntryName(i, entry), strconv.Itoa(i), false, entry)
 		}
 	case []map[string]any:
 		for i, entry := range entries {
-			add(arrayEntryName(i, entry), strconv.Itoa(i), entry)
+			add(arrayEntryName(i, entry), strconv.Itoa(i), false, entry)
 		}
 	}
 }
@@ -205,17 +227,17 @@ func (r *ConflictReport) scanHooks(path string, keys []string, value any, policy
 			rows, ok := groups[name].([]any)
 			if !ok {
 				r.add(ConflictFinding{HostKind: r.HostKind, Surface: "hook", EntryName: name, ConfigPath: path,
-					Detail: "configured hook", path: append(slices.Clone(keys), name)}, groups[name], policy)
+					Detail: "configured hook", path: append(slices.Clone(keys), name)}, true, groups[name], policy)
 				continue
 			}
 			for i, row := range rows {
 				rowPath := append(slices.Clone(keys), name, strconv.Itoa(i))
 				object, _ := row.(map[string]any)
-				if nested, ok := object["hooks"].([]any); ok {
+				if nested, ok := object["hooks"].([]any); ok && !isDisabledEntry(r.HostKind, path, "hook", false, row) {
 					r.scanEntries(path, "hook", append(rowPath, "hooks"), nested, policy)
 				} else {
 					r.add(ConflictFinding{HostKind: r.HostKind, Surface: "hook", EntryName: arrayEntryName(i, row), ConfigPath: path,
-						Detail: "configured hook", path: rowPath}, row, policy)
+						Detail: "configured hook", path: rowPath}, false, row, policy)
 				}
 			}
 		}
@@ -284,7 +306,7 @@ func (r *ConflictReport) scanDirectory(path, surface string, policy ConflictPoli
 				return err
 			}
 			r.add(ConflictFinding{HostKind: r.HostKind, Surface: surface, EntryName: entry.Name(),
-				ConfigPath: filepath.Join(path, entry.Name()), Detail: "installed " + surface, directoryEntry: true, entryDevice: uint64(st.Dev), entryInode: uint64(st.Ino)}, nil, policy)
+				ConfigPath: filepath.Join(path, entry.Name()), Detail: "installed " + surface, directoryEntry: true, entryDevice: uint64(st.Dev), entryInode: uint64(st.Ino)}, false, nil, policy)
 		}
 	}
 	return nil
@@ -306,7 +328,8 @@ func DisableThirdPartyConflicts(report ConflictReport, policy ConflictPolicy, co
 		index := slices.IndexFunc(fresh.ThirdPartyConflicts, func(f ConflictFinding) bool {
 			return finding.ConfigPath == f.ConfigPath && finding.EntryName == f.EntryName && finding.Surface == f.Surface &&
 				finding.directoryEntry == f.directoryEntry && slices.Equal(finding.path, f.path) &&
-				finding.entryDevice == f.entryDevice && finding.entryInode == f.entryInode
+				finding.entryDevice == f.entryDevice && finding.entryInode == f.entryInode &&
+				finding.configDigest == f.configDigest && (finding.directoryEntry || finding.configDigest != "")
 		})
 		if index < 0 {
 			return nil, errors.New("conflict report is stale")

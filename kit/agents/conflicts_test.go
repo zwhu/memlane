@@ -1,11 +1,94 @@
 package agents
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDisabledThirdPartyPluginsDoNotBlock(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, config, template, active, inactive string
+	}{
+		{"codex-disabled", HostCodex, "config.toml", "[plugins.\"cognee@official\"]\n%s", "enabled = true\n", "enabled = false\n"},
+		{"codex-missing-enabled", HostCodex, "config.toml", "[plugins.\"cognee@official\"]\n%s", "enabled = true\n", ""},
+		{"traex-disabled", HostTraeX, "traecli.toml", "[plugins.\"cognee@official\"]\n%s", "enabled = true\n", "enabled = false\n"},
+		{"claude-plugin", HostClaudeCode, "settings.json", `{"enabledPlugins":{"cognee@official":%s}}`, "true", "false"},
+		{"antigravity-plugin", HostAntigravity, "config.json", `{"plugins":{"cognee":{"enabled":%s}}}`, "true", "false"},
+		{"disabled-mcp", HostAntigravity, "mcp_config.json", `{"mcpServers":{"cognee":{"disabled":%s}}}`, "false", "true"},
+		{"disabled-hook", HostClaudeCode, "settings.json", `{"hooks":{"PreToolUse":[{"hooks":[{"command":"cognee","disabled":%s}]}]}}`, "false", "true"},
+		{"disabled-hook-group", HostClaudeCode, "hooks.json", `{"PreToolUse":[{"disabled":%s,"hooks":[{"command":"cognee"}]}]}`, "false", "true"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := DetectedHost{Kind: test.kind, ProfileDir: t.TempDir()}
+			path := filepath.Join(host.ProfileDir, test.config)
+			policy := ConflictPolicy{ConflictKeywords: []string{"cognee"}}
+
+			putFile(t, path, fmt.Sprintf(test.template, test.active), 0o600)
+			report, err := ScanHostConflicts(host, policy)
+			if err != nil || !report.Blocked || len(report.ThirdPartyConflicts) != 1 {
+				t.Fatalf("active entry: report %+v, error %v", report, err)
+			}
+
+			putFile(t, path, fmt.Sprintf(test.template, test.inactive), 0o600)
+			report, err = ScanHostConflicts(host, policy)
+			if err != nil || report.Blocked || len(report.ThirdPartyConflicts) != 0 {
+				t.Fatalf("disabled entry: report %+v, error %v", report, err)
+			}
+		})
+	}
+}
+
+func TestDisableThirdPartyConflictsRejectsStaleConfig(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, config, original, edited string
+	}{
+		{"toml", HostCodex, "config.toml",
+			"[plugins.\"cognee@official\"]\nenabled = true\n",
+			"# keep this unrelated edit\n[plugins.\"cognee@official\"]\nenabled = true\n"},
+		{"json", HostClaudeCode, "settings.json",
+			`{"enabledPlugins":{"cognee@official":true}}`,
+			`{"enabledPlugins":{"cognee@official":true},"unrelated":true}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, unstamped := range []bool{false, true} {
+				name := "edited-config"
+				if unstamped {
+					name = "unstamped-report"
+				}
+				t.Run(name, func(t *testing.T) {
+					host := DetectedHost{Kind: test.kind, ProfileDir: t.TempDir()}
+					path := filepath.Join(host.ProfileDir, test.config)
+					policy := ConflictPolicy{ConflictKeywords: []string{"cognee"}, BackupDir: t.TempDir()}
+					putFile(t, path, test.original, 0o600)
+					report, err := ScanHostConflicts(host, policy)
+					if err != nil || len(report.ThirdPartyConflicts) != 1 {
+						t.Fatalf("initial report: %+v, error %v", report, err)
+					}
+
+					expected := test.original
+					if unstamped {
+						report.ThirdPartyConflicts[0].configDigest = ""
+					} else {
+						expected = test.edited
+						putFile(t, path, expected, 0o600)
+					}
+
+					_, err = DisableThirdPartyConflicts(report, policy, true)
+					if err == nil || !strings.Contains(err.Error(), "conflict report is stale") {
+						t.Errorf("expected a stale report error, got %v", err)
+					}
+					actual, err := os.ReadFile(path)
+					if err != nil || string(actual) != expected {
+						t.Fatalf("expected file to stay %q, got %q, error %v", expected, actual, err)
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestConflictScanAndDisable(t *testing.T) {
 	for _, test := range []struct{ kind, config, key string }{
