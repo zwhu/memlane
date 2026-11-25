@@ -15,7 +15,8 @@ func (a *App) firstGenerationStepGuide(c *ui.Context) {
 		for _, line := range []string{
 			"1. 保存草稿 · 仅保存当前配置，供验证使用，不会启用",
 			"2. 真实验证 · 向模型发送简短探针，非本地模型可能消耗少量额度",
-			"3. 启用并完成 · 验证通过后写入正式配置并进入总览",
+			"3. 设为待启用 · 验证通过后选择要启用的配置",
+			"4. 启用并完成 · 启用所选配置并进入总览",
 		} {
 			ui.Text(c, line).FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 		}
@@ -32,9 +33,9 @@ func (a *App) firstGenerationEnableHint() string {
 func (a *App) firstGenerationEnableBlocker() string {
 	s := &a.integrations
 	switch {
-	case !a.environment.RuntimeStarted:
+	case !a.environment.RuntimeStarted || a.environment.staleRuntimeOwner():
 		return "记忆服务尚未启动，请先返回上一步检查服务。"
-	case a.environment.Busy:
+	case a.environment.Busy || a.environment.RestartingStaleDaemon:
 		return "正在启用记忆提炼，请等待完成。"
 	case generationValidationActive(s.Validation):
 		elapsed := generationValidationElapsed(time.Now(), s.ValidationStartedAt, s.Validation)
@@ -54,15 +55,21 @@ func (a *App) firstGenerationEnableBlocker() string {
 		return "有操作结果待确认，请先核对原操作。"
 	}
 
+	if s.Editor && s.DraftMode == "agent_bridge" && !s.availableProcessingBridge(s.BridgeKind) {
+		return "请先安装或重新检测本机 CLI。"
+	}
+	if s.Editor && !s.Generation.validated(s.Saved) {
+		return "草稿已保存，请先进行真实验证。"
+	}
 	next := s.Generation.Next
 	if next == nil || (s.Editor && *next != *s.Saved) {
-		if s.Editor && s.DraftMode == "provider" && !s.Generation.validated(s.Saved) {
-			return "草稿已保存，请先进行真实验证。"
-		}
 		return "请先将当前配置设为待启用。"
 	}
 	if !s.Generation.validated(next) {
 		return "待启用配置尚未通过真实验证。"
+	}
+	if !a.generationCanUse(next) {
+		return "待启用配置的本机 CLI 当前不可用，请重新检测。"
 	}
 	return ""
 }
@@ -208,7 +215,7 @@ func generationValidationNextStep(v GenerationValidation) string {
 
 func (s *integrationState) canRetryGenerationValidation() bool {
 	return (s.Validation.Status == "failed" || s.Validation.Status == "result_unknown") &&
-		!s.Busy && s.cleanSaved() && (s.DraftMode != "agent_bridge" || s.connectedProcessingAgent(s.BridgeKind))
+		!s.Busy && s.cleanSaved() && (s.DraftMode != "agent_bridge" || s.availableProcessingBridge(s.BridgeKind))
 }
 
 func (a *App) retryGenerationValidation() {

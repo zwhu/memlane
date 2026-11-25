@@ -11,7 +11,9 @@ from project_policy import PolicyError
 from trae_ide_hook import record_hook_error, scrub_diagnostic_secrets
 
 LEGACY_EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
-EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd')
+EVENTS = LEGACY_EVENTS
+LEGACY_BETA2_EVENTS = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd')
+UNSUPPORTED_BETA2_EVENTS = ('PostToolUseFailure', 'SessionEnd')
 
 _DIAGNOSTIC_WORDS = frozenset('''traceback most recent call last file line error exception
     runtimeerror valueerror typeerror oserror permissionerror timeouterror subprocesserror
@@ -50,23 +52,62 @@ def loader(installation, python):
                               'timeout': 25}]} for event in EVENTS}
 
 
-def proposal(raw, previous, replacement):
+def hook_commands(group):
+    hooks = group.get('hooks') if isinstance(group, dict) else None
+    if isinstance(hooks, list):
+        for entry in hooks:
+            if isinstance(entry, dict) and isinstance(entry.get('command'), str):
+                try:
+                    args = shlex.split(entry['command'])
+                except ValueError:
+                    continue
+                if len(args) >= 4 and args[1] == '-B' and Path(args[2]).name == 'trae_ide_hook.py':
+                    yield args
+
+
+def is_memlane_hook_group(group, *, known_scripts=None):
+    for args in hook_commands(group):
+        parts = Path(args[2]).parts[-7:]
+        if args[2] in (known_scripts or ()) or (
+                len(parts) == 7 and parts[0] == 'managed-marketplaces'
+                and re.fullmatch(r'trae_ide-[a-f0-9]{24}', parts[1])
+                and re.fullmatch(r'[a-f0-9]{20}', parts[2])
+                and parts[3:] == ('plugins', 'cognee', 'scripts', 'trae_ide_hook.py')):
+            return True
+    return False
+
+
+def parse_config(raw):
     try:
-        config = json.loads(raw) if raw else {'version': 1, 'hooks': {}}
-        if not isinstance(config, dict) or type(config.get('version')) is not int or config['version'] != 1:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode('utf-8')
+        config = json.loads(raw) if raw.strip() else {}
+        if config == {}:
+            config = {'version': 1, 'hooks': {}}
+        if not isinstance(config, dict):
+            raise ValueError()
+        if 'version' not in config and set(config) == {'hooks'} and isinstance(config['hooks'], dict):
+            config['version'] = 1
+        if type(config.get('version')) is not int or config['version'] != 1:
             raise ValueError()
         hooks = config['hooks']
         if not isinstance(hooks, dict) or any(
                 not isinstance(groups, list) or any(not isinstance(group, dict) for group in groups)
                 for groups in hooks.values()):
             raise ValueError()
-    except (ValueError, KeyError, TypeError):
+        return config
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         raise PolicyError('trae_ide_configuration_requires_review', 409) from None
 
+
+def proposal(raw, previous, replacement):
+    config = parse_config(raw)
+    hooks = config['hooks']
     previous, replacement = previous or {}, replacement or {}
+    known_scripts = {args[2] for group in (*previous.values(), *replacement.values()) for args in hook_commands(group)}
     for event, groups in hooks.items():
         for group in groups:
-            if 'trae_ide_hook.py' in json.dumps(group) and group != previous.get(event):
+            if is_memlane_hook_group(group, known_scripts=known_scripts) and group != previous.get(event):
                 raise PolicyError('trae_ide_hook_changed_requires_review', 409)
     for event in dict.fromkeys((*EVENTS, *previous, *replacement)):
         old, new = previous.get(event), replacement.get(event)
@@ -76,6 +117,10 @@ def proposal(raw, previous, replacement):
                 raise PolicyError('trae_ide_hook_changed_requires_review', 409)
             if new is not None:
                 groups[groups.index(old)] = new
+            else:
+                groups.remove(old)
+                if not groups:
+                    hooks.pop(event, None)
         elif new is not None:
             hooks.setdefault(event, []).append(new)
     return (json.dumps(config, ensure_ascii=False, indent=2) + '\n').encode()
@@ -83,7 +128,7 @@ def proposal(raw, previous, replacement):
 
 def verify_hooks(raw, expected_hooks, script):
     try:
-        if not isinstance(expected_hooks, dict) or set(expected_hooks) not in (set(EVENTS), set(LEGACY_EVENTS)):
+        if not isinstance(expected_hooks, dict) or set(expected_hooks) not in (set(EVENTS), set(LEGACY_BETA2_EVENTS)):
             raise ValueError()
         for event, group in expected_hooks.items():
             commands = group['hooks']
@@ -122,9 +167,12 @@ class HookDispatch:
                 active_record = record.get('active_record')
                 if isinstance(active_record, dict):
                     proposal_sha = active_record.get('trae_ide_proposal_sha256')
-        if not isinstance(installation, dict) or not isinstance(expected_hooks, dict):
+        journal = record.get('trae_ide_repair_journal')
+        migrating = (agent.get('kind') == 'trae_ide' and record.get('activated') is True
+                     and journal and journal['mode'] == 'active_migration')
+        if not migrating and (not isinstance(installation, dict) or not isinstance(expected_hooks, dict)):
             raise PolicyError('trae_ide_hook_not_authorized', 403)
-        if event not in EVENTS or event not in expected_hooks or len(raw) > MAX_INPUT:
+        if event not in EVENTS or len(raw) > MAX_INPUT:
             raise PolicyError('invalid_trae_ide_hook')
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get('hook_event_name') != event:
@@ -132,19 +180,32 @@ class HookDispatch:
         profile = agent.get('host_profile')
 
         def verified_script():
-            verify_hook_artifact({**installation, 'host_kind': 'trae_ide', 'instance_id': identity}, profile)
+            current, hooks, expected_sha = installation, expected_hooks, proposal_sha
+            if not isinstance(profile, str) or not profile:
+                raise PolicyError('connection_binding_changed', 409)
             raw_hooks = safe_file(Path(profile) / 'hooks.json')
-            if isinstance(proposal_sha, str) and sha(raw_hooks) != proposal_sha:
+            live_sha = sha(raw_hooks)
+            if migrating:
+                if live_sha == journal['target_proposal_sha256']:
+                    current, hooks, expected_sha = journal['target_installation'], journal['target_hooks'], live_sha
+                elif live_sha != journal['baseline_sha256']:
+                    raise PolicyError('trae_ide_hook_changed_requires_review', 409)
+            if not isinstance(current, dict) or not isinstance(hooks, dict):
+                raise PolicyError('trae_ide_hook_not_authorized', 403)
+            if event not in hooks:
+                raise PolicyError('invalid_trae_ide_hook')
+            if isinstance(expected_sha, str) and live_sha != expected_sha:
                 raise PolicyError('trae_ide_hook_changed_requires_review', 409)
-            script = Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py'
-            verify_hooks(raw_hooks, expected_hooks, script)
-            return script
+            verify_hook_artifact({**current, 'host_kind': 'trae_ide', 'instance_id': identity}, profile)
+            script = Path(current['plugin_dir']) / 'scripts/trae_ide_hook.py'
+            verify_hooks(raw_hooks, hooks, script)
+            return script, current
 
         if self.running >= 8:
             raise PolicyError('trae_ide_hook_busy', 503)
         self.running += 1
         try:
-            script = await asyncio.to_thread(verified_script)
+            script, installation = await asyncio.to_thread(verified_script)
             cwd = workspace(payload)
             if not cwd or not Path(cwd).is_dir():
                 return {}

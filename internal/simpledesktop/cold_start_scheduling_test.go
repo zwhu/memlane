@@ -392,6 +392,7 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.SetWindowActive(true)
+	drainReading(t, updates, func() bool { return a.readingIdentity != "unavailable" && !a.overviewState.Loading })
 	identity = a.readingIdentity
 	p.Loaded = true
 	p.Items = []Item{{ID: "sensitive-hidden", Body: "private text", BodyLoaded: true}}

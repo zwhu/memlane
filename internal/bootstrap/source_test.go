@@ -118,7 +118,7 @@ func checkTestArtifact(t *testing.T, destination string) {
 
 func TestArtifactUserAgentAndForbiddenMirrorFailover(t *testing.T) {
 	server := artifactTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("User-Agent"); got != "Memlane/0.1.0-beta.2" {
+		if got := r.Header.Get("User-Agent"); got != "Memlane/0.1.0-beta.3" {
 			t.Errorf("unexpected user agent on %s: %q", r.URL.Path, got)
 			http.Error(w, "user agent rejected", http.StatusForbidden)
 			return

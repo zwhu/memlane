@@ -1,9 +1,12 @@
 package simpledesktop
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +15,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 func TestOfficialHTTPErrorAndStatusCodeHelper(t *testing.T) {
@@ -218,5 +223,58 @@ func TestClientGetDoesNotPersistKnowledgeDaysSideEffect(t *testing.T) {
 	matches, _ = filepath.Glob(filepath.Join(root, "knowledge-source-dates-*.json"))
 	if len(matches) != 1 {
 		t.Fatalf("expected Client.documents to record knowledge dates, got %v", matches)
+	}
+}
+
+func TestLoopbackHTTPClientDoesNotUseEnvironmentProxy(t *testing.T) {
+	if sharedHTTPTransport.Proxy != nil {
+		t.Fatal("shared transport must not use a proxy")
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+
+	override := &http.Client{Timeout: time.Second}
+	client := newHTTPClient(override, 2*time.Second)
+	if client.Transport != sharedHTTPTransport || override.Transport != nil || client.Timeout != override.Timeout {
+		t.Fatal("transport fallback modified or ignored the caller's client")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	transport := sharedHTTPTransport.Clone()
+	defer transport.CloseIdleConnections()
+	transport.DialContext = func(_ context.Context, _, addr string) (net.Conn, error) {
+		if addr != "127.0.0.1:8910" {
+			return nil, errors.New("loopback credential was routed to a proxy")
+		}
+		conn, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			req, err := http.ReadRequest(bufio.NewReader(server))
+			if err != nil || req.Header.Get("Authorization") != "Bearer fixture-token" {
+				t.Errorf("credential did not reach loopback endpoint: %v", err)
+				return
+			}
+			req.Body.Close()
+			io.WriteString(server, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+		}()
+		return conn, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:8910", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer fixture-token")
+	response, err := newHTTPClient(&http.Client{Transport: transport}, time.Second).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected loopback response: %d", response.StatusCode)
+	}
+	sharedErr := &controlplane.ControlError{Status: http.StatusConflict, Code: "revision_conflict"}
+	if status, ok := httpStatusCode(sharedErr); !ok || status != http.StatusConflict {
+		t.Fatalf("shared error status = %d, %v", status, ok)
 	}
 }

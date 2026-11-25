@@ -24,6 +24,8 @@ type EnvironmentOptions struct {
 	Plugin         string
 	ProtectedStore string
 	DownloadSource string
+
+	SelectedAgents []string
 }
 
 type Environment struct {

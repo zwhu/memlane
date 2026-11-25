@@ -887,7 +887,10 @@ func (a *App) cachedBaseReadingIdentity() string {
 	return base
 }
 func (a *App) syncReadingIdentity() bool {
-	identity, base, err := readingIdentityPair(a.Client)
+	return a.applyReadingIdentity(readingIdentityPair(a.Client))
+}
+
+func (a *App) applyReadingIdentity(identity, base string, err error) bool {
 	if err != nil {
 		identity = "unavailable"
 		base = ""

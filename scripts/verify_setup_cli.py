@@ -1,0 +1,689 @@
+#!/usr/bin/env python3
+"""Run the beta.3 Level 1 release gate from a prepared macOS UTM snapshot."""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import fcntl
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+SCENARIOS = {
+    'clean-install': ('clean-codex-traecn', 'dirty-hooks-preexisting'),
+    'half-installed': ('clean-codex-traecn',),
+    'beta2-upgrade': ('stuck-beta2-upgrade',),
+}
+AGENTS = ('codex', 'trae_ide')
+EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'}
+FORBIDDEN_EVENTS = {'SessionEnd', 'PostToolUseFailure'}
+SECRET_MARKERS = ('sk-', 'Bearer ', 'X-Api-Key', 'management.token', 'owner.token', '.local/')
+# This fixed CLI help text names the private path marker without disclosing a path.
+GUIDANCE = (
+    'Execute read-only checks first. Show preview and ask user confirmation before any '
+    'requires=explicit_confirmation action. Never read or print tokens, API keys, .local/ '
+    'paths, hooks.json raw contents, or memory data; never run xattr or edit host config files '
+    'directly. On exit 20 poll doctor --operation-id after retry_after_ms. Stop after 3 '
+    'retries (4th failure). On exit 11 hand human_steps to user.'
+)
+DEFAULT_MAX_POLLS = 120
+DEFAULT_POLL_TIMEOUT = 1500.0
+MAX_POLLS = DEFAULT_MAX_POLLS
+POLL_TIMEOUT = DEFAULT_POLL_TIMEOUT
+WORKER_START_TIMEOUT = 10
+
+
+class VerificationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CLIResult:
+    returncode: int
+    payload: dict
+
+
+def require(condition, message):
+    if not condition:
+        raise VerificationError(message)
+
+
+def json_object(raw):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate JSON key')
+            result[key] = value
+        return result
+
+    def invalid_constant(_):
+        raise ValueError('invalid JSON number')
+
+    try:
+        payload = json.loads(raw, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+    except (ValueError, RecursionError):
+        raise VerificationError('expected a single valid JSON object') from None
+    require(isinstance(payload, dict), 'expected a single JSON object')
+    return payload
+
+
+def check_output_privacy(raw, payload, extra_markers=()):
+    public_payload = payload.copy()
+    if public_payload.get('agent_guidance') == GUIDANCE:
+        public_payload.pop('agent_guidance')
+        raw = raw.replace(json.dumps(GUIDANCE), '""', 1)
+    # Check the wire response and the decoded strings, including escaped markers.
+    decoded = json.dumps(public_payload, ensure_ascii=False)
+    require(not any(marker.casefold() in output.casefold()
+                    for marker in (*SECRET_MARKERS, *extra_markers) if marker
+                    for output in (raw, decoded)),
+            'JSON output contains a private value or path')
+
+
+def clean_env():
+    allowed = ('HOME', 'TMPDIR', 'PATH', 'LANG', 'LC_ALL')
+    return {key: os.environ[key] for key in allowed if key in os.environ}
+
+
+def run_cli(executable, args, *, env=None, timeout=65) -> CLIResult:
+    child_env = clean_env() if env is None else dict(env)
+    child_env.pop('MEMLANE_DEV_RUNTIME_CONFIG', None)
+    try:
+        result = subprocess.run([str(executable), *args], env=child_env, capture_output=True,
+                                encoding='utf-8', timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise VerificationError('CLI timed out') from None
+    except (OSError, UnicodeError):
+        raise VerificationError('could not execute CLI or decode its output') from None
+    if '--json' not in args and '--json=true' not in args:
+        return CLIResult(result.returncode, {})
+    require(result.stderr == '', 'CLI stderr was non-empty')
+    payload = json_object(result.stdout)
+    require(type(payload.get('schema_version')) is int and payload['schema_version'] == 1,
+            'CLI schema_version must be 1')
+    require(type(payload.get('exit_code')) is int and payload['exit_code'] == result.returncode,
+            'CLI exit_code differs from process return code')
+    check_output_privacy(result.stdout, payload)
+    return CLIResult(result.returncode, payload)
+
+
+def read_json(path):
+    try:
+        return json_object(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError):
+        raise VerificationError('could not read verification JSON file') from None
+
+
+def file_sha(path):
+    try:
+        with path.open('rb') as handle:
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: handle.read(65536), b''):
+                digest.update(chunk)
+            return digest.hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def hooks_document(path):
+    payload = read_json(path)
+    require(type(payload.get('version')) is int and payload['version'] == 1, 'hooks.json version must be 1')
+    hooks = payload.get('hooks')
+    require(isinstance(hooks, dict), 'hooks.json must contain a hooks object')
+    return hooks
+
+
+def memlane_hook_group(group):
+    for hook in group.get('hooks', []):
+        if not isinstance(hook, dict) or not isinstance(hook.get('command'), str):
+            continue
+        try:
+            args = shlex.split(hook['command'])
+        except ValueError:
+            continue
+        if len(args) >= 4 and args[1] == '-B' and re.search(
+            r'(?:^|/)managed-marketplaces/trae_ide-[a-f0-9]{24}/[a-f0-9]{20}/'
+            r'plugins/cognee/scripts/trae_ide_hook\.py$', args[2],
+        ):
+            return True
+    return False
+
+
+def check_hook_groups(groups):
+    require(isinstance(groups, list) and all(
+        isinstance(group, dict) and isinstance(group.get('hooks'), list) and group['hooks']
+        for group in groups
+    ), 'invalid hooks.json event groups')
+
+
+def third_party_groups(path):
+    if not path.exists():
+        return {}
+    result = {}
+    for event, groups in hooks_document(path).items():
+        check_hook_groups(groups)
+        result[event] = [group for group in groups if not memlane_hook_group(group)]
+    return result
+
+
+def assert_trae_hooks_4_event_schema(hooks_path, expected_third_party_groups=None):
+    hooks = hooks_document(hooks_path)
+    require(EVENTS <= hooks.keys(), 'hooks.json is missing a required Memlane event')
+    require(not FORBIDDEN_EVENTS.intersection(hooks), 'hooks.json contains an unsupported beta.2 event')
+    for event, groups in hooks.items():
+        require(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', event) is not None, 'invalid hooks.json event name')
+        require(bool(groups), 'hooks.json contains an empty event key')
+        check_hook_groups(groups)
+        if event in EVENTS:
+            require(any(map(memlane_hook_group, groups)), 'required event has no Memlane hook group')
+        else:
+            require(not any(map(memlane_hook_group, groups)), 'Memlane hook under an unsupported event')
+    for event, expected_groups in (expected_third_party_groups or {}).items():
+        remaining = list(hooks.get(event, []))
+        for group in expected_groups:
+            require(group in remaining, 'a preexisting third-party hook group changed or disappeared')
+            remaining.remove(group)
+
+
+def flock_held(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(fd, 'rb') as handle:
+        require(stat.S_ISREG(os.fstat(handle.fileno()).st_mode), 'lock path is not a regular file')
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+def artifact(result, key):
+    value = result.payload.get('artifacts', {}).get(key)
+    patterns = {
+        'plan_digest': r'[a-fA-F0-9]{64}',
+        'reviewed_sha': r'[a-fA-F0-9]{64}',
+        'owner_fingerprint': r'[a-fA-F0-9]{64}',
+    }
+    require(isinstance(value, str) and re.fullmatch(patterns[key], value), f'missing or invalid {key} receipt')
+    return value
+
+
+def hosts(result):
+    return result.payload.get('connections', {}).get('hosts', [])
+
+
+def pending(result):
+    return {row['operation_id']: row for row in result.payload.get('connections', {}).get('pending_ui_operations', [])}
+
+
+def valid_operation_id(value):
+    return isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}', value) is not None
+
+
+class Gate:
+    def __init__(self, options):
+        self.options = options
+        self.env = clean_env()
+        self.env['HOME'] = str(options.home)
+        if options.home != Path.home():
+            self.env['TMPDIR'] = str(options.home)
+        self.runtime = options.config.parent
+        self.hooks_path = options.hooks_path
+        self.receipts = []
+
+    def check(self, label, action):
+        receipt = {'step': label, 'status': 'failed'}
+        self.receipts.append(receipt)
+        try:
+            result = action(receipt)
+        except VerificationError as exc:
+            receipt['error'] = str(exc)
+            raise
+        except (OSError, UnicodeError, KeyError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+            receipt['error'] = 'invalid verification files, operating system state, or JSON receipt'
+            raise VerificationError(receipt['error']) from None
+        receipt['status'] = 'passed'
+        return result
+
+    def command(self, *args):
+        scope = []
+        for flag in ('config', 'component_root'):
+            value = getattr(self.options, flag)
+            scope.extend(['--' + flag.replace('_', '-'), str(value)])
+        if self.options.mirror and args[0] in ('doctor', 'install'):
+            scope.extend(['--mirror', self.options.mirror])
+        return [*args, *scope, '--json']
+
+    def cli(self, label, *args, codes=(0,), validate=None, timeout=65):
+        def execute(receipt):
+            result = run_cli(self.options.executable, self.command(*args), env=self.env, timeout=timeout)
+            receipt['exit_code'] = result.returncode
+            if validate:
+                validate(result)
+            require(result.returncode in codes, f'expected CLI exit code in {codes}')
+            return result
+        return self.check(label, execute)
+
+    def plan(self, codes=(10, 20)):
+        result = self.cli('review installation plan', 'install', '--plan', codes=codes,
+                          validate=lambda result: artifact(result, 'plan_digest'))
+        return artifact(result, 'plan_digest')
+
+    def poll(self, result, operation_id=None):
+        def worker_status(result):
+            components = result.payload.get('components', {})
+            worker_active = components.get('worker_active')
+            progress = components.get('progress') or {}
+            state = progress.get('state')
+            require(state not in ('failed', 'cancelled', 'needs_review'), f'install worker state is {state}')
+            return worker_active, state
+
+        max_polls = getattr(self.options, 'max_polls', MAX_POLLS)
+        deadline = time.monotonic() + getattr(self.options, 'poll_timeout', POLL_TIMEOUT)
+        worker_active, state = self.check('inspect initial install worker state', lambda _: worker_status(result))
+        worker_poll = (operation_id is not None or result.returncode == 20
+                       or worker_active is True or state not in (None, 'completed'))
+        for round_number in range(1, max_polls + 1) if worker_poll else ():
+            if worker_active is False and state == 'completed':
+                break
+            def poll_args(_):
+                require(worker_active is not False or result.returncode == 20,
+                        'installation completion unconfirmed after polling')
+                reported = result.payload.get('operation_id')
+                op = operation_id or reported
+                require(valid_operation_id(op), 'install poll requires a valid operation ID')
+                require(not reported or reported == op, 'install poll changed operation ID')
+                retry = result.payload.get('retry_after_ms')
+                require(type(retry) is int and retry >= 0, 'invalid install retry_after_ms')
+                remaining = deadline - time.monotonic()
+                delay = retry / 1000
+                require(delay < remaining, 'install polling deadline exceeded')
+                return op, delay
+            operation_id, delay = self.check(f'review install retry {round_number}', poll_args)
+            time.sleep(delay)
+            def validate_poll(result):
+                worker_status(result)
+                check_no_orphans(result)
+            result = self.cli(f'poll install operation {round_number}', 'doctor', '--operation-id', operation_id,
+                              codes=(0, 10, 20), validate=validate_poll,
+                              timeout=min(65.0, max(0.001, deadline - time.monotonic())))
+            worker_active, state = worker_status(result)
+        self.check('confirm installation completed', lambda _: require(
+            worker_active is False and (state == 'completed' if worker_poll
+                                        else result.returncode == 0 and state in (None, 'completed')),
+            'installation completion unconfirmed after polling'))
+        return result
+
+    def setup_verified(self, *flags):
+        self.cli('verify setup', 'verify', '--stage', 'setup', *flags)
+
+    def apply_connection(self, kind, preview, read_only):
+        args = ('connect', '--agent', kind)
+        if not preview.payload.get('artifacts', {}).get('reviewed_sha'):
+            # Unprepared hosts expose a read-only preview before staging. Their
+            # activation SHA is available only after the explicit prepare phase.
+            self.check(f'confirm {kind} prepare action', lambda _: require(any(
+                action.get('requires') == 'explicit_confirmation'
+                and action.get('args', [])[:1] == ['connect']
+                and '--phase' in action['args'] and 'prepare' in action['args']
+                and '--apply' in action['args']
+                for action in preview.payload.get('next_actions', [])
+            ), 'connection preview did not provide a SHA or a prepare action'))
+            self.cli(f'prepare {kind} connection', *args, '--phase', 'prepare', '--apply')
+            preview = self.cli(f'review prepared {kind} activation', *args, '--phase', 'activate',
+                               '--dry-run', codes=(10,), validate=read_only)
+        sha = self.check(f'confirm {kind} reviewed SHA', lambda _: artifact(preview, 'reviewed_sha'))
+        self.cli(f'apply {kind} connection', *args, '--apply', '--reviewed-sha', sha, codes=(0, 11))
+
+    def repair_hooks(self, host, baseline):
+        def unchanged(result):
+            require(file_sha(self.hooks_path) == baseline, 'TRAE hooks repair dry-run changed hooks.json')
+            artifact(result, 'reviewed_sha')
+        def target_flags(_):
+            target = host.get('instance_id')
+            require(isinstance(target, str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', target),
+                    'missing TRAE connection instance ID')
+            return ('--instance-id', target)
+        target = self.check('identify TRAE repair instance', target_flags)
+        preview = self.cli('review TRAE hooks repair', 'repair', 'trae-hooks', *target, '--dry-run',
+                           codes=(10,), validate=unchanged)
+        self.cli('apply TRAE hooks repair', 'repair', 'trae-hooks', '--apply', *target,
+                 '--reviewed-sha', artifact(preview, 'reviewed_sha'))
+
+    def clean_install(self):
+        def dns(result):
+            ok = result.payload.get('environment', {}).get('dns_ok')
+            require(ok is not False and result.returncode != 30, 'I-06 DNS preflight failed')
+            require(ok is True, 'I-06 DNS preflight did not confirm DNS')
+        doctor = self.cli('check network and missing components', 'doctor', '--check-network', codes=(10,), validate=dns)
+        digest = self.plan()
+        apply = self.cli('apply installation plan', 'install', '--apply', '--plan-digest', digest, '--wait', '45',
+                         codes=(0, 20), validate=check_no_orphans)
+        self.poll(apply)
+        self.cli('verify components', 'verify', '--stage', 'components')
+        self.setup_verified()
+
+        detected = {host['kind'] for host in hosts(doctor) if host.get('detected') is True}
+        agents = [agent for agent in AGENTS if agent in detected or agent in self.options.agents]
+        self.check('identify connection targets', lambda _: require(agents, 'no Codex or TRAE CN connection targets'))
+        for kind in agents:
+            is_trae = kind == 'trae_ide'
+            baseline = self.check('snapshot TRAE hooks', lambda _: file_sha(self.hooks_path)) if is_trae else None
+            groups = self.check('record third-party hook groups', lambda _: third_party_groups(self.hooks_path)) if is_trae else None
+            def read_only(_):
+                if is_trae:
+                    require(file_sha(self.hooks_path) == baseline, 'connect dry-run changed hooks.json')
+            preview = self.cli(f'review {kind} connection', 'connect', '--agent', kind, '--dry-run',
+                               codes=(0, 10), validate=read_only)
+            host = next((host for host in hosts(preview) if host.get('kind') == kind), {})
+            requires_repair = is_trae and (host.get('needs_hook_repair') is True or any(
+                item.get('code') == 'trae_hooks_repair_required' for item in preview.payload.get('blockers', [])
+            ))
+            if requires_repair:
+                self.repair_hooks(host, baseline)
+                # Orphan cleanup can leave the host unactivated. Re-review before
+                # installing replacement hooks if the repair did not restore them.
+                repaired = self.check('inspect repaired TRAE hooks', lambda _: hooks_document(self.hooks_path))
+                if all(event in repaired and any(map(memlane_hook_group, repaired[event])) for event in EVENTS):
+                    preview = None
+                else:
+                    baseline = self.check('snapshot repaired TRAE hooks', lambda _: file_sha(self.hooks_path))
+                    preview = self.cli('review TRAE connection after repair', 'connect', '--agent', kind,
+                                       '--dry-run', codes=(0, 10), validate=read_only)
+            if preview is not None:
+                self.apply_connection(kind, preview, read_only)
+            if is_trae:
+                self.check('verify four-event TRAE hooks and third-party groups',
+                           lambda _: assert_trae_hooks_4_event_schema(self.hooks_path, groups))
+            self.cli(f'verify {kind} needs a real host session', 'verify', '--stage', 'connection',
+                     '--agent', kind, codes=(11,), validate=check_human_required)
+
+    def half_installed(self):
+        digest = self.plan()
+        install_dir = self.options.component_root / 'installation'
+        state_path = install_dir / 'worker-state.json'
+        lock_path = install_dir / 'installation.lock'
+
+        def interrupt(receipt):
+            previous = file_sha(state_path)
+            args = self.command('install', '--apply', '--plan-digest', digest, '--wait', '45')
+            with subprocess.Popen([str(self.options.executable), *args], env=self.env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as parent:
+                try:
+                    deadline = time.monotonic() + WORKER_START_TIMEOUT
+                    while time.monotonic() < deadline and parent.poll() is None:
+                        if (file_sha(state_path) not in (None, previous)) or flock_held(lock_path):
+                            parent.kill()
+                            receipt['exit_code'] = parent.wait(timeout=5)
+                            require(receipt['exit_code'] == -signal.SIGKILL, 'install parent exited before SIGKILL')
+                            return previous
+                        time.sleep(0.05)
+                    raise VerificationError('install parent exited or timed out before its worker started')
+                finally:
+                    if parent.poll() is None:
+                        parent.kill()
+                        parent.wait(timeout=5)
+        previous = self.check('SIGKILL install parent after worker starts', interrupt)
+
+        def surviving_worker(_):
+            deadline = time.monotonic() + WORKER_START_TIMEOUT
+            while time.monotonic() < deadline:
+                if file_sha(state_path) not in (None, previous):
+                    state = read_json(state_path)
+                    state_name = state.get('state')
+                    locked = flock_held(lock_path)
+                    if locked or state_name in ('completed', 'needs_review', 'failed', 'cancelled'):
+                        operation_id = state.get('operation_id')
+                        require(valid_operation_id(operation_id), 'detached worker did not retain a valid operation ID')
+                        return operation_id, locked or state_name == 'completed'
+                time.sleep(0.05)
+            raise VerificationError('worker did not retain the install lock or complete after parent SIGKILL')
+        operation, survived = self.check('read detached worker state after parent SIGKILL', surviving_worker)
+        result = self.cli('inspect surviving install worker', 'doctor', '--operation-id', operation,
+                          codes=(0, 10, 20), validate=check_no_orphans)
+        self.check('confirm detached worker survived or completed', lambda _: require(
+            survived, 'worker terminated without completing after parent SIGKILL'))
+        self.poll(result, operation)
+        self.setup_verified()
+
+    def beta2_upgrade(self):
+        def stale_snapshot(result):
+            require(result.payload.get('daemon', {}).get('stale_version_detected') is True,
+                    'snapshot did not contain a stale beta.2 daemon')
+            require(result.payload.get('components', {}).get('complete') is True,
+                    'upgrade snapshot components are incomplete')
+        initial = self.cli('inspect stale beta.2 snapshot', 'doctor', codes=(10, 40), validate=stale_snapshot)
+
+        def ownership_snapshot(_):
+            config = read_json(self.options.config)
+            root = Path(config['official_data'])
+            require(root.is_absolute(), 'invalid upgrade store path')
+            return root, file_sha(self.options.config), file_sha(root / '.memlane-dev-owner.json'), flock_held(root / '.service-owner')
+        owner_before = self.check('snapshot stale daemon ownership', ownership_snapshot)
+        def unchanged_owner(result):
+            require(ownership_snapshot(None) == owner_before, 'stale-daemon dry-run changed ownership or runtime config')
+            require(artifact(result, 'owner_fingerprint') == initial.payload['daemon']['owner_fingerprint'],
+                    'stale-daemon preview did not match the original owner')
+        preview = self.cli('review stale daemon repair', 'repair', 'stale-daemon', '--dry-run',
+                           codes=(10,), validate=unchanged_owner)
+        self.cli('apply stale daemon repair', 'repair', 'stale-daemon', '--apply',
+                 '--owner-fingerprint', artifact(preview, 'owner_fingerprint'))
+        post_upgrade = self.cli('inspect upgraded beta.3 daemon', 'doctor', codes=(0, 10, 11, 40))
+
+        before = pending(initial)
+        self.cli('review pending operations', 'repair', 'pending-ops', '--dry-run', codes=(0, 10, 40),
+                 validate=lambda result: require(pending(result) == before, 'pending operations changed during daemon repair'))
+        expected = before.copy()
+        for index, (operation_id, row) in enumerate(before.items(), 1):
+            if not row.get('kind', '').startswith('connection_'):
+                continue
+            def classify(result):
+                evidence = result.payload.get('artifacts', {}).get('connection_operation') or {}
+                recorded = evidence.get('recorded') is True
+                return (
+                    ((recorded or evidence.get('status') == 'unrecorded')
+                     and evidence.get('reconcilable') is True and evidence.get('phase') != 'post_mutation')
+                    or (recorded and (evidence.get('safe_to_unlock') is True or evidence.get('already_complete') is True))
+                )
+            detail = self.cli(f'review pending operation {index}', 'repair', 'pending-ops', '--operation-id',
+                              operation_id, '--dry-run', codes=(10, 40))
+            safe = classify(detail)
+            self.check(f'confirm pending operation {index} classification', lambda _: require(
+                detail.returncode == (10 if safe else 40), 'pending operation classification disagrees with preview'))
+            self.cli(f'apply pending operation {index}', 'repair', 'pending-ops', '--apply', '--operation-id',
+                     operation_id, codes=(0,) if safe else (40,))
+            if safe:
+                expected.pop(operation_id)
+            self.cli(f'check pending operation {index} retention', 'doctor', codes=(0, 10, 11, 40),
+                     validate=lambda result: require(pending(result) == expected, 'pending journal retention differs from reviewed outcome'))
+
+        def find_trae(_):
+            candidates = [host for host in hosts(post_upgrade) if host.get('kind') == 'trae_ide' and host.get('needs_hook_repair') is True]
+            require(len(candidates) == 1, 'upgrade snapshot requires one TRAE instance needing hook repair')
+            return candidates[0]
+        host = self.check('identify TRAE hook repair after upgrade', find_trae)
+        baseline, groups = self.check('snapshot legacy TRAE hooks',
+                                      lambda _: (file_sha(self.hooks_path), third_party_groups(self.hooks_path)))
+        self.repair_hooks(host, baseline)
+        self.check('verify migrated TRAE hooks and third-party groups',
+                   lambda _: assert_trae_hooks_4_event_schema(self.hooks_path, groups))
+        self.setup_verified('--expect-zero-downloads', '--expect-runtime-current')
+
+        def stopped(result):
+            require(result.payload.get('daemon', {}).get('owner_locked') is False
+                    and not flock_held(owner_before[0] / '.service-owner'), 'daemon retained the service owner lock')
+        stop = self.cli('review stop with current owner', 'stop', '--dry-run', codes=(10,),
+                        validate=lambda result: artifact(result, 'owner_fingerprint'))
+        self.cli('stop current daemon', 'stop', '--apply', '--owner-fingerprint',
+                 artifact(stop, 'owner_fingerprint'), validate=stopped)
+        self.check('verify uninstall sees no active owner', self.uninstall)
+
+    def uninstall(self, receipt):
+        args = [sys.executable, str(self.options.uninstall_script), '--json', '--home', str(self.options.home),
+                '--runtime-dir', str(self.runtime), '--components-dir', str(self.options.component_root)]
+        apply = self.options.run_uninstall_apply
+        if apply:
+            args.append('--apply')
+        try:
+            result = subprocess.run(args, env=self.env, capture_output=True, encoding='utf-8', timeout=65, check=False)
+        except subprocess.TimeoutExpired:
+            raise VerificationError('uninstall timed out') from None
+        receipt['exit_code'] = result.returncode
+        require(result.stderr == '', 'uninstall stderr was non-empty')
+        payload = json_object(result.stdout)
+        require(payload.get('locked_owners') == [], 'uninstall found an active .service-owner lock or receipt')
+        require(result.returncode == 0 and payload.get('errors') == []
+                and payload.get('dry_run') is (not apply)
+                and payload.get('status') == ('completed' if apply else 'dry_run'), 'uninstall failed')
+
+
+def check_no_orphans(result):
+    require(result.returncode != 40 and not any(
+        item.get('code') == 'orphan_install_process' for item in result.payload.get('blockers', [])
+    ), 'installer needs review (orphan_install_process or unverifiable worker)')
+
+
+def check_human_required(result):
+    require(result.returncode == 11, 'connection verification must return 11 before a real host session')
+    steps = result.payload.get('human_steps')
+    require(result.payload.get('ok') is False and result.payload.get('status') == 'human_required'
+            and isinstance(steps, list) and any(isinstance(step, str) and step.strip() for step in steps),
+            'connection verification did not provide human steps')
+
+
+def absolute_path(value):
+    path = Path(value)
+    if not path.is_absolute():
+        raise argparse.ArgumentTypeError('expected an absolute path')
+    return path
+
+
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected an integer greater than or equal to 1') from None
+    if number < 1:
+        raise argparse.ArgumentTypeError('expected an integer greater than or equal to 1')
+    return number
+
+
+def positive_float(value):
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected a positive finite number') from None
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError('expected a positive finite number')
+    return number
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--executable', type=absolute_path, required=True)
+    parser.add_argument('--scenario', choices=(*SCENARIOS, 'all'), required=True)
+    for name in ('home', 'config', 'component-root', 'uninstall-script', 'hooks-path'):
+        parser.add_argument('--' + name, type=absolute_path)
+    parser.add_argument('--mirror', choices=('china', 'official'))
+    parser.add_argument('--max-polls', type=positive_int, default=DEFAULT_MAX_POLLS,
+                        help='maximum install polls (default: %(default)s)')
+    parser.add_argument('--poll-timeout', type=positive_float, default=DEFAULT_POLL_TIMEOUT,
+                        help='install polling deadline in seconds (default: %(default)s)')
+    parser.add_argument('--agents', choices=AGENTS, nargs='+', default=[])
+    parser.add_argument('--run-uninstall-apply', action='store_true')
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--dry-run', action='store_true')
+    options = parser.parse_args(argv)
+    if options.scenario == 'all' and not options.dry_run:
+        parser.error('--scenario all requires --dry-run. The three UTM snapshots are mutually exclusive. Run one --scenario per snapshot.')
+    options.home = options.home or Path.home()
+    runtime = options.home / 'Library' / 'Application Support' / 'Memlane'
+    options.config = options.config or runtime / 'runtime.json'
+    options.component_root = options.component_root or runtime / 'components'
+    options.hooks_path = options.hooks_path or options.home / '.trae-cn' / 'hooks.json'
+    options.uninstall_script = options.uninstall_script or Path(__file__).resolve().with_name('uninstall.py')
+    return options
+
+
+def plan_steps(scenario, uninstall_apply):
+    steps = {
+        'clean-install': [
+            'doctor --check-network → DNS true (I-06), exit 10',
+            'install --plan → reviewed plan digest',
+            'install --apply --wait 45 → poll doctor on exit 20, then verify components and setup (exit 0)',
+            'connect Codex and TRAE CN → dry-run before reviewed apply; repair legacy TRAE hooks when requested',
+            'TRAE hooks.json → four supported events, no empty keys, third-party groups retained',
+            'verify --stage connection → exit 11 with human steps before a real session',
+        ],
+        'half-installed': [
+            'install --plan → reviewed plan digest',
+            'install --apply --wait 45 → SIGKILL parent after worker state or lock appears',
+            'doctor --operation-id → detached worker retains lock or completes, no orphan install process',
+            'verify --stage setup → exit 0',
+        ],
+        'beta2-upgrade': [
+            'doctor → stale daemon, complete components and pending operations',
+            'repair stale-daemon → no change on dry-run; apply with reviewed owner fingerprint',
+            'doctor → inspect TRAE hook state on the upgraded daemon',
+            'repair pending-ops → safe operations unlocked, ambiguous operations retained',
+            'repair trae-hooks → unchanged SHA on dry-run; four events and third-party groups after apply',
+            'verify --stage setup --expect-zero-downloads --expect-runtime-current → exit 0',
+            'stop → apply with current owner fingerprint',
+            f'uninstall.py --json{" --apply" if uninstall_apply else ""} → no active owner lock',
+        ],
+    }
+    return steps[scenario]
+
+
+def run_verification(options):
+    scenarios = tuple(SCENARIOS) if options.scenario == 'all' else (options.scenario,)
+    if options.dry_run:
+        return 0, {'status': 'planned', 'returncode': 0, 'scenarios': [
+            {'scenario': name, 'snapshots': SCENARIOS[name], 'steps': plan_steps(name, options.run_uninstall_apply)}
+            for name in scenarios
+        ]}
+    results = []
+    for name in scenarios:
+        gate = Gate(options)
+        try:
+            getattr(gate, name.replace('-', '_'))()
+        except VerificationError:
+            status = 'failed'
+        else:
+            status = 'passed'
+        results.append({'scenario': name, 'status': status, 'steps': gate.receipts})
+    passed = sum(item['status'] == 'passed' for item in results)
+    code = int(passed != len(results))
+    return code, {'status': 'failed' if code else 'passed', 'scenarios': results,
+                  'summary': {'passed': passed, 'failed': len(results) - passed}, 'returncode': code}
+
+
+def main(argv=None):
+    options = parse_args(argv)
+    code, report = run_verification(options)
+    if options.json or options.dry_run:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for scenario in report['scenarios']:
+            print(f"{scenario['scenario']} [{scenario['status']}]")
+            for step in scenario['steps']:
+                suffix = f" — {step['error']}" if 'error' in step else ''
+                print(f"  {step['status']}: {step['step']}{suffix}")
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

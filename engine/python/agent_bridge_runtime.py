@@ -7,6 +7,7 @@ import shutil
 import copy
 import sqlite3
 
+from agent_discovery import resolve_host_runtime
 from project_policy import PolicyError
 from sqlite_ro import open_official_sqlite_ro
 
@@ -130,21 +131,7 @@ def resolve_bridge_runtime(runtime, profile=None):
     kind = (profile or {}).get('bridge_kind', 'codex')
     if kind not in ('codex', 'pi', 'traex', 'antigravity'):
         raise PolicyError('unsupported_generation_bridge', 409)
-    settings = runtime.get('agent_hosts', {}).get(kind, {})
-    command = {'codex': 'codex', 'pi': 'pi', 'traex': 'traecli', 'antigravity': 'agy'}[kind]
-    explicit = settings.get('executable') or runtime.get(kind + '_executable')
-    executable = explicit or shutil.which(command)
-    if not executable:
-        executable = next((str(base / command) for base in (Path.home()/'.local/bin', Path('/opt/homebrew/bin'), Path('/usr/local/bin'))
-                           if (base / command).is_file()), None)
-    if not executable and kind == 'antigravity':
-        executable = next((str(base / 'Gemini.app/Contents/Helpers/agy')
-                           for base in (Path('/Applications'), Path.home() / 'Applications')
-                           if (base / 'Gemini.app/Contents/Helpers/agy').is_file()), None)
-    directory = settings.get('profile') or runtime.get('auth_home' if kind == 'codex' else kind + '_auth_home')
-    if not directory and kind != 'codex':
-        directory = str(Path.home() / {'pi': '.pi/agent', 'traex': '.trae', 'antigravity': '.gemini/config'}[kind])
-    return {'kind': kind, 'executable': executable, 'home': directory}
+    return resolve_host_runtime(kind, runtime, home=Path.home(), which=shutil.which)
 
 
 def check_bridge_runtime(runtime, profile=None):
@@ -207,12 +194,15 @@ def bridge_selection_authorized(state, row):
     )
 
 
-def require_bridge_validation(store, runtime, row):
+def require_bridge_validation(store, runtime, row, *, allow_legacy=True):
     profile = row['profile']
     if profile['mode'] != 'agent_bridge':
         return
     state = getattr(store, 'state', None) or {}
-    if bridge_selection_authorized(state, row):
+    records = [r for r in state.get('validations', {}).values() if r.get('digest') == row['digest']]
+    latest = max(records, key=lambda r: r.get('registered_revision', 0), default={})
+    expected = latest.get('bridge_runtime_fingerprint') if latest.get('status') == 'passed' else None
+    if allow_legacy and expected is None and bridge_selection_authorized(state, row):
         selected = check_bridge_runtime(runtime, profile)
         read_agent_defaults(selected['kind'], selected['home'])
         if selected['kind'] == 'pi':
@@ -220,9 +210,6 @@ def require_bridge_validation(store, runtime, row):
             if models.is_symlink() or (models.exists() and models.stat().st_size > 1024 * 1024):
                 raise PolicyError('pi_provider_configuration_invalid', 409)
         return
-    records = [r for r in state.get('validations', {}).values() if r.get('digest') == row['digest'] and r.get('status') == 'passed']
-    latest = max(records, key=lambda r: r.get('registered_revision', 0), default={})
-    expected = latest.get('bridge_runtime_fingerprint')
     # Preserve existing Codex validations. Unconnected non-Codex bridges require current evidence.
     if expected is None and profile['bridge_kind'] == 'codex':
         return
@@ -267,12 +254,3 @@ def bridge_default_states(runtime):
             except PolicyError:
                 pass
     return result
-
-
-def require_connected_bridge(registry, runtime, profile):
-    from agent_connections import Connections
-    kind = profile['bridge_kind']
-    rows = Connections(registry, runtime).view()['connections']
-    if not any(row['kind'] == kind and row['status'] == 'configured_pending_new_session' for row in rows):
-        raise PolicyError('generation_agent_not_connected', 409)
-    check_bridge_runtime(runtime, profile)

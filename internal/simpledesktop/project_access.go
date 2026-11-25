@@ -10,9 +10,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 type ProjectControlConfig struct {
@@ -162,6 +165,7 @@ type CodexConnection struct {
 }
 
 type CodexConnectionPreview struct {
+	BaselineSHA256  string   `json:"baseline_sha256,omitempty"`
 	ProposedSHA     string   `json:"proposed_sha256"`
 	DisabledPlugins []string `json:"disabled_plugins"`
 	EnabledPlugin   string   `json:"enabled_plugin"`
@@ -171,26 +175,87 @@ type ProjectControlClient struct {
 	Config ProjectControlConfig
 	HTTP   *http.Client
 }
+
+func (c ProjectControlClient) controlPlaneClient() *controlplane.Client {
+	return &controlplane.Client{Config: controlplane.Config{
+		URL: c.Config.URL, RegistryFile: c.Config.RegistryFile,
+		ManagementTokenFile: c.Config.ManagementTokenFile, PluginDir: c.Config.PluginDir,
+	}, HTTP: c.HTTP}
+}
+
 type ControlResponseError struct {
 	Status  int
 	Code    string
+	Phase   string
 	Message string
 }
 
 func (e *ControlResponseError) Error() string { return e.Message }
 
-func parseControlErrorCode(body []byte) string {
+var controlErrorIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,79}$`)
+
+func parseControlError(body []byte, token string) (code, phase string) {
 	var payload struct {
 		Error string `json:"error"`
 		Code  string `json:"code"`
+		Phase string `json:"phase"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
-		return ""
+		return "", ""
 	}
-	if payload.Error != "" {
-		return payload.Error
+	for _, candidate := range []string{payload.Code, payload.Error} {
+		if controlErrorIdentifier.MatchString(candidate) && (token == "" || !strings.Contains(candidate, token)) {
+			code = candidate
+			break
+		}
 	}
-	return payload.Code
+	if payload.Phase == "pre_mutation" || payload.Phase == "post_mutation" {
+		phase = payload.Phase
+	}
+	return code, phase
+}
+
+func formatControlConflictMessage(code, phase string) string {
+	if !controlErrorIdentifier.MatchString(code) {
+		return "设置已变化或存在冲突，请刷新核对原操作"
+	}
+	var message string
+	switch code {
+	case "revision_conflict":
+		message = "设置已被其他窗口或命令行更新，请刷新后再试"
+	case "reviewed_preview_required":
+		message = "接入预览已过期，请重新预览确认后再继续"
+	case "host_configuration_changed":
+		message = "宿主配置文件已变化，请刷新后核对"
+		if phase == "post_mutation" {
+			message = "写入后检测到宿主配置文件变化，需人工核对"
+		}
+	case "codex_configuration_changed":
+		message = "Codex 配置已变动，请刷新后核对"
+	case "trae_ide_hook_changed_requires_review":
+		message = "TRAE CN Hooks 配置与记录不一致，请使用「一键修复 TRAE Hooks」或核对连接"
+	case "trae_ide_unsupported_hook_events":
+		message = "TRAE CN Hooks 包含旧版不兼容事件，请点击「一键修复 TRAE Hooks」"
+	case "connection_operation_ambiguous_requires_review":
+		message = "该次历史连接操作存在写入风险，需人工核对后处理"
+	case "host_executable_changed":
+		message = "Agent 应用版本已更新，请点击「核对连接」确认"
+	case "project_binding_conflict", "project_workspace_conflict":
+		message = "该项目目录已关联到其他项目，请检查目录后重试"
+	case "project_already_exists":
+		message = "同名项目已存在，请更换名称后重试"
+	case "dataset_already_linked":
+		message = "该记忆库已关联到其他项目，请刷新后核对"
+	default:
+		message = "操作存在冲突，请刷新核对原操作"
+		switch phase {
+		case "pre_mutation":
+			message = "操作在写入前已拦截，请刷新核对原操作"
+		case "post_mutation":
+			message = "写入后状态待核对，请人工核对原操作"
+		}
+	}
+	return message + "（" + code + "）"
 }
 
 func isControlAuthDenied(err error) bool {
@@ -200,7 +265,11 @@ func isControlAuthDenied(err error) bool {
 
 func isControlErrorCode(err error, status int, code string) bool {
 	var ce *ControlResponseError
-	return errors.As(err, &ce) && ce.Status == status && ce.Code == code
+	if errors.As(err, &ce) && ce.Status == status && ce.Code == code {
+		return true
+	}
+	var shared *controlplane.ControlError
+	return errors.As(err, &shared) && shared.Status == status && shared.Code == code
 }
 
 func isControlIndexRebuilding(err error) bool {
@@ -224,6 +293,9 @@ func controlUserError(err error) string {
 	}
 	var ce *ControlResponseError
 	if errors.As(err, &ce) {
+		if ce.Status == http.StatusConflict {
+			return formatControlConflictMessage(ce.Code, ce.Phase)
+		}
 		switch ce.Code {
 		case "project_unconfirmed":
 			return "项目尚未确认，无法读取内容"
@@ -236,6 +308,10 @@ func controlUserError(err error) string {
 		case "invalid_cursor":
 			return "列表分页游标已失效，请刷新列表"
 		}
+	}
+	var shared *controlplane.ControlError
+	if errors.As(err, &shared) && shared.IsConflict() {
+		return formatControlConflictMessage(shared.Code, shared.Phase)
 	}
 	return err.Error()
 }
@@ -266,11 +342,11 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 		}
 	}
 
-	u, err := url.Parse(c.Config.URL)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+	origin, err := controlplane.ValidateLoopbackOrigin(c.Config.URL)
+	if err != nil {
 		return fmt.Errorf("项目管理服务尚未配置")
 	}
-	key, err := readCachedToken(c.Config.ManagementTokenFile, 32, true)
+	key, err := controlplane.ReadPrivateToken(c.Config.ManagementTokenFile, 32, true)
 	if err != nil {
 		return &ControlResponseError{
 			Status:  http.StatusUnauthorized,
@@ -286,7 +362,7 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 		}
 		body = bytes.NewReader(data)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.Config.URL, "/")+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, origin+path, body)
 	if err != nil {
 		return err
 	}
@@ -309,13 +385,14 @@ func (c ProjectControlClient) requestWithHeaders(ctx context.Context, method, pa
 		return fmt.Errorf("项目目录暂时不可用，保留已载入项目")
 	}
 	defer response.Body.Close()
-	if response.StatusCode == 409 {
-		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return &ControlResponseError{Status: 409, Code: parseControlErrorCode(snippet), Message: "设置已变化或关联存在冲突，请刷新核对后再保存"}
-	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		return &ControlResponseError{Status: response.StatusCode, Code: parseControlErrorCode(snippet), Message: fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)}
+		snippet, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		code, phase := parseControlError(snippet, key)
+		message := fmt.Sprintf("项目管理请求未确认（HTTP %d），请核对原操作", response.StatusCode)
+		if response.StatusCode == http.StatusConflict {
+			message = formatControlConflictMessage(code, phase)
+		}
+		return &ControlResponseError{Status: response.StatusCode, Code: code, Phase: phase, Message: message}
 	}
 	if output == nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))

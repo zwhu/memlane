@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -80,16 +81,25 @@ func ManualInstallCommand(item Item, env *Environment, downloadSource string) st
 	case "runtime":
 		venvPython := filepath.Join(r.Destination, "venv", "bin", "python")
 		lockPath := filepath.Join(r.Destination, "requirements.lock")
-		lines := []string{
-			"uv venv --python 3.12 " + shellLiteral(filepath.Join(r.Destination, "venv")),
-		}
-		if mode == DownloadSourceChina {
+		var lines []string
+		if info, err := os.Stat(lockPath); err != nil || !info.Mode().IsRegular() {
 			lines = append(lines,
-				"uv pip sync --python "+shellLiteral(venvPython)+" --default-index "+shellLiteral(PyPIIndexURLs(mode)[0])+" --require-hashes --build-constraints "+shellLiteral(lockPath)+" "+shellLiteral(lockPath),
+				"# requirements.lock 内嵌在 Memlane 中，安装时会自动写入。",
+				"/Applications/Memlane.app/Contents/MacOS/Memlane install --plan --component runtime --mirror "+mode+" --json",
+				"# 确认安装计划后，将上一步输出中的 artifacts.plan_digest 填入 <PLAN_DIGEST> 执行：",
+				"/Applications/Memlane.app/Contents/MacOS/Memlane install --apply --plan-digest <PLAN_DIGEST> --component runtime --mirror "+mode+" --json",
 			)
+			if mode == DownloadSourceChina {
+				lines = append(lines, "# 将使用 PyPI 镜像源："+PyPIIndexURLs(mode)[0])
+			}
 		} else {
+			sync := "uv pip sync --python " + shellLiteral(venvPython)
+			if mode == DownloadSourceChina {
+				sync += " --default-index " + shellLiteral(PyPIIndexURLs(mode)[0])
+			}
 			lines = append(lines,
-				"uv pip sync --python "+shellLiteral(venvPython)+" --require-hashes --build-constraints "+shellLiteral(lockPath)+" "+shellLiteral(lockPath),
+				"uv venv --python 3.12 "+shellLiteral(filepath.Join(r.Destination, "venv")),
+				sync+" --require-hashes --build-constraints "+shellLiteral(lockPath)+" "+shellLiteral(lockPath),
 			)
 		}
 		if env != nil && env.Runtime.Native != nil {

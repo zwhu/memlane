@@ -3,10 +3,13 @@ package simpledesktop
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
-	"github.com/egoist/mygo/ui"
+	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 type backlogJob struct {
@@ -93,6 +96,9 @@ func (a *App) applyPendingChecks(q *projectQueueState, checks []pendingCheckStat
 }
 
 func (a *App) retryPendingCheck(q *projectQueueState, p AccessProject, session queuedSession) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || a.Update == nil {
 		return
@@ -140,6 +146,10 @@ func (j *backlogJob) active() bool {
 }
 
 func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
+	if a.isSetupOnlyRuntime() {
+		q.BacklogError = ""
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || client.Config.URL == "" || client.Config.ManagementTokenFile == "" || a.Update == nil || q.BacklogLoading || q.BacklogBusy {
 		return
@@ -165,6 +175,11 @@ func (a *App) refreshBacklog(q *projectQueueState, p AccessProject) {
 				return
 			}
 			if err != nil {
+				var rejected *ControlResponseError
+				if a.isSetupOnlyRuntime() && errors.As(err, &rejected) && rejected.Status == http.StatusNotFound {
+					q.BacklogError = ""
+					return
+				}
 				q.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
 				return
 			}
@@ -211,6 +226,9 @@ func backlogOperation() string {
 }
 
 func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || q.BacklogBusy {
 		return
@@ -271,6 +289,9 @@ func (a *App) retryProjectProcessing(q *projectQueueState, p AccessProject) {
 }
 
 func (a *App) runProcessingAction(q *projectQueueState, p AccessProject, suffix, errPrefix string, closeIfCleared bool) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || a.Update == nil || q.ProcessingActionBusy || a.access.Busy {
 		return

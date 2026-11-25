@@ -36,11 +36,9 @@ def emit(value):
 
 
 def capture_allowed(common, entry):
+    from plugin_capture import capture_payload
     raw = {k: v for k, v in entry.items() if k not in getattr(common, '_BUFFER_META_KEYS', set())}
-    if raw.get('type') != 'trace':
-        return True
-    from _capture_policy import allow_tool
-    return allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {}))
+    return capture_payload(raw, ambiguous=bool(entry.get(common._AMBIGUOUS_KEY))) is not None
 
 
 def _inactive_review_snapshot(common, policy, dataset, host):
@@ -346,8 +344,8 @@ def save(common, policy, payload, stopped, report=emit):
                 return
             time.sleep(.5)
         lease = common._DRAIN_LOCK.stat()
-        from _capture_policy import allow_tool, sanitize
-        from plugin_capture import capture_entry_key, entry_held, release_entry_hold, retain_failure
+        from _capture_policy import sanitize
+        from plugin_capture import capture_entry_key, capture_payload, entry_held, persist_capture_summary, release_entry_hold, retain_failure
 
         def _reload_snapshot_index():
             nonlocal cached_token_index, cached_buffer_state, cached_buf_path, cached_buf_stat
@@ -456,7 +454,8 @@ def save(common, policy, payload, stopped, report=emit):
                 progress()
                 continue
             raw = {k: v for k, v in entry.items() if k not in common._BUFFER_META_KEYS}
-            if raw.get('type') == 'trace' and not allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {})):
+            capture = capture_payload(raw, ambiguous=bool(entry.get(ambiguous_key)))
+            if capture is None:
                 # Keep the original entry; exclude only this token from this
                 # send scope. Filtering is neither a save nor an unknown POST.
                 isolated += 1
@@ -464,7 +463,9 @@ def save(common, policy, payload, stopped, report=emit):
                 tokens.popleft()
                 progress()
                 continue
-            outgoing = sanitize(raw)
+            if capture is not raw:
+                entry = persist_capture_summary(common, policy, dataset, session, entry, capture)
+            outgoing = sanitize(capture)
             try:
                 json.dumps(outgoing, allow_nan=False)
             except (ValueError, TypeError, RecursionError):

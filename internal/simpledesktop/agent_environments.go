@@ -7,17 +7,27 @@ import (
 
 const agentReceiptCheckError = "接入状态暂时无法核对，保留上次结果。"
 
+func (s *integrationState) hasPendingAgentReceipts() bool {
+	if !s.Loaded || s.Loading || s.Busy || s.ReceiptCheckLoading {
+		return false
+	}
+	for _, row := range s.Connections.Connections {
+		if (captureConnection(row) && !captureVerifiedHealthy(row)) ||
+			(row.Status == "configured_pending_new_session" && row.NewSessions == 0) ||
+			row.Status == "environment_receipt_unconfirmed" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) refreshAgentReceiptsIfDue(now time.Time) {
 	s := &a.integrations
-	if !s.Loaded || s.Loading || s.Busy || s.ReceiptCheckLoading || now.Before(s.NextReceiptCheck) || a.Update == nil {
+	if a.windowHidden || a.windowInactive || !s.hasPendingAgentReceipts() || now.Before(s.NextReceiptCheck) || a.Update == nil {
 		return
 	}
-	waiting := false
-	for _, row := range s.Connections.Connections {
-		waiting = waiting || captureConnection(row) || (row.Status == "configured_pending_new_session" && row.NewSessions == 0) || row.Status == "environment_receipt_unconfirmed"
-	}
 	client, ok := a.accessClient()
-	if !ok || !waiting {
+	if !ok {
 		return
 	}
 	s.NextReceiptCheck = now.Add(10 * time.Second)

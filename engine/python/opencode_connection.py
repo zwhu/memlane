@@ -10,7 +10,7 @@ import threading
 import time
 
 from project_control import loopback_origin, private_write
-from project_policy import PolicyError
+from project_policy import PolicyError, mark_connection_mutation, phased_connection_action
 from opencode_installation import loader, prepare as prepare_binding, verify, pending_runtime
 
 
@@ -196,10 +196,8 @@ class OpenCodeConnection:
         record = self.record()
         if self.target.exists() and sha(raw) != record.get('active_loader_sha256'):
             raise PolicyError('existing_opencode_loader_requires_review', 409)
-        configs = {}
-        for name in ('opencode.json', 'opencode.jsonc', 'config.json'):
-            body = safe_file(self.profile / name)
-            configs[name] = sha(body)
+        configs = {name: safe_file(self.profile / name) for name in ('opencode.json', 'opencode.jsonc', 'config.json')}
+        for body in configs.values():
             if not body:
                 continue
             try:
@@ -214,6 +212,13 @@ class OpenCodeConnection:
                         raise PolicyError('duplicate_opencode_memory_plugin_requires_review', 409)
             except (ValueError, UnicodeError, TypeError):
                 raise PolicyError('opencode_configuration_requires_review', 409) from None
+        return {'instance_id': self.id, 'kind': self.kind, 'target': str(self.target),
+                'baseline_sha256': sha(raw), 'configuration_sha256': self.configuration_sha256(configs, validate_plugins=True),
+                'preserve_other_plugins': True, 'requires_reload': True, 'requires_host_trust': True}
+
+    def configuration_sha256(self, configs=None, *, validate_plugins=False):
+        if configs is None:
+            configs = {name: safe_file(self.profile / name) for name in ('opencode.json', 'opencode.jsonc', 'config.json')}
         inventory = []
         for directory in (self.profile / 'plugins', self.profile / 'plugin'):
             if directory.is_symlink():
@@ -226,12 +231,11 @@ class OpenCodeConnection:
                 if len(inventory) > 1000 or path.is_symlink():
                     raise PolicyError('opencode_configuration_requires_review', 409)
                 inventory.append(str(path.relative_to(self.profile)))
-                if path != self.target and 'cognee' in path.name.lower():
+                if validate_plugins and path != self.target and 'cognee' in path.name.lower():
                     raise PolicyError('duplicate_opencode_memory_plugin_requires_review', 409)
         inventory = [name for name in inventory if name != str(self.target.relative_to(self.profile))]
-        return {'instance_id': self.id, 'kind': self.kind, 'target': str(self.target),
-                'baseline_sha256': sha(raw), 'configuration_sha256': sha(json.dumps([configs, sorted(inventory)], sort_keys=True).encode()),
-                'preserve_other_plugins': True, 'requires_reload': True, 'requires_host_trust': True}
+        hashes = {name: sha(raw) for name, raw in configs.items()}
+        return sha(json.dumps([hashes, sorted(inventory)], sort_keys=True).encode())
 
     def verify_installation(self, installation, *, force=False):
         try:
@@ -274,6 +278,7 @@ class OpenCodeConnection:
         if sha(safe_file(self.target)) != record.get('active_loader_sha256', record.get('proposed_sha256')):
             raise PolicyError('opencode_loader_changed_requires_review', 409)
 
+    @phased_connection_action
     async def prepare(self, expected, operation_id=None):
         r = self.registry
         r.check_revision(expected)
@@ -291,6 +296,7 @@ class OpenCodeConnection:
             raise PolicyError('opencode_artifact_requires_review', 409) from None
         await asyncio.to_thread(pending_runtime, manifest, self.config.get('opencode_node_executable', 'node'))
         if self.id not in r.state['agents']:
+            mark_connection_mutation()
             await r.provision_agent(expected, self.id, '本机 OpenCode')
         if self.id not in r.state['agents']:
             raise PolicyError('agent_creation_result_unknown', 503)
@@ -298,6 +304,7 @@ class OpenCodeConnection:
             record = {'status': 'preparation_unknown', 'preview': preview, 'prepare_operation_id': operation_id,
                       'active_installation': copy.deepcopy(before.get('active_installation')),
                       'active_loader_sha256': before.get('active_loader_sha256')}
+            mark_connection_mutation()
             r.state.setdefault('connections', {})[self.id] = record
             r.state['revision'] += 1
             r.save()
@@ -321,6 +328,7 @@ class OpenCodeConnection:
             r.save()
             return self.view()
 
+    @phased_connection_action
     async def activate(self, expected, reviewed_sha, operation_id=None):
         r = self.registry
         async with r.mutex:
@@ -336,6 +344,7 @@ class OpenCodeConnection:
             stub = safe_file(self.root / 'opencode-proposed.ts')
             if sha(stub) != reviewed_sha or stub != loader(installation):
                 raise PolicyError('connection_preview_changed', 409)
+            mark_connection_mutation()
             record.update(status='activation_unknown', activate_operation_id=operation_id,
                           sessions_before_activation=[key for key in r.state['sessions'] if json.loads(key)[0] == self.id])
             r.state['revision'] += 1
@@ -344,11 +353,13 @@ class OpenCodeConnection:
                 raise PolicyError('host_configuration_changed', 409)
             private_write(self.target, stub)
             self.installed({**record, 'active_installation': installation, 'active_loader_sha256': reviewed_sha}, force=True)
+            mark_connection_mutation()
             record.update(status='configured_pending_new_session', activated=True,
                           active_installation=copy.deepcopy(installation), active_loader_sha256=reviewed_sha)
             r.save()
             return self.view()
 
+    @phased_connection_action
     async def review(self, expected):
         async with self.registry.mutex:
             self.registry.check_revision(expected)
@@ -356,6 +367,7 @@ class OpenCodeConnection:
             if record.get('status') == 'activation_unknown':
                 self.installed({**record, 'active_installation': record['installation'],
                                 'active_loader_sha256': record['proposed_sha256']}, force=True)
+                mark_connection_mutation()
                 record.update(status='configured_pending_new_session', activated=True,
                               active_installation=copy.deepcopy(record['installation']), active_loader_sha256=record['proposed_sha256'])
                 self.registry.state['revision'] += 1

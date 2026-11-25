@@ -314,7 +314,7 @@ func (c Client) backfillLegacyKnowledgeDatesV2(ctx context.Context) (bool, error
 }
 
 func (a *App) triggerProvenanceBackfillOnce() {
-	if a.Config.ProjectControl == nil {
+	if a.isSetupOnlyRuntime() || a.Config.ProjectControl == nil {
 		return
 	}
 	client := a.Client

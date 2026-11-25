@@ -35,27 +35,51 @@ type environmentSetupState struct {
 	Exporting                                      bool
 	AgentOpen                                      bool
 	DiagnosticAgents                               []bootstrap.DiagnosticAgent
-	RuntimeStarted     bool
-	RuntimeStage       string
-	RuntimePreparation bootstrap.FirstRuntime
-	setupStepIndY      float32
-	setupStepIndH      float32
-	setupStepRun       uint64
-	setupLastStep      int
+	RuntimeStarted                                 bool
+	RuntimeStartError                              string
+	AutoRuntimeAttempted                           bool
+	RuntimeStage                                   string
+	RuntimePreparation                             bootstrap.FirstRuntime
+	setupStepIndY                                  float32
+	setupStepIndH                                  float32
+	setupStepRun                                   uint64
+	setupLastStep                                  int
+
+	Hosts                                     []bootstrap.DetectedHost
+	HostsLoaded, HostsLoading                 bool
+	HostDetectGen                             uint64
+	SelectedAgents                            []string
+	SelectedAgentsExplicit                    bool
+	Step1CLIGuideOpen                         bool
+	InstallPromptCopied                       bool
+	selectedAgentsSaving, selectedAgentsDirty bool
+	pinnedPreviewRequested                    map[string]pinnedPreviewVersion
+	TechDetailsOpen, ReviewTechOpen           bool
+	Progress                                  bootstrap.InstallProgress
+	ExternalWorker                            bootstrap.InstallWorkerState
+	ExternalWorkerActive                      bool
+	WorkerPollNext                            time.Time
+	workerInspecting                          bool
+	OwnerStatus                               *bootstrap.OwnerRuntimeStatus
+	OwnerStatusChecked                        bool
+	ownerInspecting                           bool
+	RestartingStaleDaemon                     bool
+	StaleDaemonError                          string
+	StaleRescueCopied                         bool
+	FastLaneChecked                           bool
 }
 
-func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
-	s := &a.environment
-	options := bootstrap.EnvironmentOptions{Root: os.Getenv("MEMLANE_BOOTSTRAP_ROOT"), Python: s.Python, UV: s.UV, Source: s.Source, Archive: s.Archive, ModelCache: s.ModelCache, Plugin: s.Plugin, ProtectedStore: a.Config.OfficialData, DownloadSource: s.DownloadSource}
+func loadEnvironmentOptions(config Config, s environmentSetupState) (bootstrap.EnvironmentOptions, error) {
+	options := bootstrap.EnvironmentOptions{Root: os.Getenv("MEMLANE_BOOTSTRAP_ROOT"), Python: s.Python, UV: s.UV, Source: s.Source, Archive: s.Archive, ModelCache: s.ModelCache, Plugin: s.Plugin, ProtectedStore: config.OfficialData, DownloadSource: s.DownloadSource}
 	if !s.SelectionLoaded {
-		options.Python, options.Source, options.Archive = a.Config.Python, a.Config.OfficialSource, a.Config.OfficialArchive
-		if a.Config.ProjectControl != nil {
-			options.Plugin = a.Config.ProjectControl.PluginDir
+		options.Python, options.Source, options.Archive = config.Python, config.OfficialSource, config.OfficialArchive
+		if config.ProjectControl != nil {
+			options.Plugin = config.ProjectControl.PluginDir
 		}
-		if a.Config.ServiceEnvironmentFile != "" {
+		if config.ServiceEnvironmentFile != "" {
 			// Decode only model selection metadata; never expose the environment or
 			// credentials to diagnostics, clipboard or component subprocesses.
-			b, err := os.ReadFile(a.Config.ServiceEnvironmentFile)
+			b, err := os.ReadFile(config.ServiceEnvironmentFile)
 			if err != nil {
 				return options, err
 			}
@@ -71,7 +95,7 @@ func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
 			}
 			options.ModelCache = fields.HFHome
 		}
-		selection, err := bootstrap.LoadSelections(options.Root, a.Config.ConfigFile)
+		selection, err := bootstrap.LoadSelections(options.Root, config.ConfigFile)
 		if err == nil {
 			options.Python, options.UV, options.Source, options.Archive, options.ModelCache = selection.Python, selection.UV, selection.Source, selection.Archive, selection.ModelCache
 			if selection.Plugin != "" {
@@ -83,18 +107,11 @@ func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return options, err
 		}
-		options.DownloadSource = bootstrap.NormalizeDownloadSource(options.DownloadSource)
-		s.Python, s.UV, s.Source, s.Archive, s.ModelCache = options.Python, options.UV, options.Source, options.Archive, options.ModelCache
-		s.Plugin = options.Plugin
-		s.DownloadSource = options.DownloadSource
-		a.syncDownloadSourceIdx()
-		s.SelectionLoaded = true
-	} else {
-		options.DownloadSource = bootstrap.NormalizeDownloadSource(options.DownloadSource)
 	}
-	if options.Root != "" && a.Config.OfficialData != "" {
+	options.DownloadSource = bootstrap.NormalizeDownloadSource(options.DownloadSource)
+	if options.Root != "" && config.OfficialData != "" {
 		root, _ := filepath.Abs(options.Root)
-		store, _ := filepath.Abs(a.Config.OfficialData)
+		store, _ := filepath.Abs(config.OfficialData)
 		for p := root; ; p = filepath.Dir(p) {
 			if p == store {
 				return options, errors.New("组件位置不能位于日常记忆库内")
@@ -107,6 +124,18 @@ func (a *App) environmentOptions() (bootstrap.EnvironmentOptions, error) {
 	return options, nil
 }
 
+func (a *App) applyEnvironmentOptions(options bootstrap.EnvironmentOptions) {
+	s := &a.environment
+	if s.SelectionLoaded {
+		return
+	}
+	s.Python, s.UV, s.Source, s.Archive, s.ModelCache = options.Python, options.UV, options.Source, options.Archive, options.ModelCache
+	s.Plugin = options.Plugin
+	s.DownloadSource = options.DownloadSource
+	a.syncDownloadSourceIdx()
+	s.SelectionLoaded = true
+}
+
 func (a *App) refreshEnvironment() {
 	a.detectEnvironment(false)
 }
@@ -116,22 +145,21 @@ func (a *App) detectEnvironment(saveSelection bool) {
 	if s.Busy || s.Loading || a.Update == nil {
 		return
 	}
-	options, err := a.environmentOptions()
-	if err != nil {
-		s.Error = bootstrap.RedactInstallerText(err.Error())
-		s.Loaded = true
-		return
-	}
-	s.Loading, s.Review, s.Error = true, false, ""
+	s.Loading, s.Review, s.ReviewTechOpen, s.Error = true, false, false, ""
 	s.Generation++
 	generation := s.Generation
-	configBinding := a.Config.ConfigFile
+	config, selection := a.Config, *s
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		environment, err := bootstrap.NewEnvironment(ctx, engine.BootstrapAssets, options)
+		options, optionsErr := loadEnvironmentOptions(config, selection)
+		err := optionsErr
+		var environment *bootstrap.Environment
+		if err == nil {
+			environment, err = bootstrap.NewEnvironment(ctx, engine.BootstrapAssets, options)
+		}
 		if err == nil && saveSelection {
-			err = bootstrap.SaveSelections(options, configBinding)
+			err = bootstrap.SaveSelections(options, config.ConfigFile)
 		}
 		var plan bootstrap.Plan
 		var journal bootstrap.Journal
@@ -144,6 +172,12 @@ func (a *App) detectEnvironment(saveSelection bool) {
 				return
 			}
 			s.Loading, s.Loaded = false, true
+			defer a.advanceFirstRuntimeStartup()
+			if optionsErr != nil {
+				s.Error = bootstrap.RedactInstallerText(optionsErr.Error())
+				return
+			}
+			a.applyEnvironmentOptions(options)
 			s.Environment, s.Plan, s.Journal = environment, plan, journal
 			if err != nil {
 				s.Error = bootstrap.RedactInstallerText(err.Error())
@@ -164,16 +198,21 @@ func (a *App) detectEnvironment(saveSelection bool) {
 
 func (a *App) runEnvironment(approve bool) {
 	s := &a.environment
-	if s.Busy || s.Loading || s.Environment == nil {
+	if s.ExternalWorkerActive {
+		s.Message = "命令行正在后台安装组件，请等待其完成或查看上方实时进度。"
+		return
+	}
+	if s.Busy || s.Loading || s.selectedAgentsSaving || s.workerInspecting || s.RestartingStaleDaemon || s.Environment == nil || a.Update == nil {
 		return
 	}
 	environment, plan := s.Environment, s.Plan
-	resume := !approve && s.Journal.ApprovedDigest != "" && s.Journal.Operation == "first-install"
-	if resume {
-		plan = s.Journal.Plan
+	journal := s.Journal
+	if !approve && journal.ApprovedDigest != "" && journal.Operation != "" {
+		plan = journal.Plan
 	}
 	s.Busy, s.Review, s.Error, s.Message = true, false, "", ""
 	s.RuntimeStage = ""
+	s.Progress = bootstrap.InstallProgress{}
 	s.Generation++
 	generation := s.Generation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,8 +220,27 @@ func (a *App) runEnvironment(approve bool) {
 	pluginDestination := a.managedPluginUpdateDestination(plan)
 	configFile := a.Config.ConfigFile
 	officialData := a.Config.OfficialData
+	inspectWorker := a.installWorkerInspector()
 	go func() {
 		defer cancel()
+		inspectionCtx, endInspection := context.WithTimeout(ctx, 5*time.Second)
+		worker, active, inspectErr := inspectWorker(inspectionCtx, environment.Options.Root)
+		endInspection()
+		if active || inspectErr != nil {
+			a.Update(func() {
+				if s.Generation != generation {
+					return
+				}
+				s.Busy, s.Cancel = false, nil
+				s.ExternalWorker, s.ExternalWorkerActive = worker, active
+				if active {
+					s.Message = "命令行正在后台安装组件，请等待其完成或查看上方实时进度。"
+				} else {
+					s.Error = "无法核对命令行安装进度，请重新检测后再试。"
+				}
+			})
+			return
+		}
 		installer := environment.Installer()
 		installer.OnChange = func(j bootstrap.Journal) {
 			a.Update(func() {
@@ -191,14 +249,24 @@ func (a *App) runEnvironment(approve bool) {
 				}
 			})
 		}
-		var err error
-		if approve {
-			err = installer.Review("first-install", plan, plan.Digest(), true)
-		} else if !resume {
-			err = bootstrap.ErrConsent
+		opID, err := bootstrap.ResolveInstallOperationID(environment.Options.Root, "")
+		if err == nil {
+			switch {
+			case approve:
+				err = installer.Review(opID, plan, plan.Digest(), true)
+			case journal.Operation != opID || journal.ApprovedDigest == "":
+				err = bootstrap.ErrConsent
+			}
 		}
 		if err == nil {
-			err = installer.Run(ctx, "first-install", plan)
+			runCtx := bootstrap.WithInstallProgress(ctx, func(p bootstrap.InstallProgress) {
+				a.Update(func() {
+					if s.Generation == generation && s.Cancel != nil {
+						s.Progress = p
+					}
+				})
+			})
+			err = installer.Run(runCtx, opID, plan)
 		}
 		var updatedPluginDir string
 		var failedPluginApplyDir string
@@ -225,6 +293,7 @@ func (a *App) runEnvironment(approve bool) {
 				return
 			}
 			s.Busy, s.Cancel = false, nil
+			s.Progress = bootstrap.InstallProgress{}
 			if err != nil {
 				s.Error = bootstrap.RedactInstallerText(err.Error())
 				if failedPluginApplyDir != "" {
@@ -244,6 +313,9 @@ func (a *App) runEnvironment(approve bool) {
 					s.Message = "Agent 插件已更新并写入配置，重启日常服务后后台将加载新版插件。"
 				} else {
 					s.Message = "环境组件已准备完成"
+					if a.initialSetup && s.InitialStep == 2 && detected.Complete() {
+						a.continueEnvironment()
+					}
 				}
 			}
 		})
@@ -256,13 +328,16 @@ func (a *App) declineEnvironment() {
 		return
 	}
 	s.Review = false
-	if s.Environment == nil {
+	if s.Environment == nil || s.ExternalWorkerActive || a.Update == nil {
 		return
 	}
 	s.Busy = true
 	environment, plan := s.Environment, s.Plan
 	go func() {
-		err := environment.Installer().Review("first-install", plan, plan.Digest(), false)
+		opID, err := bootstrap.ResolveInstallOperationID(environment.Options.Root, "")
+		if err == nil {
+			err = environment.Installer().Review(opID, plan, plan.Digest(), false)
+		}
 		a.Update(func() {
 			s.Busy = false
 			if err != nil {
@@ -677,7 +752,11 @@ func (a *App) initialEnvironmentPage(c *ui.Context) {
 }
 
 func (a *App) continueEnvironment() {
-	a.beginFirstRuntime(2)
+	if a.canEnterConnectionStep() {
+		a.setInitialStep(3)
+		return
+	}
+	a.beginFirstRuntime(3)
 }
 
 func (a *App) environmentDiagnosticAgents(c *ui.Context) {

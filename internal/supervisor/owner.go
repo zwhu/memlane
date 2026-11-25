@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,7 +30,10 @@ var (
 	// ErrOwnerMismatch indicates recorded ownership metadata does not match the target runtime.
 	ErrOwnerMismatch = errors.New("owner record configuration mismatch")
 	// ErrOwnerProcessChanged indicates the recorded owner PID has exited or its kernel start identity changed.
-	ErrOwnerProcessChanged = errors.New("owner process identity changed or exited")
+	ErrOwnerProcessChanged      = errors.New("owner process identity changed or exited")
+	ErrOwnerFingerprintMismatch = errors.New("owner process fingerprint mismatch")
+	ErrOwnerBusy                = errors.New("owner is busy starting or activating")
+	ErrUpgradeLocked            = errors.New("store upgrade lock is already held")
 )
 
 const (
@@ -54,6 +58,8 @@ type OwnerRecord struct {
 	ServiceURL          string               `json:"service_url,omitempty"`
 	CompletionURL       string               `json:"completion_url,omitempty"`
 	ProjectControlURL   string               `json:"project_control_url,omitempty"`
+	ResourcesDir        string               `json:"resources_dir,omitempty"`
+	ResourcesHash       string               `json:"resources_hash,omitempty"`
 	RuntimeConfig       string               `json:"runtime_config,omitempty"`
 	GenerationMode      string               `json:"generation_mode,omitempty"`
 	GenerationReference *GenerationReference `json:"generation_reference,omitempty"`
@@ -118,6 +124,93 @@ func canonicalPathMaybeMissing(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Abs(filepath.Join(parentResolved, filepath.Base(path)))
+}
+
+// OwnerFingerprint identifies an owner by its PID, start time, store and config.
+func OwnerFingerprint(rec OwnerRecord) string {
+	started := strings.TrimSpace(rec.Started)
+	if rec.PID <= 1 || started == "" {
+		return ""
+	}
+	store, err := canonicalDir(rec.OfficialData)
+	if err != nil {
+		store = filepath.Clean(rec.OfficialData)
+	}
+	config, err := canonicalPathMaybeMissing(rec.Config)
+	if err != nil {
+		config = filepath.Clean(rec.Config)
+	}
+	key := fmt.Sprintf("%d:%q:%q:%q", rec.PID, started, store, config)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+}
+
+func flock(file *os.File, operation int) error {
+	for {
+		err := syscall.Flock(int(file.Fd()), operation)
+		if !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+	}
+}
+
+func flockBusy(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}
+
+// UpgradeLock serializes upgrades for the canonical store.
+type UpgradeLock struct {
+	mu   sync.Mutex
+	file *os.File
+}
+
+// AcquireUpgradeLock acquires the per-store upgrade lock without waiting.
+func AcquireUpgradeLock(storeRoot string) (*UpgradeLock, error) {
+	canonical, err := canonicalDir(storeRoot)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(canonical, ".memlane-upgrade.lock")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("upgrade lock must be a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0) {
+		err = errors.New("upgrade lock must be a private regular file")
+	}
+	if err == nil {
+		err = flock(file, syscall.LOCK_EX|syscall.LOCK_NB)
+		if flockBusy(err) {
+			err = ErrUpgradeLocked
+		}
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &UpgradeLock{file: file}, nil
+}
+
+// Release unlocks and closes the upgrade lock. It is safe to call more than once.
+func (l *UpgradeLock) Release() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file == nil {
+		return nil
+	}
+	err := errors.Join(flock(l.file, syscall.LOCK_UN), l.file.Close())
+	l.file = nil
+	return err
 }
 
 func acquireStoreLock(storeRoot string) (*OwnerLock, error) {
@@ -416,22 +509,77 @@ func InspectOwner(storeRoot string) (OwnerInspection, error) {
 		_ = lock.Release()
 	}
 
-	receiptPath := filepath.Join(canonical, ownerReceiptFilename)
+	return inspectOwnerReceipt(out), nil
+}
+
+// ProbeFileLockedReadOnly probes an exclusive flock without creating or changing the file.
+func ProbeFileLockedReadOnly(path string) (locked bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, true, errors.New("lock must be a regular file")
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, true, err
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil {
+		return false, true, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, true, errors.New("lock must be a regular file")
+	}
+	err = flock(file, syscall.LOCK_SH|syscall.LOCK_NB)
+	if flockBusy(err) {
+		return true, true, nil
+	}
+	if err != nil {
+		return false, true, err
+	}
+	return false, true, flock(file, syscall.LOCK_UN)
+}
+
+// InspectOwnerReadOnly probes the owner lock and reads the receipt without mutating the store.
+func InspectOwnerReadOnly(storeRoot string) (OwnerInspection, error) {
+	canonical, err := canonicalDir(storeRoot)
+	if err != nil {
+		return OwnerInspection{}, err
+	}
+	locked, _, err := ProbeFileLockedReadOnly(filepath.Join(canonical, ownerLockFilename))
+	if err != nil {
+		return OwnerInspection{}, err
+	}
+	return inspectOwnerReceipt(OwnerInspection{StoreRoot: canonical, Locked: locked}), nil
+}
+
+func inspectOwnerReceipt(out OwnerInspection) OwnerInspection {
+
+	receiptPath := filepath.Join(out.StoreRoot, ownerReceiptFilename)
 	if _, statErr := os.Lstat(receiptPath); errors.Is(statErr, os.ErrNotExist) {
-		return out, nil
+		return out
 	} else if statErr != nil {
 		out.HasReceipt = true
 		out.ReceiptErr = statErr
-		return out, nil
+		return out
 	}
 	out.HasReceipt = true
-	rec, _, readErr := ReadOwnerRecord(canonical)
+	rec, _, readErr := ReadOwnerRecord(out.StoreRoot)
 	if readErr != nil {
 		out.ReceiptErr = readErr
-		return out, nil
+		return out
 	}
 	out.Record = rec
-	return out, nil
+	return out
 }
 
 // VerifyOwnerRecord reads .memlane-dev-owner.json and confirms it matches the target
@@ -536,6 +684,10 @@ type RecoverResult struct {
 // RecoverStaleOwner verifies an unowned store receipt belongs only to exited
 // processes whose loopback ports are free, then archives it out of the way.
 func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult, error) {
+	return recoverStaleOwner(ctx, opts, nil)
+}
+
+func recoverStaleOwner(ctx context.Context, opts RecoverOptions, checkReceipt func(OwnerRecord) error) (RecoverResult, error) {
 	lock, err := acquireStoreLock(opts.StoreRoot)
 	if err != nil {
 		return RecoverResult{}, err
@@ -559,6 +711,12 @@ func RecoverStaleOwner(ctx context.Context, opts RecoverOptions) (RecoverResult,
 	if err != nil {
 		return RecoverResult{}, fmt.Errorf("%w: %v", ErrRecoveryRefused, err)
 	}
+	if checkReceipt != nil {
+		if err := checkReceipt(rec); err != nil {
+			return RecoverResult{}, err
+		}
+	}
+
 	recConfig, cfgErr := canonicalPathMaybeMissing(rec.Config)
 	recData, dataErr := canonicalDir(rec.OfficialData)
 	if cfgErr != nil || dataErr != nil || recConfig != canonicalConfig || recData != lock.StoreRoot() {
@@ -875,17 +1033,7 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 	}
 
 	reconcileReceipt := func() error {
-		recBase := ctx
-		if recBase.Err() != nil {
-			recBase = context.Background()
-		}
-		recCtx, recCancel := context.WithTimeout(recBase, 2*time.Second)
-		defer recCancel()
-		_, recErr := RecoverStaleOwner(recCtx, RecoverOptions{
-			StoreRoot:  storeRoot,
-			ConfigPath: configPath,
-		})
-		return recErr
+		return reconcileOwnerReceipt(ctx, storeRoot, configPath, nil)
 	}
 
 	rec, err := VerifyOwnerRecord(ctx, storeRoot, configPath)
@@ -942,6 +1090,120 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 		return nil
 	}
 
+	return stopLiveOwner(ctx, rec, rec.Started, storeRoot, grace, killWait, InspectOwner, nil, reconcileReceipt)
+}
+
+// StopOwnerOptions configures shutdown of a specific verified owner.
+type StopOwnerOptions struct {
+	StoreRoot           string
+	ConfigPath          string
+	Grace               time.Duration
+	KillWait            time.Duration
+	ExpectedFingerprint string
+	AllowStarting       bool
+	ActivationLockPath  string
+}
+
+// StopVerifiedOwnerBound stops the owner selected by PID, start time and optional fingerprint.
+func StopVerifiedOwnerBound(ctx context.Context, opts StopOwnerOptions, expectedPID int, expectedStarted string) error {
+	expectedStarted = strings.TrimSpace(expectedStarted)
+	if expectedPID <= 1 || expectedPID == os.Getpid() || expectedStarted == "" {
+		return ErrOwnerFingerprintMismatch
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	insp, err := InspectOwnerReadOnly(opts.StoreRoot)
+	if err != nil {
+		return err
+	}
+	if !insp.HasReceipt {
+		if insp.Locked {
+			return ErrOwnerBusy
+		}
+		return ErrOwnerProcessChanged
+	}
+	rec, err := VerifyOwnerRecord(ctx, insp.StoreRoot, opts.ConfigPath)
+	if rec.PID != 0 && rec.PID != expectedPID {
+		return ErrOwnerFingerprintMismatch
+	}
+	if rec.PID == expectedPID && strings.TrimSpace(rec.Started) != expectedStarted {
+		matched, matchErr := ProcessStartMatches(ctx, expectedPID, expectedStarted)
+		if matchErr != nil || !matched {
+			return ErrOwnerFingerprintMismatch
+		}
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrOwnerProcessChanged
+		}
+		return err
+	}
+	checkReceipt := func(current OwnerRecord) error {
+		if current.PID != expectedPID || strings.TrimSpace(current.Started) != strings.TrimSpace(rec.Started) ||
+			(opts.ExpectedFingerprint != "" && OwnerFingerprint(current) != opts.ExpectedFingerprint) {
+			return ErrOwnerFingerprintMismatch
+		}
+		return nil
+	}
+	if err := checkReceipt(rec); err != nil {
+		return err
+	}
+	if !opts.AllowStarting && rec.Phase == "starting" {
+		return ErrOwnerBusy
+	}
+	actLock := opts.ActivationLockPath
+	if actLock == "" {
+		actLock = filepath.Join(insp.StoreRoot, "first-install-activation.lock")
+	}
+	locked, _, err := ProbeFileLockedReadOnly(actLock)
+	if err != nil {
+		return err
+	}
+	if locked {
+		return ErrOwnerBusy
+	}
+	if slices.Contains(rec.Children, os.Getpid()) && os.Getppid() == rec.PID {
+		return fmt.Errorf("%w: cannot bound-stop supervising parent", ErrOwnerBusy)
+	}
+
+	checkCurrentReceipt := func() error {
+		current, _, err := ReadOwnerRecord(insp.StoreRoot)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return checkReceipt(current)
+	}
+	inspectBoundOwner := func(storeRoot string) (OwnerInspection, error) {
+		current, err := InspectOwnerReadOnly(storeRoot)
+		if err == nil && current.HasReceipt && current.ReceiptErr == nil {
+			err = checkReceipt(current.Record)
+		}
+		return current, err
+	}
+	reconcileReceipt := func() error {
+		return reconcileOwnerReceipt(ctx, insp.StoreRoot, opts.ConfigPath, checkReceipt)
+	}
+	return stopLiveOwner(ctx, rec, expectedStarted, insp.StoreRoot, opts.Grace, opts.KillWait,
+		inspectBoundOwner, checkCurrentReceipt, reconcileReceipt)
+}
+
+func reconcileOwnerReceipt(ctx context.Context, storeRoot, configPath string, checkReceipt func(OwnerRecord) error) error {
+	if ctx.Err() != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err := recoverStaleOwner(ctx, RecoverOptions{StoreRoot: storeRoot, ConfigPath: configPath}, checkReceipt)
+	return err
+}
+
+func stopLiveOwner(ctx context.Context, rec OwnerRecord, expectedStarted, storeRoot string, grace, killWait time.Duration,
+	inspect func(string) (OwnerInspection, error), checkReceipt, reconcileReceipt func() error,
+) error {
 	// Snapshot strictly verified child/descendant kernel identities before signaling the owner.
 	var tracked map[int]string
 	probeBase := ctx
@@ -952,7 +1214,11 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 	table, tableErr := ProcessTable(probeCtx)
 	probeCancel()
 	if tableErr == nil {
-		tracked = collectVerifiedOwnerChildren(ctx, rec, true, table)
+		// Trust live parentage only if the bound owner's identity also appears
+		// in this snapshot. Persisted descendant identities can stand alone.
+		owner := table[rec.PID]
+		ownerVerified := checkReceipt == nil || owner.Started == strings.TrimSpace(rec.Started) || owner.Started == expectedStarted
+		tracked = collectVerifiedOwnerChildren(ctx, rec, ownerVerified, table)
 	}
 
 	effGrace, effKill := partitionStopBudget(ctx, grace, killWait)
@@ -964,14 +1230,20 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 		}
 		pCtx, cancel := context.WithTimeout(base, time.Second)
 		defer cancel()
-		matched, mErr := ProcessStartMatches(pCtx, rec.PID, rec.Started)
+		matched, mErr := ProcessStartMatches(pCtx, rec.PID, expectedStarted)
 		return mErr == nil && matched
 	}
 
 	// Phase 1: send SIGTERM directly to the verified owner PID so dev.py / supervisor runs
 	// its own reverse-order shutdown and removes .memlane-dev-owner.json cleanly.
 	if effGrace > 0 && ctx.Err() == nil {
-		if !ownerStillMatches() {
+		alive := ownerStillMatches()
+		if checkReceipt != nil {
+			if err := checkReceipt(); err != nil {
+				return err
+			}
+		}
+		if !alive {
 			goto escalate
 		}
 		if err := syscall.Kill(rec.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -981,9 +1253,12 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 		}
 		graceDeadline := time.Now().Add(effGrace)
 		for time.Now().Before(graceDeadline) {
-			inspNow, inspErr := InspectOwner(storeRoot)
+			inspNow, inspErr := inspect(storeRoot)
+			if errors.Is(inspErr, ErrOwnerFingerprintMismatch) {
+				return inspErr
+			}
 			alive := ownerStillMatches()
-			if !alive && inspErr == nil && !inspNow.Locked && !inspNow.HasReceipt {
+			if checkReceipt == nil && !alive && inspErr == nil && !inspNow.Locked && !inspNow.HasReceipt {
 				return nil
 			}
 			if !alive && inspErr == nil && !inspNow.Locked {
@@ -1000,7 +1275,13 @@ func StopVerifiedOwner(ctx context.Context, storeRoot, configPath string, grace,
 escalate:
 	// Phase 2: if the verified owner or any verified children remain alive, escalate to SIGKILL.
 	var errs []error
-	if ownerStillMatches() {
+	alive := ownerStillMatches()
+	if checkReceipt != nil {
+		if err := checkReceipt(); err != nil {
+			return err
+		}
+	}
+	if alive {
 		if err := syscall.Kill(rec.PID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			errs = append(errs, err)
 		}
@@ -1018,7 +1299,10 @@ escalate:
 	}
 	killDeadline := time.Now().Add(killWindow)
 	for time.Now().Before(killDeadline) {
-		inspNow, inspErr := InspectOwner(storeRoot)
+		inspNow, inspErr := inspect(storeRoot)
+		if errors.Is(inspErr, ErrOwnerFingerprintMismatch) {
+			return errors.Join(append(errs, inspErr)...)
+		}
 		if !ownerStillMatches() && inspErr == nil && !inspNow.Locked {
 			if !inspNow.HasReceipt {
 				return errors.Join(errs...)
@@ -1034,7 +1318,7 @@ escalate:
 	}
 	if ownerStillMatches() {
 		errs = append(errs, fmt.Errorf("external owner process exit unconfirmed: %d", rec.PID))
-	} else if inspNow, inspErr := InspectOwner(storeRoot); inspErr == nil {
+	} else if inspNow, inspErr := inspect(storeRoot); inspErr == nil {
 		if inspNow.Locked {
 			errs = append(errs, ErrOwnerLocked)
 		} else if inspNow.HasReceipt {
@@ -1042,6 +1326,8 @@ escalate:
 				errs = append(errs, recErr)
 			}
 		}
+	} else if checkReceipt != nil {
+		errs = append(errs, inspErr)
 	}
 	return errors.Join(errs...)
 }

@@ -13,7 +13,9 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane"
+	"github.com/zwhu/memlane/engine"
 	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/internal/setupcli"
 	"github.com/zwhu/memlane/internal/simpledesktop"
 )
 
@@ -29,6 +31,9 @@ func main() {
 			log.Fatal(err)
 		}
 		return
+	}
+	if handled, code := setupcli.Dispatch(os.Args[1:], memlane.RuntimeAssets, engine.BootstrapAssets, ""); handled {
+		os.Exit(code)
 	}
 	configuration := os.Getenv("MEMLANE_DEV_RUNTIME_CONFIG")
 	firstDefault := configuration == ""
@@ -263,7 +268,12 @@ func main() {
 				win.Hide()
 			}
 		})
-		win.OnFocus(func() { win.Update(func() { app.SetWindowActive(true) }) })
+		win.OnFocus(func() {
+			win.Update(func() {
+				app.SetWindowActive(true)
+				app.OnWindowFocus()
+			})
+		})
 		win.OnBlur(func() { win.Update(func() { app.SetWindowActive(false) }) })
 		win.OnHide(func() { win.Update(func() { app.SetWindowHidden(true) }) })
 		app.BindGraphWindow(win)

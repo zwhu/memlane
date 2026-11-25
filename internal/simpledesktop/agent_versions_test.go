@@ -50,3 +50,32 @@ func TestAntigravityVersionDetectionUsesAgyBinary(t *testing.T) {
 		t.Fatalf("expected agy version 1.5.13, got %q", rows[0].HostVersion)
 	}
 }
+
+func TestTraeVersionReadsBundleWithoutLaunchingExecutable(t *testing.T) {
+	root := t.TempDir()
+	contents := filepath.Join(root, "Trae CN.app", "Contents")
+	binary := filepath.Join(contents, "MacOS", "Trae CN")
+	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\ntouch \"$0.was-launched\"\nprintf '9.9.9'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contents, "Info.plist"), []byte(`<?xml version="1.0"?>
+<plist version="1.0"><dict><key>CFBundleShortVersionString</key><string>2.1.23</string></dict></plist>`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var config Config
+	b, _ := json.Marshal(map[string]any{"agent_hosts": map[string]any{"trae_ide": map[string]string{"executable": binary}}})
+	if err := json.Unmarshal(b, &config); err != nil {
+		t.Fatal(err)
+	}
+	rows := []AgentConnection{{Kind: "trae_ide", Detected: true}}
+	loadAgentVersions(context.Background(), config, rows)
+	if rows[0].HostVersion != "2.1.23" {
+		t.Fatalf("unexpected bundle version %q", rows[0].HostVersion)
+	}
+	if _, err := os.Stat(binary + ".was-launched"); !os.IsNotExist(err) {
+		t.Fatalf("TRAE executable was launched: %v", err)
+	}
+}

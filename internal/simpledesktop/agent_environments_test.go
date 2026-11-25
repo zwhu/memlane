@@ -205,3 +205,37 @@ func TestAgentReceiptRecoveryClearsOnlyItsOwnError(t *testing.T) {
 		t.Fatal("polling recovery erased another operation's error")
 	}
 }
+
+func TestAgentReceiptPollingPausesWhileHiddenOrInactive(t *testing.T) {
+	a := New(Config{ProjectControl: beta3ControlConfig(t, t.TempDir())}, nil)
+	a.integrations.Loaded = true
+	a.integrations.Connections = ConnectionsDirectory{Connections: []AgentConnection{
+		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session"},
+	}}
+	var requests atomic.Int32
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.RequestURI() != "/v1/connections" {
+			t.Errorf("unexpected receipt request %s %s", r.Method, r.URL)
+		}
+		json.NewEncoder(w).Encode(ConnectionsDirectory{})
+	})}
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	now := time.Now()
+
+	for _, visibility := range []struct{ hidden, inactive bool }{{true, false}, {false, true}} {
+		a.windowHidden, a.windowInactive = visibility.hidden, visibility.inactive
+		a.refreshAgentReceiptsIfDue(now)
+		if a.integrations.ReceiptCheckLoading || !a.integrations.NextReceiptCheck.IsZero() || requests.Load() != 0 {
+			t.Fatalf("background window scheduled receipt polling: %+v", visibility)
+		}
+	}
+
+	a.windowHidden, a.windowInactive = false, false
+	a.refreshAgentReceiptsIfDue(now)
+	drainReading(t, updates, func() bool { return !a.integrations.ReceiptCheckLoading })
+	if requests.Load() != 1 {
+		t.Fatal("active window did not resume receipt polling")
+	}
+}

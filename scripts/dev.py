@@ -63,7 +63,7 @@ DEV_APP_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def app_runtime_resources():
+def runtime_resource_identity():
     """Identify the private resource tree materialized and verified by the App.
 
     Checkout tasks keep their 50/55 GiB development reserve. An installed App
@@ -73,7 +73,7 @@ def app_runtime_resources():
     try:
         info = marker.lstat()
     except FileNotFoundError:
-        return False
+        return None, None
     if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
         raise RuntimeError('App runtime resource marker must be a private regular file')
     identity = json.loads(marker.read_text())
@@ -82,7 +82,11 @@ def app_runtime_resources():
             any(character not in '0123456789abcdef' for character in digest) or
             ROOT.name != 'runtime-' + digest[:16]):
         raise RuntimeError('App runtime resource identity differs')
-    return True
+    return str(ROOT), digest[:16]
+
+
+def app_runtime_resources():
+    return runtime_resource_identity()[0] is not None
 
 
 def complete_initialization(config, config_path, now=None):
@@ -1028,6 +1032,10 @@ def main():
              'phase': 'starting', 'config': str(path), 'official_data': str(data),
              'service_url': config['service_url'], 'completion_url': config.get('completion_url'),
              'children': [], 'service_children': {}, 'child_start_times': {}}
+    resources_dir, resources_hash = runtime_resource_identity()
+    if resources_dir and resources_hash:
+        state.update(resources_dir=resources_dir, resources_hash=resources_hash)
+
     def save_owner():
         live_pids = [proc.pid for proc in processes if proc.poll() is None]
         state['children'] = live_pids

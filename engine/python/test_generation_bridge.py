@@ -206,7 +206,7 @@ class BridgeValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.state['active'],self.active)
 
     async def test_missing_login_rejects_before_registering_a_model_operation(self):
-        del self.runtime['auth_home']
+        self.runtime['auth_home'] = str(self.root / 'missing-auth-home')
         with self.assertRaisesRegex(PolicyError,'generation_bridge_authentication_required'):
             self.validator.start(self.bridge_ref,self.store.state['revision'],'no-auth')
         self.assertNotIn('no-auth',self.store.state['validations'])

@@ -9,6 +9,60 @@ import urllib.error
 KEY = '_capture_id'
 
 
+def capture_payload(raw, *, ambiguous=False):
+    """Keep blocked patch bodies local while allowing a summary of ordinary file edits."""
+    if raw.get('type') != 'trace':
+        return raw
+    from _capture_policy import allow_tool
+    name, params = str(raw.get('origin_function', '')), raw.get('method_params', {})
+    if allow_tool(name, params):
+        return raw
+    if (ambiguous or name != 'apply_patch' or not isinstance(params, dict)
+            or set(params) != {'command'}
+            or any(os.environ.get(key, '').strip() for key in ('COGNEE_CAPTURE_TOOLS', 'COGNEE_CAPTURE_DENY_TOOLS'))):
+        return None
+    command = params['command']
+    if not isinstance(command, str):
+        return None
+    lines = command.splitlines()
+    if len(lines) < 3 or lines[0] != '*** Begin Patch' or lines[-1] != '*** End Patch':
+        return None
+    paths = []
+    prefixes = ('*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: ')
+    for line in lines[1:-1]:
+        if line.startswith(prefixes):
+            path = line.split(': ', 1)[1]
+            if not path.strip() or any(ord(char) < 32 for char in path):
+                return None
+            paths.append(path.strip())
+        elif line.startswith('***') and line != '*** End of File':
+            return None
+    if not paths or not allow_tool(name, {'paths': paths}):
+        return None
+    if not numbered(raw):
+        return None
+    summary = {key: raw[key] for key in ('type', 'origin_function', 'status', 'time', KEY) if key in raw}
+    summary['method_params'] = {'file_count': len(set(paths))}
+    summary['method_return_value'] = '补丁正文被采集规则过滤，仅保存操作摘要。'
+    return summary
+
+
+def persist_capture_summary(common, policy, dataset, session, entry, summary):
+    """Keep the numbered payload stable across crashes and receipt checks."""
+    with common._buffer_lock() as locked:
+        if locked is False:
+            raise policy.NotReady('pending_entry_changed_before_send')
+        path, key, cache, state, pending, _ = policy._pending_snapshot(dataset, session)
+        if entry not in pending:
+            raise policy.NotReady('pending_entry_changed_before_send')
+        replacement = {**summary, **{key: entry[key] for key in common._BUFFER_META_KEYS if key in entry}}
+        pending[pending.index(entry)] = replacement
+        state['pending_entries'] = pending
+        cache[key] = state
+        common._write_json_file(path, cache)
+        return replacement
+
+
 def numbered(entry):
     value = entry.get(KEY) if isinstance(entry, dict) else None
     try:
@@ -141,7 +195,7 @@ def drain(common, dataset, session, *, budget_seconds=None):
     number after backoff; a legacy unknown never enters this send path.
     """
     import _memlane_policy as policy
-    from _capture_policy import allow_tool, sanitize
+    from _capture_policy import sanitize
     def snapshot():
         return policy._pending_snapshot(dataset, session)
     with common._buffer_lock():
@@ -189,9 +243,12 @@ def drain(common, dataset, session, *, budget_seconds=None):
                     common._write_json_file(path, cache)
                     entry = replacement
             raw = {k: v for k, v in entry.items() if k not in common._BUFFER_META_KEYS}
-            if raw.get('type') == 'trace' and not allow_tool(str(raw.get('origin_function', '')), raw.get('method_params', {})):
+            payload = capture_payload(raw, ambiguous=bool(entry.get(common._AMBIGUOUS_KEY)))
+            if payload is None:
                 continue
-            raw = sanitize(raw)
+            if payload is not raw:
+                entry = persist_capture_summary(common, policy, dataset, session, entry, payload)
+            raw = sanitize(payload)
             try:
                 json.dumps(raw, allow_nan=False)
             except (ValueError, TypeError, RecursionError):

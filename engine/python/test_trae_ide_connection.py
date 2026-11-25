@@ -1,6 +1,7 @@
 """Isolated registration, dispatch, and diagnostic checks for TRAE IDE."""
 import asyncio
 import json
+import shlex
 from pathlib import Path
 import sys
 import tempfile
@@ -15,15 +16,19 @@ from project_policy import PolicyError
 import trae_ide_connection as connection
 
 
+def beta2_hooks(installation, python):
+    script = str(Path(installation['plugin_dir']) / 'scripts/trae_ide_hook.py')
+    return {event: {'hooks': [{'type': 'command', 'timeout': 25,
+                              'command': shlex.join([python, '-B', script, event])}]}
+            for event in connection.LEGACY_BETA2_EVENTS}
+
+
 class RegistrationTests(unittest.TestCase):
-    def test_legacy_upgrade_preserves_other_hooks_and_verifies_both_generations(self):
+    def test_beta2_upgrade_preserves_other_hooks_and_verifies_both_generations(self):
         full = connection.loader({'plugin_dir': '/example/new'}, '/example/python')
-        self.assertEqual(tuple(full), ('SessionStart', 'UserPromptSubmit', 'PostToolUse',
-                                       'PostToolUseFailure', 'Stop', 'SessionEnd'))
-        legacy = {event: group for event, group in
-                  connection.loader({'plugin_dir': '/example/old'}, '/example/python').items()
-                  if event in connection.LEGACY_EVENTS}
-        user = {'matcher': '*', 'hooks': [{'command': 'echo test'}]}
+        self.assertEqual(tuple(full), ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'))
+        legacy = beta2_hooks({'plugin_dir': '/example/old'}, '/example/python')
+        user = {'matcher': '*', 'hooks': [{'command': 'echo trae_ide_hook.py'}]}
         raw = connection.proposal(json.dumps({'version': 1, 'hooks': {'Stop': [user], 'Custom': [user]}}), None, legacy)
         connection.verify_hooks(raw, legacy, Path('/example/old/scripts/trae_ide_hook.py'))
         upgraded = connection.proposal(raw, legacy, full)
@@ -38,6 +43,26 @@ class RegistrationTests(unittest.TestCase):
                 with self.assertRaisesRegex(PolicyError, 'trae_ide_hook_changed_requires_review') as caught:
                     connection.verify_hooks(json.dumps(tampered), full, Path('/example/new/scripts/trae_ide_hook.py'))
                 self.assertEqual(caught.exception.status, 409)
+
+    def test_normalizes_empty_and_versionless_profiles(self):
+        user = {'hooks': [{'command': 'echo trae_ide_hook.py'}]}
+        for raw in (b'', '', b'  \n\t ', b'{}', bytearray(b'{"hooks":{}}')):
+            with self.subTest(raw=raw):
+                self.assertEqual(json.loads(connection.proposal(raw, None, None)), {'version': 1, 'hooks': {}})
+        raw = json.dumps({'hooks': {'Stop': [user]}})
+        self.assertEqual(json.loads(connection.proposal(raw, None, None))['hooks'], {'Stop': [user]})
+
+    def test_rejects_invalid_shape_and_unowned_managed_group(self):
+        for raw in (b'\xff', '[]', '{"version":1}', '{"unexpected":2}', '{"hooks":[]}',
+                    '{"hooks":{"Stop":{}}}', '{"hooks":{"Stop":[1]}}',
+                    *[json.dumps({'version': version, 'hooks': {}}) for version in (2, '1', True)]):
+            with self.subTest(raw=raw), self.assertRaisesRegex(PolicyError, 'trae_ide_configuration_requires_review'):
+                connection.proposal(raw, None, None)
+        managed = connection.loader({'plugin_dir': '/managed-marketplaces/trae_ide-' +
+                                      'a'*24 + '/' + 'b'*20 + '/plugins/cognee'}, '/python')
+        raw = json.dumps({'hooks': {'Stop': [managed['Stop']]}})
+        with self.assertRaisesRegex(PolicyError, 'trae_ide_hook_changed_requires_review'):
+            connection.proposal(raw, None, None)
 
 
 class DispatchTests(unittest.IsolatedAsyncioTestCase):
@@ -90,7 +115,7 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         return entry
 
     async def test_legacy_generation_dispatches_only_its_registered_events(self):
-        legacy = {event: self.full[event] for event in connection.LEGACY_EVENTS}
+        legacy = beta2_hooks(self.installation, sys.executable)
         self.set_hooks(legacy)
         self.assertEqual(self.native.view()['status'], 'configured_pending_new_session')
         worker = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b'{}', b'')))

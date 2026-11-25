@@ -198,18 +198,14 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.control.close();self.store.close();self.tmp.cleanup()
 
-    async def test_connected_agent_selection_does_not_require_model_validation(self):
-        from unittest.mock import patch
-        ref = self.store.put('connected-agent', {'mode':'agent_bridge', 'bridge_kind':'codex', 'model':'native'}, self.store.state['revision'], 'save-agent')
-        ref={key:ref[key] for key in ('id','revision')}
-        self.store.environment=lambda reference,runtime: {}
-        self.control.service=AsyncMock(return_value={'status':'not_applied','reference':ref,
-            'digest':self.store.resolve(ref)['digest'],'reason':'test_no_apply'})
-        with patch('agent_bridge_runtime.require_connected_bridge') as check:
-            self.control.start(ref,self.store.state['revision'],'choose-agent')
-            check.assert_called_once_with(self.control.registry,self.control.runtime,self.store.resolve(ref)['profile'])
-        await self.control.task
-        self.assertEqual(self.store.state['handoffs']['choose-agent']['status'],'not_applied')
+    async def test_legacy_connected_selection_cannot_bypass_fresh_handoff_validation(self):
+        saved = self.store.put('connected-agent', {'mode': 'agent_bridge', 'bridge_kind': 'codex', 'model': 'native'},
+                               self.store.state['revision'], 'save-agent')
+        self.store.state['connected_agent_selections'] = {saved['digest']: True}
+        ref = {key: saved[key] for key in ('id', 'revision')}
+        with self.assertRaisesRegex(PolicyError, 'generation_validation_required'):
+            self.control.start(ref, self.store.state['revision'], 'choose-agent')
+        self.assertNotIn('choose-agent', self.store.state['handoffs'])
 
     async def test_only_confirmed_cancelled_session_is_resumed_under_new_profile(self):
         self.control.service=AsyncMock(return_value={'status':'applied','reference':self.ref,
@@ -240,8 +236,7 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.control.service.call_args.args,('GET','lost'))
         self.assertEqual(self.store.state['active'],self.ref)
 
-    async def test_connected_non_codex_handoff_records_selection_for_restart(self):
-        from unittest.mock import patch
+    async def test_validated_non_codex_handoff_does_not_stamp_legacy_selection(self):
         ref = self.store.put('pi-agent', {'mode': 'agent_bridge', 'bridge_kind': 'pi',
             'bridge_provider': 'deepseek', 'model': 'native'}, self.store.state['revision'], 'save-pi')
         ref = {key: ref[key] for key in ('id', 'revision')}
@@ -249,12 +244,13 @@ class HandoffControllerTests(unittest.IsolatedAsyncioTestCase):
         self.store.environment = lambda reference, runtime: {}
         self.control.service = AsyncMock(return_value={'status': 'applied', 'reference': ref,
             'digest': digest, 'runtime_active': {'reference': ref, 'digest': digest}, 'cancelled_sources': []})
-        with patch('agent_bridge_runtime.require_connected_bridge') as check:
-            self.control.start(ref, self.store.state['revision'], 'switch-pi')
-            check.assert_called_once()
+        self.store.state['validations']['pi-test'] = {
+            'digest': digest, 'status': 'passed', 'plain_passed': True, 'schema_passed': True, 'quality_passed': True,
+        }
+        self.control.start(ref, self.store.state['revision'], 'switch-pi')
         await self.control.task
         self.assertEqual(self.store.state['active'], ref)
-        self.assertTrue(self.store.state.get('connected_agent_selections', {}).get(digest))
+        self.assertNotIn(digest, self.store.state.get('connected_agent_selections', {}))
 
     async def test_revoked_legacy_project_403_never_blocks_active_persistence_or_review(self):
         import hashlib

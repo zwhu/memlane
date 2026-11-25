@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,33 +12,31 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
+func TestPreparedAgentConnectionUsesFreshPreviewBeforeConfirmation(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "manager.token")
 	if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	var stage, prepares, activations atomic.Int32
+	var stage, previews, activations atomic.Int32
+	stage.Store(1)
 	row := func() AgentConnection {
 		r := AgentConnection{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"}
 		if stage.Load() == 1 {
 			r.Status = "prepared"
-			r.Preview = &CodexConnectionPreview{ProposedSHA: "reviewed", DisabledPlugins: []string{"old-cognee"}}
+			r.Preview = &CodexConnectionPreview{ProposedSHA: "cached-stale", DisabledPlugins: []string{"old-cognee"}}
 		}
 		if stage.Load() == 2 {
 			r.Status = "configured_pending_new_session"
 		}
 		return r
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			switch r.URL.Path {
-			case "/v1/connections/pi/prepare":
-				prepares.Add(1)
-				stage.Store(1)
 			case "/v1/connections/pi/activate":
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
-				if body["proposed_sha256"] != "reviewed" {
+				if body["proposed_sha256"] != "reviewed" || body["expected_revision"] != float64(7) {
 					t.Error("confirmation lost preview identity")
 				}
 				activations.Add(1)
@@ -50,14 +47,19 @@ func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{"revision": stage.Load() + 1, "connection": row()})
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/connections/pi/preview" {
+			previews.Add(1)
+			json.NewEncoder(w).Encode(map[string]any{"revision": 7, "ok": true, "instance_id": "pi", "kind": "pi", "status": "prepared", "proposed_sha256": "reviewed"})
+			return
+		}
 		if r.URL.Path == "/v1/connections" {
 			json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: int64(stage.Load() + 1), Connections: []AgentConnection{row()}})
 			return
 		}
 		json.NewEncoder(w).Encode(AccessDirectory{})
-	}))
-	defer server.Close()
-	a := New(Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	})
+	a := New(Config{GenerationFile: filepath.Join(filepath.Dir(token), "generation.json"), ProjectControl: &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
 	updates := make(chan func(), 32)
 	a.Update = func(fn func()) { updates <- fn }
 	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{row()}}}
@@ -67,28 +69,30 @@ func TestAgentConnectionUIRequiresConfirmationAfterPreparation(t *testing.T) {
 	if tt.HasText("连接所选（1）") || tt.HasText("准备所选 Agent") || tt.HasText("启用已准备项") {
 		t.Fatal("technical or premature actions visible")
 	}
-	clickProjectUI(t, tt, "连接 pi")
+	clickProjectUI(t, tt, "确认连接 pi")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	tt.Frame()
-	if prepares.Load() != 1 || activations.Load() != 0 {
-		t.Fatal("connection activated before explicit confirmation")
-	}
-	if !tt.HasText("确认连接 pi") || !tt.HasText("将为 pi 添加 Memlane 连接，确认后生效。") {
-		t.Fatal("configuration preview missing")
+	if previews.Load() != 1 || activations.Load() != 0 || !tt.HasText("确认连接") {
+		t.Fatal("opening the fresh preview activated the connection or omitted confirmation")
 	}
 	fixtureImage(t, tt, "agent-connection-confirmation")
-	clickProjectUI(t, tt, "确认连接 pi")
+	clickProjectUI(t, tt, "确认连接")
 	drainReading(t, updates, func() bool { return !a.integrations.Busy })
 	tt.Frame()
 	if activations.Load() != 1 || a.integrations.Selected["pi"] {
 		t.Fatal("activation or selection cleanup incorrect")
 	}
-	if !tt.HasText("等待采集验证") || !tt.HasText("查看步骤：pi") {
-		t.Fatal("next user action missing")
+	const restart = "1. 如果你原本已打开 pi，请先 ⌘Q 完全退出后重新打开。"
+	if !tt.HasText("等待采集验证") || !tt.HasText("收起步骤：pi") || !tt.HasText(restart) {
+		t.Fatal("capture verification steps should be open by default")
+	}
+	clickProjectUI(t, tt, "收起步骤：pi")
+	if tt.HasText(restart) || !tt.HasText("查看步骤：pi") {
+		t.Fatal("explicit collapse was ignored")
 	}
 	clickProjectUI(t, tt, "查看步骤：pi")
-	if !tt.HasText("1. 重新打开 pi，新建会话并发送一条消息。") {
-		t.Fatal("capture verification steps missing")
+	if !tt.HasText(restart) {
+		t.Fatal("capture verification steps did not reopen")
 	}
 	if tt.HasText("选择 pi") {
 		t.Fatal("configured Agent remains selectable")

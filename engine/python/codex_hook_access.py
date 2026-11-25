@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from project_policy import PolicyError
+from project_policy import PolicyError, mark_connection_mutation
 
 
 class CodexHookAccess:
@@ -101,6 +101,7 @@ class CodexHookAccess:
             command_hash, content_hash = hook['currentHash'].split('/')
             edits.append({'keyPath': 'hooks.state.' + json.dumps(hook['key']), 'mergeStrategy': 'upsert',
                 'value': {'trusted_hash': command_hash, 'trusted_content_hash': content_hash, 'enabled': True}})
+        mark_connection_mutation()
         await self.request('config/batchWrite', {'edits': edits, 'filePath': str(Path(self.profile) / 'config.toml'),
             'expectedVersion': layers[0]['version'], 'reloadUserConfig': True})
         after = await self.inspect(installation)

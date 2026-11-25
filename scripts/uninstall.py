@@ -418,7 +418,9 @@ def _remove_trae_ide_hooks(data, runtime_dir: Path) -> list[str]:
     managed = runtime_dir / 'managed-marketplaces'
     removed = []
     for event in ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'):
-        groups = data['hooks'].get(event, [])
+        groups = data['hooks'].get(event)
+        if not isinstance(groups, list):
+            continue
         for group in list(groups):
             if not isinstance(group, dict) or set(group) != {'hooks'}:
                 continue
@@ -440,6 +442,10 @@ def _remove_trae_ide_hooks(data, runtime_dir: Path) -> list[str]:
                     and re.fullmatch(r'[a-f0-9]{20}', parts[1])
                     and parts[2:] == ('plugins', 'cognee', 'scripts', 'trae_ide_hook.py')):
                 groups.remove(group)
+                removed.append(event)
+        if not groups and (event in removed or event in ('PostToolUseFailure', 'SessionEnd')):
+            del data['hooks'][event]
+            if event not in removed:
                 removed.append(event)
     return removed
 
@@ -993,6 +999,18 @@ def run_uninstall(argv: list[str] | None = None) -> tuple[int, dict]:
                     if item == components_dir:
                         continue
                     _remove_dir_action(item, runtime_dir, apply=args.apply, planned=planned, applied=applied, skipped=skipped, errors=errors)
+                # Remove now-empty managed components/runtime directories without touching custom dirs.
+                for empty_candidate in (components_dir, runtime_dir):
+                    if empty_candidate.is_symlink() or not _is_safe_standalone(empty_candidate) or not empty_candidate.is_dir():
+                        continue
+                    if args.apply:
+                        try:
+                            if not any(empty_candidate.iterdir()):
+                                empty_candidate.rmdir()
+                                planned.append(f'remove-empty-dir: {empty_candidate}')
+                                applied.append(f'removed: {empty_candidate}')
+                        except OSError as exc:
+                            errors.append(f'failed to remove {empty_candidate}: {exc}')
             else:
                 for item in data_targets:
                     if item.exists():

@@ -2,15 +2,17 @@ package simpledesktop
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 type ConnectionCapability struct {
@@ -26,26 +28,29 @@ type AgentHookError struct {
 	PayloadKeys []string `json:"payload_keys,omitempty"`
 }
 type AgentConnection struct {
-	HostVersion         string                          `json:"host_version,omitempty"`
-	Capture             *AgentCaptureState              `json:"capture,omitempty"`
-	LastHookError       *AgentHookError                 `json:"last_hook_error,omitempty"`
-	ID                  string                          `json:"instance_id"`
-	Kind                string                          `json:"kind"`
-	Status              string                          `json:"status"`
-	Detected            bool                            `json:"detected"`
-	AgentRegistered     bool                            `json:"agent_registered"`
-	NewSessions         int                             `json:"new_sessions"`
-	ErrorCode           string                          `json:"error_code"`
-	Preview             *CodexConnectionPreview         `json:"preview"`
-	Capabilities        map[string]ConnectionCapability `json:"capabilities"`
-	Profile             string                          `json:"profile"`
-	EnvironmentIssue    string                          `json:"environment_issue"`
-	Environments        []AgentEnvironment              `json:"environments"`
-	ReceiptOverdue           bool                            `json:"receipt_overdue"`
-	LastReceiptAt            float64                         `json:"last_receipt_at"`
-	PluginVersion            string                          `json:"plugin_version"`
-	EnvironmentVerified      bool                            `json:"environment_verified"`
-	AwaitingPostUpgradeReceipt bool                          `json:"awaiting_post_upgrade_receipt,omitempty"`
+	NeedsHookRepair            bool                            `json:"needs_hook_repair"`
+	RepairReason               string                          `json:"repair_reason"`
+	RepairSummary              string                          `json:"repair_summary"`
+	HostVersion                string                          `json:"host_version,omitempty"`
+	Capture                    *AgentCaptureState              `json:"capture,omitempty"`
+	LastHookError              *AgentHookError                 `json:"last_hook_error,omitempty"`
+	ID                         string                          `json:"instance_id"`
+	Kind                       string                          `json:"kind"`
+	Status                     string                          `json:"status"`
+	Detected                   bool                            `json:"detected"`
+	AgentRegistered            bool                            `json:"agent_registered"`
+	NewSessions                int                             `json:"new_sessions"`
+	ErrorCode                  string                          `json:"error_code"`
+	Preview                    *CodexConnectionPreview         `json:"preview"`
+	Capabilities               map[string]ConnectionCapability `json:"capabilities"`
+	Profile                    string                          `json:"profile"`
+	EnvironmentIssue           string                          `json:"environment_issue"`
+	Environments               []AgentEnvironment              `json:"environments"`
+	ReceiptOverdue             bool                            `json:"receipt_overdue"`
+	LastReceiptAt              float64                         `json:"last_receipt_at"`
+	PluginVersion              string                          `json:"plugin_version"`
+	EnvironmentVerified        bool                            `json:"environment_verified"`
+	AwaitingPostUpgradeReceipt bool                            `json:"awaiting_post_upgrade_receipt,omitempty"`
 }
 
 type AgentCaptureState struct {
@@ -213,12 +218,20 @@ type integrationState struct {
 	ShowUnavailable                                                                                             bool
 	ConnectionBulk                                                                                              bool
 	EnvironmentOpen                                                                                             map[string]bool
-	CaptureHelp                                                                                                 map[string]bool
+	CaptureHelpCollapsed                                                                                        map[string]bool
+	PendingReconcile                                                                                            map[string]controlplane.ConnectionOperationReceipt
+	PendingReconcileHasRevision                                                                                 map[string]bool
+	TraeRepairPreview                                                                                           map[string]controlplane.TraeHooksRepairResult
+	TraeRepairHasRevision                                                                                       map[string]bool
+	ConnectionPreviews                                                                                          map[string]controlplane.ConnectionPreview
+	PinnedAgentKinds                                                                                            []string
 	CaptureReview                                                                                               map[string]string
 	ReceiptCheckLoading                                                                                         bool
 	NextReceiptCheck                                                                                            time.Time
 	Loaded, Loading, Busy                                                                                       bool
 	Request                                                                                                     uint64
+	GenerationLoaded, ConnectionsLoaded                                                                         bool
+	GenerationError, ConnectionsError                                                                           string
 	Error, Message                                                                                              string
 	Selected                                                                                                    map[string]bool
 	ItemMessages                                                                                                map[string]string
@@ -245,7 +258,7 @@ type integrationState struct {
 	KeyEpoch                                                                                                    uint64
 }
 
-func integrationOperation() string { return "ui-" + rand.Text() }
+func integrationOperation() string { return controlplane.NewUIOperationID() }
 func connectionName(kind string) string {
 	if kind == "antigravity" {
 		return "Gemini App"
@@ -269,6 +282,12 @@ func connectionName(kind string) string {
 	return kind
 }
 func connectionStatus(row AgentConnection) string {
+	if needsTraeHooksRepair(row) {
+		return "Hooks 需修复"
+	}
+	if row.Capture != nil && row.Capture.State == "awaiting_generation_activation" {
+		return "等待启用提炼后验证保存"
+	}
 	if captureConnection(row) {
 		if row.Capture == nil {
 			return "等待采集验证"
@@ -313,6 +332,8 @@ func connectionStatus(row AgentConnection) string {
 			return "暂不支持连接"
 		}
 		return "未安装 · 暂不支持连接"
+	case "staging_not_complete":
+		return "上次准备未完成"
 	case "prepared":
 		return "等待确认"
 	case "configured_pending_new_session":
@@ -337,10 +358,24 @@ func connectionStatus(row AgentConnection) string {
 	return "未连接"
 }
 
-func connectionReviewNotice(name string, row AgentConnection) string {
+func connectionNeedsReview(row AgentConnection) bool {
 	switch row.Status {
 	case "requires_review", "activation_unknown", "preparation_unknown", "staging_unknown", "agent_creation_unconfirmed":
-	default:
+		return true
+	}
+	return false
+}
+
+func needsTraeHooksRepair(row AgentConnection) bool {
+	return row.NeedsHookRepair || row.ErrorCode == "trae_ide_hook_changed_requires_review" || row.ErrorCode == "trae_ide_unsupported_hook_events"
+}
+
+func connectionReviewNotice(name string, row AgentConnection) string {
+	switch row.ErrorCode {
+	case "trae_ide_hook_changed_requires_review", "trae_ide_unsupported_hook_events":
+		return formatControlConflictMessage(row.ErrorCode, "")
+	}
+	if !connectionNeedsReview(row) {
 		return ""
 	}
 	switch row.ErrorCode {
@@ -379,7 +414,7 @@ func connectionActionAllowed(row AgentConnection, action string) bool {
 		return false
 	}
 	if action == "prepare" {
-		return row.Status == "" || row.Status == "not_connected" || (row.Kind == "opencode" && row.Status == "prepared")
+		return row.Status == "" || row.Status == "not_connected" || row.Status == "staging_not_complete" || (row.Kind == "opencode" && row.Status == "prepared")
 	}
 	return action == "activate" && row.Status == "prepared" && row.Preview != nil && row.Preview.ProposedSHA != ""
 }
@@ -417,12 +452,13 @@ func (a *App) RefreshConnections() {
 			}
 			s.Loading = false
 			if err != nil {
-				s.Error = err.Error()
+				s.ConnectionsError = controlUserError(err)
+				s.Error = s.ConnectionsError
 				a.captureReadFailed()
 				return
 			}
-			s.Error = ""
-			s.Loaded = true
+			s.ConnectionsError, s.Error = "", ""
+			s.Loaded, s.ConnectionsLoaded = true, true
 			s.Connections = connections
 			if s.HostVersions == nil {
 				s.HostVersions = map[string]string{}
@@ -436,8 +472,13 @@ func (a *App) RefreshConnections() {
 			if s.ItemMessages == nil {
 				s.ItemMessages = map[string]string{}
 			}
+			a.preloadPinnedConnectionPreviews()
 		})
 	}()
+}
+
+func (s *integrationState) generationReady() bool {
+	return s.GenerationLoaded && s.GenerationError == ""
 }
 
 func (a *App) RefreshIntegrations() {
@@ -446,12 +487,7 @@ func (a *App) RefreshIntegrations() {
 	if !ok || s.Loading || s.Busy || a.Update == nil {
 		return
 	}
-	pending, err := a.loadGenerationOperations()
-	if err != nil {
-		s.Error = "无法读取待核对操作，已停止发送新配置请求"
-		return
-	}
-	s.PendingOperations = pending
+	opsDir := a.generationOperationsDir()
 	s.Loading = true
 	s.Request++
 	s.NextReceiptCheck = time.Now().Add(10 * time.Second)
@@ -460,6 +496,16 @@ func (a *App) RefreshIntegrations() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		defer cancel()
+		pending, err := loadGenerationOperationsFromDir(opsDir)
+		if err != nil {
+			a.Update(func() {
+				if request == s.Request {
+					s.Loading = false
+					s.Error = "无法读取待核对操作，已停止发送新配置请求"
+				}
+			})
+			return
+		}
 		var connections ConnectionsDirectory
 		var generation GenerationDirectory
 		var connErr, genErr error
@@ -477,11 +523,8 @@ func (a *App) RefreshIntegrations() {
 			genErr = client.request(ctx, "GET", "/v1/generation", nil, &generation)
 		}()
 		wg.Wait()
-		err := connErr
-		if err == nil {
-			err = genErr
-		}
-		if err == nil {
+		connectionsLoaded := !config.GenerationSetupOnly && connErr == nil
+		if connectionsLoaded {
 			loadAgentVersions(ctx, config, connections.Connections)
 		}
 		a.Update(func() {
@@ -489,26 +532,46 @@ func (a *App) RefreshIntegrations() {
 				return
 			}
 			s.Loading = false
-			if err != nil {
-				s.Error = err.Error()
-				a.captureReadFailed()
+			if s.Busy || a.Config.ProjectControl == nil || *a.Config.ProjectControl != client.Config ||
+				a.Config.GenerationSetupOnly != config.GenerationSetupOnly {
 				return
 			}
-			s.Error = ""
-			s.Loaded = true
-			s.Connections = connections
-			if s.HostVersions == nil {
-				s.HostVersions = map[string]string{}
+			s.PendingOperations = pending
+			s.ConnectionsError = controlUserError(connErr)
+			s.GenerationError = controlUserError(genErr)
+			s.Error = s.GenerationError
+			if s.Error == "" {
+				s.Error = s.ConnectionsError
 			}
-			for _, row := range connections.Connections {
-				s.HostVersions[row.Kind] = row.HostVersion
+			if genErr == nil {
+				s.Generation = generation
+				s.GenerationLoaded = true
+				s.Loaded = true
 			}
-			s.Generation = generation
-			if s.Selected == nil {
-				s.Selected = map[string]bool{}
+			if connErr != nil {
+				a.captureReadFailed()
 			}
-			if s.ItemMessages == nil {
-				s.ItemMessages = map[string]string{}
+			if connectionsLoaded {
+				s.Connections = connections
+				s.ConnectionsLoaded = true
+				s.Loaded = true
+				if s.HostVersions == nil {
+					s.HostVersions = map[string]string{}
+				}
+				for _, row := range connections.Connections {
+					s.HostVersions[row.Kind] = row.HostVersion
+				}
+			}
+			if genErr == nil || connectionsLoaded {
+				if s.Selected == nil {
+					s.Selected = map[string]bool{}
+				}
+				if s.ItemMessages == nil {
+					s.ItemMessages = map[string]string{}
+				}
+			}
+			if connectionsLoaded {
+				a.preloadPinnedConnectionPreviews()
 			}
 		})
 	}()
@@ -520,7 +583,7 @@ func (a *App) connectAgents(action string, identifiers []string) {
 func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewedSHA string) {
 	client, ok := a.accessClient()
 	s := &a.integrations
-	if !ok || s.Busy || len(identifiers) == 0 || a.Update == nil {
+	if !ok || s.Busy || s.Loading || len(identifiers) == 0 || a.Update == nil {
 		return
 	}
 	pending, err := a.loadGenerationOperations()
@@ -580,13 +643,19 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 				(target.Capture == nil || target.Capture.ReviewSHA != reviewedSHA) {
 				err = fmt.Errorf("接入配置已变化，请重新检测后再操作")
 			}
-			op := ""
+			o := generationUIOperation{}
+			rejected := false
 			if err == nil {
-				op = integrationOperation()
-				payload := map[string]any{"expected_revision": current.Revision, "operation_id": op}
+				o = generationUIOperation{Operation: integrationOperation(), Kind: "connection_" + action, Profile: id}
+				payload := map[string]any{"expected_revision": current.Revision, "operation_id": o.Operation}
 				if action == "activate" {
 					if target.Preview == nil || target.Status != "prepared" {
 						cancel()
+						continue
+					}
+					if reviewedSHA != "" && target.Preview.ProposedSHA != reviewedSHA {
+						cancel()
+						a.Update(func() { s.ItemMessages[id] = formatControlConflictMessage("reviewed_preview_required", "pre_mutation") })
 						continue
 					}
 					payload["proposed_sha256"] = target.Preview.ProposedSHA
@@ -596,7 +665,7 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 				}
 				if action != "review" {
 					var updatedPending []generationUIOperation
-					updatedPending, err = recordGenerationOperationAt(opsDir, generationUIOperation{Operation: op, Kind: "connection_" + action, Profile: id})
+					updatedPending, err = recordGenerationOperationAt(opsDir, o)
 					if err == nil {
 						a.Update(func() { s.PendingOperations = updatedPending })
 					}
@@ -607,6 +676,9 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 				}
 				if err == nil {
 					err = client.request(ctx, "POST", "/v1/connections/"+url.PathEscape(id)+"/"+action, payload, &result)
+					if action != "review" {
+						rejected = client.confirmedConnectionRejection(ctx, o, err)
+					}
 					if err == nil && result.Connection.ID != id {
 						err = fmt.Errorf("Agent 原操作回执未确认，请核对")
 					}
@@ -620,10 +692,13 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 					s.Connections = directory
 				}
 				if err != nil {
-					s.ItemMessages[id] = err.Error()
+					if rejected {
+						a.finishGenerationOperation(o.Operation)
+					}
+					s.ItemMessages[id] = controlUserError(err)
 				} else {
 					if action != "review" {
-						a.finishGenerationOperation(op)
+						a.finishGenerationOperation(o.Operation)
 					}
 					s.ItemMessages[id] = ""
 					if action == "activate" {
@@ -635,7 +710,12 @@ func (a *App) connectAgentsReviewed(action string, identifiers []string, reviewe
 				}
 			})
 		}
-		a.Update(func() { s.Busy = false; s.BatchStop = nil; a.RefreshProjectDirectory() })
+		a.Update(func() {
+			s.Busy = false
+			s.BatchStop = nil
+			a.RefreshProjectDirectory()
+			a.preloadPinnedConnectionPreviews()
+		})
 	}()
 }
 func (s *integrationState) draftProfile() GenerationProfile {
@@ -707,12 +787,15 @@ func (s *integrationState) editProfile(id string, row GenerationRow) {
 func (a *App) saveGeneration() {
 	client, ok := a.accessClient()
 	s := &a.integrations
-	applyAfterSave := s.GenerationAgentApply
 	s.GenerationAgentApply = false
 	if !ok || s.Busy || s.SaveOperation != "" {
 		return
 	}
 	profile := s.draftProfile()
+	if profile.Mode == "agent_bridge" && profile.Model == "" {
+		s.Error = "尚未读取到本机 CLI 的模型，请确认 CLI 已登录并重新检测。"
+		return
+	}
 	if err := s.generationParameterError(); err != nil {
 		s.Error = err.Error()
 		return
@@ -726,7 +809,6 @@ func (a *App) saveGeneration() {
 		s.Error = "无法保存操作回执位置，本次配置尚未发送"
 		return
 	}
-	applyAfterSave = applyAfterSave && profile.Mode == "agent_bridge"
 	s.SaveOperation = op
 	s.Busy = true
 	s.Error = ""
@@ -767,6 +849,9 @@ func (a *App) saveGeneration() {
 					}
 					s.SaveOperation = ""
 					s.Error = "保存未通过，请检查配置后再次保存；新密钥需要重新填写。"
+					if rejected.Status == http.StatusConflict || rejected.Code != "" {
+						s.Error = "保存未通过：" + controlUserError(err) + "；新密钥需要重新填写。"
+					}
 					return
 				}
 				s.Error = "保存结果尚未确认，请核对原操作。"
@@ -785,10 +870,6 @@ func (a *App) saveGeneration() {
 			}
 			s.editProfile(id, row)
 			s.Message = "配置已保存，当前使用未改变"
-			if applyAfterSave && row.Profile.Mode == "agent_bridge" {
-				s.GenerationAgentApply = false
-				a.applySelectedProcessingAgent()
-			}
 		})
 	}()
 }
@@ -837,6 +918,12 @@ func (a *App) generationAction(action string) {
 	client, ok := a.accessClient()
 	s := &a.integrations
 	if !ok || s.Busy || !s.cleanSaved() || (action != "validations" && action != "next") {
+		return
+	}
+	if s.DraftMode == "agent_bridge" && !s.availableProcessingBridge(s.BridgeKind) {
+		return
+	}
+	if action == "next" && !a.generationCanUse(s.Saved) {
 		return
 	}
 	ref := *s.Saved

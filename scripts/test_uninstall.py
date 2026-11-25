@@ -116,6 +116,33 @@ class UninstallScriptTests(unittest.TestCase):
                 self.assertEqual(data['hooks'][ev], [unrelated[ev]])
             self.assertEqual(uninstall._remove_trae_ide_hooks(data, runtime), [])
 
+    def test_trae_ide_cleanup_deletes_emptied_supported_and_legacy_keys(self):
+        from shlex import join
+
+        runtime = Path('/fixture/Memlane')
+        script = (runtime / 'managed-marketplaces' / ('trae_ide-' + 'a' * 24) /
+                  ('b' * 20) / 'plugins/cognee/scripts/trae_ide_hook.py')
+        supported = ('SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop')
+        unsupported = ('PostToolUseFailure', 'SessionEnd')
+        third_party = {'hooks': [{'command': 'echo trae_ide_hook.py'}]}
+
+        def managed(event):
+            return [{'hooks': [{'type': 'command', 'timeout': 25,
+                                'command': join(['/usr/bin/python3', '-B', str(script), event])}]}]
+
+        legacy = {'hooks': {event: managed(event) for event in supported + unsupported}}
+        self.assertCountEqual(uninstall._remove_trae_ide_hooks(legacy, runtime), supported + unsupported)
+        self.assertEqual(legacy['hooks'], {})
+        for leftover_empties in (False, True):
+            with self.subTest(leftover_empties=leftover_empties):
+                hooks = {event: managed(event) for event in supported}
+                hooks['Stop'].insert(0, third_party)
+                hooks['Custom'] = [third_party]
+                if leftover_empties:
+                    hooks.update({event: [] for event in unsupported})
+                uninstall._remove_trae_ide_hooks({'hooks': hooks}, runtime)
+                self.assertEqual(hooks, {'Stop': [third_party], 'Custom': [third_party]})
+
     def test_dry_run_makes_zero_mutations_and_json_is_valid(self):
         with tempfile.TemporaryDirectory() as raw_tmp:
             tmp = Path(raw_tmp).resolve()
@@ -493,6 +520,55 @@ class UninstallScriptTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertTrue(any('config.toml' in err for err in res['errors']))
             self.assertEqual(codex_toml.read_text(encoding='utf-8'), original)
+
+    def test_remove_data_cleans_cognee_lancedb_ladybug_and_prunes_empty_roots(self):
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp).resolve()
+            home = tmp / 'home'
+            runtime_dir = home / 'Library' / 'Application Support' / 'Memlane'
+            components_dir = runtime_dir / 'components'
+            library_dir = runtime_dir / 'library'
+            (library_dir / 'system' / 'databases' / 'cognee.lancedb').mkdir(parents=True)
+            (library_dir / 'system' / 'databases' / 'cognee_graph_kuzu').mkdir(parents=True)
+            (library_dir / 'home' / '.lbdb' / 'extension' / '0.19.0' / 'osx_arm64' / 'json').mkdir(parents=True)
+            (library_dir / 'home' / '.lbdb' / 'extension' / '0.19.0' / 'osx_arm64' / 'json' / 'libjson.lbug_extension').write_bytes(b'ext')
+            (runtime_dir / 'runtime.json').write_text('{"mode": "first"}\n', encoding='utf-8')
+
+            for dirname, marker in (
+                ('cognee-ec6f40859e5f', '.memlane-source.json'),
+                ('runtime-abc123def456', '.memlane-runtime.json'),
+                ('embedding-deadbeef1234', '.memlane-model.json'),
+                ('python-3.12.12', '.memlane-tool.json'),
+                ('uv-0.12.3', '.memlane-tool.json'),
+                ('plugin-integrations-a176248-edc059dd', '.memlane-plugin-component.json'),
+            ):
+                d = components_dir / dirname
+                d.mkdir(parents=True)
+                (d / marker).write_text('{}\n', encoding='utf-8')
+            (components_dir / 'installation').mkdir(parents=True)
+
+            # Without --remove-data: removes all managed components (Cognee/LanceDB/Ladybug runtime etc.) but keeps library/.
+            code1, res1 = uninstall.run_uninstall([
+                '--apply', '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+            ])
+            self.assertEqual(code1, 0, res1)
+            self.assertFalse((components_dir / 'cognee-ec6f40859e5f').exists())
+            self.assertFalse((components_dir / 'runtime-abc123def456').exists())
+            self.assertFalse((components_dir / 'embedding-deadbeef1234').exists())
+            self.assertFalse((components_dir / 'installation').exists())
+            self.assertTrue((library_dir / 'system' / 'databases' / 'cognee.lancedb').is_dir())
+            self.assertTrue((library_dir / 'system' / 'databases' / 'cognee_graph_kuzu').is_dir())
+            self.assertTrue((library_dir / 'home' / '.lbdb').is_dir())
+
+            # With --remove-data --confirm-remove-data: removes library/ (LanceDB/Ladybug/Cognee data) and prunes empty roots.
+            code2, res2 = uninstall.run_uninstall([
+                '--apply', '--remove-data', '--confirm-remove-data',
+                '--home', str(home), '--runtime-dir', str(runtime_dir), '--components-dir', str(components_dir),
+            ])
+            self.assertEqual(code2, 0, res2)
+            self.assertFalse(library_dir.exists())
+            self.assertFalse(components_dir.exists())
+            self.assertFalse(runtime_dir.exists())
 
 
 if __name__ == '__main__':

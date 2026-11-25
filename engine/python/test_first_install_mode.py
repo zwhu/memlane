@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from first_install_mode import first_install_setup, SetupOnlyMiddleware
+from first_install_mode import first_install_setup, setup_request_allowed, SetupOnlyMiddleware
 from first_install_store import write_private
 
 
@@ -63,6 +63,19 @@ class FirstInstallModeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             first_install_setup(self.config)
 
+    def test_dataset_setup_allowlist(self):
+        base = '/api/v1/datasets'
+        for suffix in ('', '/'):
+            for method in ('GET', 'POST'):
+                self.assertTrue(setup_request_allowed(method, base + suffix))
+        for suffix in ('status', 'status/progress', 'id/data', 'id/data/count', 'id/processing-status'):
+            path = f'{base}/{suffix}'
+            self.assertTrue(setup_request_allowed('GET', path))
+            for method in ('POST', 'PUT', 'DELETE'):
+                self.assertFalse(setup_request_allowed(method, path))
+        for suffix in ('id/graph', 'id/graph/', 'id', 'id/data/delete'):
+            self.assertFalse(setup_request_allowed('GET', f'{base}/{suffix}'))
+
     def test_setup_keeps_authentication_and_blocks_content_before_model_calls(self):
         calls = []
         async def backend(scope, receive, send):
@@ -83,6 +96,9 @@ class FirstInstallModeTests(unittest.TestCase):
         for path in ('/api/v1/remember', '/api/v1/cognify', '/api/v1/search',
                      '/api/v1/sessions', '/api/v1/datasets/../remember'):
             self.assertEqual(asyncio.run(request(path))[0]['status'], 503)
+        graph = asyncio.run(request('/api/v1/datasets/id/graph/', 'GET'))
+        self.assertEqual(graph[0]['status'], 503)
+        self.assertEqual(json.loads(graph[1]['body']), {'detail': 'generation_not_configured'})
         self.assertEqual(calls, [])
         health = asyncio.run(request('/health', 'GET'))
         self.assertEqual(health[0]['status'], 200)

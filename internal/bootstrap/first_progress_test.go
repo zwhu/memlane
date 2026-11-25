@@ -72,3 +72,63 @@ func TestFirstProgressRequiresAppliedGenerationAndDurableClientReceipt(t *testin
 		t.Fatal("foreign wizard receipt accepted")
 	}
 }
+
+func TestFirstWizardStageBeta2Compat(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wizard := filepath.Join(config.Root, "first-install-wizard.json")
+	assertState := func(step int, stage string) {
+		t.Helper()
+		if got, err := ReadFirstWizardState(prepared.ConfigPath); err != nil || got != (FirstWizardState{Step: step, Stage: stage}) {
+			t.Fatal(got, err)
+		}
+	}
+	assertState(3, WizardStageConnectAndEnable)
+	writeBootstrapTestJSON(t, wizard, firstWizardProgress{Schema: 1, StoreID: config.First.StoreID, Step: 2})
+	assertState(3, WizardStageConnectAndEnable)
+	if got, err := FirstWizardStep(prepared.ConfigPath); got != 3 || err != nil {
+		t.Fatal(got, err)
+	}
+	writeBootstrapTestJSON(t, wizard, firstWizardProgress{Schema: 1, StoreID: config.First.StoreID, Step: 1})
+	assertState(2, WizardStagePrepareEnv)
+	for i, stage := range []string{WizardStageSelectAgent, WizardStagePrepareEnv, WizardStageConnectAndEnable} {
+		if err := SaveFirstWizardState(prepared.ConfigPath, i+1, stage); err != nil {
+			t.Fatal(err)
+		}
+		assertState(i+1, stage)
+	}
+	if err := SaveFirstWizardState(prepared.ConfigPath, 2, "unknown"); err == nil {
+		t.Fatal("invalid stage accepted")
+	}
+	client := filepath.Join(config.Root, "client-state.json")
+	if err := os.WriteFile(client, []byte("client state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	assertDeferred := func(want bool) {
+		t.Helper()
+		if got, err := FirstSetupDeferred(prepared.ConfigPath); got != want || err != nil {
+			t.Fatal(got, err)
+		}
+	}
+	assertDeferred(false)
+	if err := SaveFirstSetupDeferred(prepared.ConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	assertDeferred(true)
+	writeBootstrapTestJSON(t, filepath.Join(config.Root, firstSetupDeferredFilename), firstSetupDeferredReceipt{Schema: 1, StoreID: "foreign", Deferred: true})
+	if _, err := FirstSetupDeferred(prepared.ConfigPath); err == nil {
+		t.Fatal("foreign deferred receipt accepted")
+	}
+	for range 2 {
+		if err := ClearFirstSetupDeferred(prepared.ConfigPath); err != nil {
+			t.Fatal(err)
+		}
+		assertDeferred(false)
+	}
+	if data, err := os.ReadFile(client); string(data) != "client state" || err != nil {
+		t.Fatal(string(data), err)
+	}
+}

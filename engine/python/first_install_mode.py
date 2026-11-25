@@ -4,6 +4,7 @@ This is never a fallback for a broken daily configuration. Content processing
 stays unavailable until the normal validated generation startup succeeds.
 """
 import json
+import re
 from pathlib import Path
 
 
@@ -49,8 +50,12 @@ def setup_request_allowed(method, path):
         return False
     if method == 'GET' and path.rstrip('/') in ('/health', '/api/v1/users/me'):
         return True
-    if path == '/api/v1/datasets' or path.startswith('/api/v1/datasets/'):
+    dataset_path = path.rstrip('/')
+    if dataset_path == '/api/v1/datasets':
         return method in ('GET', 'POST')
+    if method == 'GET' and dataset_path.startswith('/api/v1/datasets/'):
+        return (dataset_path in ('/api/v1/datasets/status', '/api/v1/datasets/status/progress')
+                or re.fullmatch(r'/api/v1/datasets/[^/]+/(?:data(?:/count)?|processing-status)', dataset_path) is not None)
     if path.startswith('/api/v1/permissions/'):
         return method in ('GET', 'POST', 'PUT', 'DELETE')
     if path.rstrip('/') == '/api/v1/agents/create':

@@ -3,6 +3,7 @@ package simpledesktop
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,9 +168,12 @@ func (a *App) submitProjectCreation() {
 			if err != nil {
 				s.Message = "保存结果尚未确认，请核对本次操作。"
 				status, hasStatus := httpStatusCode(err)
-				if strings.Contains(err.Error(), "设置已变化") || (hasStatus && (status == 400 || status == 403 || status == 404)) {
+				if hasStatus && (status == http.StatusConflict || status == http.StatusBadRequest || status == http.StatusForbidden || status == http.StatusNotFound) {
 					s.Submitted = false
 					s.Message = "未能保存，请检查项目名称与记录后重试。"
+					if status == http.StatusConflict {
+						s.Message = controlUserError(err)
+					}
 					a.RefreshProjectDirectory()
 				}
 				return

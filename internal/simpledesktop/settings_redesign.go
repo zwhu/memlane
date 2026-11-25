@@ -60,9 +60,14 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 	settingsTabs(c, &a.access.SettingsSection, []string{"记忆提炼", "Agent 与模型", "服务"})
 	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
+			a.setupDeferredGenerationBanner(c, false)
 			switch a.access.SettingsSection {
 			case "记忆提炼":
-				a.generationConfigurationFor(c, false, true)
+				setup := a.canActivateFirstRuntimeFromSettings()
+				if setup {
+					a.settingsFirstActivationBar(c)
+				}
+				a.generationConfigurationFor(c, setup, true)
 				v4Group(c, "提炼与记忆策略", "", nil, func() {
 					a.globalToolGraphSettings(c)
 					languageSettingsCard(c)
@@ -74,6 +79,8 @@ func (a *App) globalSettingsPage(c *ui.Context) {
 				}
 				a.generationManagement(c)
 			case "服务":
+				a.staleDaemonBanner(c)
+				a.dailyRuntimeStartupError(c)
 				a.serviceConnectionOverview(c)
 				a.desktopRuntimeSettings(c)
 				a.versionUpdateSettings(c)
@@ -176,7 +183,7 @@ func (a *App) projectSettingsPage(c *ui.Context) {
 		a.queuedDocumentDetail(c, p, q)
 		return
 	}
-	ui.Scroll(c.Key("project-settings-" + p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
+	ui.Scroll(c.Key("project-settings-"+p.ID)).Grow(1).MinHeight(0).TrackScroll(&q.Scroll).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		v4GroupWrap(c, func() {
 			// 1. 消息与采集状态（固定顶部展示，不再随状态变化在顶部与底部之间跳动）
 			a.projectQueueSection(c, p)
@@ -259,4 +266,26 @@ var emptyReadingArt = homeSVG(`<rect x="5" y="3" width="14" height="18" rx="2"/>
 
 func (a *App) emptyReadingBackground(c *ui.Context) {
 	v4EmptyState(c, "empty-reading-art", "", "")
+}
+
+func (a *App) settingsFirstActivationBar(c *ui.Context) {
+	blocker := a.settingsFirstActivationBlocker()
+	ui.Column(c.Key("settings-first-generation-activation")).FillWidth().Gap(sp1).Children(func() {
+		v4Row(c, v4RowOptions{
+			Title: "首次启用记忆提炼", Desc: blocker,
+			Control: func() {
+				if a.canRetryDailyRuntimeStartup() {
+					v4SmallButton(c, a.environment.dailyRuntimeRecoveryAction(), v4IconRefresh, a.retryDailyRuntimeStartup).
+						Disabled(a.environment.ownerInspecting || a.environment.Busy || a.environment.Loading)
+				} else if a.shouldInspectDailyRuntimeOwner() && !a.environment.staleRuntimeOwner() {
+					v4SmallButton(c, "重新检查", v4IconRefresh, a.inspectOwnerRuntimeStatusAsync).
+						Disabled(a.environment.ownerInspecting || a.environment.Busy)
+				}
+				v4SmallPrimaryButton(c, "启用记忆提炼", a.activateFirstRuntimeFromSettings).Disabled(blocker != "")
+			},
+		})
+		if a.environment.Error != "" {
+			homeText(c, a.environment.Error, homeMeta).TextColor(tok.Danger)
+		}
+	})
 }

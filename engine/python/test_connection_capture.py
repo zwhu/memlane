@@ -84,6 +84,24 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
                     f'/api/v1/sessions/{sid}/capture-status', token_file='agent-key')
         self.assertEqual(self.host_calls, 2, 'pi/TraeX must not use Codex trust inspection')
 
+    async def test_setup_waits_for_generation_without_probing_and_invalidates_cache(self):
+        self.capture.config['first_install'] = {'setup': True}
+        result = await self.refresh()
+        self.assertEqual((result['state'], result['reason']),
+                         ('awaiting_generation_activation', 'generation_not_configured'))
+        self.registry.official.request.assert_not_awaited()
+        self.capture.config['first_install']['setup'] = False
+        self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'checking')
+        self.assertEqual((await self.refresh())['state'], 'healthy')
+        self.registry.official.request.assert_awaited_once()
+
+    async def test_setup_official_503_is_reported_as_waiting_for_activation(self):
+        self.capture.config['generation_mode'] = 'unconfigured'
+        with patch.object(self.capture, 'inspect', side_effect=PolicyError('official_http_503', 503)):
+            result = await self.refresh()
+        self.assertEqual((result['state'], result['permission'], result['reason']),
+                         ('awaiting_generation_activation', 'unknown', 'generation_not_configured'))
+
     async def test_codex_untrusted_or_explicitly_deferred_overrides_old_success(self):
         self.access['permission'] = 'required'
         self.assertEqual((await self.refresh())['state'], 'needs_permission')

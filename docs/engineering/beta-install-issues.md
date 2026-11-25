@@ -66,3 +66,11 @@
   - UTM 客体默认 DNS 长期解析异常（I-06）；
   - 纯问答门控策略与提炼细节保真（I-15，及早期原测试库 `CogneeSystemError` 底层原因）；
   - 独立 DMG 经浏览器下载触发 macOS Quarantine / Gatekeeper 实窗放行，以及其余 3 个首发宿主（Codex、Antigravity、TraeX）在独立 DMG 下的同轮实机验收。
+
+## v0.1.0-beta.3 双场景 / 三快照 UTM 验收门禁（Codex + TRAE CN）
+
+以下为 `v0.1.0-beta.3` 发布候选的验收标准，UTM 实跑待 Wave 3／发版验收执行。
+
+- **Level 1 · 场景 1，净室首装与已有第三方 Hooks。** 从 `clean-codex-traecn` 和 `dirty-hooks-preexisting` 快照分别运行 `doctor --check-network --json`，先确认 DNS 正常（I-06），从 `install --plan` 取得摘要后执行 `install --apply --plan-digest <PLAN_DIGEST> --wait 45` 并轮询到 `verify --stage setup` 返回 `0`。预览并接入 Codex 与 TRAE CN，检查 TRAE CN 的 `hooks.json` 严格采用 `SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop` 四个事件，清除空键并保留第三方配置。真实新会话前，两者的 `verify --stage connection` 均须返回 `11`。[UTM 验收脚本](../../scripts/verify_setup_cli.py)
+- **Level 1 · 场景 2，半装中断恢复与就地升级。** 从 `clean-codex-traecn` 快照用 `SIGKILL` 终止安装父 CLI，检查后台 worker 持锁续跑、无孤儿 `uv`，最终通过安装核验。用 `stuck-beta2-upgrade` 快照验证 `beta.2` 就地升级，依次修复旧后台、可安全解锁的 409 和 TRAE CN 旧 Hooks。歧义回执保持待人工核对（退出码 `40`），TRAE CN 配置原子迁移至四事件并清除空键。`verify --stage setup --expect-zero-downloads --expect-runtime-current` 须返回 `0`，确认零重下载与受管运行资源切换。执行 `stop --apply --owner-fingerprint <OWNER_FINGERPRINT>` 后，`scripts/uninstall.py` 预览须确认无活动服务锁。[UTM 验收脚本](../../scripts/verify_setup_cli.py)
+- **Level 2 · 真实安装介质、宿主与模型。** 用浏览器下载候选 DMG，记录真实 Quarantine / Gatekeeper 放行和浅、深色 Native 实窗首装。分别在 Codex 和 TRAE CN 中运行带工具调用的新会话，留证自动采集、记忆提炼和跨会话记忆召回。TRAE CN 须先用 `⌘Q` 完全退出并重开，再检查全局 Hooks 开关。发版时单独核对这些实测证据。[首装发版门禁](workflow.md#首装发版门禁)

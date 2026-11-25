@@ -181,3 +181,55 @@ func TestProjectControlOverridesSendNullResetAndFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProjectControlConflictMessagesPreserveSafeCodesAndPhases(t *testing.T) {
+	token := strings.Repeat("m", 40)
+	for _, tc := range []struct {
+		code, phase, hint string
+	}{
+		{"revision_conflict", "pre_mutation", "设置已被其他窗口或命令行更新，请刷新后再试"},
+		{"reviewed_preview_required", "pre_mutation", "接入预览已过期，请重新预览确认后再继续"},
+		{"host_configuration_changed", "pre_mutation", "宿主配置文件已变化，请刷新后核对"},
+		{"host_configuration_changed", "post_mutation", "写入后检测到宿主配置文件变化，需人工核对"},
+		{"codex_configuration_changed", "pre_mutation", "Codex 配置已变动，请刷新后核对"},
+		{"trae_ide_hook_changed_requires_review", "", "TRAE CN Hooks 配置与记录不一致，请使用「一键修复 TRAE Hooks」或核对连接"},
+		{"trae_ide_unsupported_hook_events", "", "TRAE CN Hooks 包含旧版不兼容事件，请点击「一键修复 TRAE Hooks」"},
+		{"connection_operation_ambiguous_requires_review", "post_mutation", "该次历史连接操作存在写入风险，需人工核对后处理"},
+		{"host_executable_changed", "", "Agent 应用版本已更新，请点击「核对连接」确认"},
+		{"project_workspace_conflict", "", "该项目目录已关联到其他项目，请检查目录后重试"},
+		{"project_binding_conflict", "", "该项目目录已关联到其他项目，请检查目录后重试"},
+		{"project_already_exists", "", "同名项目已存在，请更换名称后重试"},
+		{"dataset_already_linked", "", "该记忆库已关联到其他项目，请刷新后核对"},
+		{"new_conflict", "pre_mutation", "操作在写入前已拦截，请刷新核对原操作"},
+		{"new_conflict", "post_mutation", "写入后状态待核对，请人工核对原操作"},
+		{"new_conflict", "", "操作存在冲突，请刷新核对原操作"},
+		{"", "", "设置已变化或存在冲突，请刷新核对原操作"},
+	} {
+		t.Run(tc.code+"/"+tc.phase, func(t *testing.T) {
+			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				json.NewEncoder(w).Encode(map[string]string{"code": tc.code, "error": "untrusted raw text /" + token, "phase": tc.phase})
+			})
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte(token), 0600); err != nil {
+				t.Fatal(err)
+			}
+			client := ProjectControlClient{HTTP: &http.Client{Transport: transport}, Config: ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: tokenFile}}
+			err := client.request(context.Background(), http.MethodPost, "/v1/projects", nil, nil)
+			response, ok := err.(*ControlResponseError)
+			want := tc.hint
+			if tc.code != "" {
+				want += "（" + tc.code + "）"
+			}
+			if !ok || response.Code != tc.code || response.Phase != tc.phase || response.Error() != want || controlUserError(err) != want {
+				t.Fatalf("unexpected control conflict %+v, want %q", err, want)
+			}
+		})
+	}
+	if code, phase := parseControlError([]byte(`{"error":"`+token+`","phase":"`+token+`"}`), token); code != "" || phase != "" {
+		t.Fatal("identifier-shaped credential escaped sanitization")
+	}
+	if code, phase := parseControlError([]byte(`{"error":"server_conflict","phase":"post_mutation"}`), token); code != "server_conflict" || phase != "post_mutation" {
+		t.Fatal("error field was not accepted as a fallback")
+	}
+}

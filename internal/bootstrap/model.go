@@ -129,9 +129,11 @@ func (d ModelDriver) Probe(ctx context.Context, r Requirement) (Observation, err
 	return o, nil
 }
 func (d ModelDriver) Install(ctx context.Context, r Requirement) error {
+	progressComponent(ctx, r.ID, false)
 	if r.ID != "embedding" || r.Digest != d.Spec.Digest() {
 		return errors.New("model requirement differs from fixed manifest")
 	}
+	progressStage(ctx, "verifying")
 	// Valid existing files remain external and read-only, even if the previous
 	// probe could not yet run because Python/dependencies were still missing.
 	if d.ExistingRoot != "" && VerifyModelFiles(ctx, d.ExistingRoot, d.Spec) == nil {
@@ -141,12 +143,14 @@ func (d ModelDriver) Install(ctx context.Context, r Requirement) error {
 	if err := claimComponentRoot(r.Destination, ".memlane-model.json", identity); err != nil {
 		return err
 	}
+	progressBatch(ctx, d.Spec.Bytes())
 	for _, repo := range d.Spec.Repositories {
 		snapshot := modelSnapshot(r.Destination, repo)
 		if err := os.MkdirAll(snapshot, 0700); err != nil {
 			return err
 		}
 		for _, file := range repo.Files {
+			progressDetail(ctx, file.Name)
 			target := filepath.Join(snapshot, file.Name)
 			if d.DownloadSource != "" {
 				candidates := ModelFileCandidates(repo.Repo, file, d.DownloadSource)
@@ -165,6 +169,7 @@ func (d ModelDriver) Install(ctx context.Context, r Requirement) error {
 			return err
 		}
 	}
+	progressStage(ctx, "verifying")
 	return VerifyModelFiles(ctx, r.Destination, d.Spec)
 }
 

@@ -123,6 +123,9 @@ func firstUseKey(cfg Config, now time.Time) overviewFirstUseKey {
 }
 
 func (a *App) startOverviewFirstUseDaysLoad(now time.Time) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	v := &a.overviewFirstUse
 	cfg, update := a.Config, a.Update
 	key := firstUseKey(cfg, now)
@@ -258,12 +261,14 @@ func (a *App) withdrawOverviewScope() {
 	a.overviewState.Snapshot = overviewSnapshot{}
 }
 
-func (a *App) loadOverview() {
+func (a *App) loadOverview(identityChecked ...bool) {
 	if a.Update == nil {
 		return
 	}
+	if len(identityChecked) == 0 || !identityChecked[0] {
+		a.syncReadingIdentity()
+	}
 	v := &a.overviewState
-	a.syncReadingIdentity()
 	a.cancelOverviewRecall()
 	a.overviewRefreshAt = time.Now().Add(overviewRefreshInterval)
 	if a.Config.ProjectControl != nil && !a.access.Loaded {
@@ -318,9 +323,9 @@ func (a *App) loadOverview() {
 		v.ActivityLoading = true
 		searchHistory := v.SearchHistory
 		projects := overviewProjects(a.Config)
-		readingID, _ := readingIdentity(Client{Config: client.Config})
 		go func() {
 			defer cancel()
+			readingID, _ := readingIdentity(Client{Config: client.Config})
 			failClosed := func(err error) {
 				if errors.Is(ctx.Err(), context.Canceled) {
 					return
@@ -693,12 +698,33 @@ func (a *App) openOverviewItem(item Item) {
 	}
 }
 
+func (a *App) openSettingsFromDeferredBanner() {
+	a.access.SettingsSection = "记忆提炼"
+	a.access.OpenProject = ""
+	a.settingsOrigin = nil
+	a.navigate("设置", 0)
+}
+
+func (a *App) setupDeferredGenerationBanner(c *ui.Context, showAction bool) {
+	if a.initialSetup || !a.isSetupOnlyRuntime() {
+		return
+	}
+	ui.Row(c.Key("setup-deferred-generation-banner")).FillWidth().Shrink(0).
+		Padding(sp2, sp3).Gap(sp2).AlignItems(ui.Center).
+		Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
+		homeText(c, "尚未配置记忆提炼模型，新会话暂不自动提炼", homeMeta).Grow(1).MinWidth(0)
+		if showAction {
+			v4SmallButton(c, "立即配置", nil, a.openSettingsFromDeferredBanner)
+		}
+	})
+}
+
 func (a *App) overviewHome(c *ui.Context) {
 	v := &a.overviewState
 	now := time.Now()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 	if !a.windowHidden {
-		c.After(midnight.Sub(now))
+		c.After(max(midnight.Sub(now), 500*time.Millisecond))
 	}
 	ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {
 		pageKey := fmt.Sprintf("overview-page-%d", a.motionRuns.overviewPage)
@@ -709,7 +735,14 @@ func (a *App) overviewHome(c *ui.Context) {
 			a.v4PageEnter(c, page, "overview-page", a.motionRuns.overviewPage)
 		}
 		page.Children(func() {
-			if _, err, ready := a.overviewFirstUseDays(now); ready && err != nil {
+			if a.environment.staleRuntimeOwner() || a.canRetryDailyRuntimeStartup() {
+				ui.Column(c).FillWidth().Shrink(0).Margin(0, 0, sp3, 0).Children(func() {
+					a.staleDaemonBanner(c)
+					a.dailyRuntimeStartupError(c)
+				})
+			}
+			a.setupDeferredGenerationBanner(c, true)
+			if _, err, ready := a.overviewFirstUseDays(now); ready && err != nil && !a.isSetupOnlyRuntime() {
 				homeText(c, "使用时间暂不可用。", homeAction).Margin(0, 0, sp2, 0)
 			}
 			if v.Error != "" {
@@ -719,13 +752,13 @@ func (a *App) overviewHome(c *ui.Context) {
 				}
 				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
 					homeText(c, message, homeBody)
-					projectLink(c, "重试读取统计", a.loadOverview)
+					projectLink(c, "重试读取统计", func() { a.loadOverview() })
 				})
 			}
 			if v.Snapshot.RawError != "" {
 				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
 					homeText(c, "原始记录统计暂不可用 · "+v.Snapshot.RawError, homeAction)
-					projectLink(c, "重试读取记录统计", a.loadOverview)
+					projectLink(c, "重试读取记录统计", func() { a.loadOverview() })
 				})
 			}
 			a.overviewHeatmap(c, now)

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
 func generationBridgeLabel(kind string) string {
@@ -72,12 +73,16 @@ func v4SelectionIndicator(c *ui.Context, selected bool) {
 func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 	edit := len(editable) == 0 || editable[0]
 	s := &a.integrations
+	if s.DraftMode == "agent_bridge" && !s.hasAvailableProcessingBridge() {
+		a.emptyProcessingCLIGuide(c)
+		return
+	}
 	groups := generationWorkspaceGroups(s.Generation, s.DraftMode)
 	ui.Column(c).FillWidth().Gap(0).Children(func() {
 		if edit {
 			title := "选择模型"
 			if s.DraftMode == "agent_bridge" {
-				title = "选择已连接的 Agent"
+				title = "选择本机 Agent CLI"
 			}
 			settingsSectionHeader(c, title, nil, func() {
 				v4SmallButton(c, "添加配置", v4IconPlus, func() {
@@ -105,7 +110,7 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 					isSelected := s.ProfileID == id
 					if item.Icon != "" {
 						iconKind := item.Icon
-						connected := s.connectedProcessingAgent(iconKind)
+						available := s.availableProcessingBridge(iconKind)
 						v4Row(c, v4RowOptions{
 							Key:         "model-profile-" + id,
 							Title:       item.Title,
@@ -113,7 +118,7 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 							Label:       "配置模型：" + id,
 							Clickable:   true,
 							HideChevron: true,
-							Disabled:    s.Busy || !connected,
+							Disabled:    s.Busy || !available,
 							OnClick:     func() { a.selectGenerationProfile(id, row) },
 							Leading: func() {
 								ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -123,8 +128,12 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 							Control: func() {
 								if isActive {
 									v4Badge(c, "使用中", "ok")
-								} else if !connected {
-									homeText(c, "CLI 未绑定", homeMeta).SingleLine()
+								} else if !available {
+									homeText(c, "未检测到 CLI", homeMeta).SingleLine()
+								} else if s.Generation.validated(ref) {
+									v4Badge(c, "已验证", "ok")
+								} else {
+									v4Badge(c, "未验证", "")
 								}
 								v4SelectionIndicator(c, isSelected)
 							},
@@ -189,4 +198,77 @@ func (a *App) generationProfileCards(c *ui.Context, editable ...bool) {
 			})
 		}
 	})
+}
+
+func (a *App) preferredExistingHostName() string {
+	for _, row := range a.integrations.Connections.Connections {
+		if row.Detected || a.integrations.Selected[row.ID] || captureConnection(row) {
+			if name := takeoverAgentName(row.Kind); name != "" {
+				return name
+			}
+		}
+	}
+	for _, host := range a.environment.Hosts {
+		if host.Detected && host.DisplayName != "" {
+			return host.DisplayName
+		}
+	}
+	for _, kind := range a.environment.SelectedAgents {
+		if name := takeoverAgentName(kind); name != "" {
+			return name
+		}
+	}
+	return "当前 Agent"
+}
+
+func (a *App) emptyProcessingCLIGuide(c *ui.Context) {
+	s := &a.integrations
+	host := a.preferredExistingHostName()
+	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Padding(sp3).Gap(sp2).
+		Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
+		homeText(c, "未检测到可用于记忆提炼的本地 CLI 工具", homeHeading)
+		homeText(c, "把对话自动整理成记忆需要一个后台提炼工具。你可以安装下面任意一个 CLI（复用已有账号额度），或改用直接调用模型 API / Ollama。", homeMeta).LineHeight(1.5)
+		a.recommendedProcessingCLIRows(c, &s.Message)
+		ui.Row(c).FillWidth().Gap(sp2).Children(func() {
+			v4SmallButton(c, "已装好，重新检测", v4IconRefresh, a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
+			v4SmallButton(c, "复制指令，让 "+host+" 帮我安装 CLI", v4IconCopy, func() {
+				c.WriteClipboard(agentTakeoverInstallCLIPrompt(host))
+				s.Message = "已复制 CLI 安装指令"
+			})
+			v4SmallButton(c, "改用模型 API / Ollama", nil, func() { a.chooseGenerationSource("provider") }).Disabled(s.Busy)
+		})
+		if s.Message != "" {
+			homeText(c, s.Message, homeMeta)
+		}
+	})
+}
+
+func (a *App) recommendedProcessingCLIRows(c *ui.Context, message *string) {
+	for _, cli := range bootstrap.RecommendedProcessingCLIs() {
+		v4Row(c, v4RowOptions{
+			Key: "recommended-cli-" + cli.Kind, Title: cli.DisplayName, Desc: cli.LoginHint,
+			DescExtra: func() {
+				if cli.InstallCommand != "" {
+					ui.Text(c, cli.InstallCommand).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.45)
+				}
+			},
+			Control: func() {
+				if cli.InstallCommand != "" {
+					v4SmallButton(c, "复制命令", v4IconCopy, func() {
+						c.WriteClipboard(cli.InstallCommand)
+						*message = "已复制 " + cli.DisplayName + " 安装命令"
+					}).Label("复制命令 " + cli.DisplayName)
+				}
+				if cli.DocsURL != "" {
+					v4SmallButton(c, "查看文档", nil, func() {
+						if a.OpenExternalURL != nil {
+							if err := a.OpenExternalURL(cli.DocsURL); err != nil {
+								*message = bootstrap.RedactInstallerText(err.Error())
+							}
+						}
+					}).Label("查看文档 " + cli.DisplayName).Disabled(a.OpenExternalURL == nil)
+				}
+			},
+		})
+	}
 }

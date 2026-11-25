@@ -17,7 +17,7 @@ func TestOllamaEditorHidesCloudCredentialAndKeepsSavedConfiguration(t *testing.T
 	a.page = "设置"
 	a.access.SettingsSection = "Agent 与模型"
 	s := &a.integrations
-	s.Loaded = true
+	s.Loaded, s.GenerationLoaded = true, true
 	row := GenerationRow{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Model: "qwen3:4b", Endpoint: "http://127.0.0.1:11434"}}
 	s.editProfile("local", row)
 	s.GenerationProviderDialog = true

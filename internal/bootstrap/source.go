@@ -69,6 +69,7 @@ func (d SourceDriver) Probe(ctx context.Context, r Requirement) (Observation, er
 }
 
 func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
+	progressComponent(ctx, r.ID, false)
 	if !d.matches(r) {
 		return errors.New("source requirement differs from pinned manifest")
 	}
@@ -120,6 +121,7 @@ func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	source := filepath.Join(r.Destination, "source")
 	if _, err := os.Lstat(source); err == nil {
+		progressStage(ctx, "verifying")
 		return VerifySource(archive, source, r.Digest, d.Spec.Packages)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -129,9 +131,11 @@ func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
+	progressStage(ctx, "extracting")
 	if err := extractPackages(ctx, archive, staging, d.Spec.Packages); err != nil {
 		return err
 	}
+	progressStage(ctx, "verifying")
 	if err := VerifySource(archive, staging, r.Digest, d.Spec.Packages); err != nil {
 		return err
 	}
@@ -145,7 +149,7 @@ type existingArchiveError struct{ msg string }
 
 func (e existingArchiveError) Error() string { return e.msg }
 
-const artifactUserAgent = "Memlane/0.1.0-beta.2"
+const artifactUserAgent = "Memlane/0.1.0-beta.3"
 
 type artifactHTTPError struct{ statusCode int }
 
@@ -286,12 +290,13 @@ func fetchArtifactCandidates(ctx context.Context, candidates []ArtifactCandidate
 		return ArtifactCandidate{}, errors.New("no download candidate configured")
 	}
 	var failures []error
-	for _, cand := range candidates {
+	for idx, cand := range candidates {
 		if err := ctx.Err(); err != nil {
 			return ArtifactCandidate{}, err
 		}
 		dest := destinationFor(cand)
-		err := fetchArchive(ctx, cand.URL, cand.SHA256, dest)
+		progressAttempt(ctx, "downloading", cand.URL, idx+1, len(candidates))
+		err := fetchArchiveAttempt(ctx, cand.URL, cand.SHA256, dest)
 		if ctx.Err() != nil {
 			return ArtifactCandidate{}, ctx.Err()
 		}
@@ -369,6 +374,11 @@ func (r *artifactStallReader) stop() {
 }
 
 func fetchArchive(ctx context.Context, rawURL, digest, destination string) error {
+	progressAttempt(ctx, "downloading", rawURL, 1, 1)
+	return fetchArchiveAttempt(ctx, rawURL, digest, destination)
+}
+
+func fetchArchiveAttempt(ctx context.Context, rawURL, digest, destination string) error {
 	if len(digest) != 64 {
 		return errArtifactDigestRequired
 	}
@@ -376,6 +386,7 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 		if !info.Mode().IsRegular() {
 			return existingArchiveError{msg: "archive destination is not a regular file"}
 		}
+		progressStage(ctx, "verifying")
 		f, err := os.Open(destination)
 		if err != nil {
 			return existingArchiveError{msg: err.Error()}
@@ -387,6 +398,9 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 		}
 		if hex.EncodeToString(h.Sum(nil)) != digest {
 			return existingArchiveError{msg: "existing archive digest mismatch; retained"}
+		}
+		if p := progressTracker(ctx); p != nil {
+			p.finishTransfer(info.Size(), true)
 		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -433,7 +447,13 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	stallTimeout := artifactReadStallTimeout
 	body := newArtifactStallReader(response.Body, stallTimeout, cancelAttempt)
 	defer body.stop()
-	_, copyErr := io.Copy(io.MultiWriter(f, h), body)
+	var reader io.Reader = body
+	p := progressTracker(ctx)
+	if p != nil {
+		p.setLength(response.ContentLength)
+		reader = installProgressReader{Reader: body, tracker: p}
+	}
+	size, copyErr := io.Copy(io.MultiWriter(f, h), reader)
 	body.stop()
 	if err := ctx.Err(); err != nil {
 		return err
@@ -456,7 +476,13 @@ func fetchArchive(ctx context.Context, rawURL, digest, destination string) error
 	if err := totalCtx.Err(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), destination)
+	if err := os.Rename(f.Name(), destination); err != nil {
+		return err
+	}
+	if p != nil {
+		p.finishTransfer(size, false)
+	}
+	return nil
 }
 
 func extractPackages(ctx context.Context, archive, destination string, packages []string) error {

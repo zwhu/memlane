@@ -3,8 +3,6 @@ package simpledesktop
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -13,12 +11,8 @@ import (
 
 func TestOpenCodeKnownRejectedOperationClearsPendingWithoutMutation(t *testing.T) {
 	root := t.TempDir()
-	token := filepath.Join(root, "manager")
-	if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
-		t.Fatal(err)
-	}
 	var mutations atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			mutations.Add(1)
 			http.Error(w, "unexpected mutation", 500)
@@ -27,7 +21,11 @@ func TestOpenCodeKnownRejectedOperationClearsPendingWithoutMutation(t *testing.T
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/connections/operations/ui-opencode-rejected":
-			json.NewEncoder(w).Encode(map[string]any{"recorded": true, "status": "complete", "outcome": "rejected", "error_code": "host_configuration_changed", "result": map[string]any{"connection": AgentConnection{ID: "opencode-test", Kind: "opencode", Status: "prepared"}}})
+			json.NewEncoder(w).Encode(map[string]any{
+				"recorded": true, "status": "complete", "outcome": "rejected", "error_code": "host_configuration_changed",
+				"operation_id": "ui-opencode-rejected", "instance_id": "opencode-test", "action": "activate",
+				"result": map[string]any{"connection": AgentConnection{ID: "opencode-test", Kind: "opencode", Status: "prepared"}},
+			})
 		case "/v1/connections":
 			json.NewEncoder(w).Encode(ConnectionsDirectory{})
 		case "/v1/generation":
@@ -35,9 +33,9 @@ func TestOpenCodeKnownRejectedOperationClearsPendingWithoutMutation(t *testing.T
 		default:
 			http.Error(w, "unexpected request", 500)
 		}
-	}))
-	defer server.Close()
-	a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+	})
+	a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
 	op := generationUIOperation{Operation: "ui-opencode-rejected", Kind: "connection_activate", Profile: "opencode-test"}

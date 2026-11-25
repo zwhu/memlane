@@ -106,6 +106,7 @@ func (q *projectQueueState) activeDetailNotice(needs, info, history []messageNot
 }
 
 func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
+	setupOnly := a.isSetupOnlyRuntime()
 	q := a.projectQueue(p)
 	needs, info := a.messageNotices(q, p)
 	anomalies, progress := partitionInfoNotices(info)
@@ -152,7 +153,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	hasDocs := q.Loaded && len(q.Documents) > 0 && q.DocumentError == ""
 	hasProgress := len(progress) > 0 || hasDocs
 	groupDesc := ""
-	if hasAlerts && q.AutomaticSave {
+	if !setupOnly && hasAlerts && q.AutomaticSave {
 		groupDesc = "自动采集已开启"
 	}
 
@@ -173,10 +174,12 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		headerActions = func() {
 			count := len(needs) + len(anomalies)
 			ui.Text(c, fmt.Sprintf("%d 项待处理", count)).Font("system-ui").FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Warning).SingleLine()
-			autoSaveControl("head", "自动采集")
+			if !setupOnly {
+				autoSaveControl("head", "自动采集")
+			}
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
-	} else if !q.Loaded && !hasProgress {
+	} else if !setupOnly && !q.Loaded && !hasProgress {
 		headerActions = func() {
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
@@ -186,7 +189,14 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	hasTarget := false
 	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与采集状态", groupDesc, headerActions, func() {
 		ui.Column(c.Key("message-status-" + p.ID)).FillWidth().Gap(0).Children(func() {
-			if !q.Loaded && !hasAlerts && !hasProgress {
+			if setupOnly {
+				v4Row(c, v4RowOptions{
+					Key: "proj-queue-setup-" + p.ID, Title: "待配置记忆提炼",
+					Desc:    "完成记忆提炼配置后，将自动整理该项目的会话记忆。",
+					Leading: func() { v4StatusDot(c, "neutral") },
+					Control: func() { v4SmallButton(c, "立即配置", nil, a.openSettingsFromDeferredBanner) },
+				})
+			} else if !q.Loaded && !hasAlerts && !hasProgress {
 				v4SkeletonRow(c, 1, false, false)
 			} else if !hasAlerts {
 				// Healthy collapsed single-row state.
@@ -210,7 +220,8 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 						queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 					},
 				})
-			} else {
+			}
+			if hasAlerts {
 				if len(needs) > 0 {
 					if el, ok := a.messageNoticeBucket(c, q, p, "需要你处理", "warn", needs, targetKey, q.LocatedNoticeKey, true); ok {
 						targetEl, hasTarget = el, true
@@ -551,7 +562,7 @@ func (a *App) renderMessageNoticeDialog(c *ui.Context, q *projectQueueState, p A
 		if n.Session != nil {
 			row := *n.Session
 			check := q.pendingCheck(row)
-			if check.Status == "unconfirmed" && check.Reason != "original_receipt_unavailable" {
+			if !a.isSetupOnlyRuntime() && check.Status == "unconfirmed" && check.Reason != "original_receipt_unavailable" {
 				hideConfirm = false
 				confirmText = "重新检查采集结果"
 				confirmDisabled = row.View.Busy || a.access.Busy

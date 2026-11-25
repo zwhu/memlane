@@ -137,85 +137,144 @@ func (i Installer) Review(operation string, p Plan, displayedDigest string, appr
 	if operation == "" || displayedDigest != p.Digest() {
 		return ErrPlanChanged
 	}
-	return i.withLock(func() error {
-		j, err := i.read()
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if j.Operation == "" {
-			j = Journal{Schema: 1, Operation: operation, Steps: map[string]Step{}}
-		}
-		if j.Operation != operation {
-			return errors.New("another installation operation is retained")
-		}
-		j.Plan = p
-		j.ApprovedDigest, j.DeclinedDigest = "", ""
-		if approve {
-			j.ApprovedDigest = displayedDigest
-		} else {
-			j.DeclinedDigest = displayedDigest
-		}
-		return i.write(j)
-	})
+	return i.withLock(func() error { return i.reviewLocked(operation, p, displayedDigest, approve) })
+}
+
+func (i Installer) reviewLocked(operation string, p Plan, displayedDigest string, approve bool) error {
+	if operation == "" || displayedDigest != p.Digest() {
+		return ErrPlanChanged
+	}
+	j, err := i.read()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if j.Operation == "" {
+		j = Journal{Schema: 1, Operation: operation, Steps: map[string]Step{}}
+	}
+	if j.Operation != operation {
+		return ErrOperationIDMismatch
+	}
+	j.Plan = p
+	j.ApprovedDigest, j.DeclinedDigest = "", ""
+	if approve {
+		j.ApprovedDigest = displayedDigest
+	} else {
+		j.DeclinedDigest = displayedDigest
+	}
+	return i.write(j)
 }
 
 // Run rechecks every component, including steps previously reported ready.
 // An interrupted step is probed before it may be retried. Driver installs must
 // therefore be resumable and must reject unknown/unowned destinations.
 func (i Installer) Run(ctx context.Context, operation string, p Plan) error {
-	return i.withLock(func() error {
-		j, err := i.read()
-		if err != nil {
+	return i.withLock(func() error { return i.runLocked(ctx, operation, p) })
+}
+
+func (i Installer) runLocked(ctx context.Context, operation string, p Plan) error {
+	j, err := i.read()
+	if err != nil {
+		return err
+	}
+	if j.Operation != operation || j.ApprovedDigest != p.Digest() || j.Plan.Digest() != p.Digest() {
+		return ErrConsent
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if i.CheckSpace != nil {
+		if err := i.CheckSpace(ctx); err != nil {
 			return err
 		}
-		if j.Operation != operation || j.ApprovedDigest != p.Digest() || j.Plan.Digest() != p.Digest() {
-			return ErrConsent
+		var cancel context.CancelCauseFunc
+		ctx, cancel = monitorResources(ctx, i.CheckSpace)
+		defer cancel(nil)
+	}
+	j.Status = Installing
+	if err := i.write(j); err != nil {
+		return err
+	}
+	for _, item := range p.Items {
+		r := item.Requirement
+		j.ActiveStep = r.ID
+		s := j.Steps[r.ID]
+		fail := func(err error) error {
+			if cause := context.Cause(ctx); cause != nil {
+				err = cause
+			}
+			s.Status, s.Error, j.Status = Failed, err.Error(), Failed
+			var failure *CommandFailure
+			if errors.As(err, &failure) {
+				code := failure.ExitCode
+				s.Log = failure.Output
+				if code >= 0 {
+					s.ExitCode = &code
+				}
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				s.Status, j.Status = Cancelled, Cancelled
+			}
+			j.Steps[r.ID] = s
+			if writeErr := i.write(j); writeErr != nil {
+				return errors.Join(err, writeErr)
+			}
+			return err
 		}
 		if err := ctx.Err(); err != nil {
-			return err
+			return fail(err)
+		}
+		progressComponent(ctx, r.ID, true)
+		progressStage(ctx, "probing")
+		o, err := i.Driver.Probe(ctx, r)
+		if err != nil {
+			return fail(err)
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if o.Status == Available {
+			// A changed external selection is a new plan, even if compatible.
+			if item.Observation.Status == Available && o != item.Observation {
+				return fail(ErrPlanChanged)
+			}
+			s.Status, s.Error = Ready, ""
+			s.ExitCode, s.Log = nil, ""
+			j.Steps[r.ID] = s
+			if err := i.write(j); err != nil {
+				return err
+			}
+			progressStage(ctx, "ready")
+			continue
+		}
+		// Consent to reuse an external component never authorizes installing
+		// its replacement after it disappears or becomes incompatible.
+		if item.Observation.Status == Available {
+			return fail(ErrPlanChanged)
+		}
+		if o.Status != Missing && o.Status != Incompatible {
+			return fail(errors.New("invalid probe result"))
 		}
 		if i.CheckSpace != nil {
 			if err := i.CheckSpace(ctx); err != nil {
-				return err
+				return fail(err)
 			}
-			var cancel context.CancelCauseFunc
-			ctx, cancel = monitorResources(ctx, i.CheckSpace)
-			defer cancel(nil)
 		}
-		j.Status = Installing
+		s.Status, s.Error, s.Attempts = Installing, "", s.Attempts+1
+		s.ExitCode, s.Log = nil, ""
+		j.Steps[r.ID] = s
 		if err := i.write(j); err != nil {
 			return err
 		}
-		for _, item := range p.Items {
-			r := item.Requirement
-			j.ActiveStep = r.ID
-			s := j.Steps[r.ID]
-			fail := func(err error) error {
-				if cause := context.Cause(ctx); cause != nil {
-					err = cause
-				}
-				s.Status, s.Error, j.Status = Failed, err.Error(), Failed
-				var failure *CommandFailure
-				if errors.As(err, &failure) {
-					code := failure.ExitCode
-					s.Log = failure.Output
-					if code >= 0 {
-						s.ExitCode = &code
-					}
-				}
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					s.Status, j.Status = Cancelled, Cancelled
-				}
-				j.Steps[r.ID] = s
-				if writeErr := i.write(j); writeErr != nil {
-					return errors.Join(err, writeErr)
-				}
-				return err
-			}
+		if err := i.Driver.Install(ctx, r); err != nil {
+			return fail(err)
+		}
+		progressStage(ctx, "verifying")
+		probeCtx := withPostInstallProbe(ctx)
+		for attempt := 1; ; attempt++ {
 			if err := ctx.Err(); err != nil {
 				return fail(err)
 			}
-			o, err := i.Driver.Probe(ctx, r)
+			o, err := i.Driver.Probe(probeCtx, r)
 			if err != nil {
 				return fail(err)
 			}
@@ -223,77 +282,30 @@ func (i Installer) Run(ctx context.Context, operation string, p Plan) error {
 				return fail(err)
 			}
 			if o.Status == Available {
-				// A changed external selection is a new plan, even if compatible.
-				if item.Observation.Status == Available && o != item.Observation {
-					return fail(ErrPlanChanged)
-				}
-				s.Status, s.Error = Ready, ""
-				s.ExitCode, s.Log = nil, ""
-				j.Steps[r.ID] = s
-				if err := i.write(j); err != nil {
-					return err
-				}
-				continue
+				break
 			}
-			// Consent to reuse an external component never authorizes installing
-			// its replacement after it disappears or becomes incompatible.
-			if item.Observation.Status == Available {
-				return fail(ErrPlanChanged)
+			if !o.transientTimeout || attempt >= postInstallProbeMaxAttempts {
+				return fail(fmt.Errorf("installed component failed verification: component=%s status=%s reason=%q",
+					r.ID, o.Status, RedactInstallerText(o.Reason)))
 			}
-			if o.Status != Missing && o.Status != Incompatible {
-				return fail(errors.New("invalid probe result"))
-			}
-			if i.CheckSpace != nil {
-				if err := i.CheckSpace(ctx); err != nil {
-					return fail(err)
-				}
-			}
-			s.Status, s.Error, s.Attempts = Installing, "", s.Attempts+1
-			s.ExitCode, s.Log = nil, ""
-			j.Steps[r.ID] = s
-			if err := i.write(j); err != nil {
-				return err
-			}
-			if err := i.Driver.Install(ctx, r); err != nil {
-				return fail(err)
-			}
-			probeCtx := withPostInstallProbe(ctx)
-			for attempt := 1; ; attempt++ {
-				if err := ctx.Err(); err != nil {
-					return fail(err)
-				}
-				o, err := i.Driver.Probe(probeCtx, r)
-				if err != nil {
-					return fail(err)
-				}
-				if err := ctx.Err(); err != nil {
-					return fail(err)
-				}
-				if o.Status == Available {
-					break
-				}
-				if !o.transientTimeout || attempt >= postInstallProbeMaxAttempts {
-					return fail(fmt.Errorf("installed component failed verification: component=%s status=%s reason=%q",
-						r.ID, o.Status, RedactInstallerText(o.Reason)))
-				}
-				timer := time.NewTimer(postInstallProbeRetryDelay)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return fail(ctx.Err())
-				case <-timer.C:
-				}
-			}
-			s.Status, s.Error = Ready, ""
-			j.Steps[r.ID] = s
-			if err := i.write(j); err != nil {
-				return err
+			timer := time.NewTimer(postInstallProbeRetryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fail(ctx.Err())
+			case <-timer.C:
 			}
 		}
-		j.Status = Ready
-		j.ActiveStep = ""
-		return i.write(j)
-	})
+		s.Status, s.Error = Ready, ""
+		j.Steps[r.ID] = s
+		if err := i.write(j); err != nil {
+			return err
+		}
+		progressStage(ctx, "ready")
+	}
+	j.Status = Ready
+	j.ActiveStep = ""
+	return i.write(j)
 }
 
 func monitorResources(parent context.Context, check func(context.Context) error) (context.Context, context.CancelCauseFunc) {
@@ -333,11 +345,11 @@ func (i Installer) read() (Journal, error) {
 	return j, nil
 }
 
-func (i Installer) withLock(fn func() error) error {
-	if !filepath.IsAbs(i.Root) {
+func prepareInstallationDir(root string) error {
+	if !filepath.IsAbs(root) {
 		return errors.New("absolute installation state path required")
 	}
-	for p := filepath.Clean(i.Root); ; p = filepath.Dir(p) {
+	for p := filepath.Clean(root); ; p = filepath.Dir(p) {
 		info, err := os.Lstat(p)
 		if err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("installation state path traverses symlink")
@@ -349,15 +361,22 @@ func (i Installer) withLock(fn func() error) error {
 			break
 		}
 	}
-	if err := os.MkdirAll(i.Root, 0700); err != nil {
+	if err := os.MkdirAll(root, 0700); err != nil {
 		return err
 	}
-	info, err := os.Stat(i.Root)
+	info, err := os.Stat(root)
 	if err != nil {
 		return err
 	}
 	if info.Mode().Perm()&0077 != 0 {
 		return errors.New("installation state directory must be private")
+	}
+	return nil
+}
+
+func (i Installer) withLock(fn func() error) error {
+	if err := prepareInstallationDir(i.Root); err != nil {
+		return err
 	}
 	fd, err := syscall.Open(filepath.Join(i.Root, "installation.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if err != nil {
@@ -366,7 +385,10 @@ func (i Installer) withLock(fn func() error) error {
 	f := os.NewFile(uintptr(fd), "installation.lock")
 	defer f.Close()
 	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("installation is already owned by another process")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return ErrInstallWorkerBusy
+		}
+		return err
 	}
 	defer syscall.Flock(fd, syscall.LOCK_UN)
 	return fn()

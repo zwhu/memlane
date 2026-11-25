@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +59,7 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 				}
 				return AgentConnection{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", Capture: capture}
 			}
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == "POST" {
 					posts.Add(1)
 					var payload struct {
@@ -81,7 +80,10 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 					return
 				}
 				if strings.HasPrefix(r.URL.Path, "/v1/connections/operations/") {
-					json.NewEncoder(w).Encode(map[string]any{"recorded": true, "status": "complete", "result": map[string]any{"connection": row()}})
+					json.NewEncoder(w).Encode(map[string]any{
+						"recorded": true, "status": "complete", "operation_id": operation, "instance_id": row().ID, "action": "allow_capture",
+						"result": map[string]any{"connection": row()},
+					})
 				} else if r.URL.Path == "/v1/connections" {
 					value := row()
 					if action == "changed_review" {
@@ -91,11 +93,11 @@ func TestCodexCaptureConsentIsReviewedAndUnknownWriteIsOnlyReconciled(t *testing
 				} else {
 					json.NewEncoder(w).Encode(AccessDirectory{})
 				}
-			}))
-			defer server.Close()
+			})
 			a := New(Config{GenerationFile: filepath.Join(root, "generation.json"),
-				ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}, nil)
+				ProjectControl: &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}}, nil)
 			updates := make(chan func(), 32)
+			a.Client.HTTP = &http.Client{Transport: transport}
 			a.Update = func(fn func()) { updates <- fn }
 			a.integrations = integrationState{Loaded: true, NextReceiptCheck: time.Now().Add(time.Hour),
 				Connections: ConnectionsDirectory{Revision: 1, Connections: []AgentConnection{row()}}}

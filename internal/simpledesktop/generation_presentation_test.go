@@ -1,8 +1,9 @@
 package simpledesktop
 
 import (
-	"github.com/egoist/mygo/ui"
 	"testing"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestGenerationCardsSeparateBridgeAndGroupProviderModels(t *testing.T) {
@@ -14,6 +15,7 @@ func TestGenerationCardsSeparateBridgeAndGroupProviderModels(t *testing.T) {
 			"one":   {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Endpoint: "http://localhost:11434", Model: "instruct"}}},
 			"two":   {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Endpoint: "http://localhost:11434", Model: "thinking"}}},
 		},
+		AgentBridges:  map[string]GenerationProfile{"codex": {Mode: "agent_bridge", BridgeKind: "codex"}},
 		AgentDefaults: map[string]AgentModelDefaults{"codex": {Model: "session-model", ReasoningEffort: "medium", ServiceTier: "fast"}},
 	}
 	tt := ui.NewTester(func(c *ui.Context) { a.generationProfileCards(c) }, 1200, 820)
@@ -65,7 +67,7 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 	for _, toolGraph := range []bool{false, true} {
 		a := New(Config{}, nil)
 		active := &GenerationRef{ID: "codex", Revision: 1}
-		a.integrations.Loaded = true
+		a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
 		a.integrations.Generation = GenerationDirectory{HandoffAvailable: true, Active: active,
 			Profiles: map[string][]GenerationRow{
 				"codex":    {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex", Model: "native"}}},
@@ -81,7 +83,7 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 		a.integrations.Model = "private-draft-model"
 		a.integrations.APIKey = "unsaved-key"
 		a.integrations.Temperature = "0"
-		clickProjectUI(t, tt, "用已连接的 Agent 提炼")
+		clickProjectUI(t, tt, "用本机 Agent CLI 提炼")
 		if a.integrations.DraftMode != "agent_bridge" || a.integrations.APIKey != "" || a.integrations.Generation.Active != active {
 			t.Fatal("Provider draft leaked into Agent")
 		}
@@ -110,7 +112,7 @@ func TestProcessingSourcesKeepDraftsAndDoNotEnableWhileConfiguring(t *testing.T)
 func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.integrations = integrationState{Loaded: true, Generation: GenerationDirectory{
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Generation: GenerationDirectory{
 		Active: &GenerationRef{ID: "api", Revision: 1}, Profiles: map[string][]GenerationRow{
 			"api": {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "openai", Model: "fixture-model"}}},
 		}}}
@@ -127,7 +129,7 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 	if !a.integrations.GenerationProviderDialog {
 		t.Fatal("model configuration did not open a dialog")
 	}
-	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("用已连接的 Agent 整理") || tt.HasText("选择已连接的 Agent") || tt.HasText("直接调用模型 API") {
+	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("用本机 Agent CLI 提炼") || tt.HasText("选择本机 Agent CLI") || tt.HasText("直接调用模型 API") {
 		t.Fatal("configuration tab mixes activation or hides editable fields")
 	}
 	fixtureImage(t, tt, "settings-agent-model-management")
@@ -142,29 +144,42 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 	}
 }
 
-func TestProcessingAgentChoicesDependOnConnectionNotModelValidation(t *testing.T) {
+func TestProcessingAgentChoiceShowsAvailabilityAndValidationSeparately(t *testing.T) {
 	a := New(Config{}, nil)
-	a.integrations = integrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
-		{Kind: "codex", Status: "configured_pending_new_session"}, {Kind: "traex", Status: "configured_pending_new_session"}, {Kind: "pi", Status: "not_connected"},
-	}}, Generation: GenerationDirectory{AgentBridges: map[string]GenerationProfile{
-		"codex": {Mode: "agent_bridge", BridgeKind: "codex", Model: "native"}, "traex": {Mode: "agent_bridge", BridgeKind: "traex", Model: "native"}, "pi": {Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "native"},
-	}}}
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
+		{Kind: "codex", Status: "configured_pending_new_session"}, {Kind: "pi", Status: "not_connected"},
+	}}, Generation: GenerationDirectory{
+		AgentBridges: map[string]GenerationProfile{
+			"codex": {Mode: "agent_bridge", BridgeKind: "codex", Model: "native"},
+			"pi":    {Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "native"},
+		},
+		Profiles: map[string][]GenerationRow{
+			"agent-codex": {{Revision: 1, Digest: "codex-digest", Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex", Model: "native"}}},
+			"agent-traex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "traex", Model: "native"}}},
+		},
+		Validations: map[string]GenerationValidation{
+			"probe": {Digest: "codex-digest", Status: "passed", Plain: true, Schema: true, Quality: true},
+		},
+	}}
 	a.chooseGenerationSource("agent_bridge")
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.generationWorkspaceFor(c, false, true) }) }, 1200, 820)
-	for _, label := range []string{"未验证", "未配置", "已保存 · 未验证", "保存配置", "验证（会消耗额度）"} {
-		if tt.HasText(label) {
-			t.Fatal("Agent selection leaked model setup state", label)
+	for _, label := range []string{"已验证", "未验证", "未检测到 CLI"} {
+		if !tt.HasText(label) {
+			t.Fatal("Agent choice is missing its status", label)
 		}
 	}
-	clickProjectUI(t, tt, "配置模型：agent-traex")
-	if a.integrations.BridgeKind != "traex" {
-		t.Fatal("connected Agent requires validation to select")
-	}
 	clickProjectUI(t, tt, "配置模型：agent-pi")
-	if a.integrations.BridgeKind != "traex" {
-		t.Fatal("disconnected Agent can be selected")
+	if a.integrations.BridgeKind != "pi" || !tt.HasText("保存配置") || a.integrations.Generation.Active != nil {
+		t.Fatal("locally detected Agent could not be selected without a capture binding")
 	}
-	fixtureImage(t, tt, "connected-agent-selection")
+	clickProjectUI(t, tt, "配置模型：agent-traex")
+	if a.integrations.BridgeKind != "pi" {
+		t.Fatal("unavailable CLI could be selected")
+	}
+	clickProjectUI(t, tt, "配置模型：agent-codex")
+	if a.integrations.BridgeKind != "codex" || !tt.HasText("切换") || a.integrations.Generation.Active != nil {
+		t.Fatal("available Codex CLI lost its validated selection")
+	}
 }
 
 func TestAgentChoiceOrderIsStableAcrossSaveAndRefresh(t *testing.T) {

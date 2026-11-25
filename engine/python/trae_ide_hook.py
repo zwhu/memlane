@@ -14,7 +14,9 @@ from urllib.parse import urlsplit
 
 import agent_memory_adapter as memory
 
-EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'PostToolUseFailure', 'Stop', 'SessionEnd'}
+EVENTS = {'SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'}
+LEGACY_EVENTS = {'PostToolUseFailure', 'SessionEnd'}
+ALL_DIAGNOSTIC_EVENTS = EVENTS | LEGACY_EVENTS
 MAX_PENDING_TURNS = 16
 MAX_HOOK_ERRORS = 5
 MAX_HOOK_ERROR_BYTES = 16384
@@ -55,12 +57,11 @@ def now():
 
 def _load_turns(state):
     previous = state.data.pop('trae_ide_turn', None)
-    turns = state.data.setdefault('trae_ide_turns', [])
-    if not isinstance(turns, list):
-        turns = state.data['trae_ide_turns'] = []
-    if isinstance(previous, dict):
-        turns.insert(0, previous)
-    return turns
+    stored = state.data.get('trae_ide_turns')
+    turns = [previous, *(stored if isinstance(stored, list) else [])]
+    state.data['trae_ide_turns'] = valid = [
+        turn for turn in turns if isinstance(turn, dict) and isinstance(turn.get('id'), str) and turn['id']]
+    return valid
 
 
 def observe_turn(event, key, payload):
@@ -71,21 +72,26 @@ def observe_turn(event, key, payload):
     with _SessionState(key) as state:
         if not state.acquired:
             raise ValueError('capture_state_locked')
+        if event == 'SessionStart':
+            for field in ('trae_ide_turn', 'trae_ide_turns', 'trae_ide_evicted_stops'):
+                state.data.pop(field, None)
+            state.save()
+            return None, []
         turns = _load_turns(state)
         evicted = state.data.get('trae_ide_evicted_stops', 0)
         if type(evicted) is not int or evicted < 0:
             evicted = 0
         pending = []
         turn_id = None
-        if event == 'SessionStart':
-            state.data.pop('trae_ide_turns', None)
-            state.data.pop('trae_ide_evicted_stops', None)
-            state.save()
-            return None, []
         if event == 'UserPromptSubmit':
             prompt = payload.get('prompt')
-            if isinstance(prompt, str) and prompt.strip():
+            external_id = next((payload[field] for field in ('turn_id', 'prompt_id', 'message_id')
+                                if isinstance(payload.get(field), str) and payload[field].strip()), None)
+            duplicate = external_id is not None and any(turn.get('external_id') == external_id for turn in turns)
+            if not duplicate and isinstance(prompt, str) and prompt.strip():
                 turn = {'id': uuid.uuid4().hex, 'time': now()}
+                if external_id is not None:
+                    turn['external_id'] = external_id
                 if capture_enabled() and permit('capture'):
                     turn['question'] = _truncate(sanitize(prompt), 8000)
                     turn_id = turn['id']
@@ -93,11 +99,9 @@ def observe_turn(event, key, payload):
                     turn['skipped_policy'] = True
                 turns.append(turn)
         elif event == 'Stop':
-            if evicted > 0:
-                evicted -= 1
-            elif turns:
-                pending = [dict(turns[0])]
-        elif event == 'PostToolUseFailure':
+            pending = [dict(turn) for turn in turns]
+            evicted = 0
+        elif event == 'PostToolUseFailure' or (event == 'PostToolUse' and tool_response_failed(payload)):
             name = payload.get('tool_name')
             if turns and not turns[-1].get('skipped_policy') and isinstance(name, str) and name.strip():
                 failures = turns[-1].setdefault('tool_failures', [])
@@ -126,9 +130,11 @@ def _consume_turn(key, turn_id):
             raise ValueError('capture_state_locked')
         turns = _load_turns(state)
         for index, item in enumerate(turns):
-            if isinstance(item, dict) and item.get('id') == turn_id:
+            if item['id'] == turn_id:
                 del turns[index]
                 break
+        if not turns:
+            state.data.pop('trae_ide_evicted_stops', None)
         state.save()
 
 
@@ -165,10 +171,15 @@ def capture_tool(payload, failed, request, key, session, dataset):
     memory.capture({**request, 'event_id': 'tool:' + tool_id, 'entry': entry}, key, session, dataset)
 
 
+def tool_response_failed(payload):
+    response = payload.get('tool_response')
+    return isinstance(response, dict) and response.get('is_error') is True
+
+
 def handle(event, payload):
     if os.environ.get('MEMLANE_PROCESSING_SESSION') == '1':
         return {}
-    if event not in EVENTS or not isinstance(payload, dict) or payload.get('hook_event_name') != event:
+    if event not in ALL_DIAGNOSTIC_EVENTS or not isinstance(payload, dict) or payload.get('hook_event_name') != event:
         return {}
     cwd = workspace(payload)
     if not cwd:
@@ -187,7 +198,8 @@ def handle(event, payload):
             result = memory.handle({**request, 'operation': 'recall', 'query': prompt[:16000]})
             return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': result.get('context', '')}}
     elif event == 'PostToolUse':
-        capture_tool(payload, False, request, key, session, dataset)
+        observe_turn(event, key, payload)
+        capture_tool(payload, tool_response_failed(payload), request, key, session, dataset)
     else:
         flush = {**request, 'operation': 'flush'}
         if event == 'SessionEnd':
@@ -279,7 +291,7 @@ def record_hook_error(event, *, error_code, error_type, status=None, payload=Non
             at = time.time()
             entry = {
                 'at': at, 'timestamp': datetime.fromtimestamp(at, timezone.utc).isoformat(),
-                'event': event if event in EVENTS else '', 'script': 'trae_ide_hook.py',
+                'event': event if event in ALL_DIAGNOSTIC_EVENTS else '', 'script': 'trae_ide_hook.py',
                 'status': status if type(status) is int else None,
                 'error_code': error_code[:80], 'error_type': error_type[:80],
                 'reason': error_code[:120],

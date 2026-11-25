@@ -7,9 +7,9 @@ from pathlib import Path
 import subprocess
 import time
 
-from agent_connections import NativeConnection, safe_file, sha, verify_artifact
+from agent_connections import NativeConnection, UPGRADE_FIELDS, safe_file, sha, verify_artifact
 from project_control import private_write
-from project_policy import PolicyError
+from project_policy import PolicyError, mark_connection_mutation, phased_connection_action
 
 NAME = 'memlane-cognee'
 
@@ -102,6 +102,7 @@ class AntigravityConnection(NativeConnection):
                 'baseline_sha256': sha(raw), 'preserve_other_plugins': True,
                 'requires_reload': True, 'requires_host_trust': True}
 
+    @phased_connection_action
     async def prepare(self, expected):
         previous = copy.deepcopy(self.registry.state.get('connections', {}).get(self.id, {}))
         active = None
@@ -116,21 +117,15 @@ class AntigravityConnection(NativeConnection):
             agent = self.registry.state['agents'][self.id]
             agent['host_profile'] = str(self.profile)
             agent['entrypoints'] = ['desktop']
-            candidate = agent['installation']
+            record = self.registry.state['connections'][self.id]
+            candidate = record['prepared_installation'] if active is not None else agent['installation']
             if active is not None:
-                record = self.registry.state['connections'][self.id]
-                record.update(prepared_installation=copy.deepcopy(candidate), active_installation=active,
-                              active_boundary_at=active_boundary,
-                              activated=True, activated_at=previous['activated_at'],
-                              native_plugin_dir=previous['native_plugin_dir'],
-                              enabled_plugin=previous.get('enabled_plugin', NAME),
-                              upgrade_review_sha=previous['upgrade_review_sha'],
-                              sessions_before_activation=previous.get('sessions_before_activation', []))
-                agent['installation'] = active
-            marker = Path(candidate['plugin_dir']) / '.memlane-installation.json'
-            value = json.loads(marker.read_text())
-            value.update(runtime_profile=str(self.profile), activated_at=0)
-            private_write(marker, json.dumps(value).encode())
+                record['active_boundary_at'] = active_boundary
+            if active is None or candidate['plugin_dir'] != active['plugin_dir']:
+                marker = Path(candidate['plugin_dir']) / '.memlane-installation.json'
+                value = json.loads(safe_file(marker))
+                value.update(runtime_profile=str(self.profile), activated_at=0)
+                private_write(marker, json.dumps(value).encode())
             self.registry.save()
         return self.view()
 
@@ -155,6 +150,7 @@ class AntigravityConnection(NativeConnection):
             raise PolicyError('antigravity_installation_binding_changed', 409)
         return path
 
+    @phased_connection_action
     async def activate(self, expected, reviewed_sha):
         r = self.registry
         async with r.mutex:
@@ -170,6 +166,7 @@ class AntigravityConnection(NativeConnection):
             if record.get('prepared_installation') and record.get('upgrade_review_sha') != self.upgrade_review_sha():
                 raise PolicyError('active_antigravity_upgrade_requires_review', 409)
             verify_artifact(installation)
+            mark_connection_mutation()
             private_write(self.root / 'config-before.json', before)
             record.update(status='activation_unknown', sessions_before_activation=[
                 key for key in r.state['sessions'] if json.loads(key)[0] == self.id])
@@ -213,7 +210,7 @@ class AntigravityConnection(NativeConnection):
             self.installed()
             record.update(status='configured_pending_new_session', activated=True, activated_at=activated_at,
                           enabled_plugin=path.name, native_config_sha256=sha(after))
-            for key in ('prepared_installation', 'active_installation', 'active_boundary_at', 'upgrade_review_sha'):
+            for key in (*UPGRADE_FIELDS, 'active_boundary_at', 'upgrade_review_sha'):
                 record.pop(key, None)
             r.save()
             return self.view()
@@ -249,14 +246,29 @@ class AntigravityConnection(NativeConnection):
         private_write(source, raw)
         private_write(native, raw)
 
+    @phased_connection_action
     async def review(self, expected):
-        async with self.registry.mutex:
-            self.registry.check_revision(expected)
-            record = self.registry.state.get('connections', {}).get(self.id, {})
+        r = self.registry
+        record = r.state.get('connections', {}).get(self.id, {})
+        if record.get('status') == 'preparation_unknown':
+            return await super().review(expected)
+        async with r.mutex:
+            r.check_revision(expected)
+            record = r.state.get('connections', {}).get(self.id, {})
             if record.get('status') == 'prepared' and record.get('prepared_installation'):
                 verify_artifact(record['prepared_installation'])
                 self.installed()
-                return self.view()
+                return self._settle_prepared_review()
+            if record.get('status') == 'prepared' and not record.get('activated'):
+                agent = r.state['agents'].get(self.id)
+                installation = (agent or {}).get('installation')
+                if not isinstance(installation, dict):
+                    raise PolicyError('connection_artifact_changed', 409)
+                verify_artifact({**installation, 'host_kind': self.kind, 'instance_id': self.id})
+                self.preview()
+                if sha(safe_file(self.target)) != (record.get('preview') or {}).get('baseline_sha256'):
+                    raise PolicyError('host_configuration_changed', 409)
+                return self._settle_prepared_review()
             path = self.installed(check_binding=False)
             if record.get('prepared_installation') and record.get('status') == 'activation_unknown':
                 source = Path(self.registry.state['agents'][self.id]['installation']['plugin_dir']) / '.memlane-installation.json'
@@ -265,19 +277,65 @@ class AntigravityConnection(NativeConnection):
                 if journal.get('source') != str(source):
                     # A verified native copy may precede the marker journal.
                     # Publish its original boundary without reinstalling.
+                    mark_connection_mutation()
                     self.publish_activation_binding(path, record['active_boundary_at'])
+            mark_connection_mutation()
             self.restore_activation_binding(path)
             self.installed()
             marker = json.loads(safe_file(path / '.memlane-installation.json'))
             if not marker.get('activated_at'):
-                activated_at = time.time()
-                self.publish_activation_binding(path, activated_at)
-                record['activated_at'] = activated_at
-            record.update(status='configured_pending_new_session', activated=True,
-                          activated_at=json.loads(safe_file(path / '.memlane-installation.json'))['activated_at'])
-            for key in ('prepared_installation', 'active_installation', 'active_boundary_at'):
-                record.pop(key, None)
-            record['upgrade_review_sha'] = self.upgrade_review_sha()
-            self.registry.state['revision'] += 1
-            self.registry.save()
-        return self.view()
+                self.publish_activation_binding(path, time.time())
+                marker = json.loads(safe_file(path / '.memlane-installation.json'))
+            previous_record = copy.deepcopy(record)
+            previous_revision = r.state['revision']
+            pending = [(op, copy.deepcopy(op)) for op in r.state.get('connection_operations', {}).values()
+                       if op.get('instance_id') == self.id and op.get('action') in ('prepare', 'activate')
+                       and op.get('status') != 'complete']
+            try:
+                record.update(status='configured_pending_new_session', activated=True, activated_at=marker['activated_at'])
+                for key in (*UPGRADE_FIELDS, 'active_boundary_at'):
+                    record.pop(key, None)
+                record['upgrade_review_sha'] = self.upgrade_review_sha()
+                r.state['revision'] = previous_revision + 1
+                row = self.view()
+                result = {'revision': r.state['revision'], 'connection': copy.deepcopy(row)}
+                for op, _ in pending:
+                    op.update(status='complete', result=copy.deepcopy(result))
+                    op.pop('outcome', None)
+                    op.pop('error_code', None)
+                r.save()
+            except BaseException:
+                record.clear()
+                record.update(previous_record)
+                r.state['revision'] = previous_revision
+                for op, previous in pending:
+                    op.clear()
+                    op.update(previous)
+                raise
+            return row
+
+    def _settle_prepared_review(self):
+        r = self.registry
+        pending = [(op, op.copy()) for op in r.state.get('connection_operations', {}).values()
+                   if op.get('instance_id') == self.id and op.get('action') == 'prepare'
+                   and op.get('status') != 'complete']
+        if not pending:
+            return self.view()
+        previous_revision = r.state['revision']
+        mark_connection_mutation()
+        try:
+            r.state['revision'] = previous_revision + 1
+            row = self.view()
+            result = {'revision': r.state['revision'], 'connection': row}
+            for op, _ in pending:
+                op.update(status='complete', result=copy.deepcopy(result))
+                op.pop('outcome', None)
+                op.pop('error_code', None)
+            r.save()
+        except BaseException:
+            r.state['revision'] = previous_revision
+            for op, previous in pending:
+                op.clear()
+                op.update(previous)
+            raise
+        return row

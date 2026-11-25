@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/zwhu/memlane/internal/bootstrap"
 )
 
 var agentVersionPattern = regexp.MustCompile(`\b[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\b`)
@@ -50,6 +52,16 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 			continue
 		}
 		executable := config.AgentHosts[rows[n].Kind].Executable
+		if rows[n].Kind == "trae_ide" {
+			workers.Add(1)
+			go func(n int, executable string) {
+				defer workers.Done()
+				if ctx.Err() == nil {
+					rows[n].HostVersion = readTraeBundleVersion(executable)
+				}
+			}(n, executable)
+			continue
+		}
 		if executable == "" && rows[n].Kind == "codex" {
 			executable = config.CodexExecutable
 		}
@@ -81,4 +93,27 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 		}(n, executable)
 	}
 	workers.Wait()
+}
+
+func readTraeBundleVersion(executable string) string {
+	var candidates []string
+	for path := filepath.Clean(executable); filepath.IsAbs(path) && path != filepath.Dir(path); path = filepath.Dir(path) {
+		if strings.EqualFold(filepath.Ext(path), ".app") {
+			candidates = append(candidates, path)
+			break
+		}
+	}
+	dirs := []string{"/Applications"}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, "Applications"))
+	}
+	for _, dir := range dirs {
+		candidates = append(candidates, filepath.Join(dir, "Trae CN.app"), filepath.Join(dir, "TRAE CN.app"))
+	}
+	for _, path := range candidates {
+		if version := bootstrap.ReadBundleVersion(path); version != "" {
+			return version
+		}
+	}
+	return ""
 }

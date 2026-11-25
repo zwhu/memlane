@@ -51,13 +51,16 @@ class GenerationHandoff:
         if self.pending():
             raise PolicyError('generation_handoff_requires_review', 409)
         candidate = self.store.resolve(reference)
+        validations = self.store.state['validations']
+        if not validation_passed(validations, candidate['digest']):
+            raise PolicyError('generation_validation_required', 409)
         if candidate['profile']['mode'] == 'agent_bridge':
-            from agent_bridge_runtime import mark_connected_bridge_selection, require_connected_bridge
-            require_connected_bridge(self.registry, self.runtime, candidate['profile'])
-            mark_connected_bridge_selection(self.store.state, candidate)
+            if self.runtime or any(r.get('digest') == candidate['digest'] and r.get('bridge_runtime_fingerprint')
+                                   for r in validations.values()):
+                from agent_bridge_runtime import check_bridge_runtime, require_bridge_validation
+                require_bridge_validation(self.store, self.runtime, candidate, allow_legacy=False)
+                check_bridge_runtime(self.runtime, candidate['profile'])
         else:
-            if not validation_passed(self.store.state['validations'], candidate['digest']):
-                raise PolicyError('generation_validation_required', 409)
             self.store.native_schema_evidence(candidate)
         if reference == self.store.state.get('active'):
             raise PolicyError('generation_profile_already_active', 409)
@@ -153,10 +156,7 @@ class GenerationHandoff:
         # agent key file is missing) while ensuring crashes mid-reconciliation
         # remain resumable via review() without double-incrementing revision.
         if not row.get('active_committed'):
-            candidate = self.store.resolve(row['reference'])
-            if candidate['profile']['mode'] == 'agent_bridge':
-                from agent_bridge_runtime import mark_connected_bridge_selection
-                mark_connected_bridge_selection(self.store.state, candidate)
+            self.store.resolve(row['reference'])
             self.store.state['active'] = copy.deepcopy(row['reference'])
             for identifier in row.get('carried_operations', []):
                 if identifier in self.store.state.get('handoffs', {}):

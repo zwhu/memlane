@@ -2,18 +2,95 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_release
 
 
 class BuildReleaseTests(unittest.TestCase):
+    def test_packaged_cli_doctor_isolated_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp) / 'Memlane'
+            executable.write_text(
+                '#!/bin/sh\n'
+                '[ "$*" = "doctor --json" ] && [ "$HOME" = "$TMPDIR" ] && [ "$PWD" = "$HOME" ] '
+                f'&& [ "$PATH" = "{os.defpath}" ] && [ ! -e "$HOME/sentinel" ] || exit 97\n'
+                '[ -z "${MEMLANE_DEV_RUNTIME_CONFIG+x}${HTTPS_PROXY+x}${USER+x}${RANDOM_SENTINEL+x}" ] || exit 98\n'
+                'printf "%s\\n" \'{"schema_version":1,"command":"doctor","exit_code":10,'
+                '"status":"action_required","ok":false,"app":{"bundled_runtime_hash":"runtime-hash"}}\'\n'
+                'exit 10\n',
+                encoding='utf-8',
+            )
+            executable.chmod(0o700)
+            with patch.dict(os.environ, {'MEMLANE_DEV_RUNTIME_CONFIG': '/private/config', 'USER': 'tester',
+                                         'HTTPS_PROXY': 'http://proxy.invalid', 'RANDOM_SENTINEL': 'present'}):
+                receipt = build_release.verify_packaged_cli_doctor(executable)
+            elapsed = receipt.pop('elapsed_s')
+            self.assertLess(elapsed, 5.0)
+            self.assertEqual(receipt, {'status': 'passed', 'schema_version': 1, 'exit_code': 10,
+                                       'bundled_runtime_hash': 'runtime-hash', 'version': ''})
+
+    def test_packaged_cli_doctor_checks_manifest_version(self):
+        executable = Path('/fake/Memlane')
+        expected = '0.1.0-beta.3'
+        for version in (expected, '0.1.0-beta.2'):
+            with self.subTest(version=version):
+                payload = {'schema_version': 1, 'command': 'doctor', 'exit_code': 10,
+                           'status': 'action_required', 'ok': False, 'app': {'version': version}}
+                probe = subprocess.CompletedProcess([], 10, json.dumps(payload), '')
+                with patch.object(build_release.subprocess, 'run', return_value=probe):
+                    if version == expected:
+                        receipt = build_release.verify_packaged_cli_doctor(executable, expected_version=expected)
+                        self.assertEqual(receipt['version'], expected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'version does not match'):
+                            build_release.verify_packaged_cli_doctor(executable, expected_version=expected)
+
+    def test_packaged_cli_doctor_rejects_bad_receipts(self):
+        payload = {'schema_version': 1, 'command': 'doctor', 'exit_code': 10,
+                   'status': 'action_required', 'ok': False}
+        good = json.dumps(payload)
+        cases = [(code, good, '') for code in (0, 1)] + [
+            (10, good, 'warning'), (10, 'not JSON', ''), (10, good + good, ''),
+        ] + [(10, json.dumps({**payload, **overrides}), '') for overrides in (
+            {'schema_version': 2}, {'schema_version': True}, {'command': 'version'}, {'exit_code': 0},
+            {'status': 'ok'}, {'ok': True}, {'leak': 'Bearer secret'}, {'leak': 'sk-secret'},
+            {'leak': '.local/daily'}, {'leak': '/Users/tester/private'},
+        )]
+        with patch.dict(os.environ, {'USER': 'tester'}):
+            for code, stdout, stderr in cases:
+                with self.subTest(code=code, stdout=stdout, stderr=stderr):
+                    probe = subprocess.CompletedProcess([], code, stdout, stderr)
+                    with patch.object(build_release.subprocess, 'run', return_value=probe):
+                        with self.assertRaises((RuntimeError, ValueError)):
+                            build_release.verify_packaged_cli_doctor(Path('/fake/Memlane'))
+
+    def test_packaged_cli_doctor_rejects_timeout_slow_execution_and_temp_path(self):
+        executable = Path('/fake/Memlane')
+        with patch.object(build_release.subprocess, 'run', side_effect=subprocess.TimeoutExpired([], 5)) as run:
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                build_release.verify_packaged_cli_doctor(executable)
+            self.assertEqual(run.call_args.kwargs['timeout'], 5)
+
+        with patch.object(build_release.time, 'monotonic', side_effect=(0, 5)), \
+                patch.object(build_release.subprocess, 'run', return_value=subprocess.CompletedProcess([], 10, '{}', '')):
+            with self.assertRaisesRegex(RuntimeError, 'at least 5 seconds'):
+                build_release.verify_packaged_cli_doctor(executable)
+
+        def leak_work_dir(*_, env, **kwargs):
+            return subprocess.CompletedProcess([], 10, json.dumps({'leak': env['HOME']}), '')
+        with patch.object(build_release.subprocess, 'run', side_effect=leak_work_dir):
+            with self.assertRaisesRegex(RuntimeError, 'private value'):
+                build_release.verify_packaged_cli_doctor(executable)
+
     def _write_fake_repo(
         self,
         root: Path,
@@ -200,8 +277,10 @@ class BuildReleaseTests(unittest.TestCase):
         subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=repo, check=True, capture_output=True)
         subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=repo, check=True, capture_output=True)
         subprocess.run(['git', 'add', '.'], cwd=repo, check=True, capture_output=True)
-        subprocess.run(['git', 'commit', '-m', 'init'], cwd=repo, check=True, capture_output=True)
-        return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+        tree = subprocess.check_output(['git', 'write-tree'], cwd=repo, text=True).strip()
+        commit = subprocess.check_output(['git', 'commit-tree', tree, '-m', 'init'], cwd=repo, text=True).strip()
+        subprocess.run(['git', 'update-ref', 'HEAD', commit], cwd=repo, check=True, capture_output=True)
+        return commit
 
     def test_dry_run_git_ref_validates_target_ref_not_dirty_workspace(self):
         with tempfile.TemporaryDirectory() as raw_tmp:

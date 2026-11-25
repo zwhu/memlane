@@ -1,6 +1,9 @@
 package bootstrap
 
 import (
+	"os"
+	"path/filepath"
+
 	"context"
 	"strings"
 	"testing"
@@ -61,5 +64,24 @@ func TestManualInstallCommandsReflectSourceModeAndExcludeSecrets(t *testing.T) {
 		if strings.Contains(clean(chinaScript), forbidden) || strings.Contains(clean(officialScript), forbidden) {
 			t.Fatalf("manual script must never include %q", forbidden)
 		}
+	}
+}
+
+func TestManualRuntimeCommandsRequireMaterializedLock(t *testing.T) {
+	item := Item{Requirement: Requirement{ID: "runtime", Destination: t.TempDir()}}
+	lock := filepath.Join(item.Requirement.Destination, "requirements.lock")
+	script := ManualInstallCommand(item, nil, DownloadSourceChina)
+	if strings.Contains(script, "uv pip sync") || strings.Contains(script, lock) ||
+		!strings.Contains(script, "install --plan --component runtime --mirror china --json") ||
+		!strings.Contains(script, "install --apply --plan-digest <PLAN_DIGEST> --component runtime") ||
+		!strings.Contains(script, "artifacts.plan_digest") || !strings.Contains(script, PyPIIndexURLs(DownloadSourceChina)[0]) {
+		t.Fatal(script)
+	}
+	if err := os.WriteFile(lock, []byte("# materialized"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script = ManualInstallCommand(item, nil, DownloadSourceChina)
+	if !strings.Contains(script, "uv pip sync") || !strings.Contains(script, lock) {
+		t.Fatal(script)
 	}
 }

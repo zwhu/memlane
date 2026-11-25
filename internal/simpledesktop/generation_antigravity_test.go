@@ -25,7 +25,7 @@ func TestGeminiProcessingChoiceKeepsOrderAndCurrentProcessor(t *testing.T) {
 		t.Fatal("Gemini identity or model source missing", items[3])
 	}
 	a := New(Config{}, nil)
-	a.integrations = integrationState{Loaded: true, Generation: g,
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Generation: g,
 		Connections: ConnectionsDirectory{Connections: []AgentConnection{{Kind: "codex", Status: "configured_pending_new_session"}, {Kind: "antigravity", Status: "configured_pending_new_session"}}}}
 	a.chooseGenerationSource("agent_bridge")
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.generationWorkspaceFor(c, false, true) }) }, 1200, 820)

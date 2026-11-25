@@ -1,4 +1,6 @@
 """Project policy values; no content, credentials or SDK side effects."""
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 import subprocess
 import uuid
@@ -19,9 +21,42 @@ def is_protected_project(project):
 
 
 class PolicyError(Exception):
-    def __init__(self, code, status=400):
+    def __init__(self, code, status=400, *, phase=None):
         super().__init__(code)
         self.code, self.status = code, status
+        self.phase = phase
+
+
+_connection_mutation = ContextVar('connection_mutation', default=None)
+
+
+def connection_mutated():
+    tracker = _connection_mutation.get()
+    return tracker is not None and tracker['mutated']
+
+
+def mark_connection_mutation():
+    tracker = _connection_mutation.get()
+    if tracker is not None:
+        tracker['mutated'] = True
+
+
+def phased_connection_action(method):
+    @wraps(method)
+    async def execute(*args, **kwargs):
+        tracker = _connection_mutation.get()
+        if tracker is None:
+            tracker = {'mutated': False}
+        token = _connection_mutation.set(tracker)
+        try:
+            return await method(*args, **kwargs)
+        except PolicyError as error:
+            if error.phase is None:
+                error.phase = 'post_mutation' if tracker['mutated'] else 'pre_mutation'
+            raise
+        finally:
+            _connection_mutation.reset(token)
+    return execute
 
 
 def validate_fields(values, *, allow_reset=False):

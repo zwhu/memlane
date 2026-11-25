@@ -73,6 +73,7 @@ func (d RuntimeDriver) Probe(ctx context.Context, r Requirement) (Observation, e
 	return o, nil
 }
 func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
+	progressComponent(ctx, r.ID, false)
 	if r.ID != "runtime" || r.Digest != d.Digest() {
 		return errors.New("runtime requirement differs from fixed lock")
 	}
@@ -99,8 +100,13 @@ func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	venv := filepath.Join(r.Destination, "venv")
 	python := filepath.Join(venv, "bin/python")
+	runUV := func(detail, index string, attempt, total int, args ...string) error {
+		stop := progressSync(ctx, detail, index, attempt, total)
+		defer stop()
+		return runManaged(ctx, r.Destination, uv, args...)
+	}
 	if _, err := os.Stat(python); errors.Is(err, os.ErrNotExist) {
-		if err := runManaged(ctx, r.Destination, uv, "--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "venv", "--no-project", "--no-python-downloads", "--python", base, venv); err != nil {
+		if err := runUV("uv venv", "", 0, 0, "--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "venv", "--no-project", "--no-python-downloads", "--python", base, venv); err != nil {
 			return err
 		}
 	} else if err != nil {
@@ -110,28 +116,26 @@ func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
 	// in the owned destination, so keep both lock arguments relative.
 	syncArgs := func(indexURL string) []string {
 		args := []string{"--no-config", "--cache-dir", filepath.Join(r.Destination, "cache"), "pip", "sync", "--python", python, "--require-hashes", "--build-constraints", filepath.Base(lock)}
-		if indexURL != "" {
-			args = append(args, "--default-index", indexURL)
-		}
-		return append(args, filepath.Base(lock))
+		return append(args, "--default-index", indexURL, filepath.Base(lock))
 	}
-	if d.DownloadSource != "" {
-		indexes := PyPIIndexURLs(d.DownloadSource)
-		var syncErr error
-		for _, idxURL := range indexes {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			syncErr = runManaged(ctx, r.Destination, uv, syncArgs(idxURL)...)
-			if syncErr == nil {
-				break
-			}
+	source := d.DownloadSource
+	if source == "" {
+		source = DownloadSourceOfficial
+	}
+	indexes := PyPIIndexURLs(source)
+	var syncErr error
+	for idx, index := range indexes {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if syncErr != nil {
-			return syncErr
+		progressRuntimeSync(ctx)
+		syncErr = runUV("uv pip sync", index, idx+1, len(indexes), syncArgs(index)...)
+		if syncErr == nil {
+			break
 		}
-	} else if err := runManaged(ctx, r.Destination, uv, syncArgs("")...); err != nil {
-		return err
+	}
+	if syncErr != nil {
+		return syncErr
 	}
 	if d.Native != nil {
 		return d.Native.install(ctx, r.Destination)

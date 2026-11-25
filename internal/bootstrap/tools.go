@@ -110,6 +110,7 @@ func (d ToolDriver) Probe(ctx context.Context, r Requirement) (Observation, erro
 }
 
 func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
+	progressComponent(ctx, r.ID, false)
 	if !d.matches(r) {
 		return errors.New("tool requirement differs from fixed manifest")
 	}
@@ -151,6 +152,7 @@ func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
 		return err
 	}
 	defer os.RemoveAll(staging)
+	progressStage(ctx, "extracting")
 	archive := archivePathFor(chosen)
 	if chosen.Format == "wheel" {
 		target := filepath.Join(staging, filepath.FromSlash(d.Executable))

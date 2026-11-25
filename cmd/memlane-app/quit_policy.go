@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -10,16 +11,20 @@ import (
 // so system quits (Cmd+Q, Dock, menu) stop owned background services when
 // KeepAliveOnQuit is disabled, without blocking or duplicating shutdowns.
 type quitCoordinator struct {
-	mu              sync.Mutex
-	quitting        bool
-	skipStopOnQuit  bool
-	shutdownRunning bool
-	shutdownDone    bool
-	keepAlive       func() bool
-	shutdown        func(context.Context) error
-	requestQuit     func()
-	shutdownTimeout time.Duration
-	logf            func(string, ...any)
+	mu                sync.Mutex
+	quitting          bool
+	skipStopOnQuit    bool
+	shutdownRunning   bool
+	shutdownDone      bool
+	lastShutdownErr   error
+	shutdownFailed    bool
+	onShutdownError   func(error)
+	refuseQuitOnError bool
+	keepAlive         func() bool
+	shutdown          func(context.Context) error
+	requestQuit       func()
+	shutdownTimeout   time.Duration
+	logf              func(string, ...any)
 }
 
 const defaultShutdownTimeout = 15 * time.Second
@@ -50,6 +55,30 @@ func (c *quitCoordinator) IsQuitting() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.quitting
+}
+
+func (c *quitCoordinator) LastShutdownError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastShutdownErr
+}
+
+func (c *quitCoordinator) ShutdownFailed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shutdownFailed
+}
+
+func (c *quitCoordinator) SetOnShutdownError(fn func(error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onShutdownError = fn
+}
+
+func (c *quitCoordinator) SetRefuseQuitOnShutdownError(refuse bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refuseQuitOnError = refuse
 }
 
 func (c *quitCoordinator) RequestQuit(stopServices bool) {
@@ -107,18 +136,39 @@ func (c *quitCoordinator) startShutdownAndQuit() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), c.shutdownTimeout)
 		defer cancel()
-		if c.shutdown != nil {
-			if err := c.shutdown(ctx); err != nil && c.logf != nil {
-				c.logf("停止本地后台服务时遇到问题：%v", err)
+		err := c.runShutdown(ctx)
+		c.mu.Lock()
+		c.lastShutdownErr = err
+		c.shutdownFailed = err != nil
+		quit := err == nil || !c.refuseQuitOnError
+		onError := c.onShutdownError
+		c.shutdownRunning = false
+		c.shutdownDone = quit
+		c.quitting = quit
+		c.mu.Unlock()
+
+		if err != nil {
+			if c.logf != nil {
+				c.logf("停止本地后台服务失败，本地服务可能仍在运行，所有权锁可能仍被持有：%v", err)
+			}
+			if onError != nil {
+				onError(err)
 			}
 		}
-		c.mu.Lock()
-		c.shutdownRunning = false
-		c.shutdownDone = true
-		c.quitting = true
-		c.mu.Unlock()
-		if c.requestQuit != nil {
+		if quit && c.requestQuit != nil {
 			c.requestQuit()
 		}
 	}()
+}
+
+func (c *quitCoordinator) runShutdown(ctx context.Context) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("本地后台服务停服发生 panic: %v", recovered)
+		}
+	}()
+	if c.shutdown == nil {
+		return nil
+	}
+	return c.shutdown(ctx)
 }

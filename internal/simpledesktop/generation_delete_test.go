@@ -15,7 +15,7 @@ import (
 
 func TestGenerationAddAndEditStayInlineAndDiscardRemovesSecret(t *testing.T) {
 	a := New(Config{}, nil)
-	a.integrations.Loaded = true
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
 	a.integrations.Generation.Profiles = map[string][]GenerationRow{"provider": {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "openai", Model: "saved-model"}}}}
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Padding(24).Gap(16).Children(func() { a.generationSettings(c) })
@@ -76,7 +76,7 @@ func TestProviderDeletionConfirmsExactProfileAndReconcilesUnknownWithoutResendin
 			}))
 			defer server.Close()
 			a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}}, nil)
-			a.integrations = integrationState{Loaded: true, Generation: GenerationDirectory{Revision: 5, Profiles: map[string][]GenerationRow{"provider": {profile}}}}
+			a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Generation: GenerationDirectory{Revision: 5, Profiles: map[string][]GenerationRow{"provider": {profile}}}}
 			updates := make(chan func(), 16)
 			a.Update = func(fn func()) { updates <- fn }
 			tt := ui.NewTester(func(c *ui.Context) {

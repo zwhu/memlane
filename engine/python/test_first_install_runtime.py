@@ -1,18 +1,27 @@
+from http.client import HTTPMessage
 import io
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.response
 from unittest.mock import patch
 
 import first_install_runtime as runtime
 from first_install_store import write_private
 
 
+FIXED_ORIGINS = ['http://127.0.0.1:41001', 'http://127.0.0.1:41002', 'http://127.0.0.1:41003']
+
+
 class FirstRuntimeFixture:
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
+        self.enterContext(patch.object(runtime, 'unused_origins', return_value=FIXED_ORIGINS))
         self.parent = Path(self.temporary.name).resolve()
         self.root = self.parent / 'library'
         self.root.mkdir(mode=0o700)
@@ -35,6 +44,151 @@ class FirstRuntimeFixture:
 
 
 class FirstRuntimeTests(FirstRuntimeFixture, unittest.TestCase):
+
+    def test_existing_only_cli_requires_runtime_and_validates_existing_files_without_writes(self):
+        argv = ['first_install_runtime.py', '--store-root', str(self.root), '--runtime-config', str(self.path),
+                '--plugin', '/synthetic/plugin', '--prepare-only', '--skip-graph-refresh', '--existing-only']
+        environment = self.root / 'service-environment.json'
+        before = set(self.root.iterdir())
+        with patch.object(sys, 'argv', argv):
+            with self.assertRaisesRegex(ValueError, 'existing first runtime configuration required'):
+                runtime.main()
+        self.assertFalse(self.path.exists())
+        self.assertFalse(environment.exists())
+        self.assertEqual(set(self.root.iterdir()), before)
+
+        initial = self.prepare()
+        files = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (self.path, *self.root.iterdir())}
+        with (patch.object(sys, 'argv', argv),
+              patch('dev.load_config', side_effect=lambda path: json.loads(runtime.read_private(path))) as load):
+            runtime.main()
+            load.assert_called_once_with(self.path)
+        self.assertEqual(json.loads(self.path.read_bytes()), initial)
+        self.assertEqual(set(self.root.iterdir()), set(files) - {self.path})
+        for path, snapshot in files.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), snapshot)
+
+    def test_reentry_refreshes_managed_graph_assets_and_preserves_concurrent_settings(self):
+        old = self.parent / ('runtime-' + 'a' * 16) / 'web/official-graph/dist'
+        new = self.parent / ('runtime-' + 'b' * 16) / 'web/official-graph/dist'
+        new.mkdir(parents=True)
+        (new / 'assets.json').write_text('{}')
+        initial = self.prepare(graph_assets=old)
+        for previous in (str(old), ''):
+            with self.subTest(previous=previous):
+                config = {**initial, 'graph_assets': previous}
+                write_private(self.path, json.dumps(config))
+                read_private = runtime.read_private
+                compared = False
+
+                def update_before_compare(path):
+                    nonlocal compared
+                    if path == self.path and not compared:
+                        compared = True
+                        original = read_private(path)
+                        write_private(path, json.dumps({**json.loads(original), 'user_setting': 'concurrent'}))
+                        return original
+                    return read_private(path)
+
+                with patch('dev.load_config', side_effect=lambda path: json.loads(read_private(path))), \
+                     patch.object(runtime, 'read_private', side_effect=update_before_compare):
+                    result = runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin', graph_assets=new)
+                self.assertEqual(result, {**config, 'graph_assets': str(new), 'user_setting': 'concurrent'})
+
+    def test_skip_graph_refresh_preserves_existing_bytes_and_checks_store_identity(self):
+        old = self.parent / ('runtime-' + 'a' * 16) / 'web/official-graph/dist'
+        new = self.parent / ('runtime-' + 'b' * 16) / 'web/official-graph/dist'
+        new.mkdir(parents=True)
+        (new / 'assets.json').write_text('{}')
+        initial = self.prepare(graph_assets=old)
+        before = self.path.read_bytes(), self.path.stat().st_mtime_ns
+        argv = ['first_install_runtime.py', '--store-root', str(self.root), '--runtime-config', str(self.path),
+                '--plugin', '/synthetic/plugin', '--graph-assets', str(new), '--prepare-only', '--skip-graph-refresh']
+
+        def prepare_without_refresh():
+            return runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin', graph_assets=new,
+                                           skip_graph_refresh=True)
+
+        with (patch('dev.load_config', side_effect=lambda path: json.loads(runtime.read_private(path))) as load,
+              patch.object(sys, 'argv', argv)):
+            self.assertEqual(prepare_without_refresh(), initial)
+            self.assertEqual((self.path.read_bytes(), self.path.stat().st_mtime_ns), before)
+            runtime.main()
+            self.assertEqual((self.path.read_bytes(), self.path.stat().st_mtime_ns), before)
+            self.assertEqual(load.call_count, 2)
+            for change in ({'first_install': {'store_id': 'different'}}, {'official_data': '/wrong/store'},
+                           {'service_commit': 'different'}, {'token_file': '/wrong/token'}):
+                with self.subTest(change=change):
+                    altered = {**initial, **change}
+                    write_private(self.path, json.dumps(altered))
+                    before = self.path.read_bytes(), self.path.stat().st_mtime_ns
+                    for entrypoint in (prepare_without_refresh, runtime.main):
+                        with self.assertRaisesRegex(ValueError, 'existing configuration belongs to another installation'):
+                            entrypoint()
+                        self.assertEqual((self.path.read_bytes(), self.path.stat().st_mtime_ns), before)
+            self.assertEqual(load.call_count, 2)
+
+    def test_reentry_preserves_custom_path_bytes_and_rejects_linked_runtime(self):
+        custom = self.parent / 'embedded-graph-dist'
+        config = self.prepare(graph_assets=custom)
+        before = self.path.read_bytes()
+        new = self.parent / ('runtime-' + 'b' * 16) / 'web/official-graph/dist'
+        new.mkdir(parents=True)
+        (new / 'assets.json').write_text('{}')
+        with patch('dev.load_config', side_effect=lambda path: json.loads(path.read_text())):
+            self.assertEqual(runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin', graph_assets=new), config)
+        self.assertEqual(self.path.read_bytes(), before)
+
+        linked = self.parent / ('runtime-' + 'a' * 16)
+        linked.symlink_to(new.parents[2])
+        self.assertFalse(runtime._is_managed_runtime_graph_assets(linked / 'web/official-graph/dist', self.parent))
+        for invalid in (custom, new / '..' / 'dist', self.parent / 'other' / linked.name / 'graph'):
+            self.assertFalse(runtime._is_managed_runtime_graph_assets(invalid, self.parent))
+
+    def test_reentry_refreshes_nested_and_external_marked_app_generations(self):
+        for index, install_root in enumerate((self.parent / 'components/installation', self.parent / 'external')):
+            with self.subTest(root=install_root):
+                generations = []
+                for digest in ('a' * 64, 'b' * 64):
+                    directory = install_root / ('runtime-' + digest[:16])
+                    graph = directory / 'web/official-graph/dist'
+                    graph.mkdir(parents=True)
+                    (graph / 'assets.json').write_text('{}')
+                    write_private(directory / '.memlane-runtime.json', json.dumps({'sha256': digest}))
+                    generations.append(graph)
+                old, new = generations
+                config_path = self.parent / f'runtime-{index}.json'
+                with patch('dev.validate_project_control'), patch('agent_connections.detect_executable', return_value=None):
+                    config = runtime.prepare_runtime(self.root, config_path, '/synthetic/plugin',
+                                                     python='/synthetic/python', graph_assets=old)
+                with patch('dev.load_config', side_effect=lambda path: json.loads(path.read_text())):
+                    result = runtime.prepare_runtime(self.root, config_path, '/synthetic/plugin', graph_assets=new)
+                self.assertEqual(result, {**config, 'graph_assets': str(new)})
+
+    def test_reentry_rejects_missing_assets_and_tampered_markers(self):
+        old = self.parent / ('runtime-' + 'a' * 16) / 'web/official-graph/dist'
+        config = self.prepare(graph_assets=old)
+        new = self.parent / ('runtime-' + 'b' * 16) / 'web/official-graph/dist'
+        new.mkdir(parents=True)
+        marker = new.parents[2] / '.memlane-runtime.json'
+        with patch('dev.load_config', side_effect=lambda path: json.loads(path.read_text())):
+            for case in ('missing assets', 'mismatched marker', 'public marker', 'linked marker', 'tampered old marker'):
+                with self.subTest(case=case):
+                    if case == 'mismatched marker':
+                        (new / 'assets.json').write_text('{}')
+                        write_private(marker, json.dumps({'sha256': 'c' * 64}))
+                    elif case == 'public marker':
+                        write_private(marker, json.dumps({'sha256': 'b' * 64}))
+                        marker.chmod(0o644)
+                    elif case == 'linked marker':
+                        marker.rename(marker.with_name('other-marker'))
+                        marker.symlink_to(marker.with_name('other-marker'))
+                    elif case == 'tampered old marker':
+                        marker.unlink()
+                        old.mkdir(parents=True)
+                        write_private(old.parents[2] / marker.name, '{}')
+                    self.assertEqual(runtime.prepare_runtime(self.root, self.path, '/synthetic/plugin',
+                                                             graph_assets=new), config)
 
     def test_fresh_configuration_has_no_default_password_or_generation_profile(self):
         config = self.prepare()
@@ -79,20 +233,48 @@ class FirstRuntimeTests(FirstRuntimeFixture, unittest.TestCase):
 
     def test_public_health_is_insufficient_without_expected_official_owner(self):
         config = self.prepare()
-        with patch('urllib.request.urlopen', return_value=io.BytesIO(b'{"id":"another-owner"}')) as open_request:
-            open_request.return_value.status = 200
-            with self.assertRaises(ValueError):
+        with patch('urllib.request.build_opener') as opener:
+            for owner in ('another-owner', 'synthetic-owner'):
+                response = io.BytesIO(json.dumps({'id': owner}).encode())
+                response.status = 200
+                opener.return_value.open.return_value = response
+                if owner == 'another-owner':
+                    with self.assertRaisesRegex(ValueError, 'authenticated first service owner differs'):
+                        runtime.confirm_service_owner(config)
+                else:
+                    runtime.confirm_service_owner(config)
+
+    def test_owner_confirmation_ignores_proxy_environment_and_refuses_redirect(self):
+        config = self.prepare()
+        headers = HTTPMessage()
+        headers['Location'] = 'http://outside.invalid/collect'
+        response = urllib.response.addinfourl(io.BytesIO(b''), headers, config['service_url'], 302)
+        response.msg = 'Found'
+        proxy = 'http://proxy.invalid:8080'
+        environment = {'HTTP_PROXY': proxy, 'HTTPS_PROXY': proxy}
+        build_opener = runtime.urllib.request.build_opener
+        with (patch.dict(os.environ, environment, clear=True),
+              patch('urllib.request.build_opener', wraps=build_opener) as opener,
+              patch('urllib.request.HTTPHandler.http_open', return_value=response) as http_open):
+            with self.assertRaises(urllib.error.HTTPError) as error:
                 runtime.confirm_service_owner(config)
-        with patch('urllib.request.urlopen', return_value=io.BytesIO(b'{"id":"synthetic-owner"}')) as open_request:
-            open_request.return_value.status = 200
-            runtime.confirm_service_owner(config)
+        self.assertEqual(error.exception.code, 302)
+        proxy_handler = opener.call_args.args[0]
+        self.assertIsInstance(proxy_handler, runtime.urllib.request.ProxyHandler)
+        self.assertEqual(proxy_handler.proxies, {})
+        http_open.assert_called_once()
+        request = http_open.call_args.args[0]
+        self.assertEqual(request.full_url, config['service_url'] + '/api/v1/users/me')
+        self.assertEqual(request.host, '127.0.0.1:41001')
+        self.assertEqual(request.get_header('X-api-key'), runtime.read_private(config['token_file']).strip())
 
     def test_service_boot_stops_at_owner_mismatch(self):
         config = self.prepare()
         from dev import first_install_runtime
         launched = []
-        with patch('first_install_runtime.confirm_service_owner', side_effect=ValueError('wrong owner')):
-            with self.assertRaises(ValueError):
+        with (patch('dev.port_free'),
+              patch('first_install_runtime.confirm_service_owner', side_effect=ValueError('wrong owner'))):
+            with self.assertRaisesRegex(ValueError, 'wrong owner'):
                 first_install_runtime(config, self.path, lambda args: launched.append(args), health=lambda *args: None)
         self.assertEqual(len(launched), 1)
         self.assertFalse((self.root / 'client-state.json').exists())

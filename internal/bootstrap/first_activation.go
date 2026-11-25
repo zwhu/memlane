@@ -21,6 +21,7 @@ type FirstActivationRequest struct {
 	Digest    string                   `json:"digest"`
 	Revision  int64                    `json:"revision"`
 	Status    string                   `json:"status"`
+	Phase     string                   `json:"phase,omitempty"`
 }
 
 func ActivateFirstRuntime(ctx context.Context, prepared FirstRuntime, reference FirstGenerationReference, digest string, revision int64) error {
@@ -45,12 +46,13 @@ func ActivateFirstRuntime(ctx context.Context, prepared FirstRuntime, reference 
 			if existing.Status == "completed" {
 				return nil
 			}
-			if existing.Reference != reference || existing.Digest != digest || existing.Revision != revision || (existing.Status != "approved" && existing.Status != "stopping" && existing.Status != "starting") {
-				return errors.New("原启用操作尚待核对，未创建另一项操作")
+			if existing.Status != "rejected" || existing.Phase != "pre_mutation" {
+				if existing.Reference != reference || existing.Digest != digest || existing.Revision != revision || (existing.Status != "approved" && existing.Status != "stopping" && existing.Status != "starting") {
+					return errors.New("原启用操作尚待核对，未创建另一项操作")
+				}
+				return nil
 			}
-			return nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		var identifier [16]byte

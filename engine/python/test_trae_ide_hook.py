@@ -56,16 +56,18 @@ class TurnTests(unittest.TestCase):
         return [(request['entry']['question'], request['entry']['answer']) for request in self.entries
                 if request['entry']['type'] == 'qa']
 
-    def test_prompts_and_replies_use_fifo(self):
+    def test_interrupted_turn_does_not_shift_later_replies(self):
         for question in ('Q1', 'Q2'):
             self.assertEqual(self.run_hook('UserPromptSubmit', prompt=question),
                              {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'recalled'}})
         turns = self.state['trae_ide_turns']
         for answer in ('A1', 'A2'):
             self.run_hook('Stop', last_assistant_message=answer)
-        self.assertEqual(self.qa(), [('Q1', 'A1'), ('Q2', 'A2')])
-        self.assertEqual([call.args[0]['event_id'] for call in self.begin.call_args_list], [turn['id'] for turn in turns])
-        self.assertEqual([request['event_id'] for request in self.entries], ['qa:' + turn['id'] for turn in turns])
+        self.run_hook('UserPromptSubmit', prompt='Q3')
+        self.run_hook('Stop', last_assistant_message='A3')
+        self.assertEqual(self.qa(), [('Q1', hook.interrupted_answer_for({})), ('Q2', 'A1'), ('Q3', 'A3')])
+        self.assertEqual([call.args[0]['event_id'] for call in self.begin.call_args_list[:2]], [turn['id'] for turn in turns])
+        self.assertEqual([request['event_id'] for request in self.entries[:2]], ['qa:' + turn['id'] for turn in turns])
         self.assertEqual(self.state['trae_ide_turns'], [])
 
     def test_legacy_slot_migrates_and_session_start_clears_both_formats(self):
@@ -73,14 +75,35 @@ class TurnTests(unittest.TestCase):
         self.run_hook('UserPromptSubmit', prompt='new')
         self.assertNotIn('trae_ide_turn', self.state)
         self.run_hook('Stop', last_assistant_message='old answer')
-        self.assertEqual(self.qa(), [('old', 'old answer')])
+        self.assertEqual(self.qa(), [('old', hook.interrupted_answer_for({})), ('new', 'old answer')])
         self.state['trae_ide_turn'] = {'id': 'stale', 'time': 'then', 'question': 'stale'}
+        self.state['trae_ide_turns'] = [{'id': 'current'}]
+        self.state['trae_ide_evicted_stops'] = 2
         self.run_hook('SessionStart')
+        self.assertNotIn('trae_ide_evicted_stops', self.state)
         self.assertNotIn('trae_ide_turn', self.state)
         self.assertNotIn('trae_ide_turns', self.state)
         self.run_hook('Stop', last_assistant_message='ignored')
-        self.assertEqual(len(self.qa()), 1)
+        self.assertEqual(len(self.qa()), 2)
         self.assertEqual(self.handle.call_args.args[0]['operation'], 'flush')
+
+    def test_duplicate_message_id_deduplicates_pending_turn_but_repeated_text_survives(self):
+        for message_id in ('original', 'original', 'another', None, None):
+            self.run_hook('UserPromptSubmit', prompt='same prompt', message_id=message_id)
+        turns = self.state['trae_ide_turns']
+        self.assertEqual([turn.get('external_id') for turn in turns], ['original', 'another', None, None])
+        self.assertEqual(self.begin.call_count, 4)
+
+    def test_corrupt_turn_entries_are_discarded_and_consuming_last_turn_clears_evictions(self):
+        valid = {'id': 'valid', 'time': 'then', 'question': 'valid prompt'}
+        self.state.update(trae_ide_turns=[None, 2, {}, {'id': ''}, {'id': 9}, valid], trae_ide_evicted_stops=7)
+        hook._consume_turn('key', valid['id'])
+        self.assertEqual(self.state['trae_ide_turns'], [])
+        self.assertNotIn('trae_ide_evicted_stops', self.state)
+        self.state['trae_ide_turns'] = {'id': 'invalid-container'}
+        self.run_hook('UserPromptSubmit', prompt='valid prompt')
+        self.run_hook('Stop', last_assistant_message='answer')
+        self.assertEqual(self.qa(), [('valid prompt', 'answer')])
 
     def test_queue_evicts_oldest_at_capacity(self):
         for number in range(hook.MAX_PENDING_TURNS + 2):
@@ -90,22 +113,17 @@ class TurnTests(unittest.TestCase):
 
     def test_tool_failure_traced_and_interrupt_drains_pending_turns(self):
         self.run_hook('UserPromptSubmit', prompt='earlier')
-        self.run_hook('UserPromptSubmit', prompt='current')
         for number in range(10):
-            self.run_hook('PostToolUseFailure', tool_use_id=str(number), tool_name=f'Tool{number}', error='tool error')
-        self.assertEqual(self.state['trae_ide_turns'][-1]['tool_failures'], [f'Tool{number}' for number in range(2, 10)])
-        self.assertEqual(self.handle.call_args.args[0]['operation'], 'flush')
-        self.run_hook('PostToolUseFailure', tool_use_id='last', tool_name='LastTool', tool_input={'sample': True},
-                      error='interrupted', is_interrupt=True)
-        request = self.entries[-3]
-        self.assertEqual(request['event_id'], 'tool:last')
-        entry = request['entry']
-        self.assertEqual((entry['status'], entry['error_message'], entry['method_return_value']),
-                         ('error', 'interrupted', 'interrupted'))
-        self.assertEqual(entry['method_params'], {'sample': True})
+            self.run_hook('PostToolUse', tool_use_id=str(number), tool_name=f'Tool{number}',
+                          tool_response={'is_error': True})
+        failures = [f'Tool{number}' for number in range(2, 10)]
+        self.assertEqual(self.state['trae_ide_turns'][-1]['tool_failures'], failures)
+        self.assertTrue(all(request['entry']['status'] == 'error' for request in self.entries))
+        self.run_hook('UserPromptSubmit', prompt='current')
+        self.run_hook('Stop', last_assistant_message='current answer')
         self.assertEqual(self.qa(), [
-            ('earlier', '[Turn interrupted before assistant completion]'),
-            ('current', '[Turn interrupted after tool failure: Tool3, Tool4, Tool5, Tool6, Tool7, Tool8, Tool9, LastTool]'),
+            ('earlier', '[Turn interrupted after tool failure: ' + ', '.join(failures) + ']'),
+            ('current', 'current answer'),
         ])
         self.assertEqual(self.state['trae_ide_turns'], [])
         self.assertEqual(self.handle.call_args.args[0]['operation'], 'flush')
@@ -142,23 +160,23 @@ class TurnTests(unittest.TestCase):
             self.assertEqual(set(tombstone), {'id', 'time', 'skipped_policy'})
             self.assertTrue(tombstone['skipped_policy'])
         self.begin.assert_called_once()
-        self.run_hook('Stop', last_assistant_message='allowed answer')
-        self.run_hook('Stop', last_assistant_message='private paused answer')
-        self.run_hook('SessionEnd', last_assistant_message='private denied answer')
-        self.assertEqual(self.qa(), [('allowed', 'allowed answer')])
+        self.run_hook('Stop', last_assistant_message='private denied answer')
+        self.assertEqual(self.qa(), [('allowed', hook.interrupted_answer_for({}))])
+        self.assertEqual(self.state['trae_ide_turns'], [])
 
-    def test_overflow_evicting_paused_tombstone_does_not_mispair_paused_reply(self):
+    def test_overflow_keeps_reply_with_latest_turn(self):
         self.enabled = False
         self.run_hook('UserPromptSubmit', prompt='private paused prompt')
         self.enabled = True
         for number in range(hook.MAX_PENDING_TURNS):
             self.run_hook('UserPromptSubmit', prompt=f'Q{number}')
         self.assertEqual(self.state.get('trae_ide_evicted_stops'), 1)
-        self.run_hook('Stop', last_assistant_message='private paused answer')
-        self.assertEqual(self.qa(), [])
+        self.run_hook('Stop', last_assistant_message='latest answer')
+        self.assertEqual(self.qa()[:-1], [(f'Q{number}', hook.interrupted_answer_for({}))
+                                        for number in range(hook.MAX_PENDING_TURNS - 1)])
+        self.assertEqual(self.qa()[-1], (f'Q{hook.MAX_PENDING_TURNS - 1}', 'latest answer'))
         self.assertNotIn('trae_ide_evicted_stops', self.state)
-        self.run_hook('Stop', last_assistant_message='A0')
-        self.assertEqual(self.qa(), [('Q0', 'A0')])
+        self.assertEqual(self.state['trae_ide_turns'], [])
 
     def test_transient_capture_failure_preserves_remaining_turns_and_defers_final_flush(self):
         for question in ('Q1', 'Q2', 'Q3'):

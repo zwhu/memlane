@@ -18,6 +18,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+
+if __package__:
+    from .verify_setup_cli import check_output_privacy, json_object
+else:
+    from verify_setup_cli import check_output_privacy, json_object
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,6 +202,47 @@ def verify_packaged_first_store(executable: Path) -> None:
         )
     if probe.returncode != 0:
         raise RuntimeError(f'packaged first-store check failed: {probe.stderr.strip() or probe.stdout.strip()}')
+
+
+def verify_packaged_cli_doctor(executable: Path, expected_version: str = '') -> dict:
+    with tempfile.TemporaryDirectory(prefix='memlane-cli-doctor-check-') as temporary:
+        work_dir = str(Path(temporary).resolve())
+        started = time.monotonic()
+        try:
+            probe = subprocess.run(
+                [str(executable.absolute()), 'doctor', '--json'],
+                cwd=work_dir, env={'HOME': work_dir, 'TMPDIR': work_dir, 'PATH': os.defpath},
+                capture_output=True, encoding='utf-8', timeout=5, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('packaged doctor timed out') from None
+        except (OSError, UnicodeError):
+            raise RuntimeError('could not execute packaged doctor or decode its output') from None
+        elapsed = time.monotonic() - started
+        if elapsed >= 5.0:
+            raise RuntimeError('packaged doctor took at least 5 seconds')
+        if probe.stderr != '':
+            raise RuntimeError('packaged doctor stderr must be empty')
+        if probe.returncode != 10:
+            raise RuntimeError(f'packaged doctor exited {probe.returncode}, expected 10')
+        payload = json_object(probe.stdout)
+        user = os.environ.get('USER')
+        check_output_privacy(probe.stdout, payload, (temporary, work_dir, f'/Users/{user}' if user else ''))
+        if (type(payload.get('schema_version')) is not int or payload['schema_version'] != 1
+                or payload.get('command') != 'doctor' or type(payload.get('exit_code')) is not int
+                or payload['exit_code'] != 10 or payload.get('status') != 'action_required'
+                or payload.get('ok') is not False):
+            raise ValueError('packaged doctor returned an unexpected JSON envelope')
+        app = payload.get('app', {})
+        if not isinstance(app, dict):
+            raise ValueError('packaged doctor returned invalid app metadata')
+        if expected_version and app.get('version') != expected_version:
+            raise ValueError('packaged doctor app version does not match the manifest')
+        return {
+            'status': 'passed', 'exit_code': 10, 'elapsed_s': round(elapsed, 3),
+            'schema_version': 1, 'bundled_runtime_hash': app.get('bundled_runtime_hash', ''),
+            'version': app.get('version', ''),
+        }
 
 
 def normalize_dmg_filename(platform_dir: Path, slug: str, name: str, version: str, arch: str) -> Path:
@@ -387,6 +434,7 @@ def _execute_build(
         raise ValueError('invalid CFBundleExecutable')
     executable = app_path / 'Contents' / 'MacOS' / executable_name
     verify_packaged_first_store(executable)
+    cli_doctor = verify_packaged_cli_doctor(executable, expected_version=manifest['version'])
 
     checksum_targets: list[Path] = []
     dmg_path_str = ''
@@ -415,6 +463,7 @@ def _execute_build(
         'info_plist': plist_info,
         'bundled_licenses': bundled_licenses,
         'packaged_first_store': 'passed',
+        'packaged_cli_doctor': cli_doctor,
     }
     if git_ref:
         res['git_ref'] = git_ref

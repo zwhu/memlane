@@ -408,9 +408,10 @@ func (a *App) verifyGraphAssetsAsync() {
 		check.assets, check.err = verifyGraphAssets(dir)
 		close(check.done)
 		update(func() {
-			if !a.graphAssetsChecked {
-				a.applyGraphAssetCheck(check.assets, check.err)
+			if a.graphAssetsCheck != check {
+				return
 			}
+			a.applyGraphAssetCheck(check.assets, check.err)
 			if a.graphAttachRequested {
 				_ = a.attachVerifiedGraph()
 			}
@@ -419,7 +420,7 @@ func (a *App) verifyGraphAssetsAsync() {
 }
 
 func (a *App) EnsureGraphAttached() {
-	if a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
+	if a.isSetupOnlyRuntime() || a.graphWindowClosed || a.graph != nil || a.graphAttachErr != nil ||
 		(a.graphWindow == nil && a.graphAttachFn == nil) {
 		return
 	}
@@ -513,6 +514,11 @@ type graphLoad struct {
 }
 
 func (a *App) loadGraph() {
+	if a.isSetupOnlyRuntime() {
+		a.cancelGraphLoad()
+		a.graphError = ""
+		return
+	}
 	a.EnsureGraphAttached()
 	if a.graphAssetsErr != nil || a.graphAttachErr != nil || a.graphWindowClosed || a.Update == nil {
 		return
@@ -590,6 +596,14 @@ func (a *App) applyGraphLoad(result graphLoad, ticket *uint64) {
 }
 
 func (a *App) graphView(c *ui.Context) {
+	if a.isSetupOnlyRuntime() {
+		ui.Column(c.Key("graph-setup-notice")).Margin(sp3, pageInset).
+			Padding(sp4).Gap(sp2).Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
+			homeText(c, "配置记忆提炼后可查看图谱", homeBody)
+			v4SmallButton(c, "前往配置", nil, a.openSettingsFromDeferredBanner).AlignSelf(ui.Start)
+		})
+		return
+	}
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
 		a.graphToolbar(c)
 		if p, ok := a.current(); ok && a.graphMode == "代码结构" && !p.CodeEnabled {

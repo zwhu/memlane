@@ -79,6 +79,7 @@ type App struct {
 	userProfiles          userProfilesState
 	environment           environmentSetupState
 	initialSetup          bool
+	setupDeferredMode     bool
 	integrations          integrationState
 	layout                appLayoutState
 	projectUI             projectReadingState
@@ -102,7 +103,16 @@ type App struct {
 	appearance            appearanceState
 	desktopPrefs          desktopPreferencesState
 	updateCheck           updateCheckState
-	motionRuns            struct {
+
+	DetectLocalHostsFn            func(bootstrap.HostDetectOptions) []bootstrap.DetectedHost
+	PrepareAndStartFirstRuntimeFn func(context.Context, Config, environmentSetupState) (bootstrap.FirstRuntime, error)
+	ActivateFirstRuntimeFn        func(context.Context, bootstrap.FirstRuntime, bootstrap.FirstGenerationReference, string, int64) error
+	FirstInitCompleteFn           func(string) (bool, error)
+	InspectOwnerRuntimeStatusFn   func(context.Context, string, string) (bootstrap.OwnerRuntimeStatus, error)
+	RestartStaleRuntimeOwnerFn    func(context.Context, bootstrap.FirstRuntime, string) error
+	InspectInstallWorkerFn        func(context.Context, string) (bootstrap.InstallWorkerState, bool, error)
+
+	motionRuns struct {
 		overviewPage      uint64
 		overviewKnowledge uint64
 		overviewActivity  uint64
@@ -115,28 +125,28 @@ type App struct {
 		docBodyKey        string
 		docBodyFade       uint64
 	}
-	poseEnter           poseEnterTracker
-	projectCreate       projectCreateState
-	Config              Config
-	Client              Client
-	Update              func(func())
-	page                string
-	project             int
-	kind                string
-	epoch               uint64
-	authEpoch           uint64
-	service, completion string
-	monitor             serviceMonitorState
-	trayCache           trayFlyoutCache
-	knowledgeWriter     *knowledgeReadWriter
-	readingMigrateMu    sync.Mutex
-	readingMigrated     map[string]bool
-	readingMigrating    map[string]chan struct{}
+	poseEnter               poseEnterTracker
+	projectCreate           projectCreateState
+	Config                  Config
+	Client                  Client
+	Update                  func(func())
+	page                    string
+	project                 int
+	kind                    string
+	epoch                   uint64
+	authEpoch               uint64
+	service, completion     string
+	monitor                 serviceMonitorState
+	trayCache               trayFlyoutCache
+	knowledgeWriter         *knowledgeReadWriter
+	readingMigrateMu        sync.Mutex
+	readingMigrated         map[string]bool
+	readingMigrating        map[string]chan struct{}
 	configError             string
 	externalStoreNotice     string
 	externalStorePollPaused bool
-	md                  markdown.Options
-	v4MD                map[v4MDKey]*markdown.Options
+	md                      markdown.Options
+	v4MD                    map[v4MDKey]*markdown.Options
 }
 
 type v4MDKey struct {
@@ -165,13 +175,26 @@ func New(c Config, err error) *App {
 		if stateError != nil {
 			a.environment.Error = bootstrap.RedactInstallerText(stateError.Error())
 		}
+		if !complete {
+			deferred, deferErr := bootstrap.FirstSetupDeferred(c.ConfigFile)
+			switch {
+			case deferErr != nil:
+				a.environment.Error = bootstrap.RedactInstallerText(deferErr.Error())
+			case deferred:
+				a.initialSetup, a.setupDeferredMode = false, true
+				a.page = "总览"
+			}
+		}
 		if a.initialSetup {
-			step, stepError := bootstrap.FirstWizardStep(c.ConfigFile)
-			a.environment.InitialStep = step
-			if stepError != nil {
+			state, stepError := bootstrap.ReadFirstWizardState(c.ConfigFile)
+			a.environment.InitialStep = state.Step
+			if stepError != nil && a.environment.Error == "" {
 				a.environment.Error = bootstrap.RedactInstallerText(stepError.Error())
 			}
 		}
+	}
+	if a.initialSetup && a.environment.InitialStep == 0 {
+		a.environment.InitialStep = 1
 	}
 	a.initSearch()
 	a.initGraph(c.GraphAssets)
@@ -223,22 +246,25 @@ func (s *deferredStartupState) stopAllTimers() {
 
 func (a *App) Start() {
 	if a.initialSetup {
-		if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted {
-			a.beginFirstRuntime(a.environment.InitialStep)
-			return
+		a.refreshLocalHosts()
+		a.inspectInstallWorkerAsync()
+		if a.Config.FirstInstall != nil {
+			a.inspectOwnerRuntimeStatusAsync()
+			if a.environment.RuntimeStarted && a.environment.InitialStep == 3 {
+				a.refreshWizardIntegrations()
+			}
 		}
-		if a.environment.InitialStep >= 2 {
-			a.RefreshIntegrations()
-			return
+		if !a.environment.RuntimeStarted {
+			a.refreshEnvironment()
 		}
-		a.refreshEnvironment()
 		return
 	}
-	if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted {
-		a.beginFirstRuntime(0)
+	if a.Config.FirstInstall != nil && !a.environment.RuntimeStarted && !a.environment.OwnerStatusChecked {
+		a.inspectOwnerRuntimeStatusAsync()
 		return
 	}
-	if a.Config.GenerationSetupOnly {
+	if a.Config.GenerationSetupOnly && !a.setupDeferredMode {
+		a.inspectOwnerRuntimeStatusAsync()
 		a.RefreshIntegrations()
 		return
 	}
@@ -313,6 +339,9 @@ func (a *App) finishDeferredStartup(settingsRefreshed bool) {
 	}
 	s.stopTimer()
 	s.done = true
+	if a.Config.FirstInstall != nil {
+		a.inspectOwnerRuntimeStatusAsync()
+	}
 	a.triggerProvenanceBackfillOnce()
 	a.restoreCodeState()
 	if !settingsRefreshed {
@@ -1047,7 +1076,7 @@ func (a *App) View(c *ui.Context) {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.initialEnvironmentPage(c) })
 		return
 	}
-	if a.Config.GenerationSetupOnly {
+	if a.Config.GenerationSetupOnly && !a.setupDeferredMode {
 		ui.Themed(c, homeTheme).Fill().FontWeight(400).Children(func() { a.generationSetupPage(c) })
 		return
 	}

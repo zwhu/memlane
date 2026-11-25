@@ -142,22 +142,22 @@ func VerifyPlugin(root string, expected []byte) error {
 }
 
 var pluginPolicyPatchAllowlist = map[string]bool{
-	"scripts/_memlane_policy.py":      true,
-	"scripts/_memlane_access.py":      true,
-	"scripts/config.py":               true,
-	"scripts/session-start.py":        true,
-	"scripts/_coding_memory.py":       true,
-	"scripts/_plugin_common.py":       true,
-	"scripts/_remember_http.py":       true,
-	"scripts/cognee-remember.sh":      true,
-	"scripts/store-user-prompt.py":    true,
+	"scripts/_memlane_policy.py":       true,
+	"scripts/_memlane_access.py":       true,
+	"scripts/config.py":                true,
+	"scripts/session-start.py":         true,
+	"scripts/_coding_memory.py":        true,
+	"scripts/_plugin_common.py":        true,
+	"scripts/_remember_http.py":        true,
+	"scripts/cognee-remember.sh":       true,
+	"scripts/store-user-prompt.py":     true,
 	"scripts/sync-session-to-graph.py": true,
-	"scripts/_env_file.py":            true,
-	"scripts/_recall_http.py":         true,
-	"scripts/cognee-search.sh":        true,
-	"scripts/_code_graph.py":          true,
-	"scripts/cognee-forget.sh":        true,
-	"scripts/cognee-index-repo.sh":    true,
+	"scripts/_env_file.py":             true,
+	"scripts/_recall_http.py":          true,
+	"scripts/cognee-search.sh":         true,
+	"scripts/_code_graph.py":           true,
+	"scripts/cognee-forget.sh":         true,
+	"scripts/cognee-index-repo.sh":     true,
 }
 
 func pluginPolicyReceiptChanged(receipt, wanted map[string]any, changed []string) bool {
@@ -296,6 +296,7 @@ func (d PluginDriver) Probe(ctx context.Context, r Requirement) (Observation, er
 }
 
 func (d PluginDriver) Install(ctx context.Context, r Requirement) error {
+	progressComponent(ctx, r.ID, false)
 	if !d.matches(r) {
 		return errors.New("插件准备范围与固定计划不同")
 	}
@@ -306,6 +307,7 @@ func (d PluginDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	output := filepath.Join(r.Destination, "plugin")
 	if _, err := os.Lstat(output); err == nil {
+		progressStage(ctx, "verifying")
 		return VerifyPlugin(output, d.Manifest)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -330,10 +332,12 @@ func (d PluginDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	defer os.RemoveAll(staging)
 	plugin := filepath.Join(staging, "plugin")
+	progressStage(ctx, "extracting")
 	if err := runManaged(ctx, staging, python, "-I", "-B", filepath.Join(resources, "scripts/build_project_plugin.py"),
 		"--source", filepath.Join(upstream.Destination, "source/integrations/codex/plugins/cognee"), "--output", plugin); err != nil {
 		return err
 	}
+	progressStage(ctx, "verifying")
 	if err := VerifyPlugin(plugin, d.Manifest); err != nil {
 		return err
 	}

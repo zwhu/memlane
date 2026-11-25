@@ -42,7 +42,7 @@ func privateReadBounded(path string, maxBytes int64) ([]byte, error) {
 			break
 		}
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -87,15 +87,17 @@ func atomicPrivateFile(path string, data []byte) error {
 // Selections contains only user-selected dependency paths, never environment
 // variables, account credentials, memory data, or installation permission.
 type Selections struct {
-	Schema         int    `json:"schema"`
-	Binding        string `json:"binding"`
-	Python         string `json:"python"`
-	UV             string `json:"uv"`
-	Source         string `json:"source"`
-	Archive        string `json:"archive"`
-	ModelCache     string `json:"model_cache"`
-	Plugin         string `json:"plugin"`
-	DownloadSource string `json:"download_source,omitempty"`
+	SelectedAgentsConfigured bool     `json:"selected_agents_configured,omitempty"`
+	SelectedAgents           []string `json:"selected_agents,omitempty"`
+	Schema                   int      `json:"schema"`
+	Binding                  string   `json:"binding"`
+	Python                   string   `json:"python"`
+	UV                       string   `json:"uv"`
+	Source                   string   `json:"source"`
+	Archive                  string   `json:"archive"`
+	ModelCache               string   `json:"model_cache"`
+	Plugin                   string   `json:"plugin"`
+	DownloadSource           string   `json:"download_source,omitempty"`
 }
 
 func selectionBinding(configPath string) string {
@@ -114,6 +116,10 @@ func LoadSelections(root, configPath string) (Selections, error) {
 	if err != nil {
 		return Selections{}, err
 	}
+	return decodeSelections(b, configPath)
+}
+
+func decodeSelections(b []byte, configPath string) (Selections, error) {
 	var s Selections
 	if err := json.Unmarshal(b, &s); err != nil {
 		return s, err
@@ -121,6 +127,7 @@ func LoadSelections(root, configPath string) (Selections, error) {
 	if s.Schema != 1 || s.Binding != selectionBinding(configPath) {
 		return s, errors.New("dependency selection binding differs; original file retained")
 	}
+	s.SelectedAgents = NormalizeSelectedAgents(s.SelectedAgents)
 	return s, nil
 }
 func SaveSelections(options EnvironmentOptions, configPath string) error {
@@ -136,10 +143,67 @@ func SaveSelections(options EnvironmentOptions, configPath string) error {
 	if options.DownloadSource != "" {
 		s.DownloadSource = NormalizeDownloadSource(options.DownloadSource)
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
+	i := Installer{Root: filepath.Join(root, "installation")}
+	return i.withLock(func() error {
+		existing, err := LoadSelections(root, configPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if options.SelectedAgents == nil {
+			s.SelectedAgents = existing.SelectedAgents
+			s.SelectedAgentsConfigured = existing.SelectedAgentsConfigured
+		} else {
+			s.SelectedAgents = NormalizeSelectedAgents(options.SelectedAgents)
+			s.SelectedAgentsConfigured = true
+		}
+		b, err := json.MarshalIndent(s, "", "  ")
+		if err != nil {
+			return err
+		}
+		return atomicPrivateFile(selectionPath(root, configPath), b)
+	})
+}
+
+// SaveSelectedAgents updates only the host selections for this configuration.
+func SaveSelectedAgents(root, configPath string, agents []string) error {
+	root, err := ComponentRoot(root)
 	if err != nil {
 		return err
 	}
 	i := Installer{Root: filepath.Join(root, "installation")}
-	return i.withLock(func() error { return atomicPrivateFile(selectionPath(root, configPath), b) })
+	return i.withLock(func() error {
+		path := selectionPath(root, configPath)
+		raw, err := privateRead(path)
+		doc := map[string]json.RawMessage{}
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			raw, err = json.Marshal(Selections{Schema: 1, Binding: selectionBinding(configPath)})
+			if err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		default:
+			if _, err := decodeSelections(raw, configPath); err != nil {
+				return err
+			}
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return err
+		}
+		doc["selected_agents_configured"] = json.RawMessage("true")
+		if selected := NormalizeSelectedAgents(agents); len(selected) == 0 {
+			delete(doc, "selected_agents")
+		} else {
+			doc["selected_agents"], err = json.Marshal(selected)
+			if err != nil {
+				return err
+			}
+		}
+		updated, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		return atomicPrivateFile(path, updated)
+	})
 }

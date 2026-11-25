@@ -2,7 +2,7 @@
   "name": "Memlane",
   "slug": "memlane",
   "identifier": "io.github.zwhu.memlane",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "icon": "assets/branding/memlane-icon.png",
   "main": "./cmd/memlane-app",
   "out": "build",

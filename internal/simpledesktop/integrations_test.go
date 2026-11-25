@@ -115,7 +115,7 @@ func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *t
 	if g.validated(ref) {
 		t.Fatal("old success concealed a newer unknown result")
 	}
-	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI 兼容", Model: "synthetic", Endpoint: "https://example.test/v1", Saved: ref, Generation: g, ValidationOperation: "a-new", Validation: g.Validations["a-new"]}
 	a.integrations.ValidationOperation = ""
 	a.integrations.Validation = GenerationValidation{}
 	a.integrations.editProfile("api", row)
@@ -207,7 +207,7 @@ func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
 	a.access.SettingsSection = "Agent 与模型"
-	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
 		Generation: GenerationDirectory{Active: &GenerationRef{ID: "existing-codex", Revision: 1}, Profiles: map[string][]GenerationRow{"existing-codex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", Model: "old-model"}}}}}}
 	tt := ui.NewTester(a.View, 1200, 820)
 	for _, label := range []string{"模型配置", "供应商协议", "API 地址", "API Key", "保存配置"} {
@@ -349,7 +349,7 @@ func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T
 	a := settingsFixture()
 	a.page = "设置"
 	a.access.SettingsSection = "Agent 与模型"
-	a.integrations = integrationState{Loaded: true, PendingOperations: []generationUIOperation{
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, PendingOperations: []generationUIOperation{
 		{Operation: "ui-unconfirmed", Kind: "save", Profile: "saved-before-exit"},
 	}}
 	tt := ui.NewTester(a.View, 1200, 820)
@@ -373,8 +373,16 @@ func TestConnectionUnknownMutationSurvivesReopenAndDoesNotResubmit(t *testing.T)
 			}
 			var mutations atomic.Int32
 			var receiptReady atomic.Bool
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == "POST" {
+					if strings.HasPrefix(r.URL.Path, "/v1/connections/operations/") && strings.HasSuffix(r.URL.Path, "/reconcile") {
+						var payload map[string]any
+						if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload["dry_run"] != true {
+							t.Errorf("receipt review sent a mutating reconcile request: %v, %v", payload, err)
+						}
+						w.Write([]byte(`{"recorded":false,"status":"unrecorded","reconcilable":false}`))
+						return
+					}
 					mutations.Add(1)
 					pending, err := New(Config{ProjectControl: &ProjectControlConfig{ManagementTokenFile: token}}, nil).loadGenerationOperations()
 					var payload map[string]any
@@ -388,7 +396,10 @@ func TestConnectionUnknownMutationSurvivesReopenAndDoesNotResubmit(t *testing.T)
 				}
 				if strings.HasPrefix(r.URL.Path, "/v1/connections/operations/") {
 					if receiptReady.Load() {
-						w.Write([]byte(`{"recorded":true,"status":"complete","result":{"connection":{"instance_id":"pi-test","status":"prepared"}}}`))
+						json.NewEncoder(w).Encode(map[string]any{
+							"recorded": true, "status": "complete", "operation_id": filepath.Base(r.URL.Path), "instance_id": "pi-test", "action": action,
+							"result": map[string]any{"connection": AgentConnection{ID: "pi-test", Status: "prepared"}},
+						})
 					} else {
 						w.Write([]byte(`{"recorded":false}`))
 					}
@@ -399,10 +410,10 @@ func TestConnectionUnknownMutationSurvivesReopenAndDoesNotResubmit(t *testing.T)
 					status = "prepared"
 				}
 				json.NewEncoder(w).Encode(ConnectionsDirectory{Revision: 1, Connections: []AgentConnection{{ID: "pi-test", Kind: "pi", Detected: true, Status: status, Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}}}})
-			}))
-			defer server.Close()
-			config := Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}
+			})
+			config := Config{ProjectControl: &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}}
 			a := New(config, nil)
+			a.Client.HTTP = &http.Client{Transport: transport}
 			updates := make(chan func(), 16)
 			a.Update = func(fn func()) { updates <- fn }
 			a.connectAgents(action, []string{"pi-test"})
@@ -416,6 +427,7 @@ func TestConnectionUnknownMutationSurvivesReopenAndDoesNotResubmit(t *testing.T)
 				}
 			}
 			reopened := New(config, nil)
+			reopened.Client.HTTP = a.Client.HTTP
 			pending, err := reopened.loadGenerationOperations()
 			if err != nil || len(pending) != 1 {
 				t.Fatalf("unknown connection operation lost on reopen: %v %v", pending, err)
@@ -752,5 +764,29 @@ func TestGenerationAgentApplyClearedOnErrorAndNavigation(t *testing.T) {
 	if nextRequests.Load() != 0 || handoffRequests.Load() != 0 || a.integrations.HandoffOpen {
 		t.Fatalf("saving provider after failed agent apply triggered switch: next=%d handoff=%d open=%v",
 			nextRequests.Load(), handoffRequests.Load(), a.integrations.HandoffOpen)
+	}
+}
+
+func TestGenerationSaveConflictRetainsRevisionGuidanceAndClearsKey(t *testing.T) {
+	root := t.TempDir()
+	a := New(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/generation/profiles/api" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"code":"revision_conflict","phase":"pre_mutation"}`))
+	})}
+	s := &a.integrations
+	s.Editor, s.ProfileID, s.DraftMode = true, "api", "provider"
+	s.ProviderLabel, s.Model, s.Endpoint, s.APIKey = "OpenAI", "model", "https://example.test/v1", "synthetic-key"
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+	a.saveGeneration()
+	drainReading(t, updates, func() bool { return !s.Busy })
+	if s.SaveOperation != "" || s.APIKey != "" ||
+		!strings.Contains(s.Error, "设置已被其他窗口或命令行更新，请刷新后再试（revision_conflict）") ||
+		!strings.Contains(s.Error, "新密钥需要重新填写") {
+		t.Fatalf("revision conflict lost its guidance or key handling: %q", s.Error)
 	}
 }

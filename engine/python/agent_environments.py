@@ -4,9 +4,8 @@ from pathlib import Path
 
 from project_policy import PolicyError
 
-DEFAULTS = {'codex': '.codex', 'pi': '.pi/agent', 'traex': '.trae', 'trae_ide': '.trae-cn',
-            'claude_code': '.claude', 'cursor': '.cursor', 'opencode': '.config/opencode',
-            'antigravity': '.gemini/config'}
+from agent_discovery import DEFAULT_PROFILE_RELPATHS as DEFAULTS, default_profile
+
 VARIABLES = {'codex': ('CODEX_HOME',), 'pi': ('PI_CODING_AGENT_DIR',),
              'traex': ('TRAE_HOME', 'TRAECLI_HOME'), 'trae_ide': (), 'claude_code': ('CLAUDE_CONFIG_DIR',),
              'cursor': (), 'opencode': ('OPENCODE_CONFIG_DIR',), 'antigravity': ()}
@@ -37,11 +36,8 @@ def environment(config, state, kind, *, home=None, environ=None):
     home = Path(home or Path.home())
     environ = os.environ if environ is None else environ
     configured = config.get('agent_hosts', {}).get(kind, {}).get('profile')
-    if kind == 'codex':
-        configured = configured or config.get('auth_home')
-    default = home / DEFAULTS[kind]
-    if kind == 'opencode' and environ.get('XDG_CONFIG_HOME'):
-        default = Path(environ['XDG_CONFIG_HOME']) / 'opencode'
+    configured = configured or config.get('auth_home' if kind == 'codex' else kind + '_auth_home')
+    default = default_profile(kind, home=home, environ=environ)
     hints = [profile_path(environ[v]) for v in VARIABLES[kind] if environ.get(v)]
     selected = state.get('host_targets', {}).get(kind)
     target = profile_path(selected or configured or (hints[0] if hints else default))

@@ -44,6 +44,9 @@ func toolGraphStatus(job *toolGraphJob) string {
 }
 
 func (a *App) previewToolGraph(project string) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	client, ok := a.accessClient()
 	if !ok || a.Update == nil {
 		return
@@ -71,6 +74,9 @@ func (a *App) previewToolGraph(project string) {
 }
 
 func (a *App) toolGraphAction(action string) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	s := &a.toolGraph
 	client, ok := a.accessClient()
 	if !ok || s.Busy || a.Update == nil {
@@ -131,7 +137,7 @@ func (a *App) toolGraphAction(action string) {
 
 func (a *App) toolGraphDialog(c *ui.Context) {
 	s := &a.toolGraph
-	if !s.Open {
+	if !s.Open || a.isSetupOnlyRuntime() {
 		return
 	}
 	if toolGraphActive(s.Job) && !s.Busy && time.Now().After(s.Next) {

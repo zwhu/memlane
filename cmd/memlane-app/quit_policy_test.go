@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -272,5 +273,62 @@ func TestQuitCoordinatorDefaultTimeoutAligned(t *testing.T) {
 	case <-quitCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for requestQuit")
+	}
+}
+
+func TestQuitCoordinatorRefusesQuitAndRetriesOnShutdownError(t *testing.T) {
+	failure := errors.New("owner busy")
+	failedCh := make(chan error, 1)
+	quitCh := make(chan struct{}, 1)
+	var attempts atomic.Int32
+	coord := newQuitCoordinator(nil, func(context.Context) error {
+		if attempts.Add(1) == 1 {
+			return failure
+		}
+		return nil
+	}, func() { quitCh <- struct{}{} }, time.Second, nil)
+	coord.SetRefuseQuitOnShutdownError(true)
+	coord.SetOnShutdownError(func(err error) { failedCh <- err })
+	if coord.ShutdownFailed() || coord.LastShutdownError() != nil {
+		t.Fatal("new coordinator has shutdown failure state")
+	}
+	coord.RequestQuit(true)
+	select {
+	case err := <-failedCh:
+		if !errors.Is(err, failure) {
+			t.Fatalf("reported error = %v", err)
+		}
+	case <-quitCh:
+		t.Fatal("quit after shutdown failed")
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown error callback did not run")
+	}
+	if !coord.ShutdownFailed() || !errors.Is(coord.LastShutdownError(), failure) || coord.IsQuitting() {
+		t.Fatalf("shutdown state after failure: %v, %v, %v", coord.ShutdownFailed(), coord.LastShutdownError(), coord.IsQuitting())
+	}
+	coord.RequestQuit(true)
+	select {
+	case <-quitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry did not request quit")
+	}
+	if attempts.Load() != 2 || coord.ShutdownFailed() || coord.LastShutdownError() != nil || !coord.IsQuitting() {
+		t.Fatalf("shutdown state after retry: %d, %v, %v, %v", attempts.Load(), coord.ShutdownFailed(), coord.LastShutdownError(), coord.IsQuitting())
+	}
+}
+
+func TestQuitCoordinatorRecoversShutdownPanic(t *testing.T) {
+	quitCh := make(chan struct{}, 1)
+	coord := newQuitCoordinator(nil, func(context.Context) error {
+		panic("shutdown callback panic")
+	}, func() { quitCh <- struct{}{} }, time.Second, nil)
+	coord.RequestQuit(true)
+	select {
+	case <-quitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("quit did not complete after shutdown panic")
+	}
+	if err := coord.LastShutdownError(); !coord.ShutdownFailed() || err == nil || !strings.Contains(err.Error(), "shutdown callback panic") {
+		t.Fatalf("shutdown panic was not captured: %v", err)
 	}
 }

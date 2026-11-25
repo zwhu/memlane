@@ -16,7 +16,7 @@ import time
 import tomlkit
 
 from project_control import private_write
-from project_policy import PolicyError
+from project_policy import PolicyError, mark_connection_mutation, phased_connection_action
 
 
 def digest(data):
@@ -213,6 +213,17 @@ class CodexConnection:
                 'new_sessions': sum(json.loads(key)[0] == self.id and key not in record.get('sessions_before_activation', [])
                                     for key in state['sessions']) if status == 'configured_pending_new_session' else 0}
 
+    @property
+    def target(self):
+        return self.home / 'config.toml'
+
+    def preview(self):
+        raw, _ = read_config(self.home)
+        return {'instance_id': self.id, 'kind': 'codex', 'target': str(self.target),
+                'baseline_sha256': digest(raw), 'preserve_other_plugins': True,
+                'requires_reload': True, 'requires_host_trust': True}
+
+    @phased_connection_action
     async def prepare(self, expected, *, include_view=True):
         r = self.registry
         read_config(self.home)  # Reject a bad host target before creating an identity.
@@ -225,9 +236,11 @@ class CodexConnection:
         if self.id not in r.state['agents']:
             if self.id in r.state.get('enrollments', {}):
                 raise PolicyError('agent_creation_requires_review', 409)
+            mark_connection_mutation()
             await r.provision_agent(expected, self.id, '本机 Codex')
         if self.id not in r.state['agents']:
             raise PolicyError('agent_creation_requires_review', 409)
+        mark_connection_mutation()
         await r.prepare_installation(r.state['revision'], self.id,
                                     self.config['project_control']['plugin_dir'],
                                     self.config['project_control']['url'],
@@ -259,6 +272,7 @@ class CodexConnection:
             r.save()
         return await self._view_off_thread() if include_view else None
 
+    @phased_connection_action
     async def activate(self, expected, reviewed_sha, *, include_view=True):
         r = self.registry
         async with r.mutex:
@@ -282,6 +296,7 @@ class CodexConnection:
             verify_cache(source, installation)
             # Journal before any writes. Failure never causes an implicit second
             # install, restoration of owner credentials, or replay of old buffers.
+            mark_connection_mutation()
             record['status'] = 'activation_unknown'
             record['sessions_before_activation'] = [key for key in r.state['sessions'] if json.loads(key)[0] == self.id]
             r.state['revision'] += 1
@@ -300,20 +315,41 @@ class CodexConnection:
             private_write(self.home / 'config.toml', planned)
             if read_config(self.home)[0] != planned:
                 raise PolicyError('codex_activation_result_unknown', 503)
+            mark_connection_mutation()
             record['status'] = 'configured_pending_new_session'
             record['activated_at'] = time.time()
             r.save()
         return await self._view_off_thread() if include_view else None
 
+    @phased_connection_action
     async def review(self, expected, *, include_view=True):
         """Inspect the original preview/cache/config, without rerunning commands."""
         r = self.registry
-        if self.id not in r.state['agents'] and self.id in r.state.get('enrollments', {}):
+        recovering_enrollment = self.id not in r.state['agents'] and self.id in r.state.get('enrollments', {})
+        if recovering_enrollment:
+            mark_connection_mutation()
             await r.recover_agent(expected, self.id)
-            return await self._view_off_thread() if include_view else None
         async with r.mutex:
-            r.check_revision(expected)
+            if not recovering_enrollment:
+                r.check_revision(expected)
             record = r.state.get('codex_connections', {}).get(self.id)
+            enrollment = r.state.get('enrollments', {}).get(self.id, {})
+            if not record and (recovering_enrollment
+                               or (self.id in r.state['agents'] and enrollment.get('status') == 'verified')):
+                # The enrollment may already have been saved before the receipt was settled.
+                row = await self._view_off_thread()
+                pending = self._pending_review_operations(('prepare', 'activate'))
+                if pending:
+                    mark_connection_mutation()
+                    try:
+                        self._settle_review_operations(pending, row, 'staging_not_complete')
+                        r.save()
+                    except BaseException:
+                        for op, previous in pending:
+                            op.clear()
+                            op.update(previous)
+                        raise
+                return row if include_view else None
             if not record:
                 if self.id in r.state.get('enrollments', {}) and self.id not in r.state['agents']:
                     # Recovery of an official creation needs its own original
@@ -328,15 +364,51 @@ class CodexConnection:
                 target = self.home / 'plugins/cache' / installation['marketplace_name'] / 'cognee' / version
                 if configured(parsed, installation):
                     verify_cache(target, installation)
-                    record['status'] = 'configured_pending_new_session'
+                    status = 'configured_pending_new_session'
                 elif digest(current) == preview['baseline_sha256']:
                     if staged.exists():
                         verify_cache(staged, installation)
-                        record.update(status='prepared', staged_cache=str(staged))
+                        status = 'prepared'
                     else:
-                        record['status'] = 'staging_not_complete'
+                        status = 'staging_not_complete'
                 else:
                     raise PolicyError('codex_configuration_changed', 409)
-                r.state['revision'] += 1
-                r.save()
+                previous_record = copy.deepcopy(record)
+                previous_revision = r.state['revision']
+                pending = self._pending_review_operations(('prepare', 'activate'))
+                mark_connection_mutation()
+                try:
+                    record['status'] = status
+                    if status == 'prepared':
+                        record['staged_cache'] = str(staged)
+                    r.state['revision'] = previous_revision + 1
+                    row = await self._view_off_thread()
+                    self._settle_review_operations(pending, row, status)
+                    r.save()
+                except BaseException:
+                    record.clear()
+                    record.update(previous_record)
+                    r.state['revision'] = previous_revision
+                    for op, previous in pending:
+                        op.clear()
+                        op.update(previous)
+                    raise
+                return row if include_view else None
         return await self._view_off_thread() if include_view else None
+
+    def _pending_review_operations(self, actions):
+        return [(op, copy.deepcopy(op)) for op in self.registry.state.get('connection_operations', {}).values()
+                if op.get('instance_id') == self.id and op.get('action') in actions
+                and op.get('status') != 'complete']
+
+    def _settle_review_operations(self, pending, row, status):
+        result = {'revision': self.registry.state['revision'], 'connection': copy.deepcopy(row)}
+        for op, _ in pending:
+            op.update(status='complete', result=copy.deepcopy(result))
+            if op['action'] == 'activate' and status != 'configured_pending_new_session':
+                op.update(outcome='rejected', error_code='codex_activation_did_not_apply')
+            elif op['action'] == 'prepare' and status == 'staging_not_complete':
+                op.update(outcome='rejected', error_code='codex_preparation_did_not_install')
+            else:
+                op.pop('outcome', None)
+                op.pop('error_code', None)

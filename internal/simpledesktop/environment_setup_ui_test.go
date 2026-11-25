@@ -1,6 +1,7 @@
 package simpledesktop
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,12 +23,12 @@ func TestEnvironmentManualSelectionRestoresAcrossAppInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := New(cfg, nil)
-	restored, err := a.environmentOptions()
-	if err != nil || restored.Python != "/manual/python" || a.environment.ModelCache != "/manual/cache" {
+	restored, err := loadEnvironmentOptions(a.Config, a.environment)
+	if err != nil || restored.Python != "/manual/python" || restored.ModelCache != "/manual/cache" {
 		t.Fatal(restored, err)
 	}
 	b := New(cfg, nil)
-	restored, err = b.environmentOptions()
+	restored, err = loadEnvironmentOptions(b.Config, b.environment)
 	if err != nil || restored.Python != "/manual/python" {
 		t.Fatal(restored, err)
 	}
@@ -90,9 +91,9 @@ func environmentFixture() (*App, bootstrap.Item) {
 	return a, item
 }
 func environmentTester(a *App) *ui.Tester {
-	return ui.NewTester(func(c *ui.Context) {
-		ui.Themed(c, homeTheme).Fill().Children(func() { ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, true) }) })
-	}, 1200, 820)
+	a.initialSetup = true
+	a.environment.InitialStep = 2
+	return ui.NewTester(a.View, 1200, 820)
 }
 
 func TestEnvironmentInstallRequiresReviewWithConcreteScope(t *testing.T) {
@@ -101,8 +102,12 @@ func TestEnvironmentInstallRequiresReviewWithConcreteScope(t *testing.T) {
 	if tt.HasText("确认安装") || tt.HasText("准备完成") {
 		t.Fatal("unreviewed missing environment looked complete")
 	}
-	clickProjectUI(t, tt, "安装缺少的依赖")
-	for _, label := range []string{"确认安装缺少的依赖", "运行本地记忆引擎", "下载 10.0 MiB，占用 30.0 MiB", "来源：https://official.example.test/pinned", "位置：/synthetic/components/python", "确认安装", "暂不安装"} {
+	clickProjectUI(t, tt, "安装并继续")
+	if !tt.HasText("确认安装本地记忆组件") || tt.HasText("运行本地记忆引擎") {
+		t.Fatal("review must open with a plain-language summary")
+	}
+	clickProjectUI(t, tt, "查看技术清单")
+	for _, label := range []string{"确认安装本地记忆组件", "运行本地记忆引擎", "下载 10.0 MiB，占用 30.0 MiB", "来源：https://official.example.test/pinned", "位置：/synthetic/components/python", "确认安装", "暂不安装"} {
 		if !tt.HasText(label) {
 			t.Fatal("review omitted", label)
 		}
@@ -115,7 +120,7 @@ func TestAvailableEnvironmentContinuesWithoutInstallAction(t *testing.T) {
 	a, _ := environmentFixture()
 	a.environment.Plan.Items[0].Observation.Status = bootstrap.Available
 	tt := environmentTester(a)
-	if !tt.HasText("可用") || !tt.HasText("已就绪") || !tt.HasText("继续") || tt.HasText("安装缺少的依赖") || tt.HasText("准备完成") {
+	if !tt.HasText("已就绪") || !tt.HasText("继续") || tt.HasText("安装并继续") || tt.HasText("准备完成") {
 		t.Fatal("compatible environment requires duplicate installation")
 	}
 }
@@ -124,13 +129,13 @@ func TestInstallationFailureCanCopyDiagnosticsWithoutRuntime(t *testing.T) {
 	a.environment.Error = "download failed API_KEY=private-secret"
 	a.environment.Journal = bootstrap.Journal{Operation: "first-install", Plan: a.environment.Plan, Status: bootstrap.Failed, Steps: map[string]bootstrap.Step{item.Requirement.ID: {Status: bootstrap.Failed, Attempts: 1, Error: a.environment.Error}}}
 	tt := environmentTester(a)
-	for _, label := range []string{"失败", "重试", "用 Agent 排查", "查看详情"} {
+	for _, label := range []string{"准备未完成", "重试", "复制指令交给 Agent 帮我装/修", "环境详情"} {
 		if !tt.HasText(label) {
 			t.Fatal("failure action missing", label)
 		}
 	}
-	clickProjectUI(t, tt, "用 Agent 排查")
-	if !strings.Contains(tt.Clipboard(), "你的文字回复不能") || strings.Contains(tt.Clipboard(), "private-secret") {
+	clickProjectUI(t, tt, "复制指令交给 Agent 帮我装/修")
+	if tt.Clipboard() != agentTakeoverBeta2RescuePrompt() || strings.Contains(tt.Clipboard(), "private-secret") {
 		t.Fatal("copied incomplete or unredacted diagnostics")
 	}
 	if a.environment.Environment != nil || a.environment.Busy {
@@ -168,13 +173,14 @@ func TestFirstWizardReusesConnectionsAndGenerationWithoutPrematureCompletion(t *
 	app.initialSetup = true
 	app.environment.InitialStep = 2
 	app.environment.RuntimeStarted = true
-	app.integrations.Loaded = true
+	app.environment.Plan.Items[0].Observation.Status = bootstrap.Available
+	app.integrations.Loaded, app.integrations.GenerationLoaded = true, true
 	tester := ui.NewTester(app.View, 1200, 820)
-	if !tester.HasText("Agent 连接") || tester.HasText("运行环境") {
-		t.Fatal("wizard did not advance to shared Agent component")
+	if tester.HasText("确认接入 Agent 并启用记忆提炼") || !tester.HasText("本地记忆引擎") {
+		t.Fatal("wizard showed connection settings before Step 3")
 	}
 	clickProjectUI(t, tester, "继续")
-	if app.environment.InitialStep != 3 || !tester.HasText("启用并完成") {
+	if app.environment.InitialStep != 3 || !tester.HasText("启用并完成") || !tester.HasText("Agent 接入") || !tester.HasText("记忆提炼") {
 		t.Fatal("generation setup missing")
 	}
 	clickProjectUI(t, tester, "启用并完成")
@@ -267,12 +273,18 @@ func TestIncompatibleAgentPluginExplainsReasonAndDailyScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			app := makeApp(tc.initial, tc.service)
-			tester := ui.NewTester(func(c *ui.Context) {
-				ui.Themed(c, homeTheme).Fill().Children(func() {
-					ui.Scroll(c).Fill().Children(func() { app.environmentSetup(c, tc.initial) })
-				})
-			}, 1200, 820)
-			if !tester.HasText("不兼容") || !tester.HasText("安装缺少的依赖") {
+			var tester *ui.Tester
+			label := "安装缺少的依赖"
+			if tc.initial {
+				tester = environmentTester(app)
+				clickProjectUI(t, tester, "查看技术明细 (1 项)")
+				label = "安装并继续"
+			} else {
+				tester = ui.NewTester(func(c *ui.Context) {
+					ui.Themed(c, homeTheme).Fill().Children(func() { app.environmentSetup(c, false) })
+				}, 1200, 820)
+			}
+			if !tester.HasText("不兼容") || !tester.HasText(label) {
 				t.Fatalf("%s did not preserve strict incompatible UI: %v", tc.name, tester.Texts())
 			}
 		})
@@ -313,11 +325,17 @@ func TestEnvironmentPolicyUpdateUsesUpdateActionAcrossSetupStates(t *testing.T) 
 			item.Requirement.ID, item.Requirement.Name = "agent-plugin", "Agent 插件"
 			item.Observation = bootstrap.Observation{Status: bootstrap.Incompatible, Reason: bootstrap.PluginPolicyUpdateReasonPrefix}
 			a.environment.Plan.Items = []bootstrap.Item{item}
-			tt := ui.NewTester(func(c *ui.Context) {
-				ui.Themed(c, homeTheme).Fill().Children(func() {
-					ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, tc.initial) })
-				})
-			}, 1200, 820)
+			var tt *ui.Tester
+			if tc.initial {
+				tt = environmentTester(a)
+				clickProjectUI(t, tt, "查看技术明细 (1 项)")
+			} else {
+				tt = ui.NewTester(func(c *ui.Context) {
+					ui.Themed(c, homeTheme).Fill().Children(func() {
+						ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) })
+					})
+				}, 1200, 820)
+			}
 			if !tt.HasText("策略有更新") || !tt.HasText(bootstrap.PluginPolicyUpdateReasonPrefix) ||
 				!tt.HasText("更新 Agent 插件") || tt.HasText("不兼容") || tt.HasText("安装缺少的依赖") {
 				t.Fatalf("wrong plugin update presentation: %v", tt.Texts())
@@ -387,5 +405,48 @@ func TestSettingsEnvironmentRetainsPluginConfigApplyActionWhenWriteFailed(t *tes
 	}, 1200, 820)
 	if tt.HasText("已就绪") || !tt.HasText("待写入配置") || !tt.HasText("写入插件配置") {
 		t.Fatalf("pending plugin config apply was hidden as ready: %v", tt.Texts())
+	}
+}
+
+func TestEnvironmentReusesRetainedInstallationOperation(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operation = "retained-cli-install"
+	a, _ := environmentFixture()
+	s := &a.environment
+	s.Environment = &bootstrap.Environment{Options: bootstrap.EnvironmentOptions{Root: root}}
+	installer := s.Environment.Installer()
+	// An unknown component fails locally after Run has accepted the journal.
+	s.Plan = bootstrap.Plan{Items: []bootstrap.Item{{Requirement: bootstrap.Requirement{ID: "synthetic-component"}}}}
+	if err := installer.Review(operation, s.Plan, s.Plan.Digest(), true); err != nil {
+		t.Fatal(err)
+	}
+	s.Journal, err = installer.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.InspectInstallWorkerFn = func(context.Context, string) (bootstrap.InstallWorkerState, bool, error) {
+		return bootstrap.InstallWorkerState{}, false, nil
+	}
+	a.runEnvironment(false)
+	drainReading(t, updates, func() bool { return !s.Busy })
+	if s.Journal.Operation != operation || s.Journal.Status != bootstrap.Failed || !strings.Contains(s.Error, "fixed environment plan") {
+		t.Fatalf("GUI did not resume retained installation: %s, %+v", s.Error, s.Journal)
+	}
+	a.declineEnvironment()
+	drainReading(t, updates, func() bool { return !s.Busy })
+	journal, err := installer.Snapshot()
+	if err != nil || journal.Operation != operation || journal.DeclinedDigest != s.Plan.Digest() {
+		t.Fatalf("GUI did not decline under retained operation: %+v, %v", journal, err)
+	}
+	a.runEnvironment(true)
+	drainReading(t, updates, func() bool { return !s.Busy })
+	journal, err = installer.Snapshot()
+	if err != nil || journal.Operation != operation || journal.ApprovedDigest != s.Plan.Digest() || journal.DeclinedDigest != "" {
+		t.Fatalf("GUI did not approve under retained operation: %+v, %v", journal, err)
 	}
 }

@@ -94,8 +94,10 @@ def start_generation(store, launch, cleanup):
         return result
     if recovered or selected:
         if recovered:
-            from agent_bridge_runtime import mark_connected_bridge_selection
-            mark_connected_bridge_selection(store.state, store.resolve(reference))
+            row = store.resolve(reference)
+            if not validation_passed(store.state['validations'], row['digest']):
+                from agent_bridge_runtime import mark_connected_bridge_selection
+                mark_connected_bridge_selection(store.state, row)
         store.state.update(active=reference, next=None)
         store.state.pop('next_error', None)
         store.state.pop('startup_error', None)

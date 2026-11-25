@@ -1,12 +1,16 @@
 package bootstrap
 
 import (
+	"runtime"
+	"testing/fstest"
+
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -282,6 +287,11 @@ func TestFirstRuntimeHelperProcess(t *testing.T) {
 		ProjectControlURL: "http://" + controlAddr,
 		Children:          []int{},
 		ServiceChildren:   map[string]int{},
+	}
+	if resources, err := os.Getwd(); err == nil {
+		if hash, managed := RuntimeHashFromDir(resources); managed {
+			rec.ResourcesDir, rec.ResourcesHash = resources, hash
+		}
 	}
 	if err := lock.WriteRecord(rec); err != nil {
 		fmt.Fprintf(os.Stderr, "write starting owner failed: %v\n", err)
@@ -1110,6 +1120,64 @@ func TestStartFirstRuntimeOwnerLockHandoffFromSupervisedToActivationLauncher(t *
 	waitPIDDead(t, activatedPID)
 }
 
+func TestStartFirstRuntimeCompletedActivationReplay(t *testing.T) {
+	requireRuntimeOwnerTestSupport(t)
+	for _, running := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owner running=%t", running), func(t *testing.T) {
+			fix, prepared := newSyntheticFirstRuntimeFixture(t, "launcher_activate", nil)
+			wrapper, err := os.ReadFile(fix.wrapperPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const replay = `for arg do
+  if [ "$arg" = "--activate-file" ]; then exit 0; fi
+done
+`
+			wrapper = []byte(strings.Replace(string(wrapper), "#!/bin/sh\n", "#!/bin/sh\n"+replay, 1))
+			if err := os.WriteFile(fix.wrapperPath, wrapper, 0700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			t.Cleanup(func() {
+				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := ShutdownFirstRuntime(cleanup, fix.configPath); err != nil {
+					t.Error(err)
+				}
+			})
+			if err := StartFirstRuntimeDetached(ctx, prepared); err != nil {
+				t.Fatal(err)
+			}
+			owner, err := supervisor.VerifyOwnerRecord(ctx, fix.storeRoot, fix.configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !running {
+				if err := ShutdownFirstRuntime(ctx, fix.configPath); err != nil {
+					t.Fatal(err)
+				}
+				waitPIDDead(t, owner.PID)
+			}
+			prepared.ActivationFile = filepath.Join(fix.storeRoot, "first-install-activation.json")
+			writeBootstrapTestJSON(t, prepared.ActivationFile, FirstActivationRequest{
+				Schema: 1, StoreID: fix.storeID, Operation: "first-replay", Status: "completed",
+			})
+			handle, err := StartFirstRuntimeHandle(ctx, prepared, WithFirstRuntimeReadyPollInterval(25*time.Millisecond))
+			if err != nil || handle == nil || handle.Attached() != running || handle.Owned() == running {
+				t.Fatalf("completed replay handle = %+v, %v", handle, err)
+			}
+			post, err := supervisor.VerifyOwnerRecord(ctx, fix.storeRoot, fix.configPath)
+			if err != nil || (supervisor.OwnerFingerprint(post) == supervisor.OwnerFingerprint(owner)) != running {
+				t.Fatalf("owner after completed replay = %+v, %v", post, err)
+			}
+			if ready, err := FirstRuntimeReady(ctx, fix.configPath); err != nil || !ready {
+				t.Fatalf("runtime after completed replay ready = %t, %v", ready, err)
+			}
+		})
+	}
+}
+
 func TestStartFirstRuntimeRetryCrashCleansUpHandleAndMonitor(t *testing.T) {
 	t.Cleanup(func() { _ = ShutdownAllFirstRuntimes(context.Background()) })
 
@@ -1353,4 +1421,755 @@ func TestShutdownAllFirstRuntimesCancelsInFlightStartupWithoutOrphan(t *testing.
 		t.Fatalf("expected .service-owner released after in-flight startup shutdown, got %v", err)
 	}
 	_ = lock.Release()
+}
+
+func writeBootstrapTestJSON(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newReadOnlyRuntimeFixture(t *testing.T) FirstRuntime {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(home, "library")
+	if err := os.Mkdir(store, 0700); err != nil {
+		t.Fatal(err)
+	}
+	storeID := strings.Repeat("c", 32)
+	configPath := filepath.Join(home, "runtime.json")
+	writeBootstrapTestJSON(t, filepath.Join(store, "store-identity.json"), StoreReceipt{
+		Schema: 1, StoreID: storeID, SourceCommit: "fixed", OwnerID: "owner", KeyID: "key", StorageInitialized: true,
+	})
+	writeBootstrapTestJSON(t, configPath, firstRuntimeConfig{
+		Root: store, Commit: "fixed", Python: "/bin/sh", TokenFile: filepath.Join(store, "owner.token"),
+		First: &FirstInstallation{Schema: 1, StoreID: storeID, Setup: true},
+	})
+	return FirstRuntime{ConfigPath: configPath, StoreRoot: store, Resources: home, Python: "/bin/sh", HostHome: home}
+}
+
+func TestPrepareFirstRuntimeForUpgradePreservesConfig(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	python := fakeDependencyPython(t, `
+case "$3" in
+	-c) echo '{"mismatch":[]}' ;;
+	*/first_install_runtime.py)
+		printf '%s\n' "$@" > preflight-argv
+		if [ -f fail-preflight ]; then exit 19; fi ;;
+	*) exit 42 ;;
+esac`)
+	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.Python = python
+	writeBootstrapTestJSON(t, prepared.ConfigPath, config)
+	wantConfig, err := os.ReadFile(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(prepared.HostHome, "components")
+	plugin := filepath.Join(root, "agent")
+	if err := os.MkdirAll(plugin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const pluginFile = "plugin.txt"
+	if err := os.WriteFile(filepath.Join(plugin, pluginFile), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"files":{"plugin.txt":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}`)
+	if err := os.WriteFile(filepath.Join(plugin, ".memlane-project-access.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec := SourceSpec{URL: "https://example.test/plugin", SHA256: "plugin-digest"}
+	env := Environment{
+		Options: EnvironmentOptions{Root: root, ProtectedStore: prepared.StoreRoot},
+		Runtime: RuntimeDriver{ExistingPython: python, Lock: []byte("locked==1\n")},
+		Source:  sourceLocations{Managed: SourceDriver{Spec: SourceSpec{Commit: config.Commit}}},
+		Plugin:  PluginDriver{Spec: spec, Version: "fixed", ExistingPath: plugin, Manifest: manifest},
+	}
+	env.requirements = []Requirement{
+		{ID: "runtime", Name: "Runtime", Purpose: "Dependencies", Version: "fixed", Source: "https://example.test/lock",
+			Digest: env.Runtime.Digest(), Destination: filepath.Join(root, "runtime")},
+		{ID: "agent-plugin", Name: "Plugin", Purpose: "Agent integration", Version: "fixed", Source: spec.URL,
+			Digest: spec.SHA256, Destination: filepath.Join(root, "plugin-component")},
+	}
+	assets := fstest.MapFS{
+		"scripts/dev.py":                         {Data: []byte("# upgraded runtime")},
+		"engine/python/first_install_runtime.py": {Data: []byte("# preflight entry point")},
+	}
+	got, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := BundledRuntimeHash(assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Resources != filepath.Join(env.Installer().Root, "runtime-"+hash) || !verifyPreparedRuntimeResources(got.Resources, assets) ||
+		got.ConfigPath != prepared.ConfigPath || got.StoreRoot != prepared.StoreRoot || got.Python != python || got.HostHome == "" || !got.Plan.Complete() {
+		t.Fatalf("unexpected upgrade preparation: %+v", got)
+	}
+	assertConfigAndArgs := func(t *testing.T) {
+		t.Helper()
+		if data, err := os.ReadFile(prepared.ConfigPath); err != nil || !bytes.Equal(data, wantConfig) {
+			t.Fatalf("upgrade preparation changed runtime.json: %v", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(prepared.StoreRoot, "preflight-argv"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		installRoot := slices.Index(args, "--installation-root")
+		if !slices.Contains(args, "--prepare-only") || !slices.Contains(args, "--skip-graph-refresh") ||
+			installRoot < 0 || installRoot+1 >= len(args) || args[installRoot+1] != env.Installer().Root {
+			t.Fatalf("unexpected upgrade preflight argv: %q", args)
+		}
+	}
+	assertConfigAndArgs(t)
+	if err := os.Remove(filepath.Join(prepared.StoreRoot, "preflight-argv")); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Installer().withLock(func() error {
+		reused, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
+		if err != nil || reused.Resources != got.Resources {
+			t.Fatalf("upgrade preflight with installation.lock held = %+v, %v", reused, err)
+		}
+		assertConfigAndArgs(t)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("preflight failure", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(prepared.StoreRoot, "preflight-argv")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(prepared.StoreRoot, "fail-preflight"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, assets)
+		var failure *CommandFailure
+		if !errors.As(err, &failure) || failure.ExitCode != 19 {
+			t.Fatalf("upgrade preflight failure = %v", err)
+		}
+		assertConfigAndArgs(t)
+	})
+	t.Run("missing assets", func(t *testing.T) {
+		if _, err := env.PrepareFirstRuntimeForUpgrade(t.Context(), prepared.ConfigPath, nil); err == nil || !strings.Contains(err.Error(), "runtime assets missing") {
+			t.Fatalf("upgrade preparation without assets = %v", err)
+		}
+	})
+	if err := os.WriteFile(filepath.Join(got.Resources, "unexpected.py"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if verifyPreparedRuntimeResources(got.Resources, assets) {
+		t.Fatal("verified runtime generation with an unexpected module")
+	}
+}
+
+func TestEvaluateZeroDownloads(t *testing.T) {
+	const currentHash, oldHash = "new-runtime", "old-runtime"
+	plan := Plan{Items: []Item{{Observation: Observation{Status: Available}}}}
+	zero := &RuntimeUpgradeReceipt{ToRuntimeHash: currentHash, ZeroDownloads: true}
+	used := &RuntimeUpgradeReceipt{ToRuntimeHash: currentHash}
+	oldReceipt := &RuntimeUpgradeReceipt{ToRuntimeHash: oldHash}
+	historical := InstallWorkerState{State: "completed", RuntimeHash: oldHash, NetworkBytesDownloaded: 123456, RuntimeSyncRan: true}
+
+	for _, tc := range []struct {
+		name       string
+		bundled    string
+		plan       Plan
+		journal    *Journal
+		worker     *InstallWorkerState
+		receipt    *RuntimeUpgradeReceipt
+		wantReason string
+		wantBytes  int64
+		wantSync   bool
+	}{
+		{name: "beta.2 to beta.3 without worker", bundled: currentHash, plan: plan, receipt: zero},
+		{name: "beta.3 to beta.3.1 with historical downloads", bundled: currentHash, plan: plan, worker: &historical, receipt: zero},
+		{name: "fresh install with downloads", bundled: currentHash, plan: plan,
+			worker:     &InstallWorkerState{State: "completed", RuntimeHash: currentHash, NetworkBytesDownloaded: 42},
+			wantReason: "current_generation_downloaded", wantBytes: 42},
+		{name: "current pip sync without reported HTTP bytes", bundled: currentHash, plan: plan,
+			worker:     &InstallWorkerState{State: "completed", RuntimeHash: currentHash, RuntimeSyncRan: true},
+			wantReason: "current_generation_downloaded", wantSync: true},
+		{name: "upgrade receipt reports downloads", bundled: currentHash, plan: plan, receipt: used, wantReason: "upgrade_used_downloads"},
+		{name: "unknown worker generation", bundled: currentHash, plan: plan,
+			worker:     &InstallWorkerState{State: "completed", NetworkBytesDownloaded: 19},
+			wantReason: "current_generation_downloaded", wantBytes: 19},
+		{name: "unknown bundled generation", plan: plan, worker: &historical,
+			wantReason: "current_generation_downloaded", wantBytes: historical.NetworkBytesDownloaded, wantSync: true},
+		{name: "historical upgrade receipt", bundled: currentHash, plan: plan, receipt: oldReceipt},
+		{name: "active historical worker", bundled: currentHash, plan: plan,
+			worker: &InstallWorkerState{State: "starting", RuntimeHash: oldHash}, wantReason: "install_worker_active"},
+		{name: "running worker", bundled: currentHash, plan: plan,
+			worker: &InstallWorkerState{State: "running"}, wantReason: "install_worker_active"},
+		{name: "installing journal", bundled: currentHash, plan: plan,
+			journal: &Journal{Status: Installing}, wantReason: "installation_in_progress"},
+		{name: "active journal step", bundled: currentHash, plan: plan,
+			journal: &Journal{ActiveStep: "runtime"}, wantReason: "installation_in_progress"},
+		{name: "incomplete plan", bundled: currentHash, wantReason: "components_incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var journal Journal
+			var worker InstallWorkerState
+			if tc.journal != nil {
+				journal = *tc.journal
+			}
+			if tc.worker != nil {
+				worker = *tc.worker
+			}
+			check := EvaluateZeroDownloads(tc.plan, journal, tc.journal != nil, worker, tc.worker != nil, tc.bundled, tc.receipt)
+			want := ZeroDownloadCheck{
+				Satisfied: tc.wantReason == "", Reason: tc.wantReason, CurrentRuntimeHash: tc.bundled,
+				NetworkBytesDownloaded: tc.wantBytes, RuntimeSyncRan: tc.wantSync, UpgradeReceipt: tc.receipt,
+			}
+			if check != want {
+				t.Fatalf("zero-download check = %+v, want %+v", check, want)
+			}
+		})
+	}
+}
+
+func TestInspectOwnerRuntimeStatusReadOnly(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	component := filepath.Join(prepared.HostHome, "missing components")
+	old := filepath.Join(component, "installation", "runtime-1111111111111111")
+	config.GraphAssets, _ = json.Marshal(filepath.Join(old, graphAssetsSuffix))
+	writeBootstrapTestJSON(t, prepared.ConfigPath, config)
+	before, err := os.ReadFile(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := InspectOwnerRuntimeStatus(context.Background(), prepared.ConfigPath, component, assets)
+	if err != nil || status.State != "stopped" || !status.GraphAssetsStale || status.OwnerLocked || status.HasReceipt {
+		t.Fatal(status, err)
+	}
+	if _, err := os.Stat(component); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(prepared.ConfigPath); !bytes.Equal(before, after) || err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(prepared.StoreRoot); err != nil || len(entries) != 1 || entries[0].Name() != "store-identity.json" {
+		t.Fatal(entries, err)
+	}
+	lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	status, err = InspectOwnerRuntimeStatus(context.Background(), prepared.ConfigPath, component, assets)
+	if err != nil || status.State != "starting" || !status.OwnerLocked || status.HasReceipt {
+		t.Fatal(status, err)
+	}
+}
+
+func TestInspectOwnerRuntimeStatusFiltersUpgradeReceipt(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	root := filepath.Join(prepared.HostHome, "components")
+	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := RuntimeUpgradeReceiptPath(root, prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareInstallationDir(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	hash, err := BundledRuntimeHash(assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, storeID, hash string
+		assets              fs.FS
+		attached            bool
+	}{
+		{"matching generation and store", config.First.StoreID, hash, assets, true},
+		{"unknown bundled generation", config.First.StoreID, hash, nil, true},
+		{"different generation", config.First.StoreID, "previous", assets, false},
+		{"different store", "another-store", hash, assets, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := RuntimeUpgradeReceipt{
+				Schema: 1, StoreID: tc.storeID, ToRuntimeHash: tc.hash, OwnerFingerprint: "verified-owner",
+			}
+			writeBootstrapTestJSON(t, path, receipt)
+			status, err := InspectOwnerRuntimeStatus(t.Context(), prepared.ConfigPath, root, tc.assets)
+			if err != nil || (status.UpgradeReceipt != nil) != tc.attached ||
+				(tc.attached && *status.UpgradeReceipt != receipt) {
+				t.Fatalf("attached upgrade receipt = %+v, %v; want attached=%t", status.UpgradeReceipt, err, tc.attached)
+			}
+			got, err := ReadRuntimeUpgradeReceipt(root, prepared.ConfigPath)
+			if err != nil || got != receipt {
+				t.Fatalf("retained upgrade receipt = %+v, %v; want %+v", got, err, receipt)
+			}
+		})
+	}
+}
+
+func TestInspectOwnerRuntimeStatusSurvivesCorruptUpgradeReceipt(t *testing.T) {
+	const token = "sk-upgrade-receipt-fixture"
+	const oldHash = "1111111111111111"
+	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	for _, mode := range []string{"corrupt JSON", "symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			prepared := newReadOnlyRuntimeFixture(t)
+			component := filepath.Join(prepared.HostHome, "components-"+token)
+			path, err := RuntimeUpgradeReceiptPath(component, prepared.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldRuntime := filepath.Join(filepath.Dir(path), "runtime-"+oldHash)
+			if err := os.MkdirAll(oldRuntime, 0700); err != nil {
+				t.Fatal(err)
+			}
+			config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			graphAssets := filepath.Join(oldRuntime, graphAssetsSuffix)
+			config.GraphAssets, _ = json.Marshal(graphAssets)
+			writeBootstrapTestJSON(t, prepared.ConfigPath, config)
+			if mode == "corrupt JSON" {
+				if err := os.WriteFile(path, []byte(`{"token":"`+token+`",`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Symlink(filepath.Join(prepared.HostHome, "missing-receipt"), path); err != nil {
+				t.Fatal(err)
+			}
+			readStatus := func(t *testing.T) OwnerRuntimeStatus {
+				t.Helper()
+				status, err := InspectOwnerRuntimeStatus(t.Context(), prepared.ConfigPath, component, assets)
+				if err != nil {
+					t.Fatalf("inspect owner status: %v", err)
+				}
+				if status.UpgradeReceipt != nil || status.UpgradeReceiptError == "" || strings.Contains(status.UpgradeReceiptError, token) {
+					t.Fatalf("unexpected upgrade receipt diagnostics: receipt=%+v error=%q", status.UpgradeReceipt, status.UpgradeReceiptError)
+				}
+				if status.GraphAssetsPath != graphAssets || !status.GraphAssetsStale {
+					t.Fatal("graph assets status was not populated")
+				}
+				return status
+			}
+			status := readStatus(t)
+			if status.State != "stopped" || status.OwnerLocked || status.HasReceipt || status.OwnerPID != 0 ||
+				status.OwnerFingerprint != "" || status.RunningRuntimeHash != "" || status.StaleVersionDetected {
+				t.Fatalf("unexpected stopped owner status: %+v", status)
+			}
+			t.Run("live owner", func(t *testing.T) {
+				pid := os.Getpid()
+				started, err := supervisor.ProcessStartTime(t.Context(), pid)
+				if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+					t.Skipf("ps unavailable in sandbox: %v", err)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Release()
+				defer lock.RemoveRecord()
+				record := supervisor.OwnerRecord{
+					PID: pid, Started: started, Phase: "ready", Config: prepared.ConfigPath,
+					OfficialData: prepared.StoreRoot, ResourcesDir: oldRuntime, ResourcesHash: oldHash,
+				}
+				if err := lock.WriteRecord(record); err != nil {
+					t.Fatal(err)
+				}
+				status := readStatus(t)
+				if status.State != "stale_runtime" || !status.OwnerLocked || !status.HasReceipt || status.OwnerPID != pid ||
+					status.OwnerFingerprint != supervisor.OwnerFingerprint(record) || status.RunningRuntimeHash != oldHash || !status.StaleVersionDetected {
+					t.Fatalf("unexpected live owner status: %+v", status)
+				}
+			})
+		})
+	}
+}
+
+func TestInspectOwnerRuntimeStatusLiveBeta2Argv(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("KERN_PROCARGS2 requires macOS")
+	}
+	prepared := newReadOnlyRuntimeFixture(t)
+	component := filepath.Join(prepared.HostHome, "components with spaces")
+	install := filepath.Join(component, "installation")
+	old := filepath.Join(install, "runtime-1111111111111111")
+	assets := fstest.MapFS{"scripts/dev.py": {Data: []byte("new runtime")}}
+	lock, err := supervisor.AcquireOwner(prepared.StoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	defer lock.RemoveRecord()
+
+	for _, tc := range []struct {
+		name, script string
+		developer    bool
+	}{
+		{"managed", filepath.Join(old, "scripts/dev.py"), false},
+		{"checkout", filepath.Join(prepared.HostHome, "developer repo", "engine/python/service.py"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", "-c", "read -r line", "fixture", tc.script)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
+			argv, err := supervisor.ProcessArgs(cmd.Process.Pid)
+			if errors.Is(err, syscall.EPERM) {
+				t.Skipf("kernel argv unavailable in sandbox: %v", err)
+			}
+			if err != nil || len(argv) < 5 || argv[4] != tc.script {
+				t.Fatal(argv, err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			started, err := supervisor.ProcessStartTime(ctx, cmd.Process.Pid)
+			if errors.Is(err, syscall.EPERM) {
+				t.Skipf("ps unavailable in sandbox: %v", err)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lock.WriteRecord(supervisor.OwnerRecord{
+				PID: cmd.Process.Pid, Started: started, Phase: "ready", Config: prepared.ConfigPath, OfficialData: prepared.StoreRoot,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			status, err := InspectOwnerRuntimeStatus(ctx, prepared.ConfigPath, component, assets)
+			if err != nil || status.DeveloperCheckout != tc.developer || status.StaleVersionDetected == tc.developer || status.OwnerFingerprint == "" {
+				t.Fatal(status, err)
+			}
+			if !tc.developer && (status.State != "stale_runtime" || status.RunningRuntimeDir != old || status.RunningRuntimeHash != "1111111111111111") {
+				t.Fatal(status)
+			}
+		})
+	}
+}
+
+func TestDetectOwnerRuntimeUsesServiceChildAndRejectsCheckout(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	install := filepath.Join(prepared.HostHome, "installation with spaces")
+	old := filepath.Join(install, "runtime-1111111111111111")
+	if err := os.MkdirAll(old, 0700); err != nil {
+		t.Fatal(err)
+	}
+	rec := supervisor.OwnerRecord{PID: 42, ServiceChildren: map[string]int{"control": 43}}
+	original := processArgsFn
+	t.Cleanup(func() { processArgsFn = original })
+	processArgsFn = func(pid int) ([]string, error) {
+		if pid == 43 {
+			return []string{"/bin/python3", filepath.Join(old, "engine/python/control.py")}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	var status OwnerRuntimeStatus
+	detectOwnerRuntime(&status, install, rec)
+	if status.RunningRuntimeDir != old || status.RunningRuntimeHash != "1111111111111111" || status.DeveloperCheckout {
+		t.Fatal(status)
+	}
+
+	rec.ResourcesDir = old
+	processArgsFn = func(int) ([]string, error) { return nil, os.ErrNotExist }
+	status = OwnerRuntimeStatus{}
+	detectOwnerRuntime(&status, install, rec)
+	if status.RunningRuntimeDir != old {
+		t.Fatal("receipt fallback", status)
+	}
+
+	processArgsFn = func(int) ([]string, error) {
+		return []string{"/bin/python3", filepath.Join(prepared.HostHome, "installation with spaces-other", "scripts/dev.py")}, nil
+	}
+	status = OwnerRuntimeStatus{}
+	detectOwnerRuntime(&status, install, rec)
+	if !status.DeveloperCheckout || status.RunningRuntimeDir != "" {
+		t.Fatal(status)
+	}
+}
+
+func TestRestartStaleRuntimeOwnerRejectsUnboundOwner(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	install := filepath.Join(prepared.HostHome, "installation")
+	prepared.Resources = filepath.Join(install, "runtime-1111111111111111")
+	if err := os.Mkdir(install, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := RestartStaleRuntimeOwner(ctx, prepared, "", nil); err == nil {
+		t.Fatal("empty fingerprint accepted")
+	}
+	lock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RestartStaleRuntimeOwnerDetached(ctx, prepared, "fingerprint", nil); !errors.Is(err, supervisor.ErrUpgradeLocked) {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestartStaleRuntimeOwner(ctx, prepared, "fingerprint", nil); !errors.Is(err, supervisor.ErrOwnerFingerprintMismatch) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(prepared.Resources); !os.IsNotExist(err) {
+		t.Fatal("resources unexpectedly changed", err)
+	}
+}
+
+func TestStartFirstRuntimeRefusesHeldUpgradeLock(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	lock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	ctx := t.Context()
+	if _, err := StartFirstRuntimeHandle(ctx, prepared); !errors.Is(err, supervisor.ErrUpgradeLocked) {
+		t.Fatalf("handle startup returned %v", err)
+	}
+	if err := StartFirstRuntimeDetached(ctx, prepared); !errors.Is(err, supervisor.ErrUpgradeLocked) {
+		t.Fatalf("detached startup returned %v", err)
+	}
+	if _, err := StartFirstRuntimeSupervised(ctx, prepared.ConfigPath, nil); !errors.Is(err, supervisor.ErrUpgradeLocked) {
+		t.Fatalf("supervised startup returned %v", err)
+	}
+}
+
+func TestVerifyRestartedRuntimeGeneration(t *testing.T) {
+	const bundledHash = "2222222222222222"
+	for _, tc := range []struct {
+		name string
+		post OwnerRuntimeStatus
+		ok   bool
+	}{
+		{name: "matching hash", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready", RunningRuntimeHash: bundledHash}, ok: true},
+		{name: "starting", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "starting", RunningRuntimeHash: bundledHash}},
+		{name: "stale graph assets", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready", GraphAssetsStale: true, RunningRuntimeHash: bundledHash}},
+		{name: "wrong hash", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready", RunningRuntimeHash: "1111111111111111"}},
+		{name: "missing hash", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready"}},
+		{name: "unlocked", post: OwnerRuntimeStatus{HasReceipt: true, State: "ready", RunningRuntimeHash: bundledHash}},
+		{name: "missing receipt", post: OwnerRuntimeStatus{OwnerLocked: true, State: "ready", RunningRuntimeHash: bundledHash}},
+		{name: "developer checkout", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready", DeveloperCheckout: true, RunningRuntimeHash: bundledHash}},
+		{name: "stale generation", post: OwnerRuntimeStatus{OwnerLocked: true, HasReceipt: true, State: "ready", StaleVersionDetected: true, RunningRuntimeHash: bundledHash}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifyRestartedRuntimeGeneration(tc.post, bundledHash)
+			if tc.ok {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "restarted runtime generation mismatch") {
+				t.Fatalf("expected generation mismatch, got %v", err)
+			}
+		})
+	}
+}
+
+func TestStartFirstRuntimeDetachedKeepsLauncherOnTimeout(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	scripts := filepath.Join(prepared.Resources, "scripts")
+	if err := os.Mkdir(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scripts, "dev.py")
+	childPID := filepath.Join(prepared.HostHome, "launcher.pid")
+	if err := os.WriteFile(script, []byte("echo $$ > \"$HOME/launcher.pid\"\necho launcher-ready-to-wait\nexec /bin/sleep 30\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err := StartFirstRuntimeDetached(ctx, prepared)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(childPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 1 {
+		t.Fatal(pid, err)
+	}
+	defer syscall.Kill(pid, syscall.SIGKILL)
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatal("launcher stopped on timeout", err)
+	}
+	if group, err := syscall.Getpgid(pid); group != pid || err != nil {
+		t.Fatal("launcher not detached", group, err)
+	}
+	logPath := filepath.Join(prepared.HostHome, "runtime-logs", "launcher.log")
+	if info, err := os.Stat(logPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal(info, err)
+	}
+	if log, err := os.ReadFile(logPath); err != nil || !strings.Contains(string(log), "launcher-ready-to-wait") {
+		t.Fatal(string(log), err)
+	}
+}
+
+func TestStartFirstRuntimeDetachedReportsEarlyExit(t *testing.T) {
+	prepared := newReadOnlyRuntimeFixture(t)
+	scripts := filepath.Join(prepared.Resources, "scripts")
+	if err := os.Mkdir(scripts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scripts, "dev.py")
+	if err := os.WriteFile(script, []byte("exit 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var exitErr *exec.ExitError
+	if err := StartFirstRuntimeDetached(ctx, prepared); !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+		t.Fatal(err)
+	}
+}
+
+func requireRuntimeOwnerTestSupport(t *testing.T) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("loopback listen unavailable in sandbox: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.Close()
+	if _, err := supervisor.ProcessStartTime(context.Background(), os.Getpid()); errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skipf("ps unavailable in sandbox: %v", err)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestartStaleRuntimeOwnerReplacesVerifiedOwner(t *testing.T) {
+	requireRuntimeOwnerTestSupport(t)
+	_, prepared := newSyntheticFirstRuntimeFixture(t, "launcher", nil)
+	install := filepath.Join(prepared.HostHome, "components", "installation")
+	oldAssets := fstest.MapFS{"scripts/dev.py": {Data: []byte("# old runtime")}}
+	newAssets := fstest.MapFS{"scripts/dev.py": {Data: []byte("# new runtime")}}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	oldResources, err := PrepareRuntimeResources(ctx, install, oldAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHash, err := BundledRuntimeHash(oldAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical := InstallWorkerState{
+		Schema: 1, State: "completed", PID: 42, Started: "historical worker start", RuntimeHash: oldHash,
+		NetworkBytesDownloaded: 123456, RuntimeSyncRan: true,
+	}
+	writeBootstrapTestJSON(t, filepath.Join(install, "worker-state.json"), historical)
+	prepared.Resources = oldResources
+	if _, err := RefreshManagedGraphAssets(prepared.ConfigPath, install, prepared.Resources); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = ShutdownFirstRuntime(cleanup, prepared.ConfigPath)
+	})
+	if err := StartFirstRuntimeDetached(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	oldOwner, err := supervisor.VerifyOwnerRecord(ctx, prepared.StoreRoot, prepared.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := processArgsFn
+	t.Cleanup(func() { processArgsFn = original })
+	processArgsFn = func(pid int) ([]string, error) {
+		if pid == oldOwner.PID {
+			return []string{prepared.Python, filepath.Join(oldResources, "scripts/dev.py")}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	fingerprint := supervisor.OwnerFingerprint(oldOwner)
+	installer := Installer{Root: install}
+	bundledHash, err := BundledRuntimeHash(newAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Resources = filepath.Join(install, "runtime-"+bundledHash)
+	if err := installer.withLock(func() error {
+		handle, err := RestartStaleRuntimeOwner(ctx, prepared, fingerprint, newAssets)
+		if handle != nil || !errors.Is(err, ErrInstallWorkerBusy) {
+			t.Fatalf("restart without staging while installation.lock held = %v, %v", handle, err)
+		}
+		owner, err := supervisor.VerifyOwnerRecord(ctx, prepared.StoreRoot, prepared.ConfigPath)
+		if err != nil || supervisor.OwnerFingerprint(owner) != fingerprint {
+			t.Fatalf("unstaged restart disturbed existing owner: %+v, %v", owner, err)
+		}
+		if ready, err := FirstRuntimeReady(ctx, prepared.ConfigPath); err != nil || !ready {
+			t.Fatalf("old owner readiness after blocked restart = %t, %v", ready, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareRuntimeResources(ctx, install, newAssets); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.withLock(func() error {
+		handle, err := RestartStaleRuntimeOwner(ctx, prepared, fingerprint, newAssets,
+			WithFirstRuntimeStopTimeouts(2*time.Second, 2*time.Second))
+		if err != nil || handle == nil || !handle.Owned() {
+			t.Fatalf("restart with staged resources while installation.lock held = %v, %v", handle, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newOwner, err := supervisor.VerifyOwnerRecord(ctx, prepared.StoreRoot, prepared.ConfigPath)
+	if err != nil || supervisor.OwnerFingerprint(newOwner) == supervisor.OwnerFingerprint(oldOwner) {
+		t.Fatal(newOwner, err)
+	}
+	status, err := InspectOwnerRuntimeStatus(ctx, prepared.ConfigPath, filepath.Dir(install), newAssets)
+	if err != nil || status.RunningRuntimeHash != status.BundledRuntimeHash || status.GraphAssetsStale ||
+		status.GraphAssetsPath != filepath.Join(install, "runtime-"+status.BundledRuntimeHash, graphAssetsSuffix) {
+		t.Fatal(status, err)
+	}
+	receipt, err := ReadRuntimeUpgradeReceipt(filepath.Dir(install), prepared.ConfigPath)
+	if err != nil || !receipt.ZeroDownloads || receipt.FromRuntimeHash != oldHash || receipt.ToRuntimeHash != bundledHash ||
+		receipt.OwnerFingerprint != supervisor.OwnerFingerprint(newOwner) || receipt.CompletedAt == "" ||
+		receipt.PriorWorkerRuntime != oldHash || receipt.PriorWorkerPID != historical.PID || receipt.PriorWorkerStarted != historical.Started ||
+		receipt.PriorWorkerNetBytes != historical.NetworkBytesDownloaded || !receipt.PriorWorkerSyncRan {
+		t.Fatalf("upgrade receipt = %+v, %v", receipt, err)
+	}
+	if status.UpgradeReceipt == nil || *status.UpgradeReceipt != receipt {
+		t.Fatalf("status upgrade receipt = %+v, want %+v", status.UpgradeReceipt, receipt)
+	}
+	plan := Plan{Items: []Item{{Observation: Observation{Status: Available}}}}
+	if check := EvaluateZeroDownloads(plan, Journal{}, false, historical, true, bundledHash, status.UpgradeReceipt); !check.Satisfied {
+		t.Fatalf("zero-download check = %+v", check)
+	}
 }

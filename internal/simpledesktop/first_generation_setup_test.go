@@ -19,7 +19,7 @@ func firstGenerationFixture() (*App, GenerationRef) {
 	row := GenerationRow{Revision: ref.Revision, Digest: "fixture-digest",
 		Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "example-model", Endpoint: "https://example.test/v1"}}
 	s := &a.integrations
-	s.Loaded = true
+	s.Loaded, s.GenerationLoaded = true, true
 	s.Generation = GenerationDirectory{Revision: 5, Profiles: map[string][]GenerationRow{ref.ID: {row}}}
 	s.editProfile(ref.ID, row)
 	return a, ref

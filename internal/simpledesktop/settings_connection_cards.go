@@ -55,7 +55,8 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 			return
 		}
 
-		hasChannelRow := a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0)
+		setupOnly := a.isSetupOnlyRuntime() || a.completion == setupOnlyCompletion
+		hasChannelRow := setupOnly || a.Config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0)
 
 		// 1) 记忆引擎（Cognee）服务行
 		cogneeState, cogneeStatus, cogneeColor := a.serviceCogneeStatus()
@@ -137,7 +138,9 @@ func (a *App) serviceConnectionOverview(c *ui.Context) {
 		// 3) Agent 模型代理行
 		if hasChannelRow {
 			compDot, compVal, compCol := "neutral", "待检查", tok.Text3
-			if strings.HasPrefix(a.completion, "端点已连接") {
+			if setupOnly {
+				compVal = "待配置提炼"
+			} else if strings.HasPrefix(a.completion, "端点已连接") {
 				compDot, compVal, compCol = "ok", "已连接", tok.OK
 			} else if a.completion != "" && a.completion != "未配置" {
 				compDot, compVal, compCol = "warn", "待检查", tok.Warning

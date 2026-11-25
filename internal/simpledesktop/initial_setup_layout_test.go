@@ -3,7 +3,6 @@ package simpledesktop
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +16,7 @@ import (
 func setupLayoutFixture() *App {
 	a, item := environmentFixture()
 	a.initialSetup = true
+	a.environment.InitialStep = 2
 	a.environment.Plan.Items = nil
 	for _, d := range []struct{ id, name, version string }{{"uv", "uv", "0.12.3"}, {"python", "Python", "3.12.12"}, {"runtime", "运行库", "LanceDB 0.39.0 · FastEmbed 0.9.1"}, {"cognee-source", "Cognee", "ec6f408"}, {"embedding", "向量模型", "fixed"}, {"agent-plugin", "Agent 插件", "1.8.0 · a176248"}} {
 		row := item
@@ -37,7 +37,7 @@ func TestFirstUsePlanKeepsApprovalVisibleAndDoesNotMoveBackground(t *testing.T) 
 		t.Fatal("first-use title missing")
 	}
 	fixtureImage(t, tt, "first-use-a-environment")
-	clickProjectUI(t, tt, "安装缺少的依赖")
+	clickProjectUI(t, tt, "安装并继续")
 	footer, ok := tt.Find("暂不安装")
 	if !ok || footer.Y < 0 || footer.Y+footer.H > 820 {
 		t.Fatal("approval footer escaped the window", footer)
@@ -46,6 +46,8 @@ func TestFirstUsePlanKeepsApprovalVisibleAndDoesNotMoveBackground(t *testing.T) 
 		t.Fatal("review started installation")
 	}
 	fixtureImage(t, tt, "first-use-a-plan")
+	clickProjectUI(t, tt, "查看技术清单")
+	footer, _ = tt.Find("暂不安装")
 	first, _ := tt.Find("uv · 0.12.3")
 	tt.Scroll(600, 400, 0, 500)
 	afterScroll, _ := tt.Find("uv · 0.12.3")
@@ -62,14 +64,19 @@ func TestFirstUsePlanKeepsApprovalVisibleAndDoesNotMoveBackground(t *testing.T) 
 
 func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	a := setupLayoutFixture()
+	a.environment.InitialStep = 1
+	a.environment.HostsLoaded = true
 	tt := ui.NewTester(a.View, 1200, 820)
-	clickProjectUI(t, tt, "连接 Agent")
-	clickProjectUI(t, tt, "配置记忆提炼")
-	if a.environment.InitialStep > 1 {
-		t.Fatal("missing runtime allowed future steps")
+	clickProjectUI(t, tt, "准备环境")
+	if a.environment.InitialStep != 2 {
+		t.Fatal("environment preparation should be reachable before runtime starts")
+	}
+	clickProjectUI(t, tt, "接入与提炼")
+	if a.environment.InitialStep != 2 {
+		t.Fatal("missing runtime allowed connection and generation")
 	}
 	a.environment.RuntimeStarted = true
-	a.integrations.Loaded = true
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
 	a.integrations.Connections.Connections = []AgentConnection{
 		{ID: "codex", Kind: "codex", Detected: true},
 		{ID: "pi", Kind: "pi", Detected: true},
@@ -77,10 +84,10 @@ func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	}
 	a.integrations.Generation.Profiles = map[string][]GenerationRow{}
 	tt.Frame()
-	clickProjectUI(t, tt, "连接 Agent")
+	clickProjectUI(t, tt, "选择 Agent")
 	fixtureImage(t, tt, "first-use-a-agents")
-	clickProjectUI(t, tt, "配置记忆提炼")
-	if a.environment.InitialStep != 3 || !tt.HasText("选择如何提炼记忆") {
+	clickProjectUI(t, tt, "接入与提炼")
+	if a.environment.InitialStep != 3 || !tt.HasText("确认接入 Agent 并启用记忆提炼") {
 		t.Fatal("model configuration bypassed validation/activation")
 	}
 	clickProjectUI(t, tt, "启用并完成")
@@ -89,7 +96,7 @@ func TestFirstUseStepsPreserveRuntimeGateAndSharedShell(t *testing.T) {
 	}
 	fixtureImage(t, tt, "first-use-a-processing")
 	clickProjectUI(t, tt, "准备环境")
-	if !tt.HasText("准备好你的本地记忆环境") || !tt.HasText("运行基础") || !tt.HasText("本地记忆引擎") || !tt.HasText("Agent 接入") {
+	if !tt.HasText("准备好你的本地记忆环境") || !tt.HasText("本地语义搜索模型") || !tt.HasText("本地记忆引擎") || !tt.HasText("Agent 接入组件") {
 		t.Fatal("return lost environment grouping")
 	}
 }
@@ -101,11 +108,12 @@ func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := GenerationRef{ID: "pi-setup", Revision: 2}
+	profile := GenerationProfile{Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "selected-model"}
 	directory := GenerationDirectory{Revision: 5, Next: &ref, Profiles: map[string][]GenerationRow{
-		ref.ID: {{Revision: ref.Revision, Digest: "pi-digest", Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "pi", BridgeProvider: "deepseek", Model: "selected-model"}}},
-	}}
+		ref.ID: {{Revision: ref.Revision, Digest: "pi-digest", Profile: profile}},
+	}, AgentBridges: map[string]GenerationProfile{"pi": profile}}
 	validated := make(chan GenerationRef, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "POST" && r.URL.Path == "/v1/generation/validations":
 			var body struct {
@@ -122,15 +130,15 @@ func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer server.Close()
+	})
 	a := setupLayoutFixture()
 	a.Config.GenerationFile = filepath.Join(root, "generation.json")
-	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+	a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
 	a.Update = func(func()) {}
+	a.Client.HTTP = &http.Client{Transport: transport}
 	a.environment.RuntimeStarted = true
 	a.environment.InitialStep = 3
-	a.integrations.Loaded = true
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
 	a.integrations.Connections.Connections = []AgentConnection{{Kind: "pi", Status: "configured_pending_new_session"}}
 	a.integrations.Generation = directory
 	tt := ui.NewTester(a.View, 1200, 820)
@@ -138,6 +146,7 @@ func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
 	if a.environment.Busy {
 		t.Fatal("activation started without a validation receipt")
 	}
+	tt.Scroll(600, 440, 0, 570)
 	clickProjectUI(t, tt, "验证（会消耗额度）")
 	select {
 	case actual := <-validated:
@@ -151,6 +160,7 @@ func TestFirstUseValidatesSavedPiBeforeEnablingRuntime(t *testing.T) {
 
 func TestSettingsEnvironmentUsesTheSameBoundedApprovalModal(t *testing.T) {
 	a := setupLayoutFixture()
+	a.initialSetup = false
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Themed(c, homeTheme).Fill().Children(func() { ui.Scroll(c).Fill().Children(func() { a.environmentSetup(c, false) }) })
 	}, 1200, 820)
@@ -201,7 +211,7 @@ func TestFirstUseV4StageBannerDetailsDialogAndNoBridgeWording(t *testing.T) {
 	a.environment.Cancel = func() { cancelled = true }
 
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("正在准备依赖组件…") || !tt.HasText("停止安装") {
+	if !tt.HasText("正在准备本地记忆环境") || !tt.HasText("停止安装") {
 		t.Fatalf("stage banner missing while busy: %v", tt.Texts())
 	}
 	for _, txt := range tt.Texts() {
@@ -231,8 +241,8 @@ func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
 	a := setupLayoutFixture()
 	a.environment.DownloadSource = "china"
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("国内镜像源") || !tt.HasText("国外官方源") || !tt.HasText("复制安装命令") {
-		t.Fatalf("download source toggle or manual copy button missing: %v", tt.Texts())
+	if !tt.HasText("国内镜像源") || !tt.HasText("国外官方源") || tt.HasText("复制安装命令") {
+		t.Fatalf("unexpected initial download controls: %v", tt.Texts())
 	}
 
 	clickProjectUI(t, tt, "国外官方源")
@@ -243,6 +253,7 @@ func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
 		t.Fatalf("expected feedback message after source toggle, got %q", a.environment.Message)
 	}
 
+	clickProjectUI(t, tt, "查看技术明细 (6 项)")
 	clickProjectUI(t, tt, "复制安装命令")
 	if !tt.HasText("已复制终端安装命令，执行后请点击「重新检测」") {
 		t.Fatalf("expected manual script copy message, got %q", a.environment.Message)
@@ -251,7 +262,8 @@ func TestFirstUseSourceSwitchAndManualCommandCopy(t *testing.T) {
 	// Open approval modal with OfficialSource set and check per-item copy button & labels.
 	a.environment.Plan.Items[0].Requirement.OfficialSource = "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz"
 	tt.Frame()
-	clickProjectUI(t, tt, "安装缺少的依赖")
+	clickProjectUI(t, tt, "安装并继续")
+	clickProjectUI(t, tt, "查看技术清单")
 	if !tt.HasText("当前来源：") || !tt.HasText("官方原址：") || !tt.HasText("复制全部安装命令") || !tt.HasText("复制此项安装命令") {
 		t.Fatalf("review modal missing mirror source labels or copy buttons: %v", tt.Texts())
 	}
@@ -265,10 +277,10 @@ func TestInitialSetupPolicyUpdateFooterUsesPluginAction(t *testing.T) {
 	}}
 	tt := ui.NewTester(a.View, 1200, 820)
 	if !tt.HasText("更新 Agent 插件") || tt.HasText("安装并继续") || tt.HasText("不兼容") {
-		t.Fatalf("unexpected Step 1 action: %v", tt.Texts())
+		t.Fatalf("unexpected Step 2 action: %v", tt.Texts())
 	}
 	clickProjectUI(t, tt, "更新 Agent 插件")
 	if !tt.HasText("确认更新 Agent 插件") {
-		t.Fatal("Step 1 update did not open the review")
+		t.Fatal("Step 2 update did not open the review")
 	}
 }

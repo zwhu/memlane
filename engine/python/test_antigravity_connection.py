@@ -1,4 +1,5 @@
 """Pinned native host compatibility and isolation, without a model or daily data."""
+import copy
 import json
 import os
 from pathlib import Path
@@ -11,10 +12,13 @@ import asyncio
 import types
 from unittest.mock import patch
 
+from aiohttp.test_utils import make_mocked_request
+
 from agent_connections import detect_executable, verify_artifact, sha
 from antigravity_plugin import files_for
 from antigravity_connection import AntigravityConnection
 from project_control import private_write, Registry
+from project_control_server import create_app
 from project_installation import prepare
 from project_policy import PolicyError
 
@@ -28,6 +32,19 @@ class AntigravityTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    async def read_operation_receipt(self, registry, profile, operation):
+        app = create_app(registry, 'm' * 40, {}, codex_config={'agent_hosts': {
+            'antigravity': {'profile': str(profile), 'executable': sys.executable}}})
+        app.freeze()
+        try:
+            request = make_mocked_request('GET', f'/v1/connections/operations/{operation}',
+                                          headers={'Authorization': 'Bearer ' + 'm' * 40}, app=app)
+            response = await app._handle(request)
+            self.assertEqual(response.status, 200)
+            return json.loads(response.body)
+        finally:
+            await app.cleanup()
 
     def artifact(self):
         agent = {'key_file': str(self.root / 'child.key'), 'control_token_file': str(self.root / 'control.key')}
@@ -145,12 +162,97 @@ assert common.run_session_improve('synthetic', 'synthetic') is False
                     with self.assertRaisesRegex(OSError, 'binding write interrupted'):
                         asyncio.run(connection.activate(registry.state['revision'], installation['manifest_sha256']))
                 self.assertNotEqual(marker.read_bytes(), (native / '.memlane-installation.json').read_bytes())
-                asyncio.run(connection.review(registry.state['revision']))
+                operation = 'partial-binding-activate'
+                receipt = dict(status='unknown', phase='post_mutation', instance_id=connection.id, action='activate',
+                               outcome='unknown', error_code='interrupted')
+                registry.state.setdefault('connection_operations', {})[operation] = receipt
+                revision = registry.state['revision']
+                record = registry.state['connections'][connection.id]
+                previous = copy.deepcopy(registry.state)
+
+                def fail_save():
+                    self.assertEqual(record['status'], 'configured_pending_new_session')
+                    self.assertEqual(receipt['status'], 'complete')
+                    self.assertEqual(registry.state['revision'], revision + 1)
+                    raise asyncio.CancelledError()
+
+                with patch.object(registry, 'save', side_effect=fail_save):
+                    with self.assertRaises(asyncio.CancelledError):
+                        asyncio.run(connection.review(revision))
+                self.assertEqual(registry.state, previous)
+                self.assertIs(registry.state['connection_operations'][operation], receipt)
+                self.assertIs(registry.state['connections'][connection.id], record)
+                row = asyncio.run(connection.review(revision))
+                body = asyncio.run(self.read_operation_receipt(registry, profile, operation))
+                self.assertEqual(body, {
+                    'recorded': True, 'operation_id': operation, 'instance_id': connection.id, 'action': 'activate',
+                    'status': 'complete', 'phase': 'post_mutation', 'error_code': None,
+                    'result': {'revision': revision + 1, 'connection': row},
+                })
+                self.assertEqual(registry.sessions_store.load_all()[1][operation], receipt)
             self.assertEqual(json.loads(marker.read_text())['activated_at'], 222)
             self.assertEqual(marker.read_bytes(), (native / '.memlane-installation.json').read_bytes())
             self.assertEqual(registry.state['connections'][connection.id]['activated_at'], 222)
         finally:
             registry.close()
+
+    def test_review_fresh_preparation_unknown_settles_original_prepare_receipt(self):
+        profile = self.root / '.gemini/config'
+        profile.mkdir(parents=True)
+        registry = Registry(self.root / 'registry.json', None)
+        self.addCleanup(registry.close)
+        connection = AntigravityConnection(registry, {}, profile, sys.executable)
+        operation = 'original-prepare'
+        with patch('antigravity_connection.Path.home', return_value=self.root):
+            registry.state['connections'][connection.id] = {
+                'status': 'preparation_unknown', 'preview': connection.preview()}
+            receipt = dict(status='unknown', phase='post_mutation', instance_id=connection.id, action='prepare')
+            registry.state.setdefault('connection_operations', {})[operation] = receipt
+            row = asyncio.run(connection.review(0))
+            body = asyncio.run(self.read_operation_receipt(registry, profile, operation))
+        self.assertEqual(row['status'], 'not_connected')
+        self.assertEqual(body, {
+            'recorded': True, 'operation_id': operation, 'instance_id': connection.id, 'action': 'prepare',
+            'status': 'complete', 'phase': 'post_mutation', 'outcome': 'rejected',
+            'error_code': 'antigravity_preparation_did_not_install',
+            'result': {'revision': 1, 'connection': row},
+        })
+        self.assertEqual(registry.sessions_store.load_all()[1][operation], receipt)
+
+    def test_review_fresh_prepared_validates_baseline_and_settles_prepare_receipt(self):
+        profile = self.root / '.gemini/config'
+        profile.mkdir(parents=True)
+        registry = Registry(self.root / 'registry.json', None)
+        self.addCleanup(registry.close)
+        connection = AntigravityConnection(registry, {'python': sys.executable, 'project_control': {
+            'url': 'http://127.0.0.1:18998'}, 'agent_host_home': str(self.root)}, profile, sys.executable)
+        agent = registry.state['agents'][connection.id] = {
+            'key_file': str(self.root / 'child.key'), 'control_token_file': str(self.root / 'control.key')}
+        with patch('antigravity_connection.Path.home', return_value=self.root):
+            asyncio.run(connection.prepare(0))
+        record = registry.state['connections'][connection.id]
+        installation = copy.deepcopy(agent['installation'])
+        self.assertNotIn('native_plugin_dir', record)
+        self.assertNotIn('prepared_installation', record)
+        receipt = dict(status='in_progress', instance_id=connection.id, action='prepare')
+        registry.state.setdefault('connection_operations', {})['original-prepare'] = receipt
+        revision = registry.state['revision']
+
+        private_write(connection.target, b'{"plugins": {}}')
+        with patch('antigravity_connection.Path.home', return_value=self.root):
+            with self.assertRaisesRegex(PolicyError, 'host_configuration_changed'):
+                asyncio.run(connection.review(revision))
+            self.assertEqual(receipt['status'], 'in_progress')
+            self.assertEqual(registry.state['revision'], revision)
+            connection.target.unlink()
+            row = asyncio.run(connection.review(revision))
+        self.assertEqual((row['status'], record['status']), ('prepared', 'prepared'))
+        self.assertEqual(agent['installation'], installation)
+        self.assertEqual(receipt, {
+            'status': 'complete', 'instance_id': connection.id, 'action': 'prepare',
+            'result': {'revision': revision + 1, 'connection': row},
+        })
+        self.assertEqual(registry.sessions_store.load_all()[1]['original-prepare'], receipt)
 
     def test_prepared_marker_does_not_admit_new_conversations(self):
         self.isolated('''
@@ -354,8 +456,104 @@ for case in ('standard', 'full', 'other_name', 'wrong_uuid', 'relative', 'file_s
             self.assertEqual(registry.state['connections'][connection.id]['activated_at'], 111)
             self.assertNotIn('prepared_installation', registry.state['connections'][connection.id])
             verify_artifact({**candidate, 'plugin_dir': str(native)})
+            with (patch('antigravity_connection.Path.home', return_value=self.root),
+                  patch('project_installation.prepare') as stage):
+                asyncio.run(connection.review(registry.state['revision']))
+                active_marker = (native / '.memlane-installation.json').read_bytes()
+                asyncio.run(connection.prepare(registry.state['revision']))
+            stage.assert_not_called()
+            record = registry.state['connections'][connection.id]
+            self.assertEqual(record['prepared_installation']['plugin_dir'], candidate['plugin_dir'])
+            self.assertEqual(record['active_record']['status'], 'configured_pending_new_session')
+            self.assertEqual((Path(candidate['plugin_dir']) / '.memlane-installation.json').read_bytes(), active_marker)
+            self.assertEqual(connection.installed(), native)
         finally:
             registry.close()
+
+    def test_review_interrupted_upgrade_restores_active_snapshot_and_rejects_prepare_receipt(self):
+        registry, connection, original, native = self.active_connection()
+        self.addCleanup(registry.close)
+        asyncio.run(connection.review(registry.state['revision']))
+        active_record = copy.deepcopy(registry.state['connections'][connection.id])
+        receipt = dict(status='unknown', phase='post_mutation', instance_id=connection.id, action='prepare')
+        registry.state.setdefault('connection_operations', {})['original-prepare'] = receipt
+        with (patch('antigravity_connection.Path.home', return_value=self.root),
+              patch('project_installation.prepare', side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(connection.prepare(registry.state['revision']))
+        on_disk = json.loads(registry.path.read_text())
+        interrupted = on_disk['connections'][connection.id]
+        self.assertEqual(interrupted['status'], 'preparation_unknown')
+        self.assertTrue(interrupted['activated'])
+        self.assertEqual(interrupted['native_plugin_dir'], str(native))
+        self.assertEqual(interrupted['active_record'], active_record)
+        self.assertEqual(interrupted['active_installation'], original)
+        self.assertEqual(on_disk['agents'][connection.id]['installation'], original)
+        self.assertEqual(registry.sessions_store.load_all()[1]['original-prepare'], receipt)
+
+        row = asyncio.run(connection.review(on_disk['revision']))
+        self.assertEqual(row['status'], 'configured_pending_new_session')
+        restored = json.loads(registry.path.read_text())
+        self.assertEqual(restored['connections'][connection.id], active_record)
+        self.assertEqual(restored['agents'][connection.id]['installation'], original)
+        self.assertEqual(restored['revision'], on_disk['revision'] + 1)
+        self.assertEqual(receipt, {
+            'status': 'complete', 'phase': 'post_mutation', 'instance_id': connection.id, 'action': 'prepare',
+            'outcome': 'rejected', 'error_code': 'antigravity_preparation_did_not_install',
+            'result': {'revision': restored['revision'], 'connection': row},
+        })
+        self.assertEqual(registry.sessions_store.load_all()[1]['original-prepare'], receipt)
+
+    def test_review_prepared_upgrade_verifies_both_artifacts_and_settles_only_prepare_receipt(self):
+        registry, connection, original, native = self.active_connection()
+        self.addCleanup(registry.close)
+        asyncio.run(connection.review(registry.state['revision']))
+        with patch('antigravity_connection.Path.home', return_value=self.root):
+            asyncio.run(connection.prepare(registry.state['revision']))
+        record = registry.state['connections'][connection.id]
+        receipt = dict(status='unknown', phase='post_mutation', instance_id=connection.id, action='prepare',
+                       outcome='rejected', error_code='old_error')
+        activate = dict(status='unknown', instance_id=connection.id, action='activate')
+        unrelated = dict(status='unknown', instance_id='other', action='prepare')
+        complete = dict(status='complete', instance_id=connection.id, action='prepare')
+        registry.state['connection_operations'] = operations = {
+            'original-prepare': receipt, 'activation': activate, 'unrelated': unrelated, 'settled': complete}
+        before = copy.deepcopy(operations)
+        revision = registry.state['revision']
+        for script in (Path(record['prepared_installation']['plugin_dir']) / 'scripts/agy_hook.py',
+                       native / 'scripts/agy_hook.py'):
+            with self.subTest(script=script):
+                data = script.read_bytes()
+                try:
+                    script.write_bytes(data + b'\n# tampered')
+                    with self.assertRaisesRegex(PolicyError, 'connection_artifact_changed'):
+                        asyncio.run(connection.review(revision))
+                finally:
+                    script.write_bytes(data)
+                self.assertEqual(operations, before)
+                self.assertEqual(registry.state['revision'], revision)
+
+        def interrupt_save():
+            self.assertEqual(receipt['status'], 'complete')
+            raise asyncio.CancelledError
+
+        with patch.object(registry, 'save', side_effect=interrupt_save):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(connection.review(revision))
+        self.assertEqual(operations, before)
+        self.assertEqual(registry.state['revision'], revision)
+        row = asyncio.run(connection.review(revision))
+        self.assertEqual((row['status'], record['status']), ('prepared', 'prepared'))
+        self.assertEqual(registry.state['agents'][connection.id]['installation'], original)
+        self.assertEqual(receipt, {
+            'status': 'complete', 'phase': 'post_mutation', 'instance_id': connection.id, 'action': 'prepare',
+            'result': {'revision': revision + 1, 'connection': row},
+        })
+        self.assertEqual(operations, {**before, 'original-prepare': receipt})
+        self.assertEqual(registry.sessions_store.load_all()[1], operations)
+        with patch.object(registry, 'save') as save:
+            self.assertEqual(asyncio.run(connection.review(revision + 1)), row)
+        save.assert_not_called()
 
     def test_upgrade_review_requires_unchanged_configuration(self):
         for changed in ('settings', 'artifact'):

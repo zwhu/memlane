@@ -4,15 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 func generationUpdate(t *testing.T, updates <-chan func()) {
@@ -35,10 +35,15 @@ func TestGenerationUnknownOperationsSurviveReopenAndOnlyReadOriginalReceipts(t *
 			}
 			row := GenerationRow{Revision: 1, Digest: "digest", Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "model", Endpoint: "https://example.test/v1", CredentialConfigured: true, CredentialVersion: "v1"}}
 			directory := GenerationDirectory{Revision: 2, Active: &GenerationRef{ID: "old", Revision: 1}, Profiles: map[string][]GenerationRow{"api": {row}}}
+			if kind == "next" {
+				directory.Validations = map[string]GenerationValidation{
+					"probe": {Digest: row.Digest, Status: "passed", Plain: true, Schema: true, Quality: true},
+				}
+			}
 			cfg := Config{GenerationFile: filepath.Join(root, "generation.json")}
 			var mutations atomic.Int32
 			var confirmed atomic.Bool
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method != "GET" {
 					mutations.Add(1)
@@ -77,11 +82,11 @@ func TestGenerationUnknownOperationsSurviveReopenAndOnlyReadOriginalReceipts(t *
 					t.Errorf("unexpected route %s", r.URL.Path)
 					w.WriteHeader(404)
 				}
-			}))
-			defer server.Close()
-			cfg.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+			})
+			cfg.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
 			a := New(cfg, nil)
 			updates := make(chan func(), 16)
+			a.Client.HTTP = &http.Client{Transport: transport}
 			a.Update = func(f func()) { updates <- f }
 			a.integrations.Generation = directory
 			a.integrations.editProfile("api", row)
@@ -100,6 +105,7 @@ func TestGenerationUnknownOperationsSurviveReopenAndOnlyReadOriginalReceipts(t *
 			}
 			b := New(cfg, nil)
 			reopened := make(chan func(), 16)
+			b.Client.HTTP = &http.Client{Transport: transport}
 			b.Update = func(f func()) { reopened <- f }
 			b.RefreshIntegrations()
 			generationUpdate(t, reopened)
@@ -202,22 +208,29 @@ func TestGenerationOperationRecoveryProcess(t *testing.T) {
 	}
 }
 
-func TestGenerationJournalReleaseDoesNotWaitForInheritedDescriptor(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "journal")
-	first, err := lockGenerationOperations(root)
-	if err != nil {
+func TestGenerationJournalSharesAtomicRepairRecordsWithControlPlane(t *testing.T) {
+	a := New(Config{GenerationFile: filepath.Join(t.TempDir(), "generation.json")}, nil)
+	op := generationUIOperation{Operation: "ui-trae-repair", Kind: "connection_repair_trae_hooks", Profile: "trae"}
+	if !op.valid() || !op.connection() {
+		t.Fatal("repair journal kind must be recognized as a connection operation")
+	}
+	if err := a.recordGenerationOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	duplicate, err := syscall.Dup(int(first.Fd()))
-	if err != nil {
-		first.Close()
-		t.Fatal(err)
+	root := a.generationOperationsDir()
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 || entries[0].Name() != op.Operation+".json" {
+		t.Fatalf("expected only the committed journal entry, got %v, %v", entries, err)
 	}
-	defer syscall.Close(duplicate)
-	unlockGenerationOperations(first)
-	next, err := lockGenerationOperations(root)
-	if err != nil {
-		t.Fatal("released journal still locked by inherited descriptor", err)
+	shared, err := controlplane.LoadUIOperations(root)
+	if err != nil || len(shared) != 1 || shared[0] != controlplane.UIOperation(op) {
+		t.Fatalf("shared journal could not recover repair: %v, %v", shared, err)
 	}
-	unlockGenerationOperations(next)
+	if !a.finishGenerationOperation(op.Operation) {
+		t.Fatal(a.integrations.Error)
+	}
+	shared, err = controlplane.LoadUIOperations(root)
+	if err != nil || len(shared) != 0 {
+		t.Fatalf("finished entry remains: %v, %v", shared, err)
+	}
 }

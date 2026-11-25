@@ -60,7 +60,7 @@ func TestGenerationHandoffConfirmsThenRecoversOriginalOperationWithoutResending(
 	defer server.Close()
 	cfg := Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}}
 	a := New(cfg, nil)
-	a.integrations.Loaded = true
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
 	a.integrations.Generation = directory
 	updates := make(chan func(), 32)
 	a.Update = func(f func()) { updates <- f }

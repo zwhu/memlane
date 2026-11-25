@@ -42,9 +42,9 @@ func (a *App) trayStatusLevel() string {
 	switch {
 	case a.monitor.State == "degraded" || a.monitor.State == "exited" ||
 		(a.service != "" && a.service != "已连接" && a.service != "尚未检查") ||
-		summary.HasErrorAlert:
+		(a.monitor.ControlChecked && !a.monitor.ControlReachable) || summary.HasErrorAlert:
 		return "danger"
-	case a.monitor.State == "warning" || hookErrors > 0 || len(summary.Alerts) > 0:
+	case a.monitor.State == "warning" || a.trayLowDisk() || hookErrors > 0 || len(summary.Alerts) > 0:
 		return "warn"
 	default:
 		return "ok"
@@ -78,15 +78,21 @@ func (a *App) trayOverallServiceStatus() (dotState, label string) {
 	switch {
 	case a.monitor.State == "exited":
 		return "fail", "服务 · 已停止"
-	case a.monitor.State == "degraded" || (a.service != "" && a.service != "已连接" && a.service != "尚未检查"):
+	case a.monitor.State == "degraded" || (a.service != "" && a.service != "已连接" && a.service != "尚未检查") ||
+		(a.monitor.ControlChecked && !a.monitor.ControlReachable):
 		return "fail", "服务 · 异常"
-	case a.monitor.State == "warning" || hookErrors > 0:
+	case a.monitor.State == "warning" || a.trayLowDisk() || hookErrors > 0:
 		return "warn", "服务 · 需关注"
 	case a.monitor.State == "ready" || a.service == "已连接":
 		return "ok", "服务 · 已连接"
 	default:
 		return "neutral", "服务 · 待检查"
 	}
+}
+
+func (a *App) trayLowDisk() bool {
+	snap := a.monitor.Snapshot
+	return snap != nil && snap.Disk != nil && snap.Disk.Low
 }
 
 func (a *App) trayControlStatus() (dotState, metric string, col ui.Color) {
@@ -107,6 +113,9 @@ func (a *App) trayControlStatus() (dotState, metric string, col ui.Color) {
 }
 
 func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
+	if a.isSetupOnlyRuntime() || a.completion == setupOnlyCompletion {
+		return "neutral", "待配置提炼", tok.Text3
+	}
 	if a.Config.CompletionURL == "" && (a.completion == "" || a.completion == "未配置") {
 		return "neutral", "未配置", tok.Text3
 	}

@@ -6,49 +6,71 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-func (a *App) captureConnectionAction(c *ui.Context, row AgentConnection) {
-	s := &a.integrations
-	if s.CaptureReview == nil {
-		s.CaptureReview = map[string]string{}
+func captureVerifiedHealthy(row AgentConnection) bool {
+	if row.Capture != nil {
+		return row.Capture.State == "healthy"
 	}
-	if s.CaptureHelp == nil {
-		s.CaptureHelp = map[string]bool{}
-	}
-	if _, open := s.CaptureReview[row.ID]; open {
-		textButton(c, "取消", func() { delete(s.CaptureReview, row.ID) }).Disabled(s.Busy)
-		return
+	return !captureConnection(row) && row.Status == "configured_pending_new_session" && row.NewSessions > 0
+}
+
+func shouldExpandChecklist(row AgentConnection) bool {
+	if captureVerifiedHealthy(row) {
+		return false
 	}
 	if row.Capture != nil {
 		switch row.Capture.State {
-		case "needs_permission", "deferred":
-			label := "允许自动采集"
-			if row.Capture.State == "deferred" {
-				label = "开启"
-			}
-			textButton(c, label, func() { s.CaptureReview[row.ID] = row.Capture.ReviewSHA }).Label(label + "：" + connectionName(row.Kind)).Disabled(s.Busy || row.Capture.ReviewSHA == "")
-			return
-		case "healthy", "checking":
-			return
-		case "check_failed":
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				if s.Loading {
-					ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)
-				}
-				textButton(c, "重新检测", a.RefreshConnections).Label("重新检测自动采集：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
-			})
-			return
+		case "waiting_session", "waiting_message", "awaiting_generation_activation", "needs_permission",
+			"check_failed", "project_disabled", "project_pending", "needs_hook_repair":
+			return true
 		}
 	}
-	label := "查看步骤"
-	if s.CaptureHelp[row.ID] {
-		label = "收起步骤"
+	if needsTraeHooksRepair(row) {
+		return true
 	}
-	textButton(c, label, func() { s.CaptureHelp[row.ID] = !s.CaptureHelp[row.ID] }).Label(label + "：" + connectionName(row.Kind))
+	switch row.Status {
+	case "configured_pending_new_session":
+		return captureConnection(row) || row.NewSessions == 0
+	case "environment_receipt_unconfirmed", "requires_review", "activation_unknown",
+		"preparation_unknown", "staging_unknown", "agent_creation_unconfirmed", "check_failed":
+		return true
+	}
+	return false
+}
+
+func (a *App) captureConnectionAction(c *ui.Context, row AgentConnection) {
+	s := &a.integrations
+	if shouldExpandChecklist(row) {
+		label := "收起步骤"
+		if s.CaptureHelpCollapsed[row.ID] {
+			label = "查看步骤"
+		}
+		textButton(c, label, func() {
+			if s.CaptureHelpCollapsed == nil {
+				s.CaptureHelpCollapsed = make(map[string]bool)
+			}
+			s.CaptureHelpCollapsed[row.ID] = !s.CaptureHelpCollapsed[row.ID]
+		}).Label(label + "：" + connectionName(row.Kind))
+	}
+	if row.Capture != nil && row.Capture.State == "deferred" && s.pendingConnection(row.ID) == nil {
+		a.capturePermissionButton(c, row, "开启")
+	}
+}
+
+func (a *App) capturePermissionButton(c *ui.Context, row AgentConnection, label string) {
+	s := &a.integrations
+	textButton(c, label, func() {
+		if s.CaptureReview == nil {
+			s.CaptureReview = make(map[string]string)
+		}
+		s.CaptureReview[row.ID] = row.Capture.ReviewSHA
+	}).Label(label + "：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading || row.Capture.ReviewSHA == "")
 }
 
 func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 	s := &a.integrations
-	if reviewed, open := s.CaptureReview[row.ID]; open {
+	reviewed, consentOpen := s.CaptureReview[row.ID]
+	canConsent := s.pendingConnection(row.ID) == nil && connectionActionAllowed(row, "allow_capture")
+	if consentOpen && canConsent {
 		ui.Column(c).FillWidth().Padding(0, 0, 0, 42).Children(func() {
 			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(12).Gap(10).Background(tok.Fill1).Radius(6).Children(func() {
 				homeText(c, "允许 Codex 自动采集已授权项目中的会话到 Memlane。", homeBody).FontSize(12)
@@ -56,13 +78,13 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 					ui.Button(c, "确认允许").Label("确认允许自动采集："+connectionName(row.Kind)).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() {
 						a.connectAgentsReviewed("allow_capture", []string{row.ID}, reviewed)
 					})
+					textButton(c, "取消", func() { delete(s.CaptureReview, row.ID) }).Disabled(s.Busy)
 					textButton(c, "暂不开启", func() {
 						a.connectAgentsReviewed("defer_capture", []string{row.ID}, reviewed)
 					}).Label("暂不开启自动采集：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
 				})
 			})
 		})
-		return
 	}
 	if row.Capture != nil && row.Capture.State == "check_failed" {
 		homeText(c, "暂时无法读取采集结果，请重新检测。", homeMeta).Margin(0, 0, 0, 42)
@@ -70,7 +92,7 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 	if row.LastHookError != nil && (row.Capture == nil || row.Capture.State != "healthy") {
 		homeText(c, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError), homeMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
 	}
-	if !s.CaptureHelp[row.ID] {
+	if !shouldExpandChecklist(row) || s.CaptureHelpCollapsed[row.ID] {
 		return
 	}
 	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
@@ -89,13 +111,22 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 			homeText(c, "在项目设置中开启会话采集后，再发送新消息。", homeMeta)
 			return
 		}
+		restart := "1. 如果你原本已打开 " + connectionName(row.Kind) + "，请先 ⌘Q 完全退出后重新打开。"
 		if row.Kind == "antigravity" {
-			homeText(c, "1. 在 Gemini App 右上角打开 Antigravity，选择项目并新建会话、发送消息。", homeMeta)
-		} else {
-			homeText(c, "1. 重新打开 "+connectionName(row.Kind)+"，新建会话并发送一条消息。", homeMeta)
+			restart = "1. 如果你原本已打开 Gemini App，请先 ⌘Q 完全退出后重新打开，并在右上角打开 Antigravity。"
 		}
-		homeText(c, "2. 等待回复后，点击重新检测。", homeMeta)
+		homeText(c, restart, homeMeta).FontWeight(500).TextColor(tok.Text1)
+		newSessionStep := "打开项目工作区新建会话，发送一条消息；无需等待此处变绿即可继续后续步骤。"
+		if row.Kind == "trae_ide" {
+			homeText(c, "2. 在 TRAE 设置 → Hooks → 全局 中开启开关并确认安全提示。", homeMeta)
+			homeText(c, "3. "+newSessionStep, homeMeta)
+		} else {
+			homeText(c, "2. "+newSessionStep, homeMeta)
+		}
 		ui.Row(c).Gap(6).AlignItems(ui.Center).AlignSelf(ui.Start).Children(func() {
+			if canConsent && !consentOpen && row.Capture.State == "needs_permission" {
+				a.capturePermissionButton(c, row, "允许自动采集")
+			}
 			textButton(c, "重新检测", a.RefreshConnections).Label("重新检测自动采集：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
 			if s.Loading {
 				ui.Spinner(c).Size(13, 13).TextColor(homeLinkInk)

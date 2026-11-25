@@ -229,6 +229,7 @@ type projectQueueSessionResult struct {
 }
 
 type projectQueueSnapshot struct {
+	setupOnly             bool
 	sessions              []projectQueueSessionResult
 	authDenied            bool
 	v2Summary             v2MessageSummaryResponse
@@ -308,11 +309,12 @@ func (a *App) loadProjectQueue(q *projectQueueState, p AccessProject) {
 		knowledgeWriter: knowledgeWriter, prevKnowledgeStartedAt: q.KnowledgeRead.StartedAt,
 	}
 	meta := projectQueueApplyMeta{request, authEpoch, ackEpoch, baseIdentity, sessions}
-	update := a.Update
+	update, setupOnly := a.Update, a.isSetupOnlyRuntime()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		snap := a.fetchProjectQueueSnapshot(ctx, in)
+		snap.setupOnly = setupOnly
 		rec := reconcileProjectQueueState(p, snap)
 		update(func() { a.applyProjectQueueResult(q, p, meta, snap, rec) })
 	}()
@@ -523,15 +525,15 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 	}
 	if snap.v2SummaryOK {
 		rec.UpdateBacklog = snap.summaryBacklogErr == ""
-		if !rec.UpdateBacklog {
-			rec.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
-		} else {
+		if rec.UpdateBacklog {
 			summary := snap.v2Summary
 			rec.Backlog = summary.Backlog
 			rec.ProcessingIssues = summary.ProcessingIssues
 			rec.AutomaticSave = summary.AutomaticSave
 			rec.BufferReviews = summary.BufferReviews
 			rec.Checks = summary.Checks
+		} else if !snap.setupOnly {
+			rec.BacklogError = "后台采集状态暂时无法读取；任务不会因此重复启动"
 		}
 	}
 	if snap.noticeErr != nil {
@@ -609,8 +611,12 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 		q.localStateLoaded = true
 	}
 	q.applyNoticeAcknowledgementRead(snap.ackPath, meta.ackEpoch, snap.noticeAckSeq, snap.noticeAcks, snap.noticeAckErr)
-	if snap.v2SummaryOK {
+	if a.isSetupOnlyRuntime() {
+		q.BacklogError = ""
+	} else if snap.v2SummaryOK {
 		q.BacklogError = rec.BacklogError
+	}
+	if snap.v2SummaryOK {
 		if rec.UpdateBacklog {
 			q.Backlog = rec.Backlog
 			q.ProcessingIssues = rec.ProcessingIssues

@@ -42,6 +42,11 @@ class ConnectionCapture:
     def record(self, identifier, kind):
         return self.registry.state.get('codex_connections' if kind == 'codex' else 'connections', {}).get(identifier, {})
 
+    def _is_setup_mode(self):
+        first_install = self.config.get('first_install')
+        return ((isinstance(first_install, dict) and first_install.get('setup') is True)
+                or self.config.get('generation_mode') == 'unconfigured')
+
     def key(self, row, adapter):
         agent = self.registry.state['agents'].get(row['instance_id'], {})
         record = self.record(row['instance_id'], row['kind'])
@@ -55,7 +60,7 @@ class ConnectionCapture:
                 fingerprints.append(None)
         receipt = self.registry.state.get('connection_receipts', {}).get(row['instance_id'], {})
         project = self.registry.state['projects'].get(receipt.get('project_id'), {})
-        value = [row['status'], bool(row.get('environment_verified')), row.get('profile'), agent.get('host_profile'), agent.get('principal_id'),
+        value = [self._is_setup_mode(), row['status'], bool(row.get('environment_verified')), row.get('profile'), agent.get('host_profile'), agent.get('principal_id'),
                  agent.get('installation', {}).get('manifest_sha256'), agent.get('installation', {}).get('marketplace_name'),
                  record.get('activated_at', 0), record.get('capture_deferred', False), fingerprints,
                  receipt.get('host_session_key'), receipt.get('environment_verified'),
@@ -97,10 +102,14 @@ class ConnectionCapture:
         previous = self.cache.get(row['instance_id'], {})
         try:
             value = await asyncio.wait_for(self.inspect(row, adapter), 10)
-        except (PolicyError, OSError, ValueError, KeyError, TypeError, asyncio.TimeoutError):
-            value = {'state': 'check_failed', 'permission': 'unknown', 'reason': 'capture_status_unavailable'}
-            if previous.get('key') == key:
-                value['last_saved_at'] = previous['value'].get('last_saved_at', 0)
+        except (PolicyError, OSError, ValueError, KeyError, TypeError, asyncio.TimeoutError) as error:
+            if isinstance(error, PolicyError) and error.code == 'official_http_503' and self._is_setup_mode():
+                value = {'state': 'awaiting_generation_activation', 'permission': 'unknown',
+                         'reason': 'generation_not_configured'}
+            else:
+                value = {'state': 'check_failed', 'permission': 'unknown', 'reason': 'capture_status_unavailable'}
+                if previous.get('key') == key:
+                    value['last_saved_at'] = previous['value'].get('last_saved_at', 0)
         value['checked_at'] = time.time()
         if self.key(row, adapter) == key:
             self.cache[row['instance_id']] = {'key': key, 'value': value}
@@ -177,6 +186,8 @@ class ConnectionCapture:
         if (project.get('status') != 'verified' or applied.get('status') != 'verified'
                 or applied.get('revision') != project.get('desired_revision')):
             return {**value, 'state': 'project_pending', 'project_id': receipt['project_id']}
+        if self._is_setup_mode():
+            return {**value, 'state': 'awaiting_generation_activation', 'reason': 'generation_not_configured'}
         last = await self._probe_saved_at(kind, agent, project, host_key, activated, 4)
         if last is not None:
             self.last_verified_session[identifier] = (host_key, receipt['project_id'])

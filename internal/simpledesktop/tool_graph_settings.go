@@ -25,13 +25,16 @@ func (c ProjectControlClient) configureToolGraph(ctx context.Context, revision i
 }
 
 func (a *App) saveToolGraphSetting(project string, enabled *bool) {
+	if a.isSetupOnlyRuntime() {
+		return
+	}
 	a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
 		return client.configureToolGraph(ctx, revision, project, enabled)
 	})
 }
 
 func (a *App) globalToolGraphSettings(c *ui.Context) {
-	if a.Config.GenerationSetupOnly {
+	if a.isSetupOnlyRuntime() {
 		return
 	}
 	enabled := a.access.Directory.ToolGraph.GlobalEnabled
@@ -63,6 +66,17 @@ func (a *App) globalToolGraphSettings(c *ui.Context) {
 }
 
 func (a *App) projectToolGraphSettings(c *ui.Context, project AccessProject) {
+	if a.isSetupOnlyRuntime() {
+		v4Group(c, "工具记录关系图谱", "", nil, func() {
+			v4Row(c, v4RowOptions{
+				Key:     "project-tool-graph-setup-" + project.ID,
+				Title:   "待配置记忆提炼",
+				Desc:    "配置并启用记忆提炼后可创建工具关系图谱",
+				Control: func() { v4SmallButton(c, "前往配置记忆提炼", nil, a.openSettingsFromDeferredBanner) },
+			})
+		})
+		return
+	}
 	selected := 0
 	if project.ToolGraph.Override != nil {
 		selected = 2

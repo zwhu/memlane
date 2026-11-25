@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,6 +35,7 @@ type firstRuntimeConfig struct {
 	Root           string             `json:"official_data"`
 	Commit         string             `json:"service_commit"`
 	Python         string             `json:"python"`
+	GraphAssets    json.RawMessage    `json:"graph_assets"`
 	ServiceURL     string             `json:"service_url"`
 	CompletionURL  string             `json:"completion_url"`
 	TokenFile      string             `json:"token_file"`
@@ -556,6 +559,16 @@ func RecoverFirstRuntimeOwner(ctx context.Context, configPath string) (superviso
 // PrepareFirstRuntime never treats a broken existing daily configuration as a
 // fresh install. The only SDK initialization path is the explicitly new store.
 func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string, assets fs.FS) (FirstRuntime, error) {
+	return e.prepareFirstRuntime(ctx, configPath, assets, false)
+}
+
+// PrepareFirstRuntimeForUpgrade stages bundled resources for an existing store
+// without rewriting its runtime configuration.
+func (e *Environment) PrepareFirstRuntimeForUpgrade(ctx context.Context, configPath string, assets fs.FS) (FirstRuntime, error) {
+	return e.prepareFirstRuntime(ctx, configPath, assets, true)
+}
+
+func (e *Environment) prepareFirstRuntime(ctx context.Context, configPath string, assets fs.FS, upgrade bool) (FirstRuntime, error) {
 	var prepared FirstRuntime
 	if !filepath.IsAbs(configPath) {
 		return prepared, errors.New("首次运行配置需要绝对路径")
@@ -567,7 +580,7 @@ func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string
 	}
 	config, err := loadFirstRuntimeConfig(configPath)
 	existing := err == nil
-	if err != nil && (statErr == nil || !errors.Is(err, os.ErrNotExist)) {
+	if err != nil && (upgrade || statErr == nil || !errors.Is(err, os.ErrNotExist)) {
 		return prepared, err
 	}
 	if existing {
@@ -618,9 +631,21 @@ func (e *Environment) PrepareFirstRuntime(ctx context.Context, configPath string
 	if err != nil {
 		return prepared, err
 	}
-	err = runManaged(ctx, root, python, "-I", "-B", filepath.Join(resources, "engine/python/first_install_runtime.py"),
-		"--store-root", root, "--runtime-config", configPath, "--plugin", plugin.Path, "--host-home", home, "--python-executable", python, "--graph-assets", filepath.Join(resources, "web/official-graph/dist"), "--prepare-only")
-	if err != nil {
+	args := []string{
+		"-I", "-B", filepath.Join(resources, "engine/python/first_install_runtime.py"),
+		"--store-root", root,
+		"--runtime-config", configPath,
+		"--plugin", plugin.Path,
+		"--host-home", home,
+		"--python-executable", python,
+		"--graph-assets", filepath.Join(resources, "web/official-graph/dist"),
+		"--installation-root", e.Installer().Root,
+		"--prepare-only",
+	}
+	if upgrade {
+		args = append(args, "--skip-graph-refresh")
+	}
+	if err := runManaged(ctx, root, python, args...); err != nil {
 		return prepared, err
 	}
 	return FirstRuntime{ConfigPath: configPath, StoreRoot: root, Resources: resources, Python: python, HostHome: home, Plan: plan}, nil
@@ -702,17 +727,9 @@ func StartFirstRuntime(ctx context.Context, prepared FirstRuntime) error {
 // StartFirstRuntimeHandle starts (or attaches to) the first-runtime service stack
 // via internal/supervisor and returns a handle supporting status inspection and explicit graceful shutdown.
 func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ...FirstRuntimeOption) (*FirstRuntimeHandle, error) {
-	for _, path := range []string{prepared.ConfigPath, prepared.StoreRoot, prepared.Resources, prepared.Python, prepared.HostHome} {
-		if !filepath.IsAbs(path) {
-			return nil, errors.New("首次运行参数必须为明确的绝对路径")
-		}
-	}
-	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	config, err := validateFirstRuntimeLaunch(prepared)
 	if err != nil {
 		return nil, err
-	}
-	if config.Root != prepared.StoreRoot || config.Python != prepared.Python {
-		return nil, errors.New("首次运行参数与原配置不同，未启动")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -721,19 +738,43 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 		return nil, errors.New("首次启用回执位置不同")
 	}
 
-	cfgOpts := defaultFirstRuntimeOptions()
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfgOpts)
-		}
-	}
+	cfgOpts := resolveFirstRuntimeOptions(opts)
 
 	canonicalStore := canonicalRuntimePath(prepared.StoreRoot)
 	storeMu := firstRuntimeHandles.storeMutex(canonicalStore)
 	storeMu.Lock()
 	defer storeMu.Unlock()
+	upgradeLock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer upgradeLock.Release()
+	return startFirstRuntimeHandleLocked(ctx, prepared, config, cfgOpts, canonicalStore)
+}
 
+// startFirstRuntimeHandleLocked requires both the store mutex and upgrade lock.
+func startFirstRuntimeHandleLocked(ctx context.Context, prepared FirstRuntime, config firstRuntimeConfig, cfgOpts firstRuntimeOptions, canonicalStore string) (*FirstRuntimeHandle, error) {
+	var sup *supervisor.Supervisor
+	var completedReplay bool
+	if prepared.ActivationFile != "" {
+		var request FirstActivationRequest
+		if b, err := privateRead(prepared.ActivationFile); err == nil && json.Unmarshal(b, &request) == nil {
+			completedReplay = request.Schema == 1 && request.StoreID == config.First.StoreID && request.Status == "completed"
+		}
+	}
 	readyCheck := func(checkCtx context.Context) (bool, error) {
+		if prepared.ActivationFile != "" {
+			services := sup.Snapshot().Services
+			if len(services) == 1 && services[0].State == supervisor.StateStopped &&
+				services[0].ExitCode != nil && *services[0].ExitCode == 0 && services[0].Signal == "" {
+				return true, nil
+			}
+			// A completed replay must finish checking its receipt, even if another
+			// launcher is already serving this store.
+			if completedReplay {
+				return false, nil
+			}
+		}
 		ready, readyErr := FirstRuntimeReady(checkCtx, prepared.ConfigPath)
 		if readyErr != nil && prepared.ActivationFile == "" {
 			return false, readyErr
@@ -759,7 +800,7 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 	}
 
 	existing := firstRuntimeHandles.get(canonicalStore)
-	if prepared.ActivationFile != "" && existing != nil && existing.sup != nil && !existing.sup.ExternalOwner() {
+	if prepared.ActivationFile != "" && !completedReplay && existing != nil && existing.sup != nil && !existing.sup.ExternalOwner() {
 		// Release an in-process Go-owned setup supervisor cleanly before handing off to first_install_runtime.py,
 		// so dev.py stop never signals the Go host process itself.
 		if err := existing.Shutdown(ctx); err != nil {
@@ -862,18 +903,7 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 		allowCleanExit = true
 	}
 
-	envPath := os.Getenv("PATH")
-	if envPath == "" {
-		envPath = "/usr/bin:/bin:/usr/sbin:/sbin"
-	}
-	launcherEnv := []string{
-		"HOME=" + prepared.HostHome,
-		"PATH=" + filepath.Join(prepared.HostHome, ".local/bin") + ":" + envPath,
-		"LANG=en_US.UTF-8",
-		"PYTHONDONTWRITEBYTECODE=1",
-	}
-
-	sup := supervisor.New(supervisor.Config{
+	sup = supervisor.New(supervisor.Config{
 		StoreRoot:         prepared.StoreRoot,
 		ConfigPath:        prepared.ConfigPath,
 		PhaseOnReady:      phaseOnReady,
@@ -897,7 +927,7 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 		Command:        prepared.Python,
 		Args:           arguments,
 		Dir:            prepared.Resources,
-		Env:            launcherEnv,
+		Env:            firstRuntimeLauncherEnv(prepared.HostHome),
 		LogPath:        logPath,
 		LogLimitBytes:  cfgOpts.logLimitBytes,
 		ReadyCheck:     readyCheck,
@@ -944,17 +974,33 @@ func StartFirstRuntimeHandle(ctx context.Context, prepared FirstRuntime, opts ..
 		return nil, startErr
 	}
 
-	// If activation exited cleanly (idempotent already-completed activation), keep the existing live handle
-	// if present rather than replacing it with an already-exited launcher supervisor.
+	// A completed activation replay can exit without starting a daemon.
 	snap := sup.Snapshot()
 	if allowCleanExit && len(snap.Services) == 1 && snap.Services[0].State == supervisor.StateStopped {
 		firstRuntimeHandles.unregister(handle)
 		_ = sup.Stop(context.Background())
+		insp, err := supervisor.InspectOwnerReadOnly(prepared.StoreRoot)
+		if err != nil {
+			return nil, err
+		}
+		ready, readyErr := FirstRuntimeReady(ctx, prepared.ConfigPath)
 		if existing != nil && existing.Owned() {
 			exSnap := existing.Snapshot()
-			if exSnap.State != supervisor.StateStopped && exSnap.State != supervisor.StateExited {
+			if exSnap.State != supervisor.StateStopped && exSnap.State != supervisor.StateExited && ready && readyErr == nil {
 				return existing, nil
 			}
+		}
+		if !insp.Locked || !ready || readyErr != nil {
+			normalPrepared := prepared
+			normalPrepared.ActivationFile = ""
+			reloaded, err := validateFirstRuntimeLaunch(normalPrepared)
+			if err != nil {
+				return nil, err
+			}
+			return startFirstRuntimeHandleLocked(ctx, normalPrepared, reloaded, cfgOpts, canonicalStore)
+		}
+		if existing != nil && existing.Attached() {
+			return existing, nil
 		}
 		attached := &FirstRuntimeHandle{
 			configPath: prepared.ConfigPath,
@@ -992,18 +1038,22 @@ func StartFirstRuntimeSupervised(ctx context.Context, configPath string, specs [
 		return nil, err
 	}
 
-	cfgOpts := defaultFirstRuntimeOptions()
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&cfgOpts)
-		}
-	}
+	cfgOpts := resolveFirstRuntimeOptions(opts)
 
 	canonicalStore := canonicalRuntimePath(config.Root)
 	storeMu := firstRuntimeHandles.storeMutex(canonicalStore)
 	storeMu.Lock()
 	defer storeMu.Unlock()
+	upgradeLock, err := supervisor.AcquireUpgradeLock(config.Root)
+	if err != nil {
+		return nil, err
+	}
+	defer upgradeLock.Release()
+	return startFirstRuntimeSupervisedLocked(ctx, configPath, config, specs, cfgOpts, canonicalStore)
+}
 
+// startFirstRuntimeSupervisedLocked requires both the store mutex and upgrade lock.
+func startFirstRuntimeSupervisedLocked(ctx context.Context, configPath string, config firstRuntimeConfig, specs []supervisor.ServiceSpec, cfgOpts firstRuntimeOptions, canonicalStore string) (*FirstRuntimeHandle, error) {
 	inspection, err := supervisor.InspectOwner(config.Root)
 	if err != nil {
 		return nil, err
@@ -1078,4 +1128,555 @@ func StartFirstRuntimeSupervised(ctx context.Context, configPath string, specs [
 	}
 	firstRuntimeHandles.set(handle)
 	return handle, nil
+}
+
+func validateFirstRuntimeLaunch(prepared FirstRuntime) (firstRuntimeConfig, error) {
+	for _, path := range []string{prepared.ConfigPath, prepared.StoreRoot, prepared.Resources, prepared.Python, prepared.HostHome} {
+		if !filepath.IsAbs(path) {
+			return firstRuntimeConfig{}, errors.New("首次运行参数必须为明确的绝对路径")
+		}
+	}
+	config, err := loadFirstRuntimeConfig(prepared.ConfigPath)
+	if err != nil {
+		return config, err
+	}
+	if config.Root != prepared.StoreRoot || config.Python != prepared.Python {
+		return config, errors.New("首次运行参数与原配置不同，未启动")
+	}
+	return config, nil
+}
+
+func resolveFirstRuntimeOptions(opts []FirstRuntimeOption) firstRuntimeOptions {
+	cfgOpts := defaultFirstRuntimeOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfgOpts)
+		}
+	}
+	return cfgOpts
+}
+
+func firstRuntimeLauncherEnv(home string) []string {
+	envPath := os.Getenv("PATH")
+	if envPath == "" {
+		envPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+	}
+	return []string{
+		"HOME=" + home,
+		"PATH=" + filepath.Join(home, ".local/bin") + ":" + envPath,
+		"LANG=en_US.UTF-8",
+		"PYTHONDONTWRITEBYTECODE=1",
+	}
+
+}
+
+// RuntimeUpgradeReceipt records a verified owner replacement and its download evidence.
+type RuntimeUpgradeReceipt struct {
+	Schema              int    `json:"schema"`
+	StoreID             string `json:"store_id"`
+	FromRuntimeHash     string `json:"from_runtime_hash,omitempty"`
+	ToRuntimeHash       string `json:"to_runtime_hash"`
+	OwnerFingerprint    string `json:"owner_fingerprint"`
+	CompletedAt         string `json:"completed_at"`
+	ZeroDownloads       bool   `json:"zero_downloads"`
+	PriorWorkerRuntime  string `json:"prior_worker_runtime_hash,omitempty"`
+	PriorWorkerPID      int    `json:"prior_worker_pid,omitempty"`
+	PriorWorkerStarted  string `json:"prior_worker_started,omitempty"`
+	PriorWorkerNetBytes int64  `json:"prior_worker_network_bytes,omitempty"`
+	PriorWorkerSyncRan  bool   `json:"prior_worker_runtime_sync_ran,omitempty"`
+}
+
+// ZeroDownloadCheck describes whether the current runtime generation required downloads.
+type ZeroDownloadCheck struct {
+	Satisfied              bool                   `json:"satisfied"`
+	Reason                 string                 `json:"reason,omitempty"`
+	CurrentRuntimeHash     string                 `json:"current_runtime_hash,omitempty"`
+	NetworkBytesDownloaded int64                  `json:"network_bytes_downloaded"`
+	RuntimeSyncRan         bool                   `json:"runtime_sync_ran"`
+	UpgradeReceipt         *RuntimeUpgradeReceipt `json:"upgrade_receipt,omitempty"`
+}
+
+// RuntimeUpgradeReceiptPath returns the receipt location for this runtime configuration.
+func RuntimeUpgradeReceiptPath(componentRoot, configPath string) (string, error) {
+	root, err := ComponentRoot(componentRoot)
+	if err != nil {
+		return "", err
+	}
+	return runtimeUpgradeReceiptPath(filepath.Join(root, "installation"), configPath), nil
+}
+
+func runtimeUpgradeReceiptPath(installationRoot, configPath string) string {
+	return filepath.Join(installationRoot, "upgrade-receipt-"+selectionBinding(configPath)[:16]+".json")
+}
+
+// ReadRuntimeUpgradeReceipt reads and validates the retained upgrade receipt.
+func ReadRuntimeUpgradeReceipt(componentRoot, configPath string) (RuntimeUpgradeReceipt, error) {
+	path, err := RuntimeUpgradeReceiptPath(componentRoot, configPath)
+	if err != nil {
+		return RuntimeUpgradeReceipt{}, err
+	}
+	return readRuntimeUpgradeReceipt(path)
+}
+
+func readRuntimeUpgradeReceipt(path string) (RuntimeUpgradeReceipt, error) {
+	data, err := privateRead(path)
+	if err != nil {
+		return RuntimeUpgradeReceipt{}, err
+	}
+	var receipt RuntimeUpgradeReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return RuntimeUpgradeReceipt{}, err
+	}
+	if receipt.Schema != 1 || receipt.StoreID == "" || receipt.ToRuntimeHash == "" || receipt.OwnerFingerprint == "" {
+		return RuntimeUpgradeReceipt{}, errors.New("invalid runtime upgrade receipt")
+	}
+	return receipt, nil
+}
+
+// EvaluateZeroDownloads checks whether installation and upgrade evidence support zero downloads.
+func EvaluateZeroDownloads(plan Plan, journal Journal, hasJournal bool, worker InstallWorkerState, hasWorker bool, bundledHash string, upgrade *RuntimeUpgradeReceipt) ZeroDownloadCheck {
+	check := ZeroDownloadCheck{CurrentRuntimeHash: bundledHash, UpgradeReceipt: upgrade}
+	switch {
+	case !plan.Complete():
+		check.Reason = "components_incomplete"
+	case hasJournal && (journal.Status == Installing || journal.ActiveStep != ""):
+		check.Reason = "installation_in_progress"
+	case hasWorker && (worker.State == "starting" || worker.State == "running"):
+		check.Reason = "install_worker_active"
+	}
+	if check.Reason != "" {
+		return check
+	}
+	if hasWorker && (bundledHash == "" || worker.RuntimeHash == "" || worker.RuntimeHash == bundledHash) {
+		check.NetworkBytesDownloaded = worker.NetworkBytesDownloaded
+		check.RuntimeSyncRan = worker.RuntimeSyncRan
+		if check.NetworkBytesDownloaded > 0 || check.RuntimeSyncRan {
+			check.Reason = "current_generation_downloaded"
+			return check
+		}
+	}
+	if upgrade != nil && (bundledHash == "" || upgrade.ToRuntimeHash == bundledHash) && !upgrade.ZeroDownloads {
+		check.Reason = "upgrade_used_downloads"
+		return check
+	}
+	check.Satisfied = true
+	return check
+}
+
+type OwnerRuntimeStatus struct {
+	State                string                  `json:"state"`
+	OwnerLocked          bool                    `json:"owner_locked"`
+	HasReceipt           bool                    `json:"has_receipt"`
+	OwnerPID             int                     `json:"owner_pid,omitempty"`
+	OwnerStarted         string                  `json:"owner_started,omitempty"`
+	OwnerPhase           string                  `json:"owner_phase,omitempty"`
+	OwnerFingerprint     string                  `json:"owner_fingerprint,omitempty"`
+	RunningRuntimeDir    string                  `json:"running_runtime_dir,omitempty"`
+	RunningRuntimeHash   string                  `json:"running_runtime_hash,omitempty"`
+	BundledRuntimeHash   string                  `json:"bundled_runtime_hash,omitempty"`
+	StaleVersionDetected bool                    `json:"stale_version_detected"`
+	GraphAssetsPath      string                  `json:"graph_assets_path,omitempty"`
+	GraphAssetsStale     bool                    `json:"graph_assets_stale"`
+	DeveloperCheckout    bool                    `json:"developer_checkout,omitempty"`
+	UpgradeReceipt       *RuntimeUpgradeReceipt  `json:"upgrade_receipt,omitempty"`
+	UpgradeReceiptError  string                  `json:"upgrade_receipt_error,omitempty"`
+	Record               *supervisor.OwnerRecord `json:"-"`
+}
+
+var processArgsFn = supervisor.ProcessArgs
+
+// InspectOwnerRuntimeStatus compares the verified owner with bundled assets without writing files.
+func InspectOwnerRuntimeStatus(ctx context.Context, configPath, componentRoot string, assets fs.FS) (OwnerRuntimeStatus, error) {
+	root, err := ComponentRoot(componentRoot)
+	if err != nil {
+		return OwnerRuntimeStatus{}, err
+	}
+	var bundledHash string
+	if assets != nil {
+		bundledHash, err = BundledRuntimeHash(assets)
+		if err != nil {
+			return OwnerRuntimeStatus{}, err
+		}
+	}
+	return inspectOwnerRuntimeStatus(ctx, configPath, filepath.Join(root, "installation"), bundledHash)
+}
+
+// resolveRuntimePath resolves existing prefixes, including when installation
+// has yet to be created or an old generation has been removed.
+func resolveRuntimePath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", err
+	}
+	resolved, err = resolveRuntimePath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, filepath.Base(path)), nil
+}
+
+func inspectOwnerRuntimeStatus(ctx context.Context, configPath, installationRoot, bundledHash string) (OwnerRuntimeStatus, error) {
+	status := OwnerRuntimeStatus{BundledRuntimeHash: bundledHash}
+	config, err := loadFirstRuntimeConfig(configPath)
+	if err != nil {
+		return status, err
+	}
+	installationRoot, err = resolveRuntimePath(installationRoot)
+	if err != nil {
+		return status, err
+	}
+	receipt, err := readRuntimeUpgradeReceipt(runtimeUpgradeReceiptPath(installationRoot, configPath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		status.UpgradeReceiptError = RedactInstallerText(err.Error())
+	}
+	if err == nil && receipt.StoreID == config.First.StoreID && (bundledHash == "" || receipt.ToRuntimeHash == bundledHash) {
+		status.UpgradeReceipt = &receipt
+	}
+	_ = json.Unmarshal(config.GraphAssets, &status.GraphAssetsPath)
+	if graphHash, ok := managedGraphAssetsHash(installationRoot, status.GraphAssetsPath); ok {
+		status.GraphAssetsStale = bundledHash != "" && graphHash != bundledHash
+	}
+	inspection, err := supervisor.InspectOwnerReadOnly(config.Root)
+	if err != nil {
+		return status, err
+	}
+	status.OwnerLocked, status.HasReceipt = inspection.Locked, inspection.HasReceipt
+	switch {
+	case !inspection.Locked && !inspection.HasReceipt:
+		status.State = "stopped"
+	case !inspection.Locked:
+		status.State = "stale_owner"
+	case !inspection.HasReceipt:
+		status.State = "starting"
+	default:
+		rec, err := supervisor.VerifyOwnerRecord(ctx, config.Root, configPath)
+		if ctx.Err() != nil {
+			return status, ctx.Err()
+		}
+		fingerprint := supervisor.OwnerFingerprint(rec)
+		if err != nil || fingerprint != supervisor.OwnerFingerprint(inspection.Record) {
+			status.State = "mismatch"
+			return status, nil
+		}
+		status.OwnerPID, status.OwnerStarted, status.OwnerPhase = rec.PID, rec.Started, rec.Phase
+		status.OwnerFingerprint, status.Record = fingerprint, &rec
+		detectOwnerRuntime(&status, installationRoot, rec)
+		status.StaleVersionDetected = !status.DeveloperCheckout && bundledHash != "" &&
+			status.RunningRuntimeHash != "" && status.RunningRuntimeHash != bundledHash
+		switch {
+		case status.StaleVersionDetected:
+			status.State = "stale_runtime"
+		case rec.Phase == "starting":
+			status.State = "starting"
+		default:
+			status.State = "ready"
+		}
+	}
+	return status, nil
+}
+
+func detectOwnerRuntime(status *OwnerRuntimeStatus, root string, rec supervisor.OwnerRecord) {
+	pids := []int{rec.PID}
+	for _, pid := range rec.ServiceChildren {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids[1:])
+	for _, pid := range pids {
+		argv, err := processArgsFn(pid)
+		if err != nil {
+			continue
+		}
+		for _, arg := range argv {
+			if !filepath.IsAbs(arg) {
+				continue
+			}
+			clean := filepath.Clean(arg)
+			if !strings.HasSuffix(clean, "/scripts/dev.py") && !strings.Contains(clean, "/engine/python/") {
+				continue
+			}
+			resolved, err := resolveRuntimePath(clean)
+			if err != nil {
+				continue
+			}
+			relative, err := filepath.Rel(root, resolved)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, "../") {
+				status.DeveloperCheckout = true
+				continue
+			}
+			generation, _, ok := strings.Cut(relative, "/")
+			if hash, managed := RuntimeHashFromDir(generation); ok && managed && status.RunningRuntimeDir == "" {
+				status.RunningRuntimeDir, status.RunningRuntimeHash = filepath.Join(root, generation), hash
+			}
+		}
+	}
+	if status.RunningRuntimeDir != "" || status.DeveloperCheckout || !filepath.IsAbs(rec.ResourcesDir) {
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(rec.ResourcesDir)
+	if err != nil || filepath.Dir(resolved) != root {
+		return
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.IsDir() {
+		return
+	}
+	hash, ok := RuntimeHashFromDir(resolved)
+	if ok && (rec.ResourcesHash == "" || rec.ResourcesHash == hash ||
+		(len(rec.ResourcesHash) == 64 && strings.HasPrefix(rec.ResourcesHash, hash))) {
+		status.RunningRuntimeDir, status.RunningRuntimeHash = resolved, hash
+	}
+}
+
+func RestartStaleRuntimeOwner(ctx context.Context, prepared FirstRuntime, expectedFingerprint string, assets fs.FS, opts ...FirstRuntimeOption) (handle *FirstRuntimeHandle, err error) {
+	options := resolveFirstRuntimeOptions(opts)
+	err = restartStaleRuntimeOwner(ctx, prepared, expectedFingerprint, assets, options, func(prepared FirstRuntime, config firstRuntimeConfig, canonicalStore string) error {
+		var startErr error
+		handle, startErr = startFirstRuntimeHandleLocked(ctx, prepared, config, options, canonicalStore)
+		return startErr
+	})
+	return handle, err
+}
+
+func RestartStaleRuntimeOwnerDetached(ctx context.Context, prepared FirstRuntime, expectedFingerprint string, assets fs.FS) error {
+	return restartStaleRuntimeOwner(ctx, prepared, expectedFingerprint, assets, defaultFirstRuntimeOptions(), func(prepared FirstRuntime, config firstRuntimeConfig, _ string) error {
+		return startFirstRuntimeDetachedLocked(ctx, prepared, config)
+	})
+}
+
+func restartStaleRuntimeOwner(ctx context.Context, prepared FirstRuntime, fingerprint string, assets fs.FS, options firstRuntimeOptions, start func(FirstRuntime, firstRuntimeConfig, string) error) error {
+	if strings.TrimSpace(fingerprint) == "" {
+		return errors.New("restart requires an owner fingerprint")
+	}
+	if _, err := validateFirstRuntimeLaunch(prepared); err != nil {
+		return err
+	}
+	if prepared.ActivationFile != "" {
+		return errors.New("runtime restart cannot perform activation")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	canonicalStore := canonicalRuntimePath(prepared.StoreRoot)
+	storeMu := firstRuntimeHandles.storeMutex(canonicalStore)
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	lock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
+	installationRoot := filepath.Dir(filepath.Clean(prepared.Resources))
+	if err := validateManagedResourcePath(installationRoot); err != nil {
+		return err
+	}
+	bundledHash, managed := RuntimeHashFromDir(prepared.Resources)
+	if assets != nil {
+		bundledHash, err = BundledRuntimeHash(assets)
+		if err != nil {
+			return err
+		}
+	} else if !managed {
+		return errors.New("restart requires a prepared managed runtime generation")
+	}
+	target := filepath.Join(installationRoot, "runtime-"+bundledHash)
+	if err := validateManagedResourcePath(target); err != nil {
+		return err
+	}
+	status, err := inspectOwnerRuntimeStatus(ctx, prepared.ConfigPath, installationRoot, bundledHash)
+	if err != nil {
+		return err
+	}
+	if status.OwnerFingerprint != fingerprint {
+		return supervisor.ErrOwnerFingerprintMismatch
+	}
+	if !status.StaleVersionDetected || status.DeveloperCheckout || status.OwnerPhase == "starting" {
+		return errors.New("restart requires a stale managed runtime owner that has finished starting")
+	}
+	if assets == nil {
+		script, err := os.Stat(filepath.Join(prepared.Resources, "scripts/dev.py"))
+		if err != nil || !script.Mode().IsRegular() {
+			return errors.New("prepared runtime launcher is missing or invalid")
+		}
+	} else if filepath.Clean(prepared.Resources) != target || !verifyPreparedRuntimeResources(target, assets) {
+		prepared.Resources, err = PrepareRuntimeResources(ctx, installationRoot, assets)
+		if err != nil {
+			return err
+		}
+	} else {
+		prepared.Resources = target
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h := firstRuntimeHandles.get(canonicalStore)
+	if h != nil && h.Owned() && h.sup != nil && !h.sup.ExternalOwner() && status.OwnerPID == os.Getpid() {
+		if err := h.Shutdown(ctx); err != nil {
+			return err
+		}
+	} else {
+		opts := supervisor.StopOwnerOptions{
+			StoreRoot: prepared.StoreRoot, ConfigPath: prepared.ConfigPath,
+			Grace: options.stopGrace, KillWait: options.killWait, ExpectedFingerprint: fingerprint,
+		}
+		if err := supervisor.StopVerifiedOwnerBound(ctx, opts, status.OwnerPID, status.OwnerStarted); err != nil {
+			return err
+		}
+		if h != nil {
+			if h.Owned() {
+				if err := h.Shutdown(ctx); err != nil {
+					return err
+				}
+			} else {
+				firstRuntimeHandles.unregister(h)
+			}
+		}
+	}
+	if _, err := RefreshManagedGraphAssets(prepared.ConfigPath, installationRoot, prepared.Resources); err != nil {
+		return err
+	}
+	config, err := validateFirstRuntimeLaunch(prepared)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := start(prepared, config, canonicalStore); err != nil {
+		return err
+	}
+	post, err := inspectOwnerRuntimeStatus(ctx, prepared.ConfigPath, installationRoot, bundledHash)
+	if err != nil {
+		return fmt.Errorf("verify restarted runtime generation: %w", err)
+	}
+	if err := verifyRestartedRuntimeGeneration(post, bundledHash); err != nil {
+		return err
+	}
+	worker, workerErr := ReadInstallWorkerState(filepath.Dir(installationRoot))
+	receipt := RuntimeUpgradeReceipt{
+		Schema: 1, StoreID: config.First.StoreID, FromRuntimeHash: status.RunningRuntimeHash,
+		ToRuntimeHash: bundledHash, OwnerFingerprint: post.OwnerFingerprint,
+		CompletedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		ZeroDownloads: errors.Is(workerErr, os.ErrNotExist),
+	}
+	if workerErr == nil {
+		receipt.ZeroDownloads = (worker.RuntimeHash != "" && worker.RuntimeHash != bundledHash) ||
+			(worker.NetworkBytesDownloaded == 0 && !worker.RuntimeSyncRan)
+		receipt.PriorWorkerRuntime = worker.RuntimeHash
+		receipt.PriorWorkerPID = worker.PID
+		receipt.PriorWorkerStarted = worker.Started
+		receipt.PriorWorkerNetBytes = worker.NetworkBytesDownloaded
+		receipt.PriorWorkerSyncRan = worker.RuntimeSyncRan
+	}
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	return atomicPrivateFile(runtimeUpgradeReceiptPath(installationRoot, prepared.ConfigPath), data)
+}
+
+func verifyRestartedRuntimeGeneration(post OwnerRuntimeStatus, bundledHash string) error {
+	if !post.OwnerLocked || !post.HasReceipt || post.State != "ready" || post.StaleVersionDetected ||
+		post.GraphAssetsStale || post.DeveloperCheckout || post.RunningRuntimeHash != bundledHash {
+		return fmt.Errorf("restarted runtime generation mismatch: state=%s running=%q want=%q", post.State, post.RunningRuntimeHash, bundledHash)
+	}
+	return nil
+}
+
+// StartFirstRuntimeDetached leaves the launcher running if readiness outlasts ctx.
+func StartFirstRuntimeDetached(ctx context.Context, prepared FirstRuntime) error {
+	config, err := validateFirstRuntimeLaunch(prepared)
+	if err != nil {
+		return err
+	}
+	if prepared.ActivationFile != "" {
+		return errors.New("detached runtime startup cannot perform activation")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	storeMu := firstRuntimeHandles.storeMutex(canonicalRuntimePath(prepared.StoreRoot))
+	storeMu.Lock()
+	defer storeMu.Unlock()
+	upgradeLock, err := supervisor.AcquireUpgradeLock(prepared.StoreRoot)
+	if err != nil {
+		return err
+	}
+	defer upgradeLock.Release()
+	return startFirstRuntimeDetachedLocked(ctx, prepared, config)
+}
+
+// startFirstRuntimeDetachedLocked requires both the store mutex and upgrade lock.
+func startFirstRuntimeDetachedLocked(ctx context.Context, prepared FirstRuntime, config firstRuntimeConfig) error {
+	inspection, err := supervisor.InspectOwnerReadOnly(prepared.StoreRoot)
+	if err != nil {
+		return err
+	}
+	if inspection.Locked {
+		return waitFirstRuntimeDetached(ctx, prepared.ConfigPath, nil)
+	}
+	if inspection.HasReceipt {
+		if _, err := supervisor.RecoverStaleOwner(ctx, buildRecoverOptions(config, prepared.ConfigPath)); err != nil {
+			return err
+		}
+	}
+	logPath := filepath.Join(filepath.Dir(prepared.ConfigPath), "runtime-logs", "launcher.log")
+	if err := rejectSymlinkAncestors(filepath.Dir(logPath)); err != nil {
+		return err
+	}
+	logFile, err := supervisor.OpenPrivateLog(logPath)
+	if err != nil {
+		return err
+	}
+	if err := supervisor.TrimServiceLog(logPath, supervisor.DefaultLogLimitBytes); err != nil {
+		logFile.Close()
+		return err
+	}
+
+	cmd := exec.Command(prepared.Python, filepath.Join(prepared.Resources, "scripts/dev.py"), "start", "--config", prepared.ConfigPath, "--no-ui")
+	cmd.Dir = prepared.Resources
+	cmd.Env = firstRuntimeLauncherEnv(prepared.HostHome)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	err = ctx.Err()
+	if err == nil {
+		err = cmd.Start()
+	}
+	logFile.Close()
+	if err != nil {
+		return err
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	return waitFirstRuntimeDetached(ctx, prepared.ConfigPath, exited)
+}
+
+func waitFirstRuntimeDetached(ctx context.Context, configPath string, exited <-chan error) error {
+	ticker := time.NewTicker(defaultFirstRuntimeOptions().readyPollInterval)
+	defer ticker.Stop()
+	for {
+		if ready, _ := FirstRuntimeReady(ctx, configPath); ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-exited:
+			if err != nil {
+				return fmt.Errorf("detached runtime launcher exited before readiness: %w", err)
+			}
+			return errors.New("detached runtime launcher exited before readiness")
+		case <-ticker.C:
+		}
+	}
 }

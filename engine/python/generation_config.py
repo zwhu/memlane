@@ -329,6 +329,8 @@ class GenerationStore:
             mark_connected_bridge_selection(self.state, row)
         elif not validation_passed(self.state['validations'], row['digest']):
             raise PolicyError('generation_validation_required', 409)
+        elif row['profile']['mode'] == 'agent_bridge' and getattr(self, 'bridge_runtime_check', None):
+            self.bridge_runtime_check(row['profile'])
         self.native_schema_evidence(row)
         self.state['next'] = copy.deepcopy(reference)
         return self.commit(operation_id, request, {'next': copy.deepcopy(reference)})

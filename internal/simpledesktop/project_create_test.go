@@ -203,3 +203,34 @@ func TestFolderlessAssociationUnknownReceiptCanBeConfirmedWithoutResubmit(t *tes
 		t.Fatal("confirmation missed folderless project or repeated write")
 	}
 }
+
+func TestProjectCreateConflictUnlocksFormByHTTPStatus(t *testing.T) {
+	for _, code := range []string{"revision_conflict", "project_workspace_conflict"} {
+		t.Run(code, func(t *testing.T) {
+			a := settingsFixture()
+			var reads, writes atomic.Int32
+			transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					writes.Add(1)
+					w.WriteHeader(http.StatusConflict)
+					json.NewEncoder(w).Encode(map[string]string{"error": code, "phase": "pre_mutation"})
+					return
+				}
+				reads.Add(1)
+				json.NewEncoder(w).Encode(AccessDirectory{})
+			})
+			a.Client.HTTP = &http.Client{Transport: transport}
+			a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: p1TestTokenFile(t)}
+			updates := make(chan func(), 8)
+			a.Update = func(fn func()) { updates <- fn }
+			a.projectCreate = projectCreateState{Open: true, Loaded: true, Name: "待创建", Folder: "/synthetic/new-project"}
+			a.submitProjectCreation()
+			drainReading(t, updates, func() bool { return !a.projectCreate.Saving && !a.access.Loading })
+			state := a.projectCreate
+			if !state.Open || state.Submitted || writes.Load() != 1 || reads.Load() != 1 ||
+				!strings.Contains(state.Message, code) || strings.Contains(state.Message, "设置已变化") {
+				t.Fatalf("did not recover a known conflict: %+v", state)
+			}
+		})
+	}
+}

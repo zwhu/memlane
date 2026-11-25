@@ -45,9 +45,9 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     if len(set(tokens)) != len(tokens):
         raise ValueError('control credentials must be independent')
 
-    if generation is not None and registry is not None and codex_config is not None:
-        from agent_bridge_runtime import require_connected_bridge
-        generation.connected_bridge_check = lambda profile: require_connected_bridge(registry, codex_config, profile)
+    if generation is not None and codex_config is not None:
+        from agent_bridge_runtime import check_bridge_runtime
+        generation.bridge_runtime_check = lambda profile: check_bridge_runtime(codex_config, profile)
 
     secret_cache = CachedSecretReader()
 
@@ -61,19 +61,24 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 return await handler(request)
             token = request.headers.get('Authorization', '')
             request['manager'] = secrets.compare_digest(token, 'Bearer ' + manager_token)
-            registered_tokens = dict(agent_tokens)
-            for key, value in (registry.state['agents'].items() if registry is not None else []):
-                if value.get('control_token_file'):
-                    registered_tokens[key] = secret_cache.read(value['control_token_file'])
-            registered_tokens = {key: value for key, value in registered_tokens.items()
-                                 if key not in (registry.state.get('agent_retirements', {}) if registry else {})}
-            request['agent'] = next((key for key, value in registered_tokens.items()
-                                     if secrets.compare_digest(token, 'Bearer ' + value)), None)
+            request['agent'] = None
+            if not request['manager']:
+                registered_tokens = dict(agent_tokens)
+                for key, value in (registry.state['agents'].items() if registry is not None else []):
+                    if value.get('control_token_file'):
+                        registered_tokens[key] = secret_cache.read(value['control_token_file'])
+                registered_tokens = {key: value for key, value in registered_tokens.items()
+                                     if key not in (registry.state.get('agent_retirements', {}) if registry else {})}
+                request['agent'] = next((key for key, value in registered_tokens.items()
+                                         if secrets.compare_digest(token, 'Bearer ' + value)), None)
             if not request['manager'] and request['agent'] is None:
                 raise PolicyError('control_authentication_required', 401)
             return await asyncio.wait_for(handler(request), timeout=120)
         except PolicyError as error:
-            return web.json_response({'error': error.code}, status=error.status)
+            payload = {'error': error.code}
+            if error.phase:
+                payload['phase'] = error.phase
+            return web.json_response(payload, status=error.status)
         except (ValueError, KeyError, TypeError):
             return web.json_response({'error': 'invalid_request'}, status=400)
         except asyncio.TimeoutError:
@@ -332,6 +337,37 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                 invalidate_codex_view()
         return web.json_response(result)
 
+    async def connection_review(request):
+        manager(request)
+        if connections is None:
+            raise PolicyError('connection_hosts_not_configured', 503)
+        if request.method == 'GET':
+            return web.json_response(await connections.preview_readonly(request.match_info['id']))
+        payload = await body(request)
+        if not isinstance(payload, dict):
+            raise PolicyError('invalid_request_fields')
+        dry_run = payload.get('dry_run', False)
+        if type(dry_run) is not bool:
+            raise PolicyError('invalid_request')
+        if 'operation_id' in request.match_info:
+            fields(payload, () if dry_run else ('expected_revision',),
+                   ('dry_run', 'expected_revision', 'instance_id', 'action'))
+            result = await connections.reconcile_operation(
+                request.match_info['operation_id'], payload.get('expected_revision'), dry_run=dry_run,
+                instance_id=payload.get('instance_id'), action=payload.get('action'))
+        else:
+            fields(payload, () if dry_run else ('expected_revision', 'operation_id'),
+                   ('dry_run', 'reviewed_sha', 'proposed_sha256', 'expected_revision', 'operation_id'))
+            try:
+                result = await connections.repair_trae_hooks(
+                    request.match_info['id'], dry_run=dry_run, expected_revision=payload.get('expected_revision'),
+                    operation_id=payload.get('operation_id'),
+                    reviewed_sha=payload.get('reviewed_sha', payload.get('proposed_sha256')))
+            finally:
+                if not dry_run:
+                    invalidate_codex_view()
+        return web.json_response(result)
+
     async def select_environment(request):
         nonlocal connection
         manager(request)
@@ -424,6 +460,9 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
                     web.post('/v1/connections/environment', select_environment),
                     web.get('/v1/connections/operations/{operation_id}', generic_connections),
                     web.post('/v1/connections/preview', generic_connections),
+                    web.get('/v1/connections/{id}/preview', connection_review),
+                    web.post('/v1/connections/{id}/repair-trae-hooks', connection_review),
+                    web.post('/v1/connections/operations/{operation_id}/reconcile', connection_review),
                     web.post('/v1/connections/{id}/{action:prepare|activate|review|allow_capture|defer_capture}', generic_connections)])
     if connections is not None:
         async def capture_cleanup(_):

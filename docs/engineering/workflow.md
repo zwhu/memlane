@@ -39,9 +39,11 @@ UI组件保持稳定Key，异步结果核对项目／配置代次和当前操作
 
 ## 首装发版门禁
 
-1. 每次运行 [构建脚本](../../scripts/build_release.py) 构建候选包，验签后直接执行 `.app` 内的程序。在临时工作目录使用隔离的 Python 进程，从包内准备经校验的运行资源，执行首装初始化脚本的依赖加载和私有文件写入检查。通过后才输出本轮校验和和成功结果。
-2. 每个发布候选按提交和 `.app` 可执行文件 SHA256 记录净室验收。先在只准备固定组件、尚无内容库的环境走完首次初始化和后台健康检查。另验一次初始化中断后续跑，再退出并重启，确认沿用同一库与属主凭据。检查库标识、官方初始化回执、`0600` 属主令牌和运行配置。
-3. Pi 的应用接入与真实模型响应分别记录。需要验证完整发布安装介质时，使用候选 DMG 内的 `.app` 重走发布安装入口。构建检查、净室首装和已确定的 Agent 发布验收全部通过后才能发布。
+1. **打包产物双探针检查。** 每次构建候选包并验签后，直接运行 `.app` 内的 `--check-first-store-resources`，在临时工作目录用隔离的 Python 进程检查包内运行资源、首装依赖加载和私有文件写入。同时用 `verify_packaged_cli_doctor` 在隔离临时 `HOME` 运行 `Memlane doctor --json`，要求退出码 `10`、`schema_version == 1`、`stderr` 为空、输出无凭据泄露且耗时小于 5 秒。两项通过后才输出本轮校验和与成功结果。[构建脚本](../../scripts/build_release.py)
+2. **双场景 / 三快照 UTM Level 1 自动化门禁（Codex + TRAE CN）。** 每个发布候选记录提交与 `.app` 可执行文件 SHA256。按以下两组场景验收。[驱动脚本](../../scripts/verify_setup_cli.py)
+   - **场景 1 · 净室首装与已有第三方 Hooks。** 在 `clean-codex-traecn` 和 `dirty-hooks-preexisting` 快照分别执行 `doctor --check-network --json` 确认 DNS 正常（I-06）。从 `install --plan` 取得摘要后，执行 `install --apply --plan-digest <PLAN_DIGEST> --wait 45` 启动安装，若返回 `20` 则按 `retry_after_ms` 用 `doctor --operation-id <id> --json` 轮询至组件与服务就绪，要求 `verify --stage setup` 返回 `0`。对 Codex 和 TRAE CN 分别执行 `connect --dry-run` 预览与 `--apply` 接入，检查 TRAE CN 的 `hooks.json` 严格采用 `SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop` 四个事件，清除空键并保留第三方配置。真实新会话前，两者的 `verify --stage connection` 均须返回 `11`。
+   - **场景 2 · 半装中断恢复与 `beta.2` 升级自愈。** 从 `clean-codex-traecn` 快照启动安装，在 worker 开始后用 `SIGKILL` 终止父 CLI，确认经 `Setsid` 分离的后台 worker 持锁续跑、无孤儿 `uv`，且 `verify --stage setup` 返回 `0`。在 `stuck-beta2-upgrade` 快照中，以 `beta.3` 覆盖安装到仍运行 `beta.2` 后台的环境，确认 `doctor` 检出 `stale_version_detected=true` 与 `components.complete=true`。依次预览并执行 `repair stale-daemon`、`repair pending-ops`（证据充分的 409 解锁，歧义样本返回 `40` 并保留回执）、`repair trae-hooks`（6→4 事件原子迁移并清理空键）。要求 `verify --stage setup --expect-zero-downloads --expect-runtime-current` 返回 `0`，确认零重下载且受管 `graph_assets` 已切换。最后用 `stop --apply --owner-fingerprint <OWNER_FINGERPRINT>` 优雅停服，确认服务锁释放且 `scripts/uninstall.py` 预览通过。
+3. **Level 2 真机 / 实窗闭环验收。** 在候选 DMG 经浏览器下载并触发 Quarantine 后，留证 Gatekeeper 放行与浅、深色两套 Native 外观的三步首装。净室初始化核对库标识、官方初始化回执、`0600` 属主令牌与运行配置，退出并重启后确认沿用同一库与属主凭据。分别留证 Codex 和 TRAE CN 的真实宿主验证，包括带工具调用的新会话、实际模型验证和跨会话记忆召回。TRAE CN 还需用 `⌘Q` 完全退出并重开，确认全局 Hooks 已开启。Pi 的应用接入和真实模型响应分别记录。发版要求打包检查、Level 1 自动化和 Level 2 真实宿主与模型验收全部通过。
 
 ## 留证契约
 

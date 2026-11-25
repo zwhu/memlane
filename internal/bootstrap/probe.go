@@ -157,17 +157,20 @@ func isolatedPython(ctx context.Context, executable, code string, args ...string
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	probeExpired := timedOut.Load() || probeCtx.Err() != nil
 	var exit *exec.ExitError
 	if err != nil && errors.As(err, &exit) {
 		exit.Stderr = stderr.Bytes()
-		// Preserve deterministic exits (any normal exit code or non-SIGKILL
-		// crash signal such as SIGABRT) even if probeCtx expired while draining
-		// pipes from a lingering descendant.
+		// A wrapper can report its child's SIGKILL as exit 137 when the
+		// deadline kills the process group. Preserve other deterministic exits
+		// even if the deadline elapsed while draining a descendant's pipes.
+		code := exit.ExitCode()
+		normalExit := code >= 0 && (!probeExpired || code != 128+int(syscall.SIGKILL))
 		if ws, ok := exit.ProcessState.Sys().(syscall.WaitStatus); ok {
-			if ws.Exited() || (ws.Signaled() && ws.Signal() != syscall.SIGKILL) {
+			if (ws.Exited() && normalExit) || (ws.Signaled() && ws.Signal() != syscall.SIGKILL) {
 				return nil, exit
 			}
-		} else if exit.ExitCode() >= 0 {
+		} else if normalExit {
 			return nil, exit
 		}
 	}

@@ -105,6 +105,8 @@ type serviceMonitorState struct {
 	popoverHideTimer     *time.Timer
 }
 
+const setupOnlyCompletion = "待配置记忆提炼"
+
 func (a *App) refreshServiceMonitor() {
 	a.pollServiceMonitor(true)
 }
@@ -114,7 +116,7 @@ func (a *App) pollServiceMonitor(allowLogs bool) {
 		return
 	}
 	client := a.Client
-	completionURL := a.Config.CompletionURL
+	completionURL, setupOnly := a.Config.CompletionURL, a.isSetupOnlyRuntime()
 	controlClient, hasControl := a.accessClient()
 	a.monitor.Request++
 	request := a.monitor.Request
@@ -133,7 +135,9 @@ func (a *App) pollServiceMonitor(allowLogs bool) {
 		completion := "未配置"
 		var completionLatencyMs float64
 		var hasCompletionLatency bool
-		if completionURL != "" {
+		if setupOnly {
+			completion = setupOnlyCompletion
+		} else if completionURL != "" {
 			cc := Client{Config: Config{ServiceURL: completionURL}}
 			compStarted := time.Now()
 			_, e := cc.request(ctx, "GET", "/health", nil)

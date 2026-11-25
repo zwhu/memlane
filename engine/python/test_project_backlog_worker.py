@@ -530,6 +530,27 @@ class WorkerQueueIsolationTests(unittest.TestCase):
                     self.assertEqual([message for message, _ in fixture.calls], [healthy["_capture_id"]])
                     self.assertEqual(fixture.read()["pending_entries"], entries[:-1])
 
+    def test_patch_body_false_positive_saves_only_a_numbered_summary(self):
+        def patch_trace(target):
+            return {'type': 'trace', 'origin_function': 'apply_patch', 'status': 'success',
+                    'method_params': {'command': f'*** Begin Patch\n*** Update File: {target}\n@@\n+row.key\n*** End Patch'},
+                    'method_return_value': 'original output', '_capture_id': str(uuid.uuid4()), '_buffered_at': 1}
+
+        ordinary = patch_trace('src/table.ts')
+        sensitive = patch_trace('config/.env')
+        unknown = {**patch_trace('src/second.ts'), '_replay_ambiguous': True}
+        with tempfile.TemporaryDirectory() as directory, WorkerDrainFixture(directory, [ordinary, sensitive, unknown]) as fixture:
+            review_result = review(fixture.common, fixture.policy, DATASET, HOST)
+            self.assertEqual(review_result['tokens'], [entry_key(ordinary)])
+            self.assertEqual(review_result['filtered'], 2)
+            result = self.run_save(fixture, tokens=review_result['tokens'])
+            self.assertEqual((result['status'], result['saved']), ('completed', 1))
+            self.assertEqual(fixture.read()['pending_entries'], [sensitive, unknown])
+            message, payload = fixture.calls[0]
+            self.assertEqual(message, ordinary['_capture_id'])
+            self.assertEqual(payload['entry']['method_params'], {'file_count': 1})
+            self.assertNotIn('original output', json.dumps(payload))
+
     def test_save_preserves_whole_session_authorization_and_sender_barriers(self):
         """Preserved boundaries: pause this managed operation with exact remaining tokens."""
         for barrier in ("http_401", "http_403", "policy_unconfirmed", "policy_write_denied", "legacy_rejection",

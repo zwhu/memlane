@@ -11,7 +11,7 @@ from connection_capture import ConnectionCapture
 from project_codex_connection import CodexConnection
 from project_control import Registry
 from project_control_server import create_app
-from project_policy import PolicyError
+from project_policy import PolicyError, mark_connection_mutation
 
 
 class CaptureHTTPTests(unittest.IsolatedAsyncioTestCase):
@@ -41,6 +41,7 @@ class CaptureHTTPTests(unittest.IsolatedAsyncioTestCase):
             return {'state': state, 'permission': owner.permission, 'review_sha': 'reviewed'}
         async def allow(capture, adapter, reviewed):
             if reviewed != 'reviewed': raise PolicyError('capture_review_changed', 409)
+            mark_connection_mutation()
             owner.allow_count += 1
             owner.permission = 'granted'
             capture.record(adapter.id, 'codex')['capture_deferred'] = False
@@ -98,8 +99,12 @@ class CaptureHTTPTests(unittest.IsolatedAsyncioTestCase):
         self.unknown = True
         reply = await self.decide('allow_capture', 'unknown-original')
         self.assertEqual(reply.status, 503)
+        self.assertEqual((await reply.json())['phase'], 'post_mutation')
+        before = self.registry.path.read_bytes()
+        self.assertEqual(self.registry.state['connection_operations']['unknown-original']['status'], 'unknown')
         receipt = await self.client.get('/v1/connections/operations/unknown-original', headers=self.headers)
         value = await receipt.json()
         self.assertEqual(value['status'], 'complete')
         self.assertTrue(value['reconciled'])
         self.assertEqual(self.allow_count, 1)
+        self.assertEqual(self.registry.path.read_bytes(), before)

@@ -49,29 +49,29 @@ func (c *searchController) hasSearchOriginFor(p *pane) bool {
 // graphController owns graph rendering host state, graph mode/selection,
 // tool-graph modal state, pending step hints, and code-graph indexing state.
 type graphController struct {
-	graph              *GraphHost
-	graphWindow        *mygo.Window
-	graphWindowClosed  bool
-	graphAssetsDir     string
-	graphAssets        map[string][]byte
-	graphAssetsCheck   *graphAssetCheck
-	graphAssetsChecked bool
-	graphAssetsErr     error
+	graph                *GraphHost
+	graphWindow          *mygo.Window
+	graphWindowClosed    bool
+	graphAssetsDir       string
+	graphAssets          map[string][]byte
+	graphAssetsCheck     *graphAssetCheck
+	graphAssetsChecked   bool
+	graphAssetsErr       error
 	graphAttachErr       error
 	graphAttachRequested bool
 	graphAttachFn        func(*GraphHost) error
-	pendingGraphLoad   *graphLoad
-	graphLoadRequest   uint64
-	graphError         string
-	graphMode          string
-	graphSelection     string
-	graphLoading       bool
-	graphPending       graphPendingState
-	toolGraph          toolGraphUIState
-	codeStatus         string
-	codeBusy           bool
-	codeUnknown        bool
-	codeRemoteActive   bool
+	pendingGraphLoad     *graphLoad
+	graphLoadRequest     uint64
+	graphError           string
+	graphMode            string
+	graphSelection       string
+	graphLoading         bool
+	graphPending         graphPendingState
+	toolGraph            toolGraphUIState
+	codeStatus           string
+	codeBusy             bool
+	codeUnknown          bool
+	codeRemoteActive     bool
 }
 
 func (c *graphController) initGraph(assets string) {
@@ -213,6 +213,9 @@ type overviewController struct {
 	overviewFirstScreenReady bool
 	startupDeferred          deferredStartupState
 	overviewRefreshAt        time.Time
+	focusRefreshAt           time.Time
+	focusRefreshNow          func() time.Time
+	windowActivation         uint64
 	fromOverview             bool
 	overviewSourceFloor      map[*pane]int
 	windowInactive           bool

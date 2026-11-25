@@ -21,7 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
-from first_install_store import read_private, write_private, validate_spec
+import agent_discovery
+from first_install_store import StoreInitializationError, read_private, write_private, validate_spec
+from project_control import loopback_origin
+from project_policy import PolicyError
 
 
 def owned_store(root):
@@ -65,19 +68,105 @@ def unused_origins(count):
             listener.close()
 
 
-def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None, graph_assets=None):
+def _managed_runtime_dir_for_graph_assets(path_value):
+    if not isinstance(path_value, (str, Path)) or not path_value:
+        return None
+    path = Path(path_value)
+    if not path.is_absolute() or '..' in path.parts or path.parts[-3:] != ('web', 'official-graph', 'dist'):
+        return None
+    runtime_dir = path.parents[2]
+    if re.fullmatch(r'runtime-[0-9a-f]{16}', runtime_dir.name) is None:
+        return None
+    for component in (path, *path.parents[:3]):
+        try:
+            if not stat.S_ISDIR(component.lstat().st_mode):
+                return None
+        except FileNotFoundError:
+            continue  # An older managed generation may already have been removed.
+        except OSError:
+            return None
+    return runtime_dir
+
+
+def _verify_runtime_marker(runtime_dir):
+    marker = runtime_dir / '.memlane-runtime.json'
+    try:
+        mode = marker.lstat().st_mode
+        if not stat.S_ISREG(mode) or mode & 0o077:
+            return False
+        data = json.loads(read_private(marker))
+    except (OSError, ValueError, RecursionError, StoreInitializationError):
+        return False
+    digest = data.get('sha256') if isinstance(data, dict) else None
+    return (isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest) is not None
+            and runtime_dir.name == 'runtime-' + digest[:16])
+
+
+def _is_managed_runtime_graph_assets(path_value, *install_roots, allow_marked_root=False):
+    runtime_dir = _managed_runtime_dir_for_graph_assets(path_value)
+    if runtime_dir is None:
+        return False
+    marker = runtime_dir / '.memlane-runtime.json'
+    marked = marker.exists() or marker.is_symlink()
+    return ((runtime_dir.parent in install_roots or (allow_marked_root and marked))
+            and (not marked or _verify_runtime_marker(runtime_dir)))
+
+
+def _validate_runtime_store(config, root, specification):
+    first_install = config.get('first_install')
+    if (not isinstance(first_install, dict) or first_install.get('store_id') != specification['store_id']
+            or config.get('official_data') != str(root)
+            or config.get('service_commit') != specification['source_commit']
+            or config.get('token_file') != str(root / 'owner.token')
+            or config.get('generation_file') != str(root / 'generation.json')):
+        raise ValueError('existing configuration belongs to another installation; retained')
+
+
+def _refresh_existing_runtime(config_path, root, specification, candidate, installation_root, *, refresh=True):
+    # Go's graph-assets refresh locks the same directory inode across renames.
+    parent = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        fcntl.flock(parent, fcntl.LOCK_EX)
+        for _ in range(2):
+            original = read_private(config_path)
+            config = json.loads(original)
+            _validate_runtime_store(config, root, specification)
+            if not refresh:
+                return
+            old_assets = config.get('graph_assets', '')
+            roots = (config_path.parent, config_path.parent / 'components' / 'installation')
+            if not _is_managed_runtime_graph_assets(candidate, *roots, installation_root, allow_marked_root=True):
+                return
+            manifest = candidate / 'assets.json'
+            if not (candidate.is_dir() and manifest.is_file()) or manifest.is_symlink():
+                return
+            if str(candidate) == old_assets or (old_assets != '' and not _is_managed_runtime_graph_assets(
+                    old_assets, *roots, candidate.parents[2].parent)):
+                return
+            if read_private(config_path) == original:
+                config['graph_assets'] = str(candidate)
+                write_private(config_path, json.dumps(config, indent=2))
+                return
+    finally:
+        os.close(parent)
+
+
+def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None, graph_assets=None,
+                    installation_root=None, skip_graph_refresh=False, existing_only=False):
     root, config_path = Path(root), Path(config_path)
     if not config_path.is_absolute() or config_path.parent != root.parent:
         raise ValueError('first runtime config must be beside the owned store')
+    config_exists = config_path.exists() or config_path.is_symlink()
+    if existing_only and not config_exists:
+        raise ValueError('existing first runtime configuration required')
     specification, _ = owned_store(root)
-    if config_path.exists() or config_path.is_symlink():
-        config = json.loads(read_private(config_path))
-        if (config.get('first_install', {}).get('store_id') != specification['store_id'] or
-                config.get('official_data') != str(root) or
-                config.get('service_commit') != specification['source_commit'] or
-                config.get('token_file') != str(root / 'owner.token')):
-            raise ValueError('existing configuration belongs to another installation; retained')
-        # Existing ports, tokens, generation and host targets never get reset.
+    if config_exists:
+        candidate = Path(graph_assets) if graph_assets and str(graph_assets).strip() else None
+        default_assets = ROOT / 'web/official-graph/dist'
+        if candidate is None and (default_assets / 'assets.json').is_file():
+            candidate = default_assets
+        _refresh_existing_runtime(config_path, root, specification, candidate,
+                                  Path(installation_root) if installation_root is not None else None, refresh=not skip_graph_refresh)
         from dev import load_config
         return load_config(config_path)
     source_manifest = json.loads((ROOT / 'engine/coding-memory-components.json').read_text())
@@ -125,18 +214,12 @@ def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None, g
     from agent_connections import detect_executable
     executable = detect_executable('codex', {})
     if not executable and host_home is not None:
-        for candidate in (
-            host / '.local/bin/codex',
-            host / '.bun/bin/codex',
-            host / 'Applications/Codex.app/Contents/Resources/codex-cli/bin/codex',
-            host / 'Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
-        ):
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                executable = detect_executable('codex', {'executable': str(candidate)})
-                break
+        candidate = agent_discovery.detect_executable('codex', home=host, which=lambda _: None)
+        if candidate:
+            executable = detect_executable('codex', {'executable': candidate})
     if executable:
         config['codex_executable'] = executable
-        config['auth_home'] = str(host / '.codex')
+        config['auth_home'] = agent_discovery.default_profile('codex', home=host)
     from dev import validate_project_control
     validate_project_control(config['project_control'], config)
     from first_install_mode import first_install_setup
@@ -146,11 +229,17 @@ def prepare_runtime(root, config_path, plugin, *, python=None, host_home=None, g
     return config
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def confirm_service_owner(config):
     _, expected = owned_store(Path(config['official_data']))
-    request = urllib.request.Request(config['service_url'].rstrip('/') + '/api/v1/users/me',
+    request = urllib.request.Request(loopback_origin(config['service_url']) + '/api/v1/users/me',
                                     headers={'X-Api-Key': read_private(config['token_file']).strip()})
-    with urllib.request.urlopen(request, timeout=10) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    with opener.open(request, timeout=10) as response:
         if response.status != 200 or json.load(response).get('id') != expected['owner_id']:
             raise ValueError('authenticated first service owner differs')
 
@@ -167,12 +256,15 @@ def activation_scope(config, request, *, allow_applied=False):
         raise ValueError('explicit generation reference required')
     rows = state.get('profiles', {}).get(reference['id'], [])
     row = next((row for row in rows if row['revision'] == reference['revision']), None)
-    connected_agent = bool(row and row['profile']['mode'] == 'agent_bridge' and state.get('connected_agent_selections', {}).get(row['digest']))
-    if row is None or row['digest'] != request.get('digest') or not (connected_agent or validation_passed(state.get('validations', {}), row['digest'])):
+    if row is None or row['digest'] != request.get('digest'):
         raise ValueError('first activation requires the same validated generation')
+    applied = state.get('active') == reference
+    legacy_applied = (allow_applied and applied and row['profile']['mode'] == 'agent_bridge'
+                      and state.get('connected_agent_selections', {}).get(row['digest']))
+    if not legacy_applied and not validation_passed(state.get('validations', {}), row['digest']):
+        raise PolicyError('generation_validation_required', 409)
     if any(row.get('status') in ('queued', 'running') for row in state.get('validations', {}).values()):
         raise ValueError('generation validation still active')
-    applied = state.get('active') == reference
     if not (allow_applied and applied):
         if state.get('active') is not None or state.get('next') != reference or state.get('revision') != request.get('revision'):
             raise ValueError('first activation selection changed; review required')
@@ -195,6 +287,17 @@ def prepare_activation(config, config_path, request_path, *, host_home=None):
         return _prepare_activation(config, config_path, request_path, host_home=host_home)
 
 
+def _check_activation_scope(config, request, request_path):
+    try:
+        activation_scope(config, request, allow_applied=request['status'] == 'starting')
+    except (ValueError, PolicyError, OSError, StoreInitializationError) as error:
+        if request.get('status') in ('approved', 'stopping'):
+            request.update(status='rejected', phase='pre_mutation', error_code=(
+                error.code if isinstance(error, PolicyError) else 'first_activation_precondition_failed'))
+            write_private(request_path, json.dumps(request))
+        raise
+
+
 def _prepare_activation(config, config_path, request_path, *, host_home=None):
     root, config_path, request_path = Path(config['official_data']), Path(config_path), Path(request_path)
     if request_path != root / 'first-install-activation.json':
@@ -207,14 +310,15 @@ def _prepare_activation(config, config_path, request_path, *, host_home=None):
         return False
     if request.get('status') not in ('approved', 'stopping', 'starting'):
         raise ValueError('activation outcome needs read-only review before another attempt')
-    activation_scope(config, request, allow_applied=request['status'] == 'starting')
+    _check_activation_scope(config, request, request_path)
     owner_path = root / '.memlane-dev-owner.json'
     if owner_path.exists():
         owner = json.loads(read_private(owner_path))
         if owner.get('phase') != 'first_install_setup':
             raise ValueError('another startup is already in progress; retain its owner')
-        request['status'] = 'stopping'
-        write_private(request_path, json.dumps(request))
+        if request['status'] != 'starting':
+            request['status'] = 'stopping'
+            write_private(request_path, json.dumps(request))
         try:
             stop_kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.PIPE, 'stderr': subprocess.STDOUT, 'check': True}
             if host_home is not None:
@@ -233,11 +337,19 @@ def _prepare_activation(config, config_path, request_path, *, host_home=None):
             raise ValueError('previous service owner still requires recovery')
         # The same store lock prevents another service writer between the
         # confirmed shutdown, selection check and persistent activation intent.
-        activation_scope(config, request, allow_applied=request['status'] == 'starting')
-        config = {**config, 'first_install': {**config['first_install'], 'setup': False}}
-        request['status'] = 'starting'
-        write_private(request_path, json.dumps(request))
-        write_private(config_path, json.dumps(config, indent=2))
+        parent = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            fcntl.flock(parent, fcntl.LOCK_EX)
+            latest = json.loads(read_private(config_path))
+            specification, _ = owned_store(root)
+            _validate_runtime_store(latest, root, specification)
+            _check_activation_scope(latest, request, request_path)
+            updated = {**latest, 'first_install': {**latest['first_install'], 'setup': False}}
+            request['status'] = 'starting'
+            write_private(request_path, json.dumps(request))
+            write_private(config_path, json.dumps(updated, indent=2))
+        finally:
+            os.close(parent)
     return True
 
 
@@ -279,6 +391,9 @@ def main():
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--python-executable', type=Path)
     parser.add_argument('--graph-assets', type=Path)
+    parser.add_argument('--skip-graph-refresh', action='store_true')
+    parser.add_argument('--existing-only', action='store_true')
+    parser.add_argument('--installation-root', type=Path)
     parser.add_argument('--activate-file', type=Path)
     args = parser.parse_args()
     if args.host_home is not None:
@@ -289,7 +404,8 @@ def main():
             raise ValueError('existing runtime Python executable required')
     config = prepare_runtime(args.store_root, args.runtime_config, args.plugin,
                              python=args.python_executable, host_home=args.host_home,
-                             graph_assets=args.graph_assets)
+                             graph_assets=args.graph_assets, installation_root=args.installation_root,
+                             skip_graph_refresh=args.skip_graph_refresh, existing_only=args.existing_only)
     if args.activate_file is not None:
         if args.prepare_only:
             raise ValueError('activation cannot be requested during read-only preparation')

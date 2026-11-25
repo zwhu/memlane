@@ -7,11 +7,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from aiohttp.test_utils import make_mocked_request
 import tomlkit
 from project_codex_connection import CodexConnection, digest, proposal, legacy_consumers, stage_install
-from project_control import private_write
+from project_control import Registry, private_write
+from project_control_server import create_app
 from project_policy import PolicyError
 
 
@@ -33,8 +35,7 @@ class RegistryFixture:
 
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.home = self.root / 'codex-home'; self.home.mkdir()
         self.config_file = self.home / 'config.toml'
         self.before = b'# keep my model\nmodel = "existing-model"\n[plugins."unrelated@official"]\nenabled = true\n[plugins."cognee@legacy"]\nenabled = true # old hook\n[features]\nhooks = false\n'
@@ -58,9 +59,6 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.preview = {'baseline_sha256': digest(self.before), 'proposed_sha256': digest(proposed), 'disabled_plugins': disabled, 'enabled_plugin': 'cognee@' + self.installation['marketplace_name']}
         self.registry.state['agents'][self.connection.id] = {'installation': self.installation}
         self.registry.state['codex_connections'][self.connection.id] = {'status': 'prepared', 'preview': self.preview, 'staged_cache': str(stage)}
-
-    async def asyncTearDown(self):
-        self.temporary.cleanup()
 
     async def test_activate_preserves_unrelated_settings_and_never_touches_auth_or_buffers(self):
         self.registry.state['sessions'][json.dumps([self.connection.id, 'old-host-session'])] = 'old-project'
@@ -132,10 +130,121 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_activation_before_config_commit_reviews_same_preview_as_prepared(self):
         self.registry.state['codex_connections'][self.connection.id]['status'] = 'activation_unknown'
-        with patch('project_codex_connection.stage_install', side_effect=AssertionError('must not reinstall')):
+        with (patch('project_codex_connection.stage_install', side_effect=AssertionError('must not reinstall')),
+              patch('project_codex_connection.legacy_consumers', return_value=[])):
             result = await self.connection.review(4)
         self.assertEqual(result['status'], 'prepared')
         self.assertEqual(self.config_file.read_bytes(), self.before)
+
+    async def test_review_settles_original_prepare_and_activate_receipts_over_http(self):
+        registry = Registry(self.registry.path, None)
+        self.addCleanup(registry.close)
+        registry.state.update(self.registry.state)
+        self.connection.registry = registry
+        app = create_app(registry, 'm' * 40, {}, codex_config={'agent_hosts': {
+            'codex': {'profile': str(self.home), 'executable': sys.executable}}})
+        app.freeze()
+        self.addAsyncCleanup(app.cleanup)
+        identifier = self.connection.id
+        record = registry.state['codex_connections'][identifier]
+        unrelated = dict(status='unknown', phase='post_mutation', action='activate', instance_id='other')
+        complete = dict(status='complete', action='activate', instance_id=identifier, result={'revision': 1})
+        with patch('project_codex_connection.legacy_consumers', return_value=[]):
+            await self.connection.activate(4, self.preview['proposed_sha256'])
+            for status, errors in (
+                    ('configured_pending_new_session', (None, None)),
+                    ('prepared', (None, 'codex_activation_did_not_apply')),
+                    ('staging_not_complete', ('codex_preparation_did_not_install', 'codex_activation_did_not_apply'))):
+                with self.subTest(status=status):
+                    if status == 'prepared':
+                        self.config_file.write_bytes(self.before)
+                    if status == 'staging_not_complete':
+                        shutil.rmtree(record['staged_cache'])
+                    record['status'] = 'staging_unknown' if status == 'staging_not_complete' else 'activation_unknown'
+                    operations = registry.state.setdefault('connection_operations', {})
+                    operations.update(unrelated=unrelated.copy(), complete=copy.deepcopy(complete))
+                    for action in ('prepare', 'activate'):
+                        operations['original-' + action] = dict(
+                            status='unknown', phase='post_mutation', instance_id=identifier, action=action,
+                            outcome='unknown', error_code='interrupted')
+                    revision = registry.state['revision']
+                    row = await self.connection.review(revision)
+                    self.assertEqual(row['status'], status)
+                    durable = registry.sessions_store.load_all()[1]
+                    for action, error in zip(('prepare', 'activate'), errors):
+                        operation = 'original-' + action
+                        request = make_mocked_request('GET', f'/v1/connections/operations/{operation}',
+                                                      headers={'Authorization': 'Bearer ' + 'm' * 40}, app=app)
+                        response = await app._handle(request)
+                        body = json.loads(response.body)
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(body, {
+                            'recorded': True, 'operation_id': operation, 'instance_id': identifier, 'action': action,
+                            'status': 'complete', 'phase': 'post_mutation', 'error_code': error,
+                            'result': {'revision': revision + 1, 'connection': row},
+                            **({'outcome': 'rejected'} if error else {}),
+                        })
+                        self.assertEqual(durable[operation], operations[operation])
+                    self.assertEqual(operations['unrelated'], unrelated)
+                    self.assertEqual(operations['complete'], complete)
+
+    async def test_review_rolls_back_connection_and_receipts_on_base_exception(self):
+        identifier = self.connection.id
+        record = self.registry.state['codex_connections'][identifier]
+        record['status'] = 'activation_unknown'
+        receipt = dict(status='unknown', phase='post_mutation', instance_id=identifier, action='activate')
+        self.registry.state['connection_operations'] = {'original': receipt}
+        original = copy.deepcopy(self.registry.state)
+
+        def fail_save():
+            self.assertEqual(record['status'], 'prepared')
+            self.assertEqual(receipt['status'], 'complete')
+            self.assertEqual(self.registry.state['revision'], 5)
+            raise asyncio.CancelledError()
+
+        with (patch('project_codex_connection.legacy_consumers', return_value=[]),
+              patch.object(self.registry, 'save', side_effect=fail_save)):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.connection.review(4, include_view=False)
+        self.assertEqual(self.registry.state, original)
+        self.assertIs(self.registry.state['codex_connections'][identifier], record)
+        self.assertIs(self.registry.state['connection_operations']['original'], receipt)
+
+    async def test_review_recovers_enrollment_and_rejects_original_prepare_and_activate(self):
+        state = self.registry.state
+        identifier = self.connection.id
+        state['agents'].clear()
+        state['codex_connections'].clear()
+        state['enrollments'] = {identifier: {'status': 'unknown'}}
+        operations = state['connection_operations'] = {
+            action: dict(status='unknown', phase='post_mutation', action=action, instance_id=identifier)
+            for action in ('prepare', 'activate')}
+
+        async def recover(expected, instance_id):
+            self.assertEqual((expected, instance_id), (4, identifier))
+            state['agents'][identifier] = {'name': 'Codex'}
+            state['enrollments'][identifier]['status'] = 'verified'
+            state['revision'] = 5
+
+        with (patch.object(self.registry, 'recover_agent', create=True, new=AsyncMock(side_effect=recover)),
+              patch('project_codex_connection.legacy_consumers', return_value=[]),
+              patch.object(self.registry, 'save', side_effect=asyncio.CancelledError()) as save):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.connection.review(4, include_view=False)
+            save.assert_called_once()
+        self.assertEqual([op['status'] for op in operations.values()], ['unknown', 'unknown'])
+        self.assertEqual(state['revision'], 5)
+        with patch('project_codex_connection.legacy_consumers', return_value=[]):
+            self.assertIsNone(await self.connection.review(5, include_view=False))
+        for action, error in (('prepare', 'codex_preparation_did_not_install'),
+                              ('activate', 'codex_activation_did_not_apply')):
+            with self.subTest(action=action):
+                receipt = operations[action]
+                self.assertEqual((receipt['status'], receipt['outcome'], receipt['error_code']),
+                                 ('complete', 'rejected', error))
+                self.assertEqual(receipt['result']['revision'], 5)
+                self.assertTrue(receipt['result']['connection']['agent_registered'])
+        self.assertEqual(self.registry.saves[-1]['connection_operations'], operations)
 
     async def test_project_level_reenable_of_old_owner_plugin_blocks_global_activation(self):
         project = self.root / 'workspace'; (project / '.codex').mkdir(parents=True)

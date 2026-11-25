@@ -13,9 +13,9 @@ func TestConnectionExpandedDirectoryStaysInsideFirstUseWorkspace(t *testing.T) {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			a := setupLayoutFixture()
 			a.environment.RuntimeStarted = true
-			a.environment.InitialStep = 2
+			a.environment.InitialStep = 3
 			a.integrations = integrationState{Loaded: true, ConnectionBulk: true,
-				EnvironmentOpen: map[string]bool{"traex": true}, CaptureHelp: map[string]bool{"pi": true},
+				EnvironmentOpen: map[string]bool{"traex": true},
 				Connections: ConnectionsDirectory{Connections: []AgentConnection{
 					{ID: "pi", Kind: "pi", Detected: true, Status: "configured_pending_new_session", HostVersion: "0.84.1"},
 					{ID: "traex", Kind: "traex", Detected: true, Status: "configured_pending_new_session", HostVersion: "0.215.0", Profile: "/Users/example/" + strings.Repeat("a-long-profile-directory/", 8)},

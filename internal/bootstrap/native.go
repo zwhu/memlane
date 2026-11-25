@@ -133,6 +133,7 @@ func (n NativeSupport) selected(name string) (string, bool) {
 	return "", false
 }
 func (n NativeSupport) install(ctx context.Context, root string) error {
+	progressDetail(ctx, "OpenSSL")
 	dir := filepath.Join(root, "native")
 	identity, _ := json.Marshal(n)
 	if err := claimComponentRoot(dir, ".memlane-native.json", identity); err != nil {
@@ -147,6 +148,7 @@ func (n NativeSupport) install(ctx context.Context, root string) error {
 	} else if err := fetchArchive(ctx, n.Artifact.URL, n.Artifact.SHA256, archive); err != nil {
 		return err
 	}
+	progressStage(ctx, "extracting")
 	f, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -217,6 +219,7 @@ func (n NativeSupport) install(ctx context.Context, root string) error {
 	if err := os.Chmod(wrapper, 0700); err != nil {
 		return err
 	}
+	progressStage(ctx, "verifying")
 	return n.verify(root)
 }
 

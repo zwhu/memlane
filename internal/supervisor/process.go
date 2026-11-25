@@ -697,12 +697,19 @@ func cloneServiceStatus(in ServiceStatus) ServiceStatus {
 	return out
 }
 
+var loopbackProbeTransport = func() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return transport
+}()
+
 func newLoopbackProbeClient(timeout time.Duration) *http.Client {
 	if timeout <= 0 {
 		timeout = time.Second
 	}
 	return &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: loopbackProbeTransport,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

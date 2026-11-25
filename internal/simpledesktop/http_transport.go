@@ -9,9 +9,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
-var sharedHTTPTransport = http.DefaultTransport.(*http.Transport).Clone()
+var sharedHTTPTransport = controlplane.NewLoopbackTransport()
 
 func noRedirectFunc(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
@@ -21,6 +23,9 @@ func newHTTPClient(override *http.Client, timeout time.Duration) *http.Client {
 	if override != nil {
 		cloned := *override
 		cloned.CheckRedirect = noRedirectFunc
+		if cloned.Transport == nil {
+			cloned.Transport = sharedHTTPTransport
+		}
 		return &cloned
 	}
 	return &http.Client{
@@ -50,6 +55,10 @@ func httpStatusCode(err error) (int, bool) {
 	var control *ControlResponseError
 	if errors.As(err, &control) {
 		return control.Status, true
+	}
+	var shared *controlplane.ControlError
+	if errors.As(err, &shared) {
+		return shared.Status, true
 	}
 	msg := err.Error()
 	for _, code := range []int{400, 401, 403, 404, 409, 500, 503} {

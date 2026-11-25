@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import make_mocked_request
 
 from _runtime_common import private_write
 from knowledge_recall import RecallStore
@@ -75,6 +75,38 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.registry.close()
         self.temp.cleanup()
+
+    async def test_generation_receipt_is_not_applicable_during_first_install_setup(self):
+        owner = self.official_data / '.memlane-dev-owner.json'
+        receipt = self.state_dir / f'.generation-applied-{self.owner_pid}.json'
+        receipt.unlink()
+
+        async def probe(_):
+            return True, 200, ''
+
+        monitor = ServiceMonitor(self.config, registry=self.registry, probe_http=probe,
+                                 sample_process=lambda pid: {'pid': pid, 'alive': True})
+        for phase, setup, reference, expected in (
+                ('first_install_setup', False, None, None),
+                ('ready', True, None, None),
+                ('ready', True, self.ref, False),
+                ('ready', False, self.ref, False)):
+            with self.subTest(phase=phase, setup=setup, reference=reference):
+                monitor.config['first_install'] = {'setup': setup}
+                private_write(owner, json.dumps({'pid': self.owner_pid, 'phase': phase,
+                                                'generation_reference': reference}))
+                snapshot = await monitor.snapshot()
+                self.assertIs(snapshot['summary']['generation_receipt_verified'], expected)
+        receipt.symlink_to(self.state_dir / 'absent')
+        private_write(owner, json.dumps({'pid': self.owner_pid, 'phase': 'first_install_setup'}))
+        snapshot = await monitor.snapshot()
+        self.assertIsNone(snapshot['summary']['generation_receipt_verified'])
+        receipt.unlink()
+        for content in ('{"reference":{"id":"stale","revision":1}}', 'malformed json'):
+            with self.subTest(content=content):
+                private_write(receipt, content)
+                snapshot = await monitor.snapshot()
+                self.assertIsNone(snapshot['summary']['generation_receipt_verified'])
 
     async def test_ready_debounce_degraded_and_recovery(self):
         probe_results = [
@@ -208,17 +240,21 @@ class ServiceMonitorTests(unittest.IsolatedAsyncioTestCase):
         manager = 'm' * 40
         agent = 'a' * 40
         app = create_app(self.registry, manager, {'agent-1': agent}, codex_config=self.config, monitor=monitor)
-        async with TestClient(TestServer(app)) as client:
-            unauth = await client.get('/v1/runtime/monitor')
-            self.assertEqual(unauth.status, 401)
-            forbidden = await client.get('/v1/runtime/monitor', headers={'Authorization': 'Bearer ' + agent})
-            self.assertEqual(forbidden.status, 403)
-            self.assertEqual((await forbidden.json())['error'], 'management_required')
-            ok = await client.get('/v1/runtime/monitor?include_logs=1', headers={'Authorization': 'Bearer ' + manager})
-            self.assertEqual(ok.status, 200)
-            body = await ok.json()
-            self.assertEqual(body['state'], 'ready')
-            self.assertTrue(body['log_tail'])
+        app.freeze()
+        self.addAsyncCleanup(app.cleanup)
+        path = '/v1/runtime/monitor'
+        unauth = await app._handle(make_mocked_request('GET', path, app=app))
+        self.assertEqual(unauth.status, 401)
+        forbidden = await app._handle(make_mocked_request(
+            'GET', path, headers={'Authorization': 'Bearer ' + agent}, app=app))
+        self.assertEqual(forbidden.status, 403)
+        self.assertEqual(json.loads(forbidden.body)['error'], 'management_required')
+        ok = await app._handle(make_mocked_request(
+            'GET', path + '?include_logs=1', headers={'Authorization': 'Bearer ' + manager}, app=app))
+        self.assertEqual(ok.status, 200)
+        body = json.loads(ok.body)
+        self.assertEqual(body['state'], 'ready')
+        self.assertTrue(body['log_tail'])
 
     @patch('subprocess.run')
     @patch('os.kill')

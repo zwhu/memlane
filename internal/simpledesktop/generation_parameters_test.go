@@ -49,7 +49,7 @@ func TestGenerationParameterDraftLabelsSavedValidation(t *testing.T) {
 	a.page = "设置"
 	a.access.SettingsSection = "Agent 与模型"
 	row := GenerationRow{Revision: 1, Digest: "original", Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}}
-	a.integrations = integrationState{Loaded: true, Editor: true, GenerationProviderDialog: true, Generation: GenerationDirectory{Profiles: map[string][]GenerationRow{"local": {row}}, Validations: map[string]GenerationValidation{"v": {Status: "passed", Digest: "original", Plain: true, Schema: true, Quality: true}}}}
+	a.integrations = integrationState{Loaded: true, GenerationLoaded: true, Editor: true, GenerationProviderDialog: true, Generation: GenerationDirectory{Profiles: map[string][]GenerationRow{"local": {row}}, Validations: map[string]GenerationValidation{"v": {Status: "passed", Digest: "original", Plain: true, Schema: true, Quality: true}}}}
 	a.integrations.editProfile("local", row)
 	a.integrations.MaxOutputTokens = "8192"
 	tt := ui.NewTester(a.View, 1200, 820)

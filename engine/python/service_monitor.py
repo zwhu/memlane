@@ -476,14 +476,20 @@ class ServiceMonitor:
         owner_pid = owner.get('pid')
         if type(owner_pid) is not int or owner_pid <= 1 or state_dir is None:
             return None
+        setup = self.config.get('first_install')
+        if (owner.get('phase') == 'first_install_setup'
+                or (isinstance(setup, dict) and setup.get('setup') is True
+                    and owner.get('generation_reference') is None)):
+            return None
         receipt = state_dir / f'.generation-applied-{owner_pid}.json'
         try:
-            if not receipt.exists() or receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_size > _MAX_RECEIPT_BYTES:
+            if receipt.is_symlink() or not receipt.is_file() or receipt.stat().st_size > _MAX_RECEIPT_BYTES:
                 return False
             data = json.loads(receipt.read_text(encoding='utf-8'))
             if not isinstance(data, dict):
                 return False
-            return data.get('reference') == owner.get('generation_reference')
+            reference = owner.get('generation_reference')
+            return reference is not None and data.get('reference') == reference
         except (OSError, ValueError, TypeError):
             return False
 
