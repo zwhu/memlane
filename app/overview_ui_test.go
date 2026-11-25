@@ -1,0 +1,659 @@
+package app
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/settings"
+)
+
+// Pure UI fixture: no Start, model, write endpoint, directory discovery, or
+// daily config. Output images are opt-in and explicitly labelled fixture.
+func overviewFixture(t *testing.T) *App {
+	t.Helper()
+	state := filepath.Join(t.TempDir(), "client-state.json")
+	b, _ := json.Marshal(firstUseState{Version: 1, Completed: time.Now().UTC().Format(time.RFC3339), Date: time.Now().Format("2006-01-02"), Zone: "fixture"})
+	if err := os.WriteFile(state, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{ClientStateFile: state}
+	for n := 0; n < 13; n++ {
+		name := fmt.Sprintf("Project %02d", n)
+		path := fmt.Sprintf("/synthetic/team-%02d/project", n)
+		if n < 2 {
+			name = "same"
+		}
+		if n == 2 {
+			name = "跨 Agent 项目记忆与长期上下文管理客户端 memory-client-exploration"
+		}
+		cfg.Projects = append(cfg.Projects, Project{ID: fmt.Sprint(n), Name: name, Path: path, Dataset: fmt.Sprint(n)})
+	}
+	a := New(cfg, nil)
+	a.monitor.EngineStatus = "已连接"
+	// Static overview fixture has no server; ignore background callbacks instead
+	// of executing them unsynchronized off the UI thread.
+	a.Update = func(func()) {}
+	a.overviewState.Loaded = true
+	a.overviewState.RawLoaded = true
+	a.overviewState.ActivityLoaded = true
+	a.overviewState.AllProjects = true
+	for n, title := range []string{
+		"docs/development.md documents config/daily-runtime.example.json fields, credentials and the daily development workflow.",
+		strings.Repeat("LongTechnicalIdentifier_", 22),
+		"跨 Agent 项目记忆与长期上下文管理：同名项目路径、来源与逐层返回都要保持。",
+		"Fourth knowledge for pagination",
+	} {
+		d := Document{ID: fmt.Sprint(n), Dataset: "0", Name: title, Created: time.Now().UTC().Format(time.RFC3339)}
+		a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Document: &d})
+	}
+	a.overviewState.Events = []overviewEvent{
+		{Key: "complete", Title: "召回记忆", State: "已完成", Project: "synthetic", At: time.Now()},
+		{Key: "running", Title: "提炼记忆", State: "处理中", Project: "synthetic", At: time.Now()},
+		{Key: "failed", Title: "读取来源", State: "失败", Project: "synthetic", At: time.Now(), Record: activityRow{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}, Failures: []activityRow{{ID: "fixture-row", Run: "fixture-run", ErrorClass: "BrokenPipeError"}}},
+	}
+	return a
+}
+
+func fixtureImage(t *testing.T, tt *ui.Tester, name string) {
+	t.Helper()
+	if dir := os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE"); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.Create(filepath.Join(dir, "fixture-"+name+".png"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if err = png.Encode(f, tt.Image()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Same authored labels as the fixed A screenshot, separate from both the
+// stress fixture and the live official store. No content is written to Cognee.
+func overviewSelectedAFixture(t *testing.T) *App {
+	a := overviewFixture(t)
+	names := []string{"memlane", "same", "background-window", "跨 Agent 项目记忆与长期上下文管理客户端 / memory-client-exploration", "automatic", "same", "beta", "worktree", "base", "alpha", "race", "PA Native manual", "frontend-platform"}
+	for i, name := range names {
+		a.Config.Projects[i].Name = name
+		a.Config.Projects[i].Path = "~/work/" + strings.ReplaceAll(name, " / ", "/")
+	}
+	a.Config.Projects[1].Path = "~/work/team-two/same"
+	a.Config.Projects[5].Path = "~/work/team-one/same"
+	a.overviewState.AllProjects = false
+	titles := []string{"docs/development.md documents config/daily-runtime.example.json fields, credentials and the daily development workflow.", "Sandbox-denied httptest listeners abort `sh scripts/go.sh test ./app`.", "app/client.go sends X-Api-Key from token_file without Bearer fallback.", "技术说明先给出结果，再解释关键依据", "异步切换页面时核对请求所属对象"}
+	a.overviewState.Snapshot.Knowledge = nil
+	for i, title := range titles {
+		at := time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), 0, 46, 0, 0, time.Local)
+		if i == 0 {
+			at = at.Add(10 * time.Minute)
+		}
+		if i >= 3 {
+			at = at.AddDate(0, 0, -1)
+		}
+		d := Document{ID: fmt.Sprint(i), Dataset: "0", Name: title, Created: at.Format(time.RFC3339)}
+		a.overviewState.Snapshot.Knowledge = append(a.overviewState.Snapshot.Knowledge, Item{ID: d.ID, Dataset: d.Dataset, Kind: "知识", Title: title, Document: &d})
+	}
+	a.overviewState.Snapshot.Raw = 6
+	for i := range a.overviewState.Events {
+		a.overviewState.Events[i].Project = "memlane"
+		a.overviewState.Events[i].Record.Dataset = "0"
+		clock := []struct{ h, m int }{{14, 44}, {14, 17}, {14, 10}}[i]
+		a.overviewState.Events[i].At = time.Date(time.Now().Year(), time.Now().Month(), time.Now().Day(), clock.h, clock.m, 0, 0, time.Local)
+	}
+	return a
+}
+
+func TestOverviewActivityProjectUsesStableScope(t *testing.T) {
+	a := overviewFixture(t)
+	if _, ok := a.overviewActivityProject(overviewEvent{Project: "same"}); ok {
+		t.Fatal("display name used as identity")
+	}
+	if i, ok := a.overviewActivityProject(overviewEvent{Project: "same", Record: activityRow{Dataset: "1"}}); !ok || i != 1 {
+		t.Fatal("same-name project was misrouted")
+	}
+	a.Config.Projects[0].Dataset = "1"
+	if _, ok := a.overviewActivityProject(overviewEvent{Record: activityRow{Dataset: "1"}}); ok {
+		t.Fatal("ambiguous scope was routed")
+	}
+}
+
+func TestOverviewLayoutAndContinuousUIFixture(t *testing.T) {
+	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
+		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
+			if os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE") != "" {
+				selected := overviewSelectedAFixture(t)
+				baseline := ui.NewTester(selected.overviewShell, size[0], size[1])
+				baseline.SetScale(2)
+				fixtureImage(t, baseline, fmt.Sprintf("%dx%d-selected-a", size[0], size[1]))
+			}
+			a := overviewFixture(t)
+			// Exclude lifecycle polling; exercise the actual homepage and sidebar.
+			tt := ui.NewTester(a.overviewShell, size[0], size[1])
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-home", size[0], size[1]))
+			if a.overviewState.Scroll.MaxX != 0 || a.overviewState.SidebarScroll.MaxX != 0 {
+				t.Fatal("horizontal overflow")
+			}
+			knowledge, _ := tt.Find(a.overviewState.Snapshot.Knowledge[0].Title)
+			dynamic, _ := tt.Find("近期动态")
+			if knowledge.X+knowledge.W > dynamic.X || knowledge.W < 200 || dynamic.X > float32(size[0]-200) {
+				t.Fatalf("columns overlap or squeeze: knowledge=%+v dynamic=%+v", knowledge, dynamic)
+			}
+			if tt.HasText("下一页") || tt.HasText("上一页") {
+				t.Fatal("obsolete pagination visible")
+			}
+			day := time.Now().Format("2006-01-02")
+			if err := tt.Click(day + " · 新增 4 条记忆"); err != nil {
+				t.Fatal(err)
+			}
+			if a.overviewState.Day != day {
+				t.Fatal("date not selected")
+			}
+			if err := tt.Click("返回最近记忆"); err != nil {
+				t.Fatal(err)
+			}
+			if a.overviewState.Day != "" {
+				t.Fatal("date not cleared")
+			}
+			if err := tt.Click("失败操作：failed"); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.HasText("连接管道已断开") || !tt.HasText("BrokenPipeError") || !tt.HasText("展开技术信息") {
+				t.Fatal("failure detail dialog missing human-readable explanation or collapsed tech toggle")
+			}
+			if tt.HasText("fixture-row") {
+				t.Fatal("technical row ID should be collapsed by default")
+			}
+			if err := tt.Click("展开技术信息"); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.HasText("fixture-row") || !tt.HasText("收起技术信息") {
+				t.Fatal("expanded technical section missing record ID")
+			}
+			if err := tt.Click("复制诊断信息"); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(tt.Clipboard(), "fixture-run") || a.overviewState.CopiedEvent != "failed" || !tt.HasText("已复制诊断信息 · 不含凭据或会话正文") {
+				t.Fatal("diagnostic clipboard/feedback missing")
+			}
+			// Close diagnostic modal before checking project layout.
+			if err := tt.Click("关闭"); err != nil {
+				t.Fatal(err)
+			}
+			if a.overviewState.ExpandedEvent != "" || tt.HasText("任务失败详情") {
+				t.Fatal("failure detail dialog did not close")
+			}
+			if tt.HasText("项目入口") {
+				t.Fatal("obsolete project grid visible on V4 overview")
+			}
+			footer, _ := tt.Find("服务 · 已连接")
+			if footer.Y > float32(size[1]) || footer.Y < float32(size[1]-70) {
+				t.Fatalf("sidebar footer moved: %+v", footer)
+			}
+			a.overviewState.SidebarScroll.Y = a.overviewState.SidebarScroll.MaxY
+			tt.Frame()
+			if err := tt.Click(fmt.Sprintf("全部 %d", len(a.Config.Projects))); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.HasText("Project 12") {
+				t.Fatal("all projects dialog missing Project 12")
+			}
+		})
+	}
+}
+
+func TestOverviewLoadingEmptyAndPartialFailureUI(t *testing.T) {
+	a := overviewFixture(t)
+	v := &a.overviewState
+	v.Loaded = false
+	v.RawLoaded = false
+	v.Loading = true
+	v.ActivityLoaded = false
+	v.ActivityLoading = true
+	v.Snapshot = overviewSnapshot{}
+	v.Events = nil
+	tt := ui.NewTester(a.overviewHome, 980, 758)
+	if !tt.HasText("读取中…") || tt.HasText("暂无记忆") || !tt.HasText("—") {
+		t.Fatal("loading masquerades as zero/empty")
+	}
+	fixtureImage(t, tt, "loading")
+	v.Loaded = true
+	v.RawLoaded = true
+	v.Loading = false
+	v.ActivityLoaded = true
+	v.ActivityLoading = false
+	tt.Frame()
+	if !tt.HasText("暂无记忆") || !tt.HasText("暂无动态") {
+		t.Fatal("successful empty missing")
+	}
+	fixtureImage(t, tt, "empty")
+	v.Snapshot.Knowledge = []Item{{ID: "kept", Title: "Last valid knowledge"}}
+	v.Snapshot.Raw = 9
+	v.Error = "fixture timeout"
+	v.ActivityError = "fixture unavailable"
+	v.Loading = true
+	tt.Frame()
+	if !tt.HasText("Last valid knowledge") || !tt.HasText("9") {
+		t.Fatal("partial failure removed good content")
+	}
+	fixtureImage(t, tt, "partial-refresh")
+}
+
+func TestOverviewFixedListsAreCappedAndScrollIndependently(t *testing.T) {
+	for _, size := range [][2]int{{1200, 820}, {1440, 900}} {
+		t.Run(fmt.Sprint(size[0]), func(t *testing.T) {
+			a := overviewFixture(t)
+			v := &a.overviewState
+			v.Events = nil
+			for n := 0; n < 60; n++ {
+				v.Events = append(v.Events, overviewEvent{Key: fmt.Sprint(n), Title: fmt.Sprintf("Synthetic event %02d", n), State: "已完成", Project: "synthetic", At: time.Now()})
+				v.Snapshot.Knowledge = append(v.Snapshot.Knowledge, Item{ID: fmt.Sprint("extra", n), Dataset: "0", Title: fmt.Sprintf("Extra knowledge %02d", n)})
+			}
+			tt := ui.NewTester(a.overviewShell, size[0], size[1])
+			tt.Frame()
+			left, _ := tt.Find("最近记忆内容")
+			right, _ := tt.Find("近期动态内容")
+			// V4: dual columns fill remaining height rather than a fixed 280px cap.
+			if left.H < 350 || right.H < 350 || left.H-right.H < -2 || left.H-right.H > 2 {
+				t.Fatalf("dual columns did not fill remaining height evenly: %+v %+v", left, right)
+			}
+			if d := left.Y - right.Y; d < -2 || d > 2 {
+				t.Fatal("panel tops differ", left, right)
+			}
+			if len(a.overviewDisplayedRows(time.Now())) != 20 || !tt.HasText("Synthetic event 49") || tt.HasText("Synthetic event 50") {
+				t.Fatal("list caps incorrect")
+			}
+			if tt.HasText("下一页") || tt.HasText("查看全部动态") || tt.HasText("加载更多动态") {
+				t.Fatal("obsolete footer controls visible")
+			}
+			tt.Scroll(right.X+20, right.Y+80, 0, 180)
+			if v.ActivityScroll.Y <= 0 || v.KnowledgeScroll.Y != 0 {
+				t.Fatal("activity scroll leaked")
+			}
+			tt.Scroll(left.X+20, left.Y+80, 0, 180)
+			if v.KnowledgeScroll.Y <= 0 {
+				t.Fatal("knowledge scroll failed")
+			}
+			fixtureImage(t, tt, fmt.Sprintf("%dx%d-v4-lists", size[0], size[1]))
+		})
+	}
+}
+
+func TestOverviewHeaderUsesContentInsets(t *testing.T) {
+	a := overviewFixture(t)
+	tt := ui.NewTester(a.projectHeader, 980, int(titlebarH))
+	if _, ok := tt.Find("总览"); !ok {
+		t.Fatal("V4 fused titlebar should show page title")
+	}
+	search, ok := tt.Find("搜索记忆与原始记录")
+	if !ok {
+		t.Fatal("missing search trigger")
+	}
+	if search.X+search.W < 980-sp4-1 || search.X+search.W > 980-sp4+1 {
+		t.Fatalf("toolbar does not align with V4 titlebar right inset: search=%+v", search)
+	}
+}
+
+func TestOverviewSidebarHasNoProjectMenus(t *testing.T) {
+	a := overviewFixture(t)
+	tt := ui.NewTester(a.overviewShell, 1200, 820)
+	for _, label := range settings.ProjectLabels(a.Config.Projects) {
+		if _, ok := tt.Find("项目菜单：" + label); ok {
+			t.Fatal("sidebar still contains a project menu", label)
+		}
+	}
+}
+
+func TestOverviewReturnIgnoresHistoryFromBeforeThisVisit(t *testing.T) {
+	a := overviewFixture(t)
+	// No network callbacks can publish into this navigation-only fixture.
+	a.Update = func(func()) {}
+	a.page = "知识"
+	a.project = 0
+	p := a.state()
+	p.History = []Item{{ID: "old-knowledge"}, {ID: "old-source"}}
+	a.page = "总览"
+	a.overviewState.Day = "2026-11-13"
+	a.overviewState.Offset = 3
+	a.overviewState.Scroll.Y = 123
+	a.navigate("知识", 0)
+	if a.overviewSourceFloor[p] != 2 {
+		t.Fatal("visit did not capture the old source boundary")
+	}
+	// A newly followed source still unwinds once, stopping at that boundary.
+	p.History = append(p.History, Item{ID: "new-source-parent"})
+	a.returnToOverview()
+	if a.page != "知识" || len(p.History) != 2 || a.overviewSourceFloor[p] != 2 {
+		t.Fatal("new source did not stop at the visit boundary")
+	}
+	a.returnToOverview()
+	if a.page != "总览" || len(p.History) != 2 {
+		t.Fatal("old reading history consumed the homepage return")
+	}
+	if a.overviewState.Day != "2026-11-13" || a.overviewState.Offset != 3 || a.overviewState.Scroll.Y != 123 {
+		t.Fatal("homepage state lost")
+	}
+	// A new explicit item selection owns a fresh source stack, even if this
+	// pane had an older stack when it was re-entered from the homepage.
+	a.navigate("知识", 0)
+	a.selectItem(p, Item{ID: "new-item"})
+	if a.overviewSourceFloor[p] != 0 {
+		t.Fatal("new item retained the old source boundary")
+	}
+	p.History = []Item{{ID: "new-item"}}
+	a.returnToOverview()
+	if a.page != "知识" || len(p.History) != 0 {
+		t.Fatal("fresh source did not return to its item")
+	}
+	a.returnToOverview()
+	if a.page != "总览" {
+		t.Fatal("fresh item did not return to homepage")
+	}
+}
+
+func TestOverviewRefreshFailureKeepsViewAndExpandedPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "p"}}}, nil)
+	a.access.Loaded = true
+	updates := make(chan func(), 20)
+	a.Update = func(fn func()) { updates <- fn }
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+	v := &a.overviewState
+	v.Loaded = true
+	v.RawLoaded = true
+	v.Snapshot = overviewSnapshot{Raw: 9, Knowledge: []Item{{ID: "kept"}}}
+	v.Day = "2026-11-13"
+	v.Offset = 3
+	v.Scroll.Y = 123
+	v.ActivityScroll.Y = 42
+	v.ActivityLimit = 60
+	v.ExpandedEvent = "failed"
+	v.ExpandedReport = "kept report"
+	v.ActivityExpanded = true
+	v.AllProjects = true
+	a.loadOverview()
+	// A later selection while requests are in flight must survive their callbacks.
+	v.Day = "2026-11-12"
+	drainReading(t, updates, func() bool { return !v.Loading && !v.ActivityLoading })
+	if v.Snapshot.Raw != 9 || len(v.Snapshot.Knowledge) != 1 || v.Day != "2026-11-12" || v.Offset != 3 || v.Scroll.Y != 123 || v.ActivityScroll.Y != 42 || v.ActivityLimit != 60 || v.ExpandedEvent != "failed" || v.ExpandedReport != "kept report" || !v.ActivityExpanded || !v.AllProjects {
+		t.Fatal("refresh reset valid content or view state")
+	}
+	if v.Error == "" || v.ActivityError == "" {
+		t.Fatal("refresh failure hidden")
+	}
+}
+
+func TestOverviewTitleKeepsReadableSentenceForTwoLineLayout(t *testing.T) {
+	body := "docs/development.md documents config/daily-runtime.example.json fields, credentials and the daily development workflow. Another sentence."
+	i := Item{Kind: "知识", Document: &Document{Name: "generated.txt"}, Body: body, BodyLoaded: true}
+	// Reuse the existing readable sentence parser, with a homepage-only bound.
+	i.Document.Name = ""
+	got := overviewReadingTitle(i)
+	if got != strings.Split(body, ". Another")[0]+"." {
+		t.Fatalf("unexpected title %q", got)
+	}
+	if len([]rune(firstReadingSentence(body))) > 81 {
+		t.Fatal("other reading title limit changed")
+	}
+}
+
+func TestOverviewDirectoryRefreshPreservesDateAndRejectsStaleCallbacks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/capabilities" {
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "p", Name: "original"}}}, nil)
+	a.access.Loaded = true
+	updates := make(chan func(), 20)
+	a.Update = func(fn func()) { updates <- fn }
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+	v := &a.overviewState
+	v.Day = "2026-11-13"
+	v.Offset = 3
+	v.Scroll.Y = 100
+	v.ActivityLimit = 40
+	v.ExpandedEvent = "kept"
+	a.Config.Projects[0].Name = "renamed"
+	a.loadOverview()
+	if v.Day != "2026-11-13" || v.ExpandedEvent != "kept" {
+		t.Fatal("display metadata changed content identity")
+	}
+	// Hold the bootstrap response, change the range, then execute the old callback.
+	oldBootstrap := <-updates
+	a.Config.Common = []Project{{Dataset: "new-common"}}
+	a.Client.Config = a.Config
+	a.loadOverview()
+	v.Day = "2026-11-12"
+	oldBootstrap()
+	if !v.Loading || !v.ActivityLoading || v.Day != "2026-11-12" || v.Offset != 3 || v.Scroll.Y != 100 || v.ActivityLimit != 40 {
+		t.Fatal("old callback changed new range/selection")
+	}
+	drainReading(t, updates, func() bool { return !v.Loading && !v.ActivityLoading })
+}
+
+func TestOverviewCurrentRuntimeReadOnly(t *testing.T) {
+	path := os.Getenv("MEMLANE_OVERVIEW_READONLY_CONFIG")
+	if path == "" {
+		t.Skip("explicit live read-only check only")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := New(cfg, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	control, ok := a.accessClient()
+	if !ok {
+		t.Fatal("explicit live overview check requires the control plane")
+	}
+	directory, err := control.directory(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.applyAccessDirectory(directory)
+	resp, err := control.overviewBootstrap(ctx, "", 365, 20, 50, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := overviewProjects(a.Config)
+	snapshot, days, _, _ := buildOverviewFromV2Bootstrap(projects, resp, 50)
+	allowed := map[string]bool{}
+	for _, p := range projects {
+		allowed[p.Dataset] = true
+	}
+	sessions, documents := 0, 0
+	for _, summary := range resp.Projects {
+		if allowed[summary.DatasetID] {
+			sessions += summary.SessionCount
+			documents += summary.RawDocCount
+		}
+	}
+	if resp.Common != nil && allowed[resp.Common.DatasetID] {
+		documents += resp.Common.RawDocCount
+	}
+	if snapshot.Raw != sessions+documents || len(snapshot.Knowledge) > min(20, resp.TotalKnowledgeCount) {
+		t.Fatal("bootstrap totals or recent limit inconsistent with the rendered overview")
+	}
+	seen := map[string]bool{}
+	for _, item := range snapshot.Knowledge {
+		if !allowed[item.Dataset] || seen[item.Key()] {
+			t.Fatal("recent knowledge contains a foreign or duplicate document", item.Key())
+		}
+		seen[item.Key()] = true
+	}
+	first, err := firstUseDays(a.Config, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := cfg.ClientStateFile
+	if statePath == "" {
+		statePath = filepath.Join(filepath.Dir(path), "client-state.json")
+	}
+	state, _ := os.ReadFile(statePath)
+	receipt := map[string]any{"checked_at": time.Now().UTC().Format(time.RFC3339), "source": "live official read-only; client date association only, no official/model/index writes", "knowledge": resp.TotalKnowledgeCount, "raw_sessions": sessions, "raw_documents": documents, "raw_total": snapshot.Raw, "knowledge_dates": days, "used_days": first, "client_state_sha256": fmt.Sprintf("%x", sha256.Sum256(state)), "projects": len(a.Config.Projects), "scopes": len(overviewProjects(a.Config))}
+	data, _ := json.MarshalIndent(receipt, "", "  ")
+	if dir := os.Getenv("MEMLANE_OVERVIEW_UI_EVIDENCE"); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "official-readonly.json"), data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Log(string(data))
+}
+
+func TestOverviewRefreshKeepsResolvedTitles(t *testing.T) {
+	const title = "Resolved first sentence."
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/overview/bootstrap":
+			json.NewEncoder(w).Encode(v2OverviewBootstrapResponse{
+				RecentItems: []v2KnowledgeItem{{DocID: "k", DatasetID: "p", Title: title, ContentHash: "stable"}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	a := New(Config{ServiceURL: server.URL, ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{Dataset: "p"}}}, nil)
+	a.access.Loaded = true
+	updates := make(chan func(), 20)
+	a.Update = func(fn func()) { updates <- fn }
+	a.loadOverview()
+	drainReading(t, updates, func() bool { return !a.overviewState.Loading && !a.overviewState.ActivityLoading })
+	v := &a.overviewState
+	if len(v.Snapshot.Knowledge) != 1 || v.Snapshot.Knowledge[0].Title != title {
+		t.Fatal("bootstrap did not provide the resolved title", v.Snapshot.Knowledge, v.Error)
+	}
+	a.recentScope = "already preheated old catalog"
+	a.loadOverview()
+	if v.Snapshot.Knowledge[0].Title != title {
+		t.Fatal("refresh hid the resolved title before publication")
+	}
+	drainReading(t, updates, func() bool { return !v.Loading && !v.ActivityLoading })
+	if v.Snapshot.Knowledge[0].Title != "Resolved first sentence." || a.recentScope != "" {
+		t.Fatal("catalog publication lost readable title or blocked title hydration")
+	}
+}
+
+func TestOverviewHeatmapHidesMissingDatesNotice(t *testing.T) {
+	a := overviewFixture(t)
+	a.overviewState.Snapshot.MissingDates = 5
+	tt := ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("部分记忆缺少来源日期，未计入热力图。") {
+		t.Fatal("missing dates notice should not be displayed on overview")
+	}
+}
+
+func TestOverviewFailureDetailDialogReadabilityAndAppearances(t *testing.T) {
+	parent := activityRow{
+		ID:        "6299cdd3-51df-4c45-bd3f-c58bf80ce11e",
+		Run:       "7c467ee6-3fb2-444d-ba80-9f55b90ca45b",
+		Dataset:   "0",
+		Operation: "improve",
+		Origin:    "api",
+		Outcome:   "failed",
+		Created:   "2026-11-20T20:21:46.247797",
+		Started:   "2026-11-20T19:57:53.712232",
+		Ended:     "2026-11-20T20:21:46.240281",
+	}
+	child := activityRow{
+		ID:         "e43280b7-f87f-4c87-bd98-cb00b76e87d8",
+		Run:        "e967a7e9-d20a-4184-85e3-4886ba4ffdea",
+		Parent:     parent.Run,
+		Dataset:    "0",
+		Pipeline:   "memify_pipeline",
+		Origin:     "api",
+		ErrorClass: "ConnectTimeout",
+		Outcome:    "failed",
+		Status:     "DATASET_PROCESSING_ERRORED",
+		Created:    "2026-11-20T20:21:42.579387",
+	}
+	for _, tc := range []struct {
+		name string
+		pref string
+	}{
+		{name: "light", pref: appearanceLight},
+		{name: "dark", pref: appearanceDark},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := overviewSelectedAFixture(t)
+			a.Config.ServiceURL = "http://127.0.0.1:61255"
+			a.Config.ServiceCommit = "ec6f40859e5f2df9e7862dde27580ac3268ed43"
+			a.setAppearancePreference(tc.pref)
+			defer a.setAppearancePreference(appearanceLight)
+
+			a.overviewState.Events = []overviewEvent{
+				{
+					Key:      parent.Run,
+					Title:    "提炼记忆",
+					State:    "失败",
+					Project:  "memlane",
+					At:       time.Date(2026, 11, 20, 20, 21, 46, 240281000, time.UTC),
+					Record:   parent,
+					Failures: []activityRow{parent, child},
+				},
+			}
+			tt := ui.NewTester(a.overviewShell, 1200, 820)
+			if err := tt.Click("失败操作：" + parent.Run); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"提炼记忆 · 失败详情", "连接超时", "ConnectTimeout", "提炼记忆流水线", "23 分 53 秒", "展开技术信息"} {
+				if !tt.HasText(want) {
+					t.Fatalf("%s collapsed dialog missing %q", tc.name, want)
+				}
+			}
+			if tt.HasText(child.Run) {
+				t.Fatalf("%s dialog leaked raw child run ID before expanding tech info", tc.name)
+			}
+			fixtureImage(t, tt, "failure-dialog-"+tc.name+"-collapsed")
+
+			if err := tt.Click("展开技术信息"); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"收起技术信息", child.Run, a.Config.ServiceCommit} {
+				if !tt.HasText(want) {
+					t.Fatalf("%s expanded dialog missing %q", tc.name, want)
+				}
+			}
+			fixtureImage(t, tt, "failure-dialog-"+tc.name+"-expanded")
+
+			if err := tt.Click("关闭"); err != nil {
+				t.Fatal(err)
+			}
+			if a.overviewState.ExpandedEvent != "" {
+				t.Fatalf("%s dialog did not close", tc.name)
+			}
+		})
+	}
+}

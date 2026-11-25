@@ -45,14 +45,6 @@ func FirstUseDays(clientStateFile, configFile string, now time.Time) (int, error
 }
 
 // Upstream writes datetime.now(timezone.utc); SQLite DTOs may omit its offset.
-func OfficialTime(value string) (time.Time, bool) {
-	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
-		if t, err := time.Parse(layout, value); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
-}
 
 const activityLimit = 50
 

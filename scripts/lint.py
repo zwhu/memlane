@@ -458,7 +458,7 @@ def main(root=ROOT):
     for path in sorted((root / 'scripts').glob('*.py')):
         if not path.name.startswith('test_') and path.name != 'lint.py':
             scan(path, check_source)
-    for directory in ('kit/ui', 'app', 'internal/simpledesktop'):
+    for directory in ('kit/ui', 'app'):
         go_dir = root / directory
         if go_dir.is_dir():
             for path in sorted(go_dir.rglob('*.go')):

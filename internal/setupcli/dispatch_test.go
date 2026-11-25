@@ -263,7 +263,7 @@ func TestSetupCLIHasZeroMyGoDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v: %s", err, out)
 	}
-	for _, path := range []string{"github.com/egoist/mygo", "internal/simpledesktop"} {
+	for _, path := range []string{"github.com/egoist/mygo", "github.com/zwhu/memlane/app"} {
 		if bytes.Contains(out, []byte(path)) {
 			t.Fatalf("unexpected dependency %s", path)
 		}

@@ -3,6 +3,7 @@ package memlane
 import (
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -38,6 +39,12 @@ func checkGoFileArchitecture(relPath string, src []byte) []string {
 		}
 		var reason string
 		switch {
+		case path.Dir(relPath) == "app/settings" && !settingsImportAllowed(importPath):
+			reason = "settings dependencies must stay inside its host and transport boundaries"
+		case path.Dir(relPath) == "app/shell" && inPackage("app"):
+			reason = "shell cannot depend on application controllers"
+		case crossesAppFeatureBoundary(relPath, importPath):
+			reason = "application features cannot depend on sibling features or the composition root"
 		case inPackage("core/engine/cognee") &&
 			!strings.HasPrefix(relPath, "core/engine/cognee/") &&
 			path.Dir(relPath) != "core/engine" && !strings.HasPrefix(relPath, "cmd/"):
@@ -53,6 +60,55 @@ func checkGoFileArchitecture(relPath string, src []byte) []string {
 		}
 	}
 	return violations
+}
+
+func appFeature(name string) string {
+	rest, ok := strings.CutPrefix(name, "app/")
+	if !ok {
+		return ""
+	}
+	feature, _, _ := strings.Cut(rest, "/")
+	switch feature {
+	case "overview", "reading", "search", "graph", "settings":
+		return feature
+	default:
+		return ""
+	}
+}
+
+func crossesAppFeatureBoundary(relPath, importPath string) bool {
+	source := appFeature(path.Dir(relPath))
+	if source == "" {
+		return false
+	}
+	localPath, ok := strings.CutPrefix(importPath, architectureModule+"/")
+	if !ok {
+		return false
+	}
+	target := appFeature(localPath)
+	return localPath == "app" || (target != "" && source != target)
+}
+
+func settingsImportAllowed(importPath string) bool {
+	switch importPath {
+	case architectureModule + "/app/api",
+		architectureModule + "/app/shell",
+		architectureModule + "/kit/ui",
+		architectureModule + "/kit/agents",
+		architectureModule + "/kit/aiinstaller",
+		architectureModule + "/core/setup",
+		architectureModule + "/internal/bootstrap",
+		architectureModule + "/internal/controlplane",
+		"github.com/egoist/mygo",
+		"github.com/egoist/mygo/ui",
+		"github.com/egoist/mygo/ui/markdown":
+		return true
+	}
+	if strings.Contains(strings.SplitN(importPath, "/", 2)[0], ".") {
+		return false
+	}
+	pkg, err := build.Default.Import(importPath, "", build.FindOnly)
+	return err == nil && pkg.Goroot
 }
 
 var (
@@ -198,6 +254,32 @@ func TestArchitectureGuardSelfTest(t *testing.T) {
 		{"core/gateway/file.go", cognee + "/client", true},
 		{"core/engine/other/file.go", cognee, true},
 		{"app/shell/file.go", cognee, true},
+		{"app/shell/contracts.go", module + "/app/settings", true},
+		{"app/shell/contracts.go", module + "/app/api", true},
+		{"app/shell/contracts.go", module + "/app", true},
+		{"app/overview/controller.go", module + "/app/reading", true},
+		{"app/reading/common_test.go", module + "/app/search", true},
+		{"app/search/controller.go", module + "/app/graph", true},
+		{"app/graph/controller.go", module + "/app/settings", true},
+		{"app/overview/controller.go", module + "/app", true},
+		{"app/settings/controller.go", module + "/app", true},
+		{"app/reading/nested/file.go", module + "/app/search/nested", true},
+		{"app/graph/controller.go", module + "/app/shell", false},
+		{"app/overview/controller.go", module + "/app/api", false},
+		{"app/app.go", module + "/app/settings", false},
+		{"app/app.go", module + "/app/overview", false},
+		{"app/app.go", module + "/app/graph", false},
+		{"app/settings/controller.go", module, true},
+		{"app/settings/controller.go", module + "/app/overview", true},
+		{"app/settings/controller.go", module + "/app/reading", true},
+		{"app/settings/controller.go", module + "/app/search", true},
+		{"app/settings/controller.go", module + "/app/graph", true},
+		{"app/settings/controller.go", cognee, true},
+		{"app/settings/controller.go", module + "/app/shell", false},
+		{"app/settings/controller.go", module + "/kit/ui", false},
+		{"app/settings/controller_test.go", "net/http/httptest", false},
+		{"app/settings/controller.go", "github.com/egoist/mygo/ui/markdown", false},
+		{"app/settings/controller.go", "github.com/egoist/mygo/cli", true},
 		{"kit/example/file.go", cognee, true},
 		{"internal/example/file.go", cognee, true},
 		{"root_test.go", cognee, true},

@@ -23,7 +23,7 @@ var bootstrapWarmDispatcher string
 func TestMain(m *testing.M) {
 	var warmDir string
 	if os.Getenv("MEMLANE_BOOTSTRAP_HELPER") != "1" && os.Getenv("MEMLANE_TEST_WORKER_ROLE") == "" {
-		if dir, err := os.MkdirTemp("", "memlane-bootstrap-warm-"); err == nil {
+		if dir, err := os.MkdirTemp("", "memlane-probe-warm-"); err == nil {
 			warmDir = dir
 			p := filepath.Join(dir, "warm-dispatcher.sh")
 			body := "#!/bin/sh\nif [ -f \"$0.body.sh\" ]; then\n  . \"$0.body.sh\"\nfi\n"

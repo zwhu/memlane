@@ -1,0 +1,317 @@
+package app
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+)
+
+func profileUIFixture(t *testing.T) *App {
+	a := overviewFixture(t)
+	a.page = "用户画像"
+	a.access.Next = time.Now().Add(time.Hour)
+	a.overview.RefreshAt = time.Now().Add(time.Hour)
+	a.userProfiles = userProfilesState{Loaded: true, Next: time.Now().Add(time.Hour), Selected: "codex", Directory: userProfilesDirectory{
+		Prompt: "请导出你自己已经保存的关于我的记忆。尽可能保留我的原话；未知内容写未知。",
+		Profiles: []userProfile{
+			{ID: "codex", Kind: "codex", Name: "Codex", Status: "ready", Method: "automatic", Updated: 1794830400, Document: &userProfileDocument{Dataset: "synthetic", ID: "one"}},
+			{ID: "manual:grok", Kind: "manual", Name: "Grok", Status: "manual"},
+		},
+	}}
+	a.userProfiles.Body = "# 用户画像\n\n## 沟通与写作偏好\n\n用户原话：先给结论，再说明依据。\n\n## 依据与未知\n\n仅依据此 AI 的现有记忆；职业未知。"
+	a.userProfiles.BodyKey = "codex/synthetic/one"
+	return a
+}
+
+func TestUserProfileReadManualImportAndDraftContinuity(t *testing.T) {
+	for _, wh := range [][2]int{{1200, 820}, {1440, 900}} {
+		t.Run(fmt.Sprint(wh), func(t *testing.T) {
+			a := profileUIFixture(t)
+			tt := ui.NewTester(a.View, wh[0], wh[1])
+			fixtureImage(t, tt, fmt.Sprintf("profiles-%dx%d-read", wh[0], wh[1]))
+			if !tt.HasText("Codex 对你的了解") || !tt.HasText("用户原话：先给结论，再说明依据。") {
+				t.Fatal("saved profile not presented")
+			}
+			clickProjectUI(t, tt, "Grok用户画像")
+			if a.userProfiles.Body != "" || tt.HasText("用户原话：先给结论，再说明依据。") {
+				t.Fatal("previous source body leaked into new source")
+			}
+			clickProjectUI(t, tt, "导入此来源画像")
+			if !a.userProfiles.Open {
+				t.Fatal("import action did not open dialog")
+			}
+			fixtureImage(t, tt, fmt.Sprintf("profiles-%dx%d-import", wh[0], wh[1]))
+			if !tt.HasText("复制提示词") {
+				t.Fatal("manual import prompt action missing")
+			}
+			clickProjectUI(t, tt, "复制提示词")
+			if tt.Clipboard() != a.userProfiles.Directory.Prompt {
+				t.Fatal("wrong manual prompt copied")
+			}
+			footer, ok := tt.Find("保存画像")
+			if !ok || footer.Y+footer.H > float32(wh[1]) {
+				t.Fatal("save action below viewport")
+			}
+			clickProjectUI(t, tt, "用户画像文档")
+			tt.Type("# Grok 对我的了解\n\n保留原话。")
+			clickProjectUI(t, tt, "取消")
+			clickProjectUI(t, tt, "导入此来源画像")
+			if !strings.Contains(a.userProfiles.Draft, "保留原话") {
+				t.Fatal("draft lost when reopening import")
+			}
+		})
+	}
+}
+
+func TestUserProfileBusyAndUnknownNeverOfferAnotherAutomaticRun(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
+	a.userProfiles.Directory.Profiles[0].Status = "unknown"
+	a.userProfiles.Directory.Profiles[0].SaveUnknown = true
+	tt := ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("自动生成") || tt.HasText("重新生成") || !tt.HasText("核对保存结果") {
+		t.Fatal("unknown operation can be silently replayed")
+	}
+}
+
+func TestUserProfileLateReadCannotReplaceAnotherSource(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	started, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"body":"OLD SOURCE MUST NOT APPEAR","document":{"dataset_id":"synthetic","data_id":"one"}}`)
+	}))
+	defer server.Close()
+	key := filepath.Join(t.TempDir(), "manager-token")
+	if err := os.WriteFile(key, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}
+	updates := make(chan func(), 1)
+	a.Update = func(fn func()) { updates <- fn }
+	a.readUserProfile()
+	<-started
+	a.selectUserProfile("manual:grok")
+	close(release)
+	select {
+	case update := <-updates:
+		update()
+	case <-time.After(3 * time.Second):
+		t.Fatal("document callback missing")
+	}
+	if a.userProfiles.Body != "" || a.userProfiles.Selected != "manual:grok" {
+		t.Fatal("late read crossed source boundaries")
+	}
+}
+
+func TestUserProfileExplicitImportEntryAfterFailure(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	a.userProfiles.Directory.Profiles[0].Status = "failed"
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
+	a.userProfiles.Directory.Profiles[0].ErrorDetail = "Error loading config.toml: invalid transport"
+	exit := 1
+	a.userProfiles.Directory.Profiles[0].ExitCode = &exit
+	tt := ui.NewTester(a.View, 1200, 820)
+	if (!tt.HasText("尝试导入") && !tt.HasText("重新导入")) || !tt.HasText("手动导入") || tt.HasText("自动生成") {
+		t.Fatal("explicit attempt or paste fallback missing")
+	}
+	if !tt.HasText("导入失败：Error loading config.toml: invalid transport（退出码 1）") {
+		t.Fatal("actual CLI error missing")
+	}
+	for _, label := range []string{"上次导入未完成", "复制提示词", "来源独立保留 · 不自动合并为通用记忆", "将它记住的背景、偏好与协作约定，独立保存在这里。"} {
+		if tt.HasText(label) {
+			t.Fatal("retired explanatory content remains", label)
+		}
+	}
+	if a.userProfiles.Busy {
+		t.Fatal("view started a profile operation")
+	}
+	a.userProfiles.Directory.Profiles[0].Status = "unknown"
+	tt = ui.NewTester(a.View, 1200, 820)
+	if tt.HasText("尝试导入") || tt.HasText("重新导入") {
+		t.Fatal("unknown result offered another attempt")
+	}
+}
+
+func TestUserProfileWrappedMarkdownUsesTheSameReadingStyle(t *testing.T) {
+	a := profileUIFixture(t)
+	a.userProfiles.Body = "```text\n## Instructions\n\n[unknown] - 保留用户原话。\n```\n\nThis is the complete set."
+	tt := ui.NewTester(a.View, 1200, 820)
+	if _, ok := tt.Find("代码横向滚动"); ok {
+		t.Fatal("entire profile rendered as a horizontal code block")
+	}
+	if !tt.HasText("Instructions") || !tt.HasText("[unknown] - 保留用户原话。") {
+		t.Fatal("Markdown exported inside an outer text fence is displayed as source code")
+	}
+	if !tt.HasText("This is the complete set.") {
+		t.Fatal("export completeness note was lost")
+	}
+}
+
+func TestProfileExportEnvelopeKeepsInnerCodeAndSavedSource(t *testing.T) {
+	for _, source := range []string{"## Instructions\n\nplain", "```go\npackage main\n```", "Before\n```text\n## sample\n```", "```text\nno closing fence"} {
+		if profileReadingMarkdown(source) != source {
+			t.Fatal("non-envelope content changed", source)
+		}
+	}
+	body := "```markdown\n## Instructions\n\n- 原话\n```\n\nComplete."
+	if got := profileReadingMarkdown(body); got != "## Instructions\n\n- 原话\n\nComplete." {
+		t.Fatal(got)
+	}
+	if got := (userProfile{Status: "failed", Error: "profile_generation_timeout"}).FailureLabel(); !strings.Contains(got, "导出超时") {
+		t.Fatal(got)
+	}
+}
+
+func TestUserProfileAntigravityDisplaysGeminiAppAndAllowsAutomaticImport(t *testing.T) {
+	called := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/profiles") {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case called <- r.Method + " " + r.URL.Path:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"profiles":[{"instance_id":"antigravity-test","kind":"antigravity","name":"Gemini App","status":"queued","can_generate":true}],"prompt":"p"}`)
+	}))
+	defer server.Close()
+	key := filepath.Join(t.TempDir(), "manager-token")
+	if err := os.WriteFile(key, []byte(strings.Repeat("m", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a := profileUIFixture(t)
+	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: key}
+	updates := make(chan func(), 4)
+	a.Update = func(fn func()) { updates <- fn }
+	a.userProfiles.Directory.Profiles = []userProfile{
+		{ID: "antigravity-test", Kind: "antigravity", Name: "Gemini App", Status: "manual", CanGenerate: true},
+	}
+	a.userProfiles.Selected = "antigravity-test"
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("Gemini App") || !tt.HasText("Gemini App 对你的了解") {
+		t.Fatal("Gemini App label missing for antigravity source")
+	}
+	if tt.HasText("antigravity") || tt.HasText("antigravity 对你的了解") {
+		t.Fatal("raw antigravity identifier leaked into UI")
+	}
+	if _, ok := tt.Find("尝试导入"); !ok {
+		t.Fatal("automatic import button missing")
+	}
+	clickProjectUI(t, tt, "从Gemini App导入画像")
+	var got string
+	select {
+	case got = <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic import request missing")
+	}
+	select {
+	case update := <-updates:
+		update()
+	case <-time.After(2 * time.Second):
+		t.Fatal("automatic import update callback missing")
+	}
+	if got != "POST /v1/user-profiles/antigravity-test/generate" {
+		t.Fatalf("expected enabled automatic import request, got %q", got)
+	}
+}
+
+func TestUserProfileV4UnifiedMarkdownFormatsAndVerbatimCopy(t *testing.T) {
+	// Source meta must show only "<day> · 自动生成" or "<day> · 手动导入" with no entry count.
+	autoMeta, autoFail, autoDot := profileSourceMeta(userProfile{Status: "ready", Method: "automatic", Updated: 1794830400})
+	if autoFail || autoDot != "ok" || !strings.HasSuffix(autoMeta, " · 自动生成") || strings.Contains(autoMeta, "条") {
+		t.Fatalf("unexpected automatic profile source meta: text=%q fail=%v dot=%q", autoMeta, autoFail, autoDot)
+	}
+	manualMeta, manualFail, manualDot := profileSourceMeta(userProfile{Status: "ready", Method: "manual", Updated: 1794830400})
+	if manualFail || manualDot != "ok" || !strings.HasSuffix(manualMeta, " · 手动导入") || strings.Contains(manualMeta, "条") {
+		t.Fatalf("unexpected manual profile source meta: text=%q fail=%v dot=%q", manualMeta, manualFail, manualDot)
+	}
+
+	cases := []struct {
+		name     string
+		body     string
+		expected []string
+	}{
+		{
+			name:     "chinese-five-section",
+			body:     "# 用户画像\n\n## 身份与背景\n- [2026-11-18] - 程序员，专注桌面与 AI 工具\n\n## 工作与协作偏好\n- [2026-11-19] - 先给结论再给依据\n\n## 技术偏好\n- [2026-11-20] - 零侵入外置扩展\n\n## 沟通与写作风格\n- 简洁中文\n\n## 依据与未知\n- 仅依据现有记忆",
+			expected: []string{"身份与背景", "工作与协作偏好", "零侵入外置扩展", "依据与未知"},
+		},
+		{
+			name:     "english-headings-and-code-block",
+			body:     "# User Profile\n\n## Engineering Stack\n\nPrefers Go and Python tooling:\n\n```go\npackage main\nfunc main() {}\n```\n",
+			expected: []string{"User Profile", "Engineering Stack", "package main"},
+		},
+		{
+			name:     "dateless-prose",
+			body:     "Plain prose without headings or dates. Keeps original phrasing intact.",
+			expected: []string{"Plain prose without headings or dates. Keeps original phrasing intact."},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := profileUIFixture(t)
+			a.userProfiles.Body = tc.body
+			a.userProfiles.BodyKey = "codex/synthetic/" + tc.name
+			tt := ui.NewTester(a.View, 1200, 820)
+			for _, want := range tc.expected {
+				if !tt.HasText(want) {
+					t.Fatalf("missing expected markdown text %q in %v", want, tt.Texts())
+				}
+			}
+			for _, text := range tt.Texts() {
+				if strings.Contains(text, "条记录") || strings.Contains(text, " · 3 条") {
+					t.Fatalf("unexpected entry count leaked in UI: %q", text)
+				}
+			}
+			clickProjectUI(t, tt, "复制正文")
+			if tt.Clipboard() != tc.body {
+				t.Fatalf("copy body did not copy raw profile body verbatim: got %q want %q", tt.Clipboard(), tc.body)
+			}
+		})
+	}
+
+	// Verify import dialog hint, ↑↓ keyboard switch, and failed profile "重新导入".
+	a := profileUIFixture(t)
+	tt := ui.NewTester(a.View, 1200, 820)
+	clickProjectUI(t, tt, "导入此来源画像")
+	if !tt.HasText("支持直接粘贴任意 Markdown 正文，保留原文不做改写") {
+		t.Fatalf("import dialog hint not updated: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "取消")
+
+	// Window-level ↑↓ keyboard switch works immediately upon entering the profile page.
+	tt.Key(0, ui.KeyDown)
+	if a.userProfiles.Selected != "manual:grok" {
+		t.Fatalf("KeyDown did not select next source: %q", a.userProfiles.Selected)
+	}
+	tt.Key(0, ui.KeyUp)
+	if a.userProfiles.Selected != "codex" {
+		t.Fatalf("KeyUp did not return to previous source: %q", a.userProfiles.Selected)
+	}
+
+	// Failed profile without a prior document must still show "重新导入" consistently.
+	a.userProfiles.Body, a.userProfiles.BodyKey = "", ""
+	a.userProfiles.Directory.Profiles[0].Document = nil
+	a.userProfiles.Directory.Profiles[0].Status = "failed"
+	a.userProfiles.Directory.Profiles[0].CanGenerate = true
+	tt.Frame()
+	if !tt.HasText("重新导入") {
+		t.Fatalf("failed profile without document should show 重新导入, got: %v", tt.Texts())
+	}
+}

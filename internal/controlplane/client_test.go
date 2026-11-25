@@ -85,7 +85,7 @@ func TestControlPlaneHasZeroMyGoDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v\n%s", err, out)
 	}
-	for _, name := range []string{"github.com/egoist/mygo", "internal/simpledesktop", "github.com/ebitengine/purego", "internal/bootstrap", "internal/supervisor"} {
+	for _, name := range []string{"github.com/egoist/mygo", "github.com/zwhu/memlane/app", "github.com/ebitengine/purego", "internal/bootstrap", "internal/supervisor"} {
 		if strings.Contains(string(out), name) {
 			t.Errorf("unexpected dependency: %s", name)
 		}

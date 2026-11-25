@@ -1,0 +1,293 @@
+package settings
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/egoist/mygo/ui"
+	kitui "github.com/zwhu/memlane/kit/ui"
+)
+
+type ProjectAccessState struct {
+	Directory                    AccessDirectory
+	Loaded, Loading, Busy        bool
+	Request                      uint64
+	Next                         time.Time
+	Message                      string
+	DirectoryError               string
+	Signature                    string
+	Defaults                     ProjectPolicy
+	DefaultsDirty                bool
+	DefaultsRevision             int64
+	OpenProject, SettingsSection string
+	RevealQueueProject           string
+	PermissionSaved              map[string]time.Time
+	Queues                       map[string]*ProjectQueueState
+	CheckboxPending              map[string]*ProjectCheckboxPending
+	SidebarQueueIndex            int
+}
+
+func (a *Controller) accessClient() (ProjectControlClient, bool) {
+	if a.config.ProjectControl == nil || strings.TrimSpace(a.config.ProjectControl.URL) == "" {
+		return ProjectControlClient{}, false
+	}
+	return ProjectControlClient{Config: *a.config.ProjectControl, HTTP: a.client.HTTP}, true
+}
+
+func (a *Controller) RefreshProjectDirectory() {
+	if a.config.GenerationSetupOnly {
+		return
+	}
+	client, ok := a.accessClient()
+	if !ok || a.access.Loading || a.access.Busy || !a.canDispatch() {
+		return
+	}
+	a.access.Loading = true
+	a.access.Next = time.Now().Add(15 * time.Second)
+	a.access.Request++
+	request := a.access.Request
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		directory, err := client.directory(ctx)
+		a.dispatch(func() {
+			if request != a.access.Request {
+				return
+			}
+			a.access.Loading = false
+			if err != nil {
+				a.access.DirectoryError = err.Error()
+				if IsControlAuthDenied(err) || readingUnavailable(err) {
+					a.invalidateReading("")
+				}
+				return
+			}
+			a.access.DirectoryError = ""
+			a.ApplyAccessDirectory(directory)
+		})
+	}()
+}
+
+func (a *Controller) ApplyAccessDirectory(directory AccessDirectory) {
+	if a.access.Loaded && directory.Revision < a.access.Directory.Revision {
+		return
+	}
+	if directory.CodexConnection == nil {
+		directory.CodexConnection = a.access.Directory.CodexConnection
+	}
+	data, _ := json.Marshal(directory)
+	signature := fmt.Sprintf("%x", sha256.Sum256(data))
+	changed := !a.access.Loaded || accessPolicyChanged(a.access.Directory, directory)
+	a.confirmProjectCheckboxes(directory)
+	a.access.Directory = directory
+	a.access.Signature = signature
+	a.access.Loaded = true
+	if !a.access.DefaultsDirty {
+		a.access.Defaults = directory.Defaults
+		a.access.DefaultsRevision = directory.Revision
+	}
+	// The registry is authoritative. Keep presentation order by stable ID only.
+	previous := a.config
+	oldProjects := previous.Projects
+	registered := make(map[string]Project, len(directory.Projects))
+	for _, record := range directory.Projects {
+		p := Project{ID: record.ID, Name: record.Name, Dataset: record.Dataset, CodeEnabled: record.CodeEnabled, CodeDataset: record.CodeDataset}
+		if len(record.Aliases) > 0 {
+			p.Path = record.Aliases[0]
+		}
+		registered[p.ID] = p
+	}
+	projects := make([]Project, 0, len(registered))
+	for _, old := range oldProjects {
+		if p, ok := registered[old.ID]; ok {
+			projects = append(projects, p)
+			delete(registered, old.ID)
+		}
+	}
+	for _, record := range directory.Projects {
+		if p, ok := registered[record.ID]; ok {
+			projects = append(projects, p)
+			delete(registered, record.ID)
+		}
+	}
+	a.config.Projects = projects
+	a.config.Common = nil
+	if directory.Common != nil && directory.Common.Dataset != "" {
+		common := Project{ID: directory.Common.ID, Name: "通用记忆", Dataset: directory.Common.Dataset}
+		a.config.Common = []Project{common}
+	}
+	a.setConfig(a.config)
+	if a.host.ProjectsChanged != nil {
+		a.host.ProjectsChanged(previous, a.config)
+	}
+	if changed {
+		a.setReadingPolicyRevision(signature)
+	}
+}
+
+func accessPolicyChanged(before, after AccessDirectory) bool {
+	encode := func(value any) string { b, _ := json.Marshal(value); return string(b) }
+	agentIDs := func(agents []AccessAgent) map[string]bool {
+		ids := map[string]bool{}
+		for _, agent := range agents {
+			ids[agent.ID] = true
+		}
+		return ids
+	}
+	if before.Defaults != after.Defaults || encode(agentIDs(before.Agents)) != encode(agentIDs(after.Agents)) {
+		return true
+	}
+	for _, old := range before.Projects {
+		for _, current := range after.Projects {
+			if old.ID != current.ID {
+				continue
+			}
+			old.Name, current.Name = "", ""
+			old.Aliases, current.Aliases = nil, nil
+			old.ToolGraph, current.ToolGraph = ToolGraphSettings{}, ToolGraphSettings{}
+			old.AutoCapture, current.AutoCapture = nil, nil
+			old.AutoCaptureVersion, current.AutoCaptureVersion = 0, 0
+			old.AutoCaptureUpdatedAt, current.AutoCaptureUpdatedAt = "", ""
+			if encode(old) != encode(current) {
+				return true
+			}
+			break
+		}
+		// Removed associations are withdrawn by reconcileProjectReading; they
+		// must not invalidate unrelated, still-authorized reading panes.
+	}
+	return before.Common != nil && encode(before.Common) != encode(after.Common)
+}
+
+func (a *Controller) mutateAccess(operation func(context.Context, ProjectControlClient, int64) (AccessDirectory, error), onSuccess ...func()) {
+	client, ok := a.accessClient()
+	if !ok || !a.access.Loaded || a.access.Busy {
+		return
+	}
+	a.access.Busy = true
+	a.access.Loading = false
+	a.access.Message = "正在保存并核对实际权限…"
+	a.access.Request++
+	request, revision := a.access.Request, a.access.Directory.Revision
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
+		defer cancel()
+		directory, err := operation(ctx, client, revision)
+		a.dispatch(func() {
+			if request != a.access.Request {
+				return
+			}
+			a.access.Busy = false
+			if err != nil {
+				a.access.Message = err.Error()
+				return
+			}
+			for _, fn := range onSuccess {
+				fn()
+			}
+			a.ApplyAccessDirectory(directory)
+			a.access.Message = "设置已保存；生效状态以官方核对结果为准"
+		})
+	}()
+}
+
+func accessLabel(access string) string {
+	switch access {
+	case "none":
+		return "不可访问"
+	case "read":
+		return "只读"
+	case "maintain":
+		return "可写并维护记忆（含删除）"
+	}
+	return "未知"
+}
+
+func accessValue(label string) string {
+	switch label {
+	case "不可访问":
+		return "none"
+	case "只读":
+		return "read"
+	case "可写并维护记忆（含删除）":
+		return "maintain"
+	}
+	return ""
+}
+
+func booleanLabel(value bool) string {
+	if value {
+		return "开启"
+	}
+	return "关闭"
+}
+
+func inheritedFields(directory AccessDirectory) int {
+	count := 0
+	for _, p := range directory.Projects {
+		for _, agent := range directory.Agents {
+			o := p.Overrides[agent.ID]
+			if o.Access == nil {
+				count++
+			}
+			if o.Capture == nil {
+				count++
+			}
+			if o.AutoProcess == nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (a *Controller) accessSettings(c *ui.Context) {
+	tok := a.tokens()
+	if a.config.ProjectControl == nil {
+		ui.Text(c, "项目管理服务尚未启用").FontSize(13).TextColor(tok.Text3)
+		return
+	}
+	ui.Text(c, "项目默认规则").FontSize(17).FontWeight(600)
+	if a.access.Message != "" {
+		ui.Text(c, a.access.Message).FontSize(11).TextColor(tok.Text3)
+	}
+	if a.access.DirectoryError != "" {
+		ui.Text(c, a.access.DirectoryError).FontSize(11).TextColor(tok.Text3)
+	}
+	kitui.RefreshAction(c, tok, "重新读取默认规则", a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
+	if !a.access.Loaded {
+		ui.Text(c, "正在读取项目规则…").FontSize(12)
+		return
+	}
+	directory := a.access.Directory
+	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护包含官方删除能力，不授予分享权限。").FontSize(12).LineHeight(1.7)
+	access, capture, process := accessLabel(a.access.Defaults.Access), booleanLabel(a.access.Defaults.Capture), booleanLabel(a.access.Defaults.AutoProcess)
+	policySettingRow(tok, c, "Agent 默认访问权限", "可写并维护包含读取、写入和删除；不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
+		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护记忆（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
+	})
+	policySettingRow(tok, c, "默认自动采集", "采集 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
+		ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(180).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })
+	})
+	policySettingRow(tok, c, "默认自动提炼", "收到新材料后自动提炼记忆；关闭不取消已经运行的任务。", booleanLabel(directory.Defaults.AutoProcess), false, func() {
+		ui.Select(c.Key("default-process"), &process, []string{"开启", "关闭"}).Width(180).Label("默认自动提炼").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.AutoProcess = process == "开启"; a.access.DefaultsDirty = true })
+	})
+	ui.Text(c, fmt.Sprintf("保存将更新 %d 个项目中的 %d 个继承字段；明确覆盖的字段保持。关闭自动提炼只停止后续触发，已运行任务保留真实状态。", len(directory.Projects), inheritedFields(directory))).FontSize(11).TextColor(tok.Text3).LineHeight(1.7)
+	ui.Button(c, "保存默认规则").Disabled(a.access.Busy || !a.access.DefaultsDirty).OnClick(func() {
+		policy := a.access.Defaults
+		draftRevision := a.access.DefaultsRevision
+		a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
+			return client.defaults(ctx, draftRevision, policy)
+		}, func() { a.access.DefaultsDirty = false })
+	})
+	if a.access.DefaultsDirty {
+		kitui.TextButton(c, tok, "重新载入默认规则", nil).Disabled(a.access.Busy).OnClick(func() {
+			a.access.Defaults = a.access.Directory.Defaults
+			a.access.DefaultsDirty = false
+			a.access.DefaultsRevision = a.access.Directory.Revision
+		})
+	}
+}

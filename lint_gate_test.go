@@ -19,7 +19,7 @@ func resolveLintPython() string {
 
 func recordLintInputs(t *testing.T) {
 	t.Helper()
-	for _, root := range []string{"scripts", "engines/cognee", "internal/simpledesktop", "kit/ui", "app", "docs"} {
+	for _, root := range []string{"scripts", "engines/cognee", "kit/ui", "app", "docs"} {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				if path == root && root != "scripts" && errors.Is(walkErr, fs.ErrNotExist) {

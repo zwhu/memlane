@@ -112,43 +112,10 @@ type FirstUseReceipt struct {
 	Date      string `json:"first_used_date"`
 	Zone      string `json:"first_used_timezone"`
 }
-type ActivityRow struct {
-	ErrorClass string `json:"error_class"`
-	Origin     string `json:"origin"`
-	ID         string `json:"id"`
-	Run        string `json:"pipeline_run_id"`
-	Parent     string `json:"parent_operation_id"`
-	Dataset    string `json:"dataset_id"`
-	Kind       string `json:"kind"`
-	Pipeline   string `json:"pipeline_name"`
-	Operation  string `json:"operation_name"`
-	Status     string `json:"status"`
-	Outcome    string `json:"outcome"`
-	Background bool   `json:"background"`
-	Created    string `json:"created_at"`
-	Started    string `json:"started_at"`
-	Ended      string `json:"ended_at"`
-}
-type Event struct {
-	Key, Title, State, Project string
-	At                         time.Time
-	Record                     ActivityRow
-	Failures                   []ActivityRow
-	Recall                     *RecallEvent
-}
-type RecallHit struct {
-	Dataset  string `json:"dataset_id"`
-	Document string `json:"document_id"`
-}
-type RecallEvent struct {
-	ID        string      `json:"event_id"`
-	AgentID   string      `json:"agent_id"`
-	AgentName string      `json:"agent_name"`
-	AgentKind string      `json:"agent_kind"`
-	Channel   string      `json:"channel"`
-	Received  string      `json:"received_at"`
-	Hits      []RecallHit `json:"hits"`
-}
+type ActivityRow = api.ActivityRow
+type Event = api.ActivityEvent
+type RecallHit = api.ActivityRecallHit
+type RecallEvent = api.ActivityRecallEvent
 type FailureDetailItem struct {
 	StageLabel  string
 	StageRaw    string

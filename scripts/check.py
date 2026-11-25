@@ -75,7 +75,7 @@ def build_plan(args, root):
     broad = full or args.pre_push
     engine = any(path.startswith('engines/cognee/') and path.endswith('.py') for path in paths)
     scripts = any(path.startswith('scripts/') and path.endswith('.py') for path in paths)
-    ui = any(path.startswith(('app/', 'kit/ui/', 'internal/simpledesktop/')) and path.endswith('.go')
+    ui = any(path.startswith(('app/', 'kit/ui/')) and path.endswith('.go')
              for path in paths)
     docs = any(path.startswith('docs/') and path.endswith('.md') for path in paths)
     pi_changed = any(path.startswith('engine/agents/pi/') or path == 'scripts/test_pi_extension.mjs' for path in paths)

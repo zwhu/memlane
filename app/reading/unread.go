@@ -17,27 +17,10 @@ var _ UnreadTransport = (*api.Client)(nil)
 
 type UnreadScopeState = UnreadScopeStateOf[api.CatalogItem]
 
-type UnreadScopeStateOf[T any] struct {
-	ServerUnreadKnown    bool
-	ServerUnreadCount    int
-	ServerUnreadStateRev int64
-	ServerUnreadSnapshot uint64
-	UnreadHasMore        bool
-	UnreadPreview        []T
-	Error                string
-	ReadIDs              map[string]bool
-}
+type UnreadScopeStateOf[T any] = api.UnreadScopeStateOf[T]
 
 func ApplyServerSnapshot[T any](state *UnreadScopeStateOf[T], unreadCount int, stateRev int64, writerPending bool) bool {
-	if state == nil || stateRev < state.ServerUnreadStateRev ||
-		(writerPending && stateRev <= state.ServerUnreadStateRev) {
-		return false
-	}
-	state.ServerUnreadStateRev = stateRev
-	state.ServerUnreadKnown = true
-	state.ServerUnreadCount = max(0, unreadCount)
-	state.ServerUnreadSnapshot++
-	return true
+	return api.ApplyServerSnapshot(state, unreadCount, stateRev, writerPending)
 }
 
 func CanMarkRead(kind string, hasDoc, isKnowledge, bodyLoaded, bodyTruncated bool) bool {

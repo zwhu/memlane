@@ -36,7 +36,7 @@ for relpath in $STAGED; do
         *.py)
             NEEDS_DIFF_GUARD=1
             ;;
-        internal/simpledesktop/*.go|kit/ui/*.go|app/*.go|app/*/*.go)
+        kit/ui/*.go|app/*.go|app/*/*.go)
             NEEDS_LINT=1
             NEEDS_DIFF_GUARD=1
             ;;
