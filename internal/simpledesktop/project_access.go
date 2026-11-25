@@ -56,18 +56,21 @@ type AccessApplied struct {
 }
 
 type AccessProject struct {
-	ToolGraph       ToolGraphSettings          `json:"tool_graph"`
-	ID              string                     `json:"id"`
-	Name            string                     `json:"name"`
-	Aliases         []string                   `json:"aliases"`
-	Dataset         string                     `json:"dataset_id"`
-	Status          string                     `json:"status"`
-	DesiredRevision int64                      `json:"desired_revision"`
-	Overrides       map[string]ProjectOverride `json:"overrides"`
-	Applied         map[string]AccessApplied   `json:"applied"`
-	CodeEnabled     bool                       `json:"code_enabled"`
-	CodeConfigured  bool                       `json:"code_configured"`
-	CodeDataset     string                     `json:"code_dataset_id"`
+	AutoCapture          *bool                      `json:"auto_capture,omitempty"`
+	AutoCaptureVersion   int64                      `json:"auto_capture_version,omitempty"`
+	AutoCaptureUpdatedAt string                     `json:"auto_capture_updated_at,omitempty"`
+	ToolGraph            ToolGraphSettings          `json:"tool_graph"`
+	ID                   string                     `json:"id"`
+	Name                 string                     `json:"name"`
+	Aliases              []string                   `json:"aliases"`
+	Dataset              string                     `json:"dataset_id"`
+	Status               string                     `json:"status"`
+	DesiredRevision      int64                      `json:"desired_revision"`
+	Overrides            map[string]ProjectOverride `json:"overrides"`
+	Applied              map[string]AccessApplied   `json:"applied"`
+	CodeEnabled          bool                       `json:"code_enabled"`
+	CodeConfigured       bool                       `json:"code_configured"`
+	CodeDataset          string                     `json:"code_dataset_id"`
 }
 
 func (p AccessProject) syncLabel(agents ...AccessAgent) string {
@@ -433,6 +436,15 @@ func (c ProjectControlClient) defaults(ctx context.Context, revision int64, poli
 func (c ProjectControlClient) overrides(ctx context.Context, revision int64, project, agent string, fields map[string]any) (AccessDirectory, error) {
 	var result AccessDirectory
 	err := c.request(ctx, "PUT", "/v1/projects/"+url.PathEscape(project)+"/overrides", map[string]any{"expected_revision": revision, "agent_id": agent, "fields": fields}, &result)
+	return result, err
+}
+
+func (c ProjectControlClient) SetProjectAutoCapture(ctx context.Context, projectID string, enabled bool) (AccessProject, error) {
+	var result AccessProject
+	err := c.request(ctx, "PUT", "/v1/projects/"+url.PathEscape(projectID)+"/auto-capture", map[string]bool{"enabled": enabled}, &result)
+	if err == nil && (result.ID != projectID || result.AutoCapture == nil || *result.AutoCapture != enabled || result.AutoCaptureVersion < 1) {
+		err = fmt.Errorf("自动采集设置回执不完整")
+	}
 	return result, err
 }
 

@@ -20,7 +20,7 @@ try {
   const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   keys(input, ["installation", "agent_id", "operator", "command"]);
   keys(input.installation, ["plugin_dir", "manifest_sha256", "binding_file", "binding_sha256", "node_executable", "node_sha256"]);
-  keys(input.operator, ["token_file", "control_url", "service_url"]);
+  keys(input.operator, ["token_file", "control_url", "service_url", "bound_service_url"]);
   const expected = input.installation;
   if (!/^[a-f0-9]{64}$/.test(expected.manifest_sha256) || !/^[a-f0-9]{64}$/.test(expected.binding_sha256) ||
       !/^[a-f0-9]{64}$/.test(expected.node_sha256)) fail();
@@ -49,7 +49,8 @@ try {
   if (binding.version !== 1 || binding.plugin_root !== expected.plugin_dir || binding.instance_id !== input.agent_id ||
       typeof input.operator.control_url !== "string" || typeof input.operator.service_url !== "string" ||
       binding.memlane?.origin !== input.operator.control_url.replace(/\/$/, "") ||
-      binding.cognee?.baseUrl !== input.operator.service_url.replace(/\/$/, "")) fail();
+      input.operator.service_url !== binding.memlane.origin + "/cognee" ||
+      binding.cognee?.baseUrl !== (input.operator.bound_service_url ?? input.operator.service_url)) fail();
   if (!Array.isArray(binding.secrets) || binding.secrets.length !== 2) fail();
   for (const secret of binding.secrets) if (sha(file(secret.path, 65536, true)) !== secret.sha256) fail();
   // No unverified component code is imported before the complete tree check.
@@ -60,7 +61,8 @@ try {
   // Queued targets must already have a private original binding; this directory
   // is never used to discover a replacement project for a queued session.
   const control = new ManagedProjectControl({...binding.memlane, directory: binding.profile});
-  const client = new CogneeHttpClient(cfg.baseUrl, cfg.apiKey, undefined, undefined, cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
+  const client = new CogneeHttpClient(input.operator.service_url, cfg.apiKey, undefined, undefined,
+    cfg.requestTimeoutMs, cfg.ingestionTimeoutMs, cfg.mode);
   const queue = new Outbox([cfg.baseUrl, binding.memlane.instanceId].join("|"), cfg.stateDir);
   const actions = new ManagedActions(control, client, join(cfg.stateDir, "actions"), binding.memlane.instanceId);
   const worker = new ManagedPending(control, client, queue, actions,

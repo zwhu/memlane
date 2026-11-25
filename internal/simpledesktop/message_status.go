@@ -141,7 +141,9 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 		})
 	}
 	now := time.Now()
-	automaticBackoff := q.BacklogError == "" && q.Backlog != nil && q.Backlog.Automatic && q.Backlog.Status == "paused" &&
+	autoCapture := q.projectAutoCapture(p)
+	captureRunning := q.Backlog.active() && (autoCapture || !q.Backlog.Automatic)
+	automaticBackoff := autoCapture && q.BacklogError == "" && q.Backlog != nil && q.Backlog.Automatic && q.Backlog.Status == "paused" &&
 		(q.Backlog.Reason == "rate_limited" || q.Backlog.Reason == "capture_retry_pending")
 	for _, failure := range q.ProcessingNotices {
 		if !failure.resolved() {
@@ -213,8 +215,14 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Tag, n.Detail, n.Followup = "采集受阻", "本机采集队列已被暂停，当前不能继续发送这些消息。", "原消息保留；暂停原因见详情，系统不会绕过限制重新发送。"
 			case p.agentPolicyUnconfirmed(r.Agent.ID):
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "当前项目权限同步尚未确认，自动采集已暂缓；核对生效后将继续采集。"
-			case q.Backlog.active():
+			case captureRunning:
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "后台采集任务正在运行，切换页面不会停止。"
+			case !autoCapture:
+				n.Tag = "已暂停"
+				n.Detail, n.Followup = "项目已关闭自动采集，原消息仍在本机队列。", "符合条件的消息仍可手工补采。"
+				if access == "maintain" && !q.Backlog.active() {
+					n.Action = "save"
+				}
 			case q.AutomaticSave:
 				n.Detail, n.Followup = "消息仍在本机队列，尚未完成采集。", "自动采集已开启；当前尚未读到正在执行的采集任务。"
 			default:
@@ -235,6 +243,8 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Tag, n.Followup = "状态未确认", "当前项目权限同步尚未确认，自动重试已暂缓；核对生效后将按原编号继续重试。"
 			} else if (s.Blocked != nil && s.Blocked.Reason == "capture_request_rejected") || (q.Backlog != nil && q.Backlog.Reason == "capture_request_rejected") {
 				n.Tag, n.Followup = "采集异常", "服务拒绝了这次采集请求，原消息保留；系统已停止重试。"
+			} else if !autoCapture && !captureRunning && q.pendingCheck(r).Status != "checking" {
+				n.Tag, n.Followup = "已暂停", "项目已关闭自动采集，仍可按原编号核对采集结果。"
 			} else if automaticBackoff {
 				n.Tag, n.Followup = "等待重试", "退避结束后，后台将按原编号核对并重试，避免重复采集。"
 			} else if q.Backlog != nil && (q.Backlog.Status == "paused" || q.Backlog.Status == "stopped" || q.Backlog.Status == "interrupted" || q.Backlog.Status == "stopping") {
@@ -243,7 +253,7 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 				n.Tag, n.Followup = "状态未确认", "暂时无法读取采集任务状态，尚不能确认是否会重试。"
 			} else if q.pendingCheck(r).Status == "checking" {
 				n.Tag, n.Followup = "正在核对", "正在查询原消息的采集结果。"
-			} else if q.AutomaticSave || q.Backlog.active() {
+			} else if q.AutomaticSave || captureRunning {
 				n.Tag, n.Followup = "等待重试", "后台将按原编号核对并重试，避免重复采集。"
 			}
 			add(n)
@@ -273,9 +283,15 @@ func (a *App) messageNotices(q *projectQueueState, p AccessProject) (needs, info
 			add(messageNotice{Key: "review-failed", Title: "部分会话暂未采集", Tag: "读取异常", Detail: fmt.Sprintf("%d 个会话的采集状态未能核对，已单独保留。", j.ReviewFailed), Followup: "其他会话可继续采集；失败会话不会被当成已采集。"})
 		}
 		paused := j.Status == "paused" || j.Status == "stopped" || j.Status == "interrupted"
-		if paused {
+		if paused && (j.Reason != "project_auto_capture_disabled" || !autoCapture) {
 			n := messageNotice{Key: "backlog", Title: "后台采集已暂停", Tag: "系统异常", Detail: backlogReason(j.Reason), Followup: "此状态不代表所有消息都未采集；具体消息见上方会话。"}
 			switch j.Reason {
+			case "project_auto_capture_disabled":
+				n.Title, n.Tag = "后台自动采集已停止", "已暂停"
+				n.Followup = "可以重新开启自动采集，也可以手工补采已保留的消息。"
+				if queueRecoverableCount(q) > 0 {
+					n.Action = "resume"
+				}
 			case "user_stopped":
 				n.Title, n.Tag = "积压消息采集已暂停", "已暂停"
 				n.Detail = "暂停原因：任务留有停止标记，触发来源未记录。"

@@ -107,14 +107,33 @@ if not gate_code_auto(load_env_file, "read"):
         text = body(text, 'plugin_identity_mode', 'from _memlane_policy import managed\nif managed():\n    return "disabled"')
         text = body(text, '_api_key_with_source', 'from _memlane_access import managed_api_key_with_source\n_managed_key = managed_api_key_with_source(os.environ)\nif _managed_key is not None:\n    return _managed_key')
         text = body(text, 'active_agent_key', 'from _memlane_policy import managed\nif managed():\n    return str(os.environ.get("COGNEE_API_KEY") or "").strip()')
-        text = body(text, 'remember_entry_via_http', 'from _memlane_policy import require\nrequire("write", dataset)')
+        text = replace(text, '    dataset_id: str | None = None,\n    timeout: float = 30.0,\n',
+                       '    dataset_id: str | None = None,\n    timeout: float = 30.0,\n    capture_mode: str = "automatic",\n')
+        text = body(text, 'remember_entry_via_http', 'from _memlane_policy import require_capture_write\nrequire_capture_write(dataset, capture_mode)')
+        if '    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)\n' in text:
+            text = replace(text, '    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)\n',
+                           '    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout, capture_mode=capture_mode)\n')
+        else:
+            text = replace(text, '        {"entry": entry, **fields, "session_id": session_id},\n        timeout=timeout,\n',
+                           '        {"entry": entry, **fields, "session_id": session_id},\n        timeout=timeout, capture_mode=capture_mode,\n')
         text = body(text, 'append_warmup_entry', 'from _memlane_policy import require\nrequire("capture", dataset)')
+        text = replace(text, '    data[turn_key] = entry\n    data[session_key] = entry\n',
+                       '    from _memlane_policy import managed\n'
+                       '    if managed():\n'
+                       '        from _memlane_access import pending_capture_allowed\n'
+                       '        from _capture_policy import capture_enabled\n'
+                       '        pending_capture_allowed(session_id, enabled=capture_enabled(), turn_id=turn_id,\n'
+                       '                                new_turn=True, pending_entry=entry)\n'
+                       '        return\n'
+                       '    data[turn_key] = entry\n    data[session_key] = entry\n')
         text = body(text, 'ensure_dataset_via_http', 'from _memlane_policy import managed, require\nif managed():\n    require("write", dataset)\n    return')
         text = body(text, 'improve_session_via_http', 'from _memlane_policy import require\nrequire("process", dataset)')
         text = body(text, 'run_session_improve_detailed', 'from _memlane_policy import managed, permit\nif managed() and not permit("process", dataset, automatic=trigger not in ("manual", "switch")):\n    return {"ok": False, "reason": "managed_policy_paused", "error": "automatic_processing_paused"}')
-        text = body(text, 'drain_warmup_entries', 'from _memlane_policy import managed, permit\nfrom _memlane_access import managed_drain_precheck\n_paused = managed_drain_precheck(dataset, session_id, _load_json_file, _bridge_file, _bridge_cache_key)\nif _paused is not None:\n    return _paused')
+        text = replace(text, '    dataset: str, session_id: str, budget_seconds: float | None = None\n) -> tuple:',
+                       '    dataset: str, session_id: str, budget_seconds: float | None = None, *, capture_mode: str = "automatic"\n) -> tuple:')
+        text = body(text, 'drain_warmup_entries', 'from _memlane_policy import managed, permit\nfrom _memlane_access import managed_drain_precheck\n_drain_operation = "write" if capture_mode == "manual" else "drain"\n_paused = managed_drain_precheck(dataset, session_id, _load_json_file, _bridge_file, _bridge_cache_key, operation=_drain_operation)\nif _paused is not None:\n    return _paused')
         text = replace(text, '        for entry in snapshot:\n            budget_left',
-                       '        for entry in snapshot:\n            if managed() and not permit("drain", dataset):\n                break\n            budget_left')
+                       '        for entry in snapshot:\n            if managed() and not permit(_drain_operation, dataset):\n                break\n            budget_left')
         text = replace(text, '            if ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:\n',
                        '            if managed() and ambiguous and (not verified or _entry_fingerprint(send_entry) not in server_prints):\n'
                        '                from _memlane_policy import hold\n'
@@ -124,13 +143,25 @@ if not gate_code_auto(load_env_file, "read"):
         text = replace(text, '            except urllib.error.HTTPError as exc:\n                http_failure = True\n',
                        '            except urllib.error.HTTPError as exc:\n'
                        '                from _memlane_access import handle_drain_http_error\n'
-                       '                handle_drain_http_error(dataset, session_id, entry, exc.code)\n'
+                       '                if handle_drain_http_error(dataset, session_id, entry, exc, was_ambiguous=ambiguous):\n'
+                       '                    break\n'
                        '                http_failure = True\n')
         text = replace(text, '                send_entry = sanitize(send_entry)\n                remember_entry_via_http(\n',
                        '                send_entry = sanitize(send_entry)\n'
                        '                from _memlane_access import stamp_before_send\n'
                        '                stamp_before_send(dataset, session_id, entry)\n'
                        '                remember_entry_via_http(\n')
+        text = replace(text, '                    send_entry,\n                    timeout=min(30.0, max(1.0, budget_left)),\n',
+                       '                    send_entry,\n                    timeout=min(30.0, max(1.0, budget_left)),\n'
+                       '                    capture_mode=capture_mode,\n')
+        text = replace(text,
+                       '    api_key: str | None = None,\n):\n    # base_url overrides',
+                       '    api_key: str | None = None,\n    capture_mode: str | None = None,\n):\n    # base_url overrides')
+        text = replace(text, '    headers = {"Content-Type": "application/json"}\n    if api_key:',
+                       '    headers = {"Content-Type": "application/json"}\n'
+                       '    if capture_mode in ("manual", "automatic"):\n'
+                       '        headers["X-Memlane-Capture-Mode"] = capture_mode\n'
+                       '    if api_key:')
         text = replace(text, '    with urlopen_following_307(req, timeout=timeout, context=_https_context()) as resp:\n        body = resp.read().decode("utf-8")\n        if not body:\n            return None\n        return json.loads(body)\n',
                        '    try:\n'
                        '        with urlopen_following_307(req, timeout=timeout, context=_https_context()) as resp:\n'
@@ -140,7 +171,7 @@ if not gate_code_auto(load_env_file, "read"):
                        '            return json.loads(body)\n'
                        '    except urllib.error.HTTPError as exc:\n'
                        '        from _memlane_access import record_managed_http_denial\n'
-                       '        record_managed_http_denial(method, path, exc.code)\n'
+                       '        record_managed_http_denial(method, path, exc)\n'
                        '        raise\n')
     elif name == '_remember_http.py':
         text = body(text, 'do_remember', '''from _env_file import load_env_file
@@ -149,7 +180,7 @@ _err, api_key = prepare_managed_remember(load_env_file, service_url, api_key, da
 if _err is not None:
     return _err''')
         text = replace(text, '    except urllib.error.HTTPError as e:\n        if e.code in (401, 403):\n',
-                       '    except urllib.error.HTTPError as e:\n        from _memlane_policy import block\n        block(e.code)\n        if e.code in (401, 403):\n')
+                       '    except urllib.error.HTTPError as e:\n        from _memlane_policy import block, is_capture_paused\n        if not is_capture_paused(e):\n            block(e.code)\n        if e.code in (401, 403):\n')
         if text.count('        return UNREACHABLE\n') != 2:
             raise ValueError('remember fallback anchors changed')
         text = text.replace('        return UNREACHABLE\n', '        return _error(0, "managed_server_unreachable") if managed() else UNREACHABLE\n')
@@ -177,7 +208,9 @@ if _err is not None:
         text = replace(text, 'elif [ -n "$FILE_PATH" ]; then\n',
                        'elif [ -f "${SELF_DIR}/_memlane_policy.py" ]; then\n    echo \'{"error":"managed_server_unreachable","status":0}\'\n    exit 1\nelif [ -n "$FILE_PATH" ]; then\n')
     elif name == 'store-user-prompt.py':
-        text = body(text, '_store', 'from _memlane_policy import managed, permit\nif managed() and not permit("capture"):\n    return')
+        text = body(text, '_store', 'from _memlane_access import pending_capture_allowed\n'
+                    'from _capture_policy import capture_enabled\n'
+                    'if not pending_capture_allowed(enabled=capture_enabled(), new_turn=True):\n    return')
     elif name == 'sync-session-to-graph.py':
         text = replace(text, '            elif not wrote:\n                incomplete.append', '            elif not wrote and why != "managed_policy_paused":\n                incomplete.append')
         text = replace(text, '    # --strict: the caller',

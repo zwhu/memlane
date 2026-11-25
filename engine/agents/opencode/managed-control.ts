@@ -5,16 +5,25 @@ import { isAbsolute, join, resolve } from "node:path";
 
 type Permission = "read" | "write" | "delete";
 export type Operation = Permission | "recall" | "capture" | "process";
+type CapturePolicy = {
+  enabled: boolean; project_enabled: boolean; version: number;
+  scope: "ok" | "project" | "agent" | "default"; updated_at: string;
+};
+type CaptureCache = CapturePolicy & {project_id: string; checked_at: string; revision: number};
 export type ProjectPolicy = {
   project_id: string; dataset_id: string; dataset_name: string; revision: number; ready: true;
   policy: {permissions: Permission[]; can_capture: boolean; can_auto_process: boolean};
   common: {ready: boolean; readable: boolean; dataset_id?: string};
+  capture_policy?: CapturePolicy;
 };
 type Binding = {state: "unknown" | "bound"; workspace: string; project_id?: string; dataset_id?: string | null};
 export type ControlOptions = {instanceId: string; directory: string; stateDir: string; origin: string; tokenFile: string; timeoutMs?: number};
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const unconfirmed = () => new Error("project_policy_unconfirmed");
+class ControlRejected extends Error {
+  constructor() { super("project_policy_unconfirmed"); }
+}
 
 function privateFile(path: string): string {
   if (!isAbsolute(path) || realpathSync(path) !== path) throw unconfirmed();
@@ -23,13 +32,18 @@ function privateFile(path: string): string {
   if (stat.size > 64 * 1024) throw unconfirmed();
   return readFileSync(path, "utf8");
 }
-function store(path: string, value: Binding) {
+function store(path: string, value: Binding | CaptureCache) {
   const temporary = path + "." + randomUUID();
   const fd = openSync(temporary, "wx", 0o600);
   try { writeFileSync(fd, JSON.stringify(value)); fsyncSync(fd); }
   finally { closeSync(fd); }
   try { renameSync(temporary, path); }
   finally { if (existsSync(temporary)) rmSync(temporary); }
+}
+function isCapturePolicy(value: any): value is CapturePolicy {
+  return value && typeof value.enabled === "boolean" && typeof value.project_enabled === "boolean" &&
+    Number.isSafeInteger(value.version) && value.version >= 1 && ["ok", "project", "agent", "default"].includes(value.scope) &&
+    typeof value.updated_at === "string";
 }
 function locked<T>(path: string, run: () => T): T {
   const lock = path + ".lock";
@@ -55,6 +69,7 @@ export class ManagedProjectControl {
   private readonly directory: string;
   private readonly timeout: number;
   private readonly options: Readonly<ControlOptions>;
+  private readonly captureDir: string;
   private readonly pending = new Map<string, Promise<Binding>>();
   constructor(options: ControlOptions) {
     this.options = Object.freeze({...options});
@@ -69,6 +84,7 @@ export class ManagedProjectControl {
     mkdirSync(options.stateDir, {recursive: true, mode: 0o700});
     if (realpathSync(options.stateDir) !== resolve(options.stateDir) ||
         (lstatSync(options.stateDir).mode & 0o077)) throw unconfirmed();
+    this.captureDir = join(options.stateDir, "capture-policies");
     this.timeout = options.timeoutMs ?? 5000;
     if (!Number.isFinite(this.timeout) || this.timeout <= 0 || this.timeout > 10000) throw unconfirmed();
     this.token();
@@ -83,6 +99,39 @@ export class ManagedProjectControl {
     return "opencode-" + hash(this.options.instanceId + "\0" + native);
   }
   private path(native: string) { return join(this.options.stateDir, this.hostKey(native) + ".json"); }
+  private capturePath(id: string) { return join(this.captureDir, id.toLowerCase() + ".json"); }
+  private cachedCapture(projectId: string): CaptureCache | undefined {
+    try {
+      const value = JSON.parse(privateFile(this.capturePath(projectId))) as CaptureCache;
+      if (isCapturePolicy(value) && value.project_id === projectId && Number.isSafeInteger(value.revision) &&
+          typeof value.checked_at === "string") return value;
+    } catch { /* Unavailable or invalid cache is unconfirmed. */ }
+  }
+  private ensureCaptureDir() {
+    mkdirSync(this.captureDir, {mode: 0o700, recursive: true});
+    if (realpathSync(this.captureDir) !== this.captureDir ||
+        (lstatSync(this.captureDir).mode & 0o077)) throw unconfirmed();
+  }
+  private cacheCapture(projectId: string, policy: CapturePolicy, revision: number): CapturePolicy {
+    const {enabled, project_enabled, version, scope, updated_at} = policy;
+    this.ensureCaptureDir();
+    return locked(this.capturePath(projectId), () => {
+      const existing = this.cachedCapture(projectId);
+      if (existing && (existing.version > version || (existing.version === version && existing.revision > revision))) {
+        return existing;
+      }
+      store(this.capturePath(projectId), {project_id: projectId, enabled, project_enabled, version, scope, updated_at,
+        revision, checked_at: new Date().toISOString()});
+      return policy;
+    });
+  }
+  noteCapturePause(projectId: string, version: unknown, scope: unknown) {
+    if (!uuid(projectId) || typeof version !== "number" || !Number.isSafeInteger(version) || version < 1 ||
+        (scope !== "project" && scope !== "agent" && scope !== "default")) return;
+    const previous = this.cachedCapture(projectId);
+    this.cacheCapture(projectId, {enabled: false, project_enabled: scope !== "project", version, scope,
+      updated_at: previous?.version === version ? previous.updated_at : ""}, previous?.revision ?? 0);
+  }
   private read(path: string): Binding {
     const value = JSON.parse(privateFile(path));
     if (!value || !["unknown", "bound"].includes(value.state) || !isAbsolute(value.workspace)) throw unconfirmed();
@@ -98,7 +147,10 @@ export class ManagedProjectControl {
         headers: {Authorization: "Bearer " + this.token(), "Content-Type": "application/json"},
         body: payload === undefined ? undefined : JSON.stringify(payload), signal: controller.signal,
       });
-      if (!response.ok || !response.body) { await response.body?.cancel(); throw unconfirmed(); }
+      if (!response.ok || !response.body) {
+        await response.body?.cancel();
+        throw response.status < 500 ? new ControlRejected() : unconfirmed();
+      }
       const reader = response.body.getReader();
       const chunks: Uint8Array[] = [];
       let size = 0;
@@ -114,7 +166,10 @@ export class ManagedProjectControl {
       const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       if (!result || typeof result !== "object" || Array.isArray(result)) throw unconfirmed();
       return result;
-    } catch { throw unconfirmed(); }
+    } catch (error) {
+      if (error instanceof ControlRejected) throw error;
+      throw unconfirmed();
+    }
     finally { clearTimeout(timer); }
   }
   private async bindOnce(native: string): Promise<Binding> {
@@ -131,12 +186,31 @@ export class ManagedProjectControl {
       "/v1/project/binding?host_session_key=" + encodeURIComponent(this.hostKey(native)),
       first ? {workspace: binding.workspace, host_session_key: this.hostKey(native)} : undefined);
     if (!uuid(result.project_id) || (result.dataset_id !== null && !uuid(result.dataset_id))) throw unconfirmed();
+    if (isCapturePolicy(result.capture_policy)) this.cacheCapture(result.project_id, result.capture_policy, result.revision ?? 0);
     return locked(path, () => {
       binding = this.read(path);
       if (binding.state === "bound" && (binding.project_id !== result.project_id || binding.dataset_id !== result.dataset_id)) throw unconfirmed();
       const confirmed: Binding = {...binding, state: "bound", project_id: result.project_id, dataset_id: result.dataset_id};
       store(path, confirmed); return confirmed;
     });
+  }
+  async captureStatus(native: string): Promise<CapturePolicy> {
+    const binding = await this.bind(native);
+    const projectId = binding.project_id!;
+    let result;
+    try {
+      result = await this.request("/v1/project/capture-policy?project_id=" + encodeURIComponent(projectId));
+    } catch (error) {
+      const cached = this.cachedCapture(projectId);
+      if (!(error instanceof ControlRejected) && cached?.enabled === false && cached.scope !== "ok") return cached;
+      throw error;
+    }
+    if (result.project_id !== projectId || (binding.dataset_id && result.dataset_id !== binding.dataset_id) ||
+        !isCapturePolicy(result.capture_policy) || result.capture_policy.enabled !== result.can_capture ||
+        !Number.isSafeInteger(result.revision) || result.revision < 0) throw unconfirmed();
+    const policy = this.cacheCapture(projectId, result.capture_policy, result.revision);
+    if (result.ready === false && policy.enabled) throw unconfirmed();
+    return policy;
   }
   async bind(native: string): Promise<Binding> {
     let work = this.pending.get(native);
@@ -149,6 +223,9 @@ export class ManagedProjectControl {
   async current(native: string): Promise<ProjectPolicy> {
     const binding = await this.bind(native);
     const result = await this.request("/v1/project/policy?project_id=" + encodeURIComponent(binding.project_id!));
+    if (result.project_id === binding.project_id && isCapturePolicy(result.capture_policy) && Number.isSafeInteger(result.revision)) {
+      this.cacheCapture(binding.project_id!, result.capture_policy, result.revision);
+    }
     if (result.ready !== true || result.project_id !== binding.project_id || !uuid(result.dataset_id) ||
         (binding.dataset_id && result.dataset_id !== binding.dataset_id) ||
         typeof result.dataset_name !== "string" || !result.dataset_name ||

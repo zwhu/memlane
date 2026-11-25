@@ -19,8 +19,10 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 	}
 	var summaryCalls, legacyCalls int32
 	partialErrors := map[string]string{}
+	enabled := true
+	var captureVersion int64 = 1
 
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/capabilities" {
 			_ = json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
 			return
@@ -34,10 +36,12 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 		if r.URL.Path == "/v1/projects/p/message-summary" {
 			atomic.AddInt32(&summaryCalls, 1)
 			json.NewEncoder(w).Encode(v2MessageSummaryResponse{
-				ProjectID:     "p",
-				DatasetID:     "ds",
-				AutomaticSave: true,
-				Backlog:       &backlogJob{Operation: "op-1", Status: "watching", Automatic: true},
+				ProjectID:          "p",
+				DatasetID:          "ds",
+				AutoCapture:        &enabled,
+				AutoCaptureVersion: captureVersion,
+				AutomaticSave:      enabled,
+				Backlog:            &backlogJob{Operation: "op-1", Status: "watching", Automatic: true},
 				Notices: []processingNotice{
 					{Operation: "proc-1", Status: 502, Code: "codex_upstream_error", Backend: "codex", At: time.Now().UTC().Format(time.RFC3339)},
 					{Operation: "resolved-1", Status: 502, Code: "codex_stream_disconnected", Backend: "codex",
@@ -53,20 +57,13 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 		}
 		atomic.AddInt32(&legacyCalls, 1)
 		http.NotFound(w, r)
-	}))
-	defer control.Close()
-
-	cognee := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&legacyCalls, 1)
-		http.NotFound(w, r)
-	}))
-	defer cognee.Close()
+	})
 
 	a := settingsFixture()
 	a.access.Directory.Bindings = nil
-	a.Config.ServiceURL = cognee.URL
-	a.Client = Client{Config: a.Config}
-	a.Config.ProjectControl = &ProjectControlConfig{URL: control.URL, ManagementTokenFile: token}
+	a.Config.ServiceURL = "http://127.0.0.1:60001"
+	a.Client = Client{Config: a.Config, HTTP: &http.Client{Transport: transport}}
+	a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
 
@@ -87,10 +84,14 @@ func TestLoadProjectQueueUsesMessageSummaryAndHandlesPartialErrors(t *testing.T)
 
 	// Partial failure in documents & backlog must surface errors honestly.
 	partialErrors = map[string]string{"documents": "upstream_unavailable", "backlog": "backlog_read_failed"}
+	enabled, captureVersion = false, 2
 	a.loadProjectQueue(q, p)
 	drainReading(t, updates, func() bool { return !q.Loading })
 	if q.DocumentError == "" || q.BacklogError == "" {
 		t.Fatalf("partial errors were hidden: docErr=%q backlogErr=%q", q.DocumentError, q.BacklogError)
+	}
+	if q.projectAutoCapture(p) || q.AutoCaptureVersion != 2 {
+		t.Fatal("failed backlog read hid the current automatic capture setting")
 	}
 }
 

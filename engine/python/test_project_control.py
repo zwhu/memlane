@@ -7,11 +7,11 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import uuid
 
 from aiohttp import ClientSession, web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from project_control import Official, Registry, private_write
 from project_control_server import create_app
@@ -545,6 +545,95 @@ class RegistryTests(unittest.IsolatedAsyncioTestCase):
         await self.registry.set_policy(self.registry.state['revision'], {'access': None, 'capture': None},
                                        project_id=identifier, agent_id='a')
         self.assertEqual(self.registry.policy(project, 'a')['policy'], self.registry.policy(project, 'b')['policy'])
+
+    async def test_auto_capture_response_uses_configured_and_protected_defaults(self):
+        binding = await self.registry.resolve('a', str(self.repo), 'capture-defaults')
+        identifier = binding['project_id']
+        self.registry.state['defaults']['capture'] = False
+        normal = await self.registry.set_auto_capture(identifier, True)
+        self.assertEqual(normal['capture_policy']['scope'], 'default')
+        self.assertFalse(normal['capture_policy']['enabled'])
+
+        self.registry.state['defaults']['capture'] = True
+        self.registry.state['projects'][identifier]['name'] = 'ml-user-profiles'
+        protected = await self.registry.set_auto_capture(identifier, True)
+        self.assertEqual(protected['capture_policy']['scope'], 'default')
+        self.assertFalse(protected['capture_policy']['enabled'])
+
+    async def test_auto_capture_persists_and_publishes_without_touching_acl(self):
+        binding = await self.registry.resolve('a', str(self.repo), 'capture-toggle')
+        identifier = binding['project_id']
+        self.assertEqual(binding['capture_policy']['version'], 1)
+        self.assertTrue(binding['capture_policy']['enabled'])
+        self.assertEqual(binding['capture_policy']['scope'], 'ok')
+        for field in ('auto_capture', 'auto_capture_version'):
+            self.registry.state['projects'][identifier].pop(field)
+        self.registry.save()
+        self.registry.close()
+        self.registry = Registry(self.path, self.official)
+        self.assertEqual(self.registry.policy(self.registry.state['projects'][identifier], 'a')['capture_policy'],
+                         binding['capture_policy'])
+        self.registry.backlog = Mock()
+        agent = {'Authorization': 'Bearer ' + 'a' * 40}
+        manager = {'Authorization': 'Bearer ' + 'm' * 40}
+        app = create_app(self.registry, 'm' * 40, {'a': 'a' * 40})
+        app.freeze()
+
+        async def request(method, url, headers, payload=None):
+            req = make_mocked_request(method, url, headers={**headers, 'Content-Type': 'application/json'}, app=app)
+            if payload is not None:
+                req._read_bytes = json.dumps(payload).encode()
+            response = await app._handle(req)
+            return response.status, json.loads(response.body)
+
+        url = f'/v1/projects/{identifier}/auto-capture'
+        with patch.object(self.registry, 'reconcile_locked', new_callable=AsyncMock) as reconcile, \
+                patch.object(self.official, 'effective_permissions', new_callable=AsyncMock,
+                             side_effect=PolicyError('official_http_503', 503)) as probe:
+            self.assertEqual((await request('PUT', url, agent, {'enabled': False}))[0], 403)
+            self.assertEqual((await request('PUT', url, manager, {'enabled': 0}))[0], 400)
+            status_code, project = await request('PUT', url, manager, {'enabled': False})
+            self.assertEqual(status_code, 200)
+            self.assertEqual(project['status'], 'verified')
+            self.assertEqual(project['desired_revision'], binding['desired_revision'])
+            self.assertFalse(project['auto_capture'])
+            self.assertEqual(project['auto_capture_version'], 2)
+            self.assertTrue(project['auto_capture_updated_at'].endswith('+00:00'))
+            self.registry.backlog.on_auto_capture_disabled.assert_called_once_with(identifier)
+            _, repeated = await request('PUT', url, manager, {'enabled': False})
+            self.assertEqual(repeated['auto_capture_version'], 2)
+            _, status = await request('GET', f'/v1/project/capture-policy?project_id={identifier}', agent)
+            self.assertEqual(status['capture_policy'], project['capture_policy'])
+            self.assertEqual(status['revision'], project['revision'])
+            self.assertFalse(status['can_capture'])
+            reconcile.assert_not_awaited()
+            probe.assert_not_awaited()
+
+        for route in (f'/v1/project/policy?project_id={identifier}',
+                      '/v1/project/binding?host_session_key=capture-toggle'):
+            _, view = await request('GET', route, agent)
+            self.assertEqual(view['capture_policy'], status['capture_policy'])
+            self.assertTrue(view['policy']['can_auto_process'])
+            self.assertEqual(view['policy']['permissions'], binding['policy']['permissions'])
+        _, directory = await request('GET', '/v1/projects', manager)
+        self.assertFalse(directory['projects'][0]['auto_capture'])
+
+        self.assertFalse(json.loads(self.path.read_text())['projects'][identifier]['auto_capture'])
+        self.registry.close()
+        self.registry = Registry(self.path, self.official)
+        project = self.registry.state['projects'][identifier]
+        self.assertEqual(self.registry.policy(project, 'a')['capture_policy'], status['capture_policy'])
+        await self.registry.set_policy(self.registry.state['revision'], {'capture': False, 'auto_process': False},
+                                       project_id=identifier, agent_id='a')
+        reopened = await self.registry.set_auto_capture(identifier, True)
+        self.assertEqual(reopened['auto_capture_version'], 3)
+        await self.registry.set_policy(self.registry.state['revision'], {'access': 'read'},
+                                       project_id=identifier, agent_id='a')
+        view = self.registry.policy(self.registry.state['projects'][identifier], 'a')
+        self.assertEqual(view['policy']['permissions'], ['read'])
+        self.assertFalse(view['policy']['capture'])
+        self.assertFalse(view['policy']['auto_process'])
+        self.assertEqual(view['capture_policy']['scope'], 'agent')
 
     async def test_unknown_not_retried_by_hooks_and_explicit_reconcile(self):
         self.official.fail = True

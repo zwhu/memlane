@@ -65,6 +65,7 @@ class ConnectionCapture:
                  record.get('activated_at', 0), record.get('capture_deferred', False), fingerprints,
                  receipt.get('host_session_key'), receipt.get('environment_verified'),
                  self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(row['instance_id'], {}),
+                 project.get('auto_capture', True), project.get('auto_capture_version', 1),
                  project.get('status'), project.get('desired_revision'), project.get('applied', {}).get(row['instance_id'])]
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
@@ -120,7 +121,8 @@ class ConnectionCapture:
         if self.registry.state.get('sessions', {}).get(json.dumps([identifier, cand_host_key])) != cand_project_id:
             return None
         project = self.registry.state.get('projects', {}).get(cand_project_id, {})
-        policy = effective(self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(identifier, {}))
+        policy = effective(self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(identifier, {}),
+                           project_auto_capture=project.get('auto_capture', True))
         if not policy['can_capture']:
             return None
         applied = project.get('applied', {}).get(identifier, {})
@@ -179,9 +181,12 @@ class ConnectionCapture:
         if not host_key or self.registry.state['sessions'].get(json.dumps([identifier, host_key])) != receipt.get('project_id'):
             raise PolicyError('capture_session_identity_unconfirmed', 503)
         project = self.registry.state['projects'].get(receipt['project_id'], {})
-        policy = effective(self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(identifier, {}))
-        if not policy['can_capture']:
+        policy = effective(self.registry.state.get('defaults', DEFAULTS), project.get('overrides', {}).get(identifier, {}),
+                           project_auto_capture=project.get('auto_capture', True))
+        if policy['capture_policy']['scope'] != 'ok':
             return {**value, 'state': 'project_disabled', 'project_id': receipt['project_id']}
+        if not policy['can_capture']:
+            return {**value, 'state': 'project_write_denied', 'project_id': receipt['project_id']}
         applied = project.get('applied', {}).get(identifier, {})
         if (project.get('status') != 'verified' or applied.get('status') != 'verified'
                 or applied.get('revision') != project.get('desired_revision')):

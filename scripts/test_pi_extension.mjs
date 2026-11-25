@@ -69,6 +69,9 @@ print(json.dumps({'status':'complete', 'context':'' if (root / 'denied').exists(
   const qa = calls.find(c => c.operation === 'capture' && c.entry.type === 'qa');
   assert.equal(qa.entry.question, 'synthetic question');
   assert.equal(qa.entry.answer, 'synthetic answer');
+  const prompt = calls.find(c => c.operation === 'resolve' && c.event_id);
+  assert.equal(qa.turn_event_id, prompt.event_id);
+  assert.equal(traces[0].turn_event_id, prompt.event_id);
   assert.equal(calls.filter(c => c.operation === 'flush').length, 2);
   assert.ok(calls.every(c => c.session_id === 'synthetic-session' && c.cwd === root));
   console.log(JSON.stringify({ status: 'passed', boundary: 'real_pi_loader_synthetic_memory_helper', tools: 4, trace: 1, qa: 1, revocation_removes_context: true }));

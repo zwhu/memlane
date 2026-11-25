@@ -1,6 +1,7 @@
 """Local project registry and ACL reconciliation. Never accepts knowledge bodies."""
 import asyncio
 import copy
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -9,6 +10,7 @@ import time
 from pathlib import Path
 import secrets
 import re
+import sqlite3
 import tempfile
 import uuid
 from urllib.parse import urlparse
@@ -16,7 +18,8 @@ from urllib.parse import quote
 
 from _runtime_common import private_write, read_secret
 from project_policy import (
-    ACCESS, DEFAULTS, PolicyError, effective, is_protected_project, project_id, validate_fields, workspace_root,
+    ACCESS, DEFAULTS, PolicyError, effective, is_protected_project, project_capture_fields,
+    project_id, validate_fields, workspace_root,
 )
 from registry_sessions_store import RegistrySessionsStore
 
@@ -212,6 +215,7 @@ class Registry:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._lock_file = os.open(str(self.path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
         self.sessions_store = None
+        self.backlog = None
         self._sync_version = 0
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -366,10 +370,14 @@ class Registry:
             raise PolicyError('revision_conflict', 409)
 
     def _project_policy_values(self, project, agent_id):
+        capture = project_capture_fields(project)
         return effective(
             self.state['defaults'],
             project.get('overrides', {}).get(agent_id, {}),
             protected=is_protected_project(project),
+            project_auto_capture=capture['auto_capture'],
+            auto_capture_version=capture['auto_capture_version'],
+            auto_capture_updated_at=capture['auto_capture_updated_at'],
         )
 
     def _group_expected_permissions(self, group, agent_id):
@@ -393,6 +401,7 @@ class Registry:
                 'dataset_name': project['dataset_name'], 'revision': self.state['revision'],
                 'desired_revision': project['desired_revision'], 'ready': ready,
                 'applied': copy.deepcopy(applied), 'policy': values, 'code_enabled': project.get('code_enabled', False),
+                'capture_policy': values['capture_policy'],
                 'code': {'enabled': project.get('code_enabled', False),
                          'dataset_id': project.get('code_dataset_id'),
                          'ready': ready and project.get('code_configured', False),
@@ -512,7 +521,8 @@ class Registry:
                            for key, value in self.state['agents'].items()],
                 'enrollments': {key: {field: value[field] for field in ('status', 'error_code') if field in value}
                                 for key, value in self.state.get('enrollments', {}).items()},
-                'projects': [{**copy.deepcopy(project), 'tool_graph': tool_graph_settings(self.state, project['id'])}
+                'projects': [{**copy.deepcopy(project), **project_capture_fields(project),
+                              'tool_graph': tool_graph_settings(self.state, project['id'])}
                              for project in self.state['projects'].values()],
                 'common': copy.deepcopy(self.state.get('common')),
                 'bindings': [{'agent_id': json.loads(key)[0], 'host_session_key': json.loads(key)[1], 'project_id': value}
@@ -1028,7 +1038,8 @@ class Registry:
                    'overrides': initial_overrides, 'applied': {}, 'desired_revision': self.state['revision'],
                    'operation_id': secrets.token_hex(16), 'status': 'unconfirmed',
                    'import_acl': bool(dataset_id),
-                   'code_enabled': False, 'source': source or ('associated' if dataset_id else 'discovered')}
+                   'code_enabled': False, 'auto_capture': True, 'auto_capture_version': 1,
+                   'source': source or ('associated' if dataset_id else 'discovered')}
         self.state['projects'][identifier] = project
         self.save()
         await self.reconcile_locked(project)
@@ -1077,6 +1088,38 @@ class Registry:
             for agent_id in self.state['agents']:
                 project['applied'][agent_id] = {'status': 'unconfirmed', 'error_code': error.code}
         self.save()
+
+    async def set_auto_capture(self, identifier, enabled):
+        if type(enabled) is not bool:
+            raise PolicyError('invalid_policy_boolean')
+        async with self.mutex:
+            project = self.state['projects'].get(identifier)
+            if project is None:
+                raise PolicyError('project_not_found', 404)
+            capture = project_capture_fields(project)
+            if enabled != capture['auto_capture']:
+                revision = self.state['revision']
+                updated = {**project, 'auto_capture': enabled,
+                           'auto_capture_version': capture['auto_capture_version'] + 1,
+                           'auto_capture_updated_at': datetime.now(timezone.utc).isoformat()}
+                self.state['projects'][identifier] = updated
+                self.state['revision'] += 1
+                try:
+                    self.save()
+                except (OSError, sqlite3.Error):
+                    self.state['projects'][identifier] = project
+                    self.state['revision'] = revision
+                    raise
+                project = updated
+            if not enabled and self.backlog is not None:
+                self.backlog.on_auto_capture_disabled(identifier)
+            capture = project_capture_fields(project)
+            policy = effective(self.state['defaults'], {}, protected=is_protected_project(project),
+                               project_auto_capture=enabled,
+                               auto_capture_version=capture['auto_capture_version'],
+                               auto_capture_updated_at=capture['auto_capture_updated_at'])
+            return {**copy.deepcopy(project), **capture, 'capture_policy': policy['capture_policy'],
+                    'revision': self.state['revision']}
 
     async def set_policy(self, expected, fields, *, project_id=None, agent_id=None):
         values = validate_fields(fields, allow_reset=project_id is not None)

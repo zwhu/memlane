@@ -152,21 +152,22 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	hasAlerts := len(needs) > 0 || len(anomalies) > 0
 	hasDocs := q.Loaded && len(q.Documents) > 0 && q.DocumentError == ""
 	hasProgress := len(progress) > 0 || hasDocs
+	autoCapture := q.projectAutoCapture(p)
 	groupDesc := ""
-	if !setupOnly && hasAlerts && q.AutomaticSave {
-		groupDesc = "自动采集已开启"
+	if !setupOnly && hasAlerts {
+		if autoCapture {
+			groupDesc = "自动采集已开启"
+		} else {
+			groupDesc = "自动采集已关闭"
+		}
 	}
 
 	autoSaveControl := func(keySuffix, label string) {
-		saveActive := q.AutomaticSave || q.Backlog.active()
-		canStop := q.Backlog != nil && saveActive && q.Backlog.Status != "stopping"
-		disabled := q.BacklogBusy || a.access.Busy || a.Config.ProjectControl == nil || (saveActive && !canStop)
-		v4Switch(c, "proj-autosave-"+p.ID+"-"+keySuffix, &saveActive, label, func() {
-			if disabled {
-				return
-			}
-			a.changeBacklog(q, p, q.AutomaticSave || q.Backlog.active())
-		}).Disabled(disabled)
+		enabled := autoCapture
+		disabled := q.AutoCaptureBusy || a.access.Busy || a.Config.ProjectControl == nil || a.Update == nil
+		v4Switch(c, "proj-autosave-"+p.ID+"-"+keySuffix, &enabled, label, func() {
+			a.changeProjectAutoCapture(q, p, enabled)
+		}).Label("自动采集").Disabled(disabled)
 	}
 
 	var headerActions func()
@@ -181,6 +182,7 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 		}
 	} else if !setupOnly && !q.Loaded && !hasProgress {
 		headerActions = func() {
+			autoSaveControl("head", "自动采集")
 			queueRefreshAction(c, "刷新", func() { a.loadProjectQueue(q, p); a.refreshBacklog(q, p) }).Disabled(q.Loading || q.BacklogLoading || a.access.Busy)
 		}
 	}
@@ -189,6 +191,9 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 	hasTarget := false
 	section := v4Group(c.Key("project-queue-section-"+p.ID), "消息与采集状态", groupDesc, headerActions, func() {
 		ui.Column(c.Key("message-status-" + p.ID)).FillWidth().Gap(0).Children(func() {
+			if q.AutoCaptureError != "" {
+				homeText(c, q.AutoCaptureError, homeMeta)
+			}
 			if setupOnly {
 				v4Row(c, v4RowOptions{
 					Key: "proj-queue-setup-" + p.ID, Title: "待配置记忆提炼",
@@ -201,13 +206,16 @@ func (a *App) projectQueueSection(c *ui.Context, p AccessProject) {
 			} else if !hasAlerts {
 				// Healthy collapsed single-row state.
 				dotTone := "warn"
-				title := "自动采集已暂停"
-				if q.AutomaticSave {
-					dotTone = "ok"
-					title = "自动采集已开启 · 正常"
-				} else if q.Backlog.active() {
+				title := "自动采集已关闭"
+				if autoCapture {
+					title = "自动采集已开启"
+					if q.AutomaticSave {
+						dotTone = "ok"
+						title = "自动采集已开启 · 正常"
+					}
+				} else if q.Backlog.active() && !q.Backlog.Automatic {
 					dotTone = "run"
-					title = "正在采集消息"
+					title = "自动采集已关闭 · 手工采集中"
 				}
 				v4Row(c, v4RowOptions{
 					Key:   "proj-msg-healthy-" + p.ID,

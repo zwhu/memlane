@@ -21,6 +21,7 @@ from project_policy import PolicyError
 from performance_trace import RequestTrace
 
 ACTIVE = {'queued', 'reviewing', 'running', 'waiting', 'stopping', 'processing'}
+CAPTURE_DISABLED = 'project_auto_capture_disabled'
 MAX_BACKLOG_JOBS = 100
 WORKER = Path(__file__).with_name('project_backlog_worker.py')
 HASH_CHUNK_SIZE = 1024 * 1024
@@ -179,6 +180,7 @@ class Backlog:
         self._review_cache = {}
         self._review_inflight = {}
         self._review_gen = {}
+        self._stop_generation = {}
         self._cold_reviews = {}
         self.root = registry.path.parent / 'backlog'
         self.path = self.root / 'jobs.json'
@@ -217,6 +219,9 @@ class Backlog:
                     target.update(previous_processing='disabled', processing='deferred',
                                   recovery_reason='pre_submit_policy_unconfirmed', next_processing_at=time.time()+30)
                     target.pop('reason', None)
+            if row.get('automatic') and row.get('reason') == CAPTURE_DISABLED:
+                row['status'] = 'paused'
+                continue
             if (row.get('automatic') and not row.get('automatic_user_paused')
                     and (row['status'] in ACTIVE or row.get('owner_shutdown'))):
                 # A new owner reviews the current official buffer afresh. It
@@ -257,7 +262,7 @@ class Backlog:
 
     def _latest_project_job(self, project):
         rows = [r for r in self.jobs.values() if r.get('project_id') == project]
-        return max(rows, key=lambda r: r['created_at']) if rows else None
+        return max(rows, key=lambda r: (r['status'] in ACTIVE, r.get('updated_at', r['created_at'])), default=None)
 
     @staticmethod
     def _processing_targets(row):
@@ -286,11 +291,27 @@ class Backlog:
 
     def get(self, project):
         latest = self._latest_project_job(project)
-        enabled = bool(self.monitor and not self.monitor.done()) and (not latest or latest['status'] not in ('paused','stopped','interrupted','stopping'))
+        enabled = self.project_auto_capture(project) and bool(self.monitor and not self.monitor.done())
         return {'job': self.public(latest) if latest else None, 'automatic_enabled': enabled,
                 'buffer_reviews': [dict(value) for value in self.buffer_reviews.values() if value['project_id'] == project],
                 'checks': [dict(value) for value in self.checks.values() if value['project_id'] == project],
                 'processing_issues': self.processing_issues(latest)}
+
+    def project_auto_capture(self, project_id):
+        return self.registry.state['projects'].get(project_id, {}).get('auto_capture', True)
+
+    def on_auto_capture_disabled(self, project_id):
+        self._stop_generation[project_id] = self._stop_generation.get(project_id, 0) + 1
+        changed = False
+        for row in self.jobs.values():
+            if (row['project_id'] != project_id or not row.get('automatic')
+                    or row.get('automatic_user_paused') or row['status'] not in ACTIVE | {'watching'}):
+                continue
+            private_write(self.cancel_file(row), CAPTURE_DISABLED.encode())
+            row.update(status='paused', reason=CAPTURE_DISABLED, updated_at=time.time())
+            changed = True
+        if changed:
+            self.persist()
 
     def record_buffer_review(self, project, target, snapshot):
         # Metadata projection of the installed plugin's current source buffer.
@@ -372,16 +393,20 @@ class Backlog:
                 pass
             await asyncio.sleep(20)
 
-    def checked_target(self, project_id, target, *, write=True):
+    def checked_target(self, project_id, target, *, write=True, automatic=False):
         project = self.registry.state['projects'].get(project_id)
         agent = self.registry.state['agents'].get(target['agent_id'])
         binding = json.dumps([target['agent_id'], target['host']], ensure_ascii=True)
         if (not project or not agent or target['agent_id'] in self.registry.state.get('agent_retirements', {}) or self.registry.state['sessions'].get(binding) != project_id
                 or project.get('dataset_id') != target['dataset']):
             raise PolicyError('backlog_binding_changed', 409)
+        if automatic and not project.get('auto_capture', True):
+            raise PolicyError(CAPTURE_DISABLED, 403)
         view = self.registry.policy(project, target['agent_id'])
         if not view['ready'] or (write and 'write' not in view['policy']['permissions']):
             raise PolicyError('backlog_write_denied', 403)
+        if automatic and not view['policy'].get('can_capture'):
+            raise PolicyError(CAPTURE_DISABLED, 403)
         return agent, view
 
     def _prune_finished_jobs(self, target_project_id, *, max_jobs=MAX_BACKLOG_JOBS):
@@ -433,6 +458,8 @@ class Backlog:
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
             raise PolicyError('backlog_operation_id_required') from None
+        if automatic and not self.project_auto_capture(project_id):
+            raise PolicyError(CAPTURE_DISABLED, 403)
         old = self.jobs.get(operation_id)
         if old is not None and not (automatic and old.get('automatic') and old['status'] == 'watching'):
             if old['project_id'] != project_id:
@@ -467,7 +494,7 @@ class Backlog:
                 continue
             target = {'agent_id': agent_id, 'host': host, 'dataset': project['dataset_id']}
             try:
-                self.checked_target(project_id, target)
+                self.checked_target(project_id, target, automatic=automatic)
             except PolicyError as error:
                 target.update(admission_blocked=True, review_status='unconfirmed', review_reason=error.code,
                               save_status='paused', save_reason=error.code, tokens=[])
@@ -486,6 +513,7 @@ class Backlog:
                 previous = self.public(old)
                 row.update(saved_before=previous['saved'], handled_before=previous['handled'],
                            created_at=old['created_at'], capture_retry_count=old.get('capture_retry_count', 0))
+                self.cancel_file(old).unlink(missing_ok=True)
         self.jobs[operation_id] = row
         self.persist()
         self.task = asyncio.create_task(self.run(row))
@@ -495,6 +523,7 @@ class Backlog:
         row = self.jobs.get(operation_id)
         if row is None or row['project_id'] != project_id:
             raise PolicyError('backlog_job_not_found', 404)
+        self._stop_generation[project_id] = self._stop_generation.get(project_id, 0) + 1
         if row.get('automatic'):
             row['owner_shutdown' if owner_shutdown else 'automatic_user_paused'] = True
         if self.processing_task and not self.processing_task.done() and self.processing_operation == operation_id:
@@ -634,11 +663,15 @@ class Backlog:
             trace.finish(outcome, host_kind=host_kind, action=action if action in {'save', 'process', 'check'} else 'other')
 
     async def _execute(self, row, target, action, update=None):
-        agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'))
+        automatic = bool(row.get('automatic'))
+        agent, _ = self.checked_target(row['project_id'], target, write=action not in ('review', 'check'),
+                                       automatic=automatic and action == 'save')
         installation = copy.deepcopy(agent['installation'])
         if installation.get('host_kind') == 'opencode':
             from opencode_backlog import execute
-            return await execute(self.runtime, installation, row['project_id'], target, action, self.cancel_file(row), update)
+            options = {'project_auto_capture': lambda: self.project_auto_capture(row['project_id'])} if action == 'save' else {}
+            return await execute(self.runtime, installation, row['project_id'], target, action, self.cancel_file(row),
+                                 update, automatic=automatic, **options)
         await asyncio.to_thread(verify_installation, installation)
         if self.worker:
             return await self.worker(row, target, action, update)
@@ -673,7 +706,7 @@ class Backlog:
         except BaseException:
             # Never abandon a sender then blindly retry it. Signal cooperative
             # stop; its HTTP result/unknown journal remains the original truth.
-            if action not in ('review', 'check'):
+            if action not in ('review', 'check') and not self.cancel_file(row).exists():
                 private_write(self.cancel_file(row), b'stop')
             try:
                 process.terminate()
@@ -689,7 +722,8 @@ class Backlog:
         if getattr(self, 'handoff', None) and self.handoff.pending():
             target.update(processing='deferred', processing_reason='generation_handoff_in_progress')
             return
-        if self.cancel_file(row).exists() or not (target.get('saved') or target.get('handled')):
+        if ((self.cancel_file(row).exists() and row.get('reason') != CAPTURE_DISABLED)
+                or not (target.get('saved') or target.get('handled'))):
             return
         project = self.registry.state['projects'].get(row['project_id'])
         agent = self.registry.state['agents'].get(target['agent_id'])
@@ -1097,15 +1131,30 @@ class Backlog:
             await asyncio.sleep(0)
         return self.get(project_id)
 
+    def _save_stop_reason(self, row):
+        if row.get('automatic') and (row.get('reason') == CAPTURE_DISABLED
+                                     or not self.project_auto_capture(row['project_id'])):
+            return CAPTURE_DISABLED
+        if self.cancel_file(row).exists():
+            return 'user_stopped'
+        return ''
+
     async def run(self, row):
         try:
+            def stop_requested():
+                reason = self._save_stop_reason(row)
+                if reason:
+                    row.update(status='paused' if reason == CAPTURE_DISABLED else 'stopped', reason=reason)
+                return reason
+
+            if stop_requested():
+                return
             row['status'] = 'reviewing'
             self.persist()
             # Freeze every original buffer before any POST. New arrivals remain
             # with the normal capture flow and are not silently added to consent.
             for target in row['targets']:
-                if self.cancel_file(row).exists():
-                    row.update(status='stopped', reason='user_stopped')
+                if stop_requested():
                     return
                 if target.get('admission_blocked'):
                     continue
@@ -1136,9 +1185,8 @@ class Backlog:
                 target.update(saved=0, handled=0, isolated=0, remaining=len(target['tokens']))
                 self.persist()
             for target in row['targets']:
-                if self.cancel_file(row).exists():
-                    row.update(status='stopped', reason='user_stopped')
-                    return
+                if stop_requested():
+                    break
                 if target.get('review_status') != 'confirmed' or not target.get('tokens'):
                     continue
                 def progress(value):
@@ -1154,12 +1202,19 @@ class Backlog:
                         raise PolicyError('backlog_progress_unconfirmed', 503)
                     target.update({k: value[k] for k in ('saved', 'handled', 'isolated', 'remaining')})
                     target.update(classifications)
-                    row.update(status='stopping' if self.cancel_file(row).exists() else 'waiting' if value['status'] == 'waiting' else 'running',
-                               reason=value.get('reason', ''))
+                    if not stop_requested():
+                        row.update(status='waiting' if value['status'] == 'waiting' else 'running',
+                                   reason=value.get('reason', ''))
                     self.persist()
                 try:
+                    if row.get('automatic'):
+                        self.checked_target(row['project_id'], target, automatic=True)
                     result = await self.execute(row, target, 'save', progress)
                 except PolicyError as error:
+                    if error.code == CAPTURE_DISABLED:
+                        row.update(status='paused', reason=CAPTURE_DISABLED)
+                        target.update(save_status='paused', save_reason=CAPTURE_DISABLED)
+                        break
                     if error.code not in ('backlog_write_denied', 'backlog_binding_changed', 'backlog_installation_changed', 'backlog_installation_unconfirmed', 'backlog_host_unsupported'):
                         raise
                     target.update(save_status='paused', save_reason=error.code)
@@ -1169,6 +1224,10 @@ class Backlog:
                     raise PolicyError('backlog_worker_unconfirmed', 503)
                 progress(result)
                 target.update(save_status=result['status'], save_reason=result.get('reason', ''))
+                if stop_requested() or result.get('reason') == CAPTURE_DISABLED:
+                    if result.get('reason') == CAPTURE_DISABLED:
+                        row.update(status='paused', reason=CAPTURE_DISABLED)
+                    break
                 retry_key = json.dumps([target['agent_id'], target['host']])
                 if result['status'] == 'completed':
                     row.get('save_retries', {}).pop(retry_key, None)
@@ -1185,7 +1244,8 @@ class Backlog:
                         row['capture_retry_count'] = min(8, row.get('capture_retry_count', 0) + 1)
                         row['capture_retry_at'] = time.time() + min(300, 2 ** row['capture_retry_count'])
                     return
-            row['status'] = 'processing'
+            if not stop_requested():
+                row['status'] = 'processing'
             self.persist()
             for target in row['targets']:
                 if target.get('review_status') != 'confirmed':
@@ -1201,7 +1261,8 @@ class Backlog:
                             'processing': 'deferred' if previous.get('processing') == 'deferred' else 'queued'}
                 else:
                     await self.process_saved(row, target)
-            row.update(status='stopped' if self.cancel_file(row).exists() else 'completed', reason='')
+            if not stop_requested():
+                row.update(status='completed', reason='')
             if row['status'] == 'completed':
                 if any(t.get('review_status') == 'unconfirmed' for t in row['targets']):
                     row['reason'] = 'partial_review_unconfirmed'
@@ -1254,20 +1315,41 @@ class Backlog:
             return
         project_id = projects[self.auto_cursor % len(projects)]
         self.auto_cursor += 1
-        rows = [r for r in self.jobs.values() if r['project_id'] == project_id]
-        previous = max(rows, key=lambda r: r['created_at']) if rows else None
-        recoverable = bool(previous and previous.get('automatic') and not previous.get('automatic_user_paused')
+        rows = [r for r in self.jobs.values() if r['project_id'] == project_id and r.get('automatic')]
+        previous = max(rows, key=lambda r: r['created_at'], default=None)
+        if not self.project_auto_capture(project_id):
+            for row in rows:
+                if not row.get('automatic_user_paused') and self._kick_pending_processing(row):
+                    break
+            return
+        capture_version = self.registry.state['projects'][project_id].get('auto_capture_version', 1)
+        resume_project_pause = bool(previous and not previous.get('automatic_user_paused')
+                                    and previous.get('reason') == CAPTURE_DISABLED)
+        recoverable = bool(previous and not previous.get('automatic_user_paused')
                            and previous['status'] == 'paused' and previous.get('reason') in ('policy_unconfirmed', 'capture_retry_pending', 'capture_filter_changed', 'rate_limited'))
         if recoverable and previous.get('reason') in ('capture_retry_pending', 'rate_limited'):
             if time.time() < previous.get('capture_retry_at', 0):
                 return
-        if previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping') and not recoverable:
+        if (previous and previous['status'] in ('paused', 'stopped', 'interrupted', 'stopping')
+                and not (recoverable or resume_project_pause)):
             return
-        automatic = previous if previous and previous.get('automatic') else None
+        latest = self._latest_project_job(project_id)
+        stop_generation = self._stop_generation.get(project_id, 0)
+
+        def review_still_current():
+            return (self._stop_generation.get(project_id, 0) == stop_generation
+                    and self._latest_project_job(project_id) is latest
+                    and self.project_auto_capture(project_id)
+                    and self.registry.state['projects'][project_id].get('auto_capture_version', 1) == capture_version
+                    and (previous is None or (
+                        not previous.get('automatic_user_paused')
+                        and previous.get('status') not in ('stopped', 'stopping'))))
+
+        automatic = previous
         if automatic and not recoverable and self._kick_pending_processing(automatic):
             await asyncio.sleep(0)
         operation = automatic['operation_id'] if automatic else str(uuid.uuid4())
-        candidate = {'operation_id': operation, 'project_id': project_id}
+        candidate = {'operation_id': operation, 'project_id': project_id, 'automatic': True}
         selected = set()
         has_unsent = False
         reviewed = False
@@ -1340,12 +1422,12 @@ class Backlog:
             inspected += 1
             session_cursors[project_id] = raw
             try:
-                _, view = self.checked_target(project_id, target)
-                if not view['policy'].get('can_capture'):
-                    continue
-                if recoverable:
+                self.checked_target(project_id, target, automatic=True)
+                if recoverable or resume_project_pause:
                     self.invalidate_review_cache(project_id, agent_id, host)
                 snapshot = await self.execute(candidate, target, 'review')
+                if not review_still_current():
+                    return
                 if not isinstance(snapshot.get('tokens'), list) or 'unknown' not in snapshot:
                     continue
                 self.record_buffer_review(project_id, target, snapshot)
@@ -1382,7 +1464,11 @@ class Backlog:
                 # The normal queue view exposes the original unconfirmed state;
                 # do not install, repair permissions or replay in this scanner.
                 continue
-        if recoverable and reviewed:
+        if not review_still_current():
+            return
+        if (recoverable or resume_project_pause) and reviewed:
+            if resume_project_pause:
+                self.cancel_file(previous).unlink(missing_ok=True)
             previous.update(status='watching', reason='')
             self.persist()
         elif review_cleared:
@@ -1401,6 +1487,7 @@ class Backlog:
 
 def attach_backlog(app, registry, runtime):
     backlog = Backlog(registry, runtime)
+    registry.backlog = backlog
     async def endpoint(request):
         if not request['manager']:
             raise PolicyError('management_required', 403)

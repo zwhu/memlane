@@ -20,7 +20,7 @@ func shouldExpandChecklist(row AgentConnection) bool {
 	if row.Capture != nil {
 		switch row.Capture.State {
 		case "waiting_session", "waiting_message", "awaiting_generation_activation", "needs_permission",
-			"check_failed", "project_disabled", "project_pending", "needs_hook_repair":
+			"check_failed", "project_disabled", "project_write_denied", "project_pending", "needs_hook_repair":
 			return true
 		}
 	}
@@ -96,11 +96,20 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 		return
 	}
 	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
-		if row.Capture != nil && (row.Capture.State == "project_disabled" || row.Capture.State == "project_pending") {
-			message := "最近会话所属项目未开启会话采集。"
-			if row.Capture.State == "project_pending" {
-				message = "最近会话所属项目的权限设置尚未生效。"
-			}
+		projectState := ""
+		if row.Capture != nil {
+			projectState = row.Capture.State
+		}
+		message := ""
+		switch projectState {
+		case "project_disabled":
+			message = "最近会话所属项目未开启会话采集。"
+		case "project_pending":
+			message = "最近会话所属项目的权限设置尚未生效。"
+		case "project_write_denied":
+			message = "当前 Agent 没有最近会话所属项目的写入权限。"
+		}
+		if message != "" {
 			homeText(c, message, homeMeta)
 			for index, project := range a.Config.Projects {
 				if project.ID == row.Capture.ProjectID {
@@ -108,7 +117,7 @@ func (a *App) captureConnectionDetails(c *ui.Context, row AgentConnection) {
 					return
 				}
 			}
-			homeText(c, "在项目设置中开启会话采集后，再发送新消息。", homeMeta)
+			homeText(c, "调整项目设置后，再发送新消息。", homeMeta)
 			return
 		}
 		restart := "1. 如果你原本已打开 " + connectionName(row.Kind) + "，请先 ⌘Q 完全退出后重新打开。"

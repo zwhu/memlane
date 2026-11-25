@@ -160,12 +160,18 @@ def valid(receipt, message, ident, session, outgoing, sha):
             and receipt.get('payload_sha256') == sha and bool(receipt.get('entry_id')))
 
 
-def send(common, dataset, session, entry, *, timeout, dataset_id=None):
-    from _memlane_policy import require, NotReady
-    require('write', dataset)
+def send(common, dataset, session, entry, *, timeout, dataset_id=None, capture_mode='automatic'):
+    from _memlane_policy import require_capture_write, remember_capture_pause, NotReady
+    require_capture_write(dataset, capture_mode)
     message, ident, outgoing, sha = wire(common, dataset, session, entry, dataset_id)
-    receipt = common._json_http_request('/api/v1/capture/entries/' + message,
-        {'dataset_id': ident, 'session_id': session, 'entry': outgoing}, method='PUT', timeout=timeout)
+    try:
+        receipt = common._json_http_request('/api/v1/capture/entries/' + message,
+            {'dataset_id': ident, 'session_id': session, 'entry': outgoing}, method='PUT',
+            timeout=timeout, capture_mode=capture_mode)
+    except urllib.error.HTTPError as error:
+        if remember_capture_pause(error, dataset):
+            raise NotReady('capture_disabled') from error
+        raise
     if not valid(receipt, message, ident, session, outgoing, sha):
         raise NotReady('capture_receipt_unconfirmed')
     return receipt
@@ -188,7 +194,7 @@ def confirmed(common, dataset, session, entry, *, timeout=8):
     return valid(receipt, message, ident, session, outgoing, sha)
 
 
-def drain(common, dataset, session, *, budget_seconds=None):
+def drain(common, dataset, session, *, budget_seconds=None, capture_mode='automatic'):
     """Reuse the official buffer and sender lease; skip unnumbered unknowns.
 
     No content-similarity acknowledgement. A timeout retries the same durable
@@ -221,8 +227,12 @@ def drain(common, dataset, session, *, budget_seconds=None):
                 break
             if original.get(common._AMBIGUOUS_KEY) and not numbered(original):
                 continue
-            policy.require('capture', dataset)
-            policy.require('write', dataset)
+            try:
+                policy.require_capture_write(dataset, capture_mode)
+                if capture_mode == 'automatic':
+                    policy.require('write', dataset)
+            except policy.NotReady:
+                break
             policy._pending_identity(dataset, session)
             current = common._DRAIN_LOCK.stat()
             if (current.st_dev, current.st_ino) != (lease.st_dev, lease.st_ino):
@@ -258,7 +268,14 @@ def drain(common, dataset, session, *, budget_seconds=None):
             was_ambiguous = bool(entry.get(common._AMBIGUOUS_KEY))
             policy.stamp_pending_entry(dataset, session, entry, True)
             try:
-                send(common, dataset, session, raw, timeout=min(12, max(.1, deadline - time.monotonic())))
+                send(common, dataset, session, raw, timeout=min(12, max(.1, deadline - time.monotonic())),
+                     capture_mode=capture_mode)
+            except policy.NotReady as error:
+                if str(error) in ('capture_disabled', 'project_policy_unconfirmed', 'project_write_denied'):
+                    policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
+                    break
+                retain_failure(common, policy, dataset, session, entry)
+                continue
             except urllib.error.HTTPError as error:
                 if error.code in (401, 403):
                     policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)

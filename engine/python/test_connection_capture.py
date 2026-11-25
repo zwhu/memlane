@@ -169,6 +169,19 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'checking')
         self.assertEqual((await self.refresh())['state'], 'project_disabled')
 
+    async def test_project_switch_invalidates_capture_status_and_recovers(self):
+        self.assertEqual((await self.refresh())['state'], 'healthy')
+        calls = self.registry.official.request.await_count
+        project = self.registry.state['projects']['project']
+        project.update(auto_capture=False, auto_capture_version=2)
+        self.assertEqual(self.capture.view(self.row, self.adapter)['state'], 'checking')
+        self.assertEqual((await self.refresh())['state'], 'project_disabled')
+        self.assertEqual(self.registry.official.request.await_count, calls)
+        project.update(auto_capture=True, auto_capture_version=3)
+        self.assertEqual((await self.refresh())['state'], 'healthy')
+        project['overrides'] = {self.identifier: {'access': 'read'}}
+        self.assertEqual((await self.refresh())['state'], 'project_write_denied')
+
     async def test_force_refresh_bypasses_15s_cache(self):
         self.registry.official.request.return_value = {**self.saved, 'qa_count': 0, 'last_qa_at': None}
         self.assertEqual((await self.refresh())['state'], 'waiting_message')

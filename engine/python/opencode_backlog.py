@@ -152,7 +152,17 @@ def private_file(path, limit=65536):
     return path.read_bytes()
 
 
-def verify(installation, runtime, agent_id, *, force=False):
+def _supports_worker_field(root, files, name, field):
+    relative = 'dist/src/' + name + '.js'
+    path = root / relative
+    with path.open('rb') as stream:
+        source = stream.read(1024 * 1024 + 1)
+    if len(source) > 1024 * 1024 or hashlib.sha256(source).hexdigest() != files[relative]:
+        raise ValueError('worker changed')
+    return bool(re.search(rb"['\"]" + field.encode() + rb"['\"]", source))
+
+
+def verify(installation, runtime, agent_id, *, force=False, include_protocol=False):
     try:
         if installation.get('host_kind') != 'opencode' or installation.get('instance_id') != agent_id:
             raise ValueError('wrong host')
@@ -204,32 +214,54 @@ def verify(installation, runtime, agent_id, *, force=False):
         profile = Path(installation['profile'])
         if not profile.is_absolute() or profile.resolve() != profile or not profile.is_dir():
             raise ValueError('profile changed')
-        return node, helper, profile, base_url
+        verified = (node, helper, profile, base_url)
+        if include_protocol:
+            return (*verified,
+                    _supports_worker_field(root, manifest['files'], 'managed-backlog', 'automatic'),
+                    _supports_worker_field(root, manifest['files'], 'managed-pending-cli', 'bound_service_url'))
+        return verified
     except PolicyError:
         raise
     except (OSError, ValueError, TypeError, KeyError):
         raise PolicyError('backlog_installation_changed', 409) from None
 
 
-async def execute(runtime, installation, project_id, target, action, cancel_file, update=None):
+async def execute(runtime, installation, project_id, target, action, cancel_file, update=None, *,
+                  automatic=False, project_auto_capture=None):
     if action not in ('review', 'save', 'process', 'check'):
         raise PolicyError('backlog_worker_unconfirmed', 503)
     read_only = action in ('review', 'check')
-    node, helper, profile, expected_service_url = await asyncio.to_thread(
-        verify, installation, runtime, target['agent_id'], force=not read_only)
+    node, helper, profile, bound_service_url, supports_automatic, supports_bound_url = await asyncio.to_thread(
+        verify, installation, runtime, target['agent_id'], force=not read_only, include_protocol=True)
     command = {'action': 'backlog_' + action, 'project_id': project_id,
                'dataset_id': target['dataset'], 'host_session_key': target['host']}
     if action == 'check':
         command['action'] = 'check'
     if not read_only:
         command.update(session_id=target['session_id'], native_session=target['native'], cancel_file=str(cancel_file))
+    control = runtime['project_control']
+    gateway_url = control['url'].rstrip('/') + '/cognee'
     if action == 'save':
+        if not supports_bound_url and bound_service_url != gateway_url:
+            return {'status': 'paused', 'reason': 'plugin_upgrade_required', 'saved': 0, 'handled': 0,
+                    'isolated': 0, 'remaining': len(target['tokens'])}
         command['tokens'] = target['tokens']
+        if supports_automatic:
+            command['automatic'] = bool(automatic)
+        else:
+            capture_open = project_auto_capture() if project_auto_capture is not None else automatic
+            if not capture_open:
+                reason = 'project_auto_capture_disabled' if automatic else 'plugin_upgrade_required'
+                return {'status': 'paused', 'reason': reason, 'saved': 0, 'handled': 0,
+                        'isolated': 0, 'remaining': len(target['tokens'])}
     allowed = ('plugin_dir', 'manifest_sha256', 'binding_file', 'binding_sha256', 'node_executable', 'node_sha256')
+    operator = {'token_file': control['management_token_file'], 'control_url': control['url'],
+                'service_url': gateway_url}
+    if supports_bound_url and bound_service_url != gateway_url:
+        # Preserve the verified outbox identity for legacy direct-bound installs.
+        operator['bound_service_url'] = bound_service_url
     payload = {'installation': {key: installation[key] for key in allowed}, 'agent_id': target['agent_id'],
-               'operator': {'token_file': runtime['project_control']['management_token_file'],
-                            'control_url': runtime['project_control']['url'], 'service_url': expected_service_url},
-               'command': command}
+               'operator': operator, 'command': command}
     raw = json.dumps(payload).encode()
     if len(raw) > LIMIT:
         raise PolicyError('backlog_snapshot_unconfirmed', 503)
@@ -278,7 +310,7 @@ async def execute(runtime, installation, project_id, target, action, cancel_file
                     'reason': 'original_receipt_unavailable' if unknown else ''}
         return last
     except BaseException:
-        if not read_only:
+        if not read_only and not cancel_file.exists():
             private_write(cancel_file, b'stop')
         try:
             process.terminate()

@@ -44,7 +44,7 @@ class OpenCodeBacklogDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, snapshot)
         python_verify.assert_not_called()
         execute.assert_awaited_once_with(self.runtime, self.installation, 'p', self.target, 'review',
-                                         self.backlog.cancel_file(self.row), None)
+                                         self.backlog.cancel_file(self.row), None, automatic=False)
 
     async def test_processing_uses_original_node_action_receipt_instead_of_duplicate_official_post(self):
         for outcome in ('submitted', 'unknown', 'disabled', 'deferred'):
@@ -100,6 +100,7 @@ class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.tmp.name).resolve()
         self.artifact = Path(artifact).resolve()
         self.writes = []
+        self.write_modes = []
         self.inflight = asyncio.Event()
         self.response = asyncio.Event()
         self.hold_response = False
@@ -108,6 +109,7 @@ class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
         async def entry(request):
             self.assertEqual(request.headers.get('X-Api-Key'), 'c' * 40)
             self.writes.append(await request.json())
+            self.write_modes.append(request.headers.get('X-Memlane-Capture-Mode'))
             self.inflight.set()
             if self.hold_response:
                 await self.response.wait()
@@ -122,7 +124,8 @@ class OpenCodeBacklogWorkerTests(unittest.IsolatedAsyncioTestCase):
         official = OfficialFixture()
         official.url = str(self.official_server.make_url('')).rstrip('/')
         self.registry = Registry(self.root / 'registry.json', official)
-        self.registry.state['agents'] = {'a': {'name': 'A', 'principal_id': str(uuid.uuid4())}}
+        self.registry.state['agents'] = {'a': {'name': 'A', 'principal_id': str(uuid.uuid4()),
+                                              'key_file': str(self.root / 'official')}}
         self.registry.save()
         await self.registry.ensure_common(self.registry.state['revision'])
         for name, value in [('manager', 'm' * 40), ('control', 'a' * 40), ('official', 'c' * 40)]:
@@ -200,6 +203,7 @@ console.log(JSON.stringify({project_id:p.project_id,host:c.hostKey(native),datas
         self.assertEqual(result['status'], 'completed')
         self.assertEqual(result['saved'], 2)
         self.assertEqual(len(self.writes), 2)
+        self.assertEqual(self.write_modes, ['manual', 'manual'])
         self.assertEqual({w['entry']['context'] for w in self.writes}, {'first', 'second'})
         current = await self.node('status')
         self.assertEqual(len(current['tokens']), 1)
@@ -328,6 +332,18 @@ class OpenCodeBacklogHygieneAndCacheTests(unittest.IsolatedAsyncioTestCase):
         opencode_backlog.clear_verification_caches()
         self.tmp.cleanup()
 
+    def _use_capture_mode_worker(self):
+        files = {}
+        for name, field in (('managed-backlog', 'automatic'), ('managed-pending-cli', 'bound_service_url')):
+            relative = f'dist/src/{name}.js'
+            raw = f'export const accepted = ["{field}"];'.encode()
+            (self.plugin_dir / relative).write_bytes(raw)
+            files[relative] = hashlib.sha256(raw).hexdigest()
+        raw = json.dumps({'protocol': 1, 'files': files}, sort_keys=True).encode()
+        (self.plugin_dir / '.memlane-opencode-artifact.json').write_bytes(raw)
+        self.installation.update(manifest_sha256=hashlib.sha256(raw).hexdigest(),
+                                 helper_sha256=files['dist/src/managed-pending-cli.js'])
+
     def _fake_process(self, lines, *, returncode=0, hang_on_wait=False):
         class FakeProcess:
             def __init__(self):
@@ -361,6 +377,54 @@ class OpenCodeBacklogHygieneAndCacheTests(unittest.IsolatedAsyncioTestCase):
 
         return FakeProcess()
 
+    async def test_legacy_worker_receives_original_fields_and_refuses_closed_manual_save(self):
+        import opencode_backlog
+
+        # A legacy worker still bound directly to the official port cannot bypass the gateway stop gate.
+        cancel = self.root / 'legacy-direct.stop'
+        with patch('opencode_backlog.asyncio.create_subprocess_exec', new_callable=AsyncMock) as launch:
+            direct_res = await opencode_backlog.execute(
+                self.runtime, self.installation, 'p', self.target, 'save', cancel, automatic=True,
+                project_auto_capture=lambda: True)
+        self.assertEqual((direct_res['status'], direct_res['reason']), ('paused', 'plugin_upgrade_required'))
+        launch.assert_not_awaited()
+
+        # Rebind the legacy installation to the gateway URL so original-field compatibility still runs through /cognee.
+        gateway_url = self.runtime['project_control']['url'] + '/cognee'
+        binding_path = Path(self.installation['binding_file'])
+        binding = json.loads(binding_path.read_text())
+        binding['cognee']['baseUrl'] = gateway_url
+        raw_binding = json.dumps(binding).encode()
+        binding_path.write_bytes(raw_binding)
+        self.installation['binding_sha256'] = hashlib.sha256(raw_binding).hexdigest()
+
+        for automatic in (True, False):
+            cancel = self.root / f'legacy-{automatic}.stop'
+            proc = self._fake_process([
+                b'{"status":"completed","saved":1,"handled":0,"isolated":0,"remaining":0}\n', b'',
+            ])
+            sent = []
+            proc.stdin.write = sent.append
+            with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)), \
+                    patch('opencode_backlog._process_start_time', return_value='synthetic process start'):
+                result = await opencode_backlog.execute(
+                    self.runtime, self.installation, 'p', self.target, 'save', cancel, automatic=automatic,
+                    project_auto_capture=lambda: True)
+            self.assertEqual(result['status'], 'completed')
+            payload = json.loads(sent[0])
+            self.assertNotIn('automatic', payload['command'])
+            self.assertNotIn('bound_service_url', payload['operator'])
+            self.assertEqual(payload['operator']['service_url'], gateway_url)
+
+        cancel = self.root / 'legacy-closed.stop'
+        with patch('opencode_backlog.asyncio.create_subprocess_exec', new_callable=AsyncMock) as launch:
+            result = await opencode_backlog.execute(
+                self.runtime, self.installation, 'p', self.target, 'save', cancel,
+                project_auto_capture=lambda: False)
+        self.assertEqual((result['status'], result['reason']), ('paused', 'plugin_upgrade_required'))
+        launch.assert_not_awaited()
+        self.assertFalse(Path(str(cancel) + '.opencode-worker.json').exists())
+
     async def test_review_and_check_unlink_worker_file_and_skip_ps_while_save_retains_it(self):
         import opencode_backlog
         for action, payload in (
@@ -381,16 +445,23 @@ class OpenCodeBacklogHygieneAndCacheTests(unittest.IsolatedAsyncioTestCase):
                                  'confirmed' if action == 'check' else 0)
 
         # Mutating save retains durable owner_path and records ps start time.
+        self._use_capture_mode_worker()
         cancel = self.root / 'save.stop'
         owner_path = Path(str(cancel) + '.opencode-worker.json')
         proc = self._fake_process([
             json.dumps({'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}).encode() + b'\n',
             b'',
         ])
+        sent_stdin = []
+        proc.stdin.write = sent_stdin.append
         with patch('opencode_backlog.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)), \
              patch('opencode_backlog._process_start_time', return_value='Fri Nov 21 06:00:00 2026') as ps_mock:
             result = await opencode_backlog.execute(
-                self.runtime, self.installation, 'p', self.target, 'save', cancel)
+                self.runtime, self.installation, 'p', self.target, 'save', cancel, automatic=True)
+        payload = json.loads(b''.join(sent_stdin))
+        self.assertIs(payload['command']['automatic'], True)
+        self.assertEqual(payload['operator']['service_url'], self.runtime['project_control']['url'] + '/cognee')
+        self.assertEqual(payload['operator']['bound_service_url'], self.runtime['service_url'])
         self.assertEqual(result['status'], 'completed')
         ps_mock.assert_called_once_with(proc.pid)
         self.assertTrue(owner_path.exists(), 'mutating save must retain .opencode-worker.json')

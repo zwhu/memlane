@@ -269,6 +269,7 @@ async def _authenticate_and_snapshot(registry, secret_reader, presented_key):
                     'ready': bool(view['ready']),
                     'permissions': perms,
                     'can_capture': bool(view['policy']['can_capture']),
+                    'capture_policy': view['capture_policy'],
                     'can_auto_process': bool(view['policy']['can_auto_process']),
                     'code_enabled': bool(view['code_enabled']),
                 })
@@ -316,7 +317,21 @@ def _resolve_target(ctx, ref):
     raise PolicyError('dataset_access_denied', 403)
 
 
+class CapturePaused(PolicyError):
+    def __init__(self, policy):
+        super().__init__('capture_paused', 403)
+        self.policy = policy
+
+
+def _capture_write_operation(request):
+    mode = request.headers.get('X-Memlane-Capture-Mode', '').strip().lower()
+    return 'write' if mode == 'manual' else 'capture'
+
+
 def _authorize_target(info, operation):
+    if (operation == 'capture' and info['kind'] == 'project'
+            and 'write' in info['permissions'] and not info['can_capture']):
+        raise CapturePaused(info['capture_policy'])
     if not info['ready']:
         raise PolicyError('dataset_not_ready', 403)
     if operation == 'read':
@@ -333,13 +348,11 @@ def _authorize_target(info, operation):
         if not info['code_enabled'] or 'write' not in info['permissions']:
             raise PolicyError('code_indexing_denied', 403)
         return info
-    if operation == 'capture':
+    if operation in ('write', 'capture'):
         if info['kind'] == 'code':
             raise PolicyError('code_dataset_capture_denied', 403)
         if 'write' not in info['permissions']:
             raise PolicyError('dataset_write_denied', 403)
-        if not info['can_capture']:
-            raise PolicyError('capture_paused', 403)
         return info
     if operation == 'process':
         if 'write' not in info['permissions']:
@@ -895,7 +908,9 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 ds_id = _uuid_str(payload.get('dataset_id'))
                 if not ds_id:
                     raise PolicyError('dataset_access_denied', 403)
-                _authorize_target(_resolve_target(ctx, ds_id), 'capture')
+                # Receiving the request body can overlap a management switch.
+                ctx = await _authenticate_and_snapshot(registry, secret_cache, presented_key)
+                _authorize_target(_resolve_target(ctx, ds_id), _capture_write_operation(request))
                 entry_obj = payload.get('entry')
                 if isinstance(entry_obj, dict):
                     entry_obj = enrich_codex_file_change_entry(entry_obj)
@@ -920,7 +935,8 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 body_bytes = await _read_limited_body(request)
                 payload = _read_json_bytes(body_bytes)
                 ref = payload.get('dataset_id') or payload.get('datasetId') or payload.get('dataset_name') or payload.get('datasetName')
-                info = _authorize_target(_resolve_target(ctx, ref), 'capture')
+                ctx = await _authenticate_and_snapshot(registry, secret_cache, presented_key)
+                info = _authorize_target(_resolve_target(ctx, ref), _capture_write_operation(request))
                 updated = {**payload, 'dataset_id': info['dataset_id']}
                 updated.pop('datasetId', None)
                 updated.pop('datasetName', None)
@@ -945,7 +961,7 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 id_ref = fields.get('datasetId') or fields.get('dataset_id')
                 name_ref = fields.get('datasetName') or fields.get('dataset_name')
                 ref = id_ref or name_ref
-                op = 'code_write' if fields.get('content_type') == 'code' else 'capture'
+                op = 'code_write' if fields.get('content_type') == 'code' else 'write'
                 info = _authorize_target(_resolve_target(ctx, ref), op)
                 if id_ref and name_ref:
                     expected_name = info.get('dataset_name')
@@ -1037,6 +1053,10 @@ def create_gateway_app(registry, *, recall_store=None, drift_store=None, officia
                 return await proxy(request, ctx, rel_path, json_body=payload)
 
             raise PolicyError('gateway_route_not_allowed', 403)
+        except CapturePaused as error:
+            return web.json_response({'error': error.code, 'permission_denied': False,
+                                      'capture_policy_version': error.policy['version'],
+                                      'capture_scope': error.policy['scope']}, status=error.status)
         except PolicyError as error:
             return web.json_response({'error': error.code, 'detail': error.code}, status=error.status)
 

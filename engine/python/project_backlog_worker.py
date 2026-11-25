@@ -6,6 +6,7 @@ written to stdout. Contents stay in the official buffer until a confirmed POST.
 from collections import deque
 import contextlib
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -314,8 +315,19 @@ def _prune_confirmed_from_list(entries, confirmed, ambiguous_key, *, strict):
     return [item for idx, item in enumerate(entries) if idx not in removed]
 
 
+def capture_cancelled(cancel_file):
+    if not cancel_file:
+        return False
+    try:
+        with Path(cancel_file).open('rb') as marker:
+            return marker.read(64) == b'project_auto_capture_disabled'
+    except OSError:
+        return False
+
+
 def save(common, policy, payload, stopped, report=emit):
     dataset, session = payload['dataset'], payload['session_id']
+    automatic = bool(payload.get('automatic'))
     tokens = deque(payload['tokens'])
     saved = handled = isolated = filtered = rejected = deferred = 0
     lease = None
@@ -334,13 +346,26 @@ def save(common, policy, payload, stopped, report=emit):
                 'rejected': rejected, 'deferred': deferred,
                 'isolated': isolated, 'remaining': len(tokens)})
 
+    def report_cancelled():
+        if automatic and capture_cancelled(payload.get('cancel_file')):
+            progress('paused', 'project_auto_capture_disabled')
+        else:
+            progress('stopped', 'user_stopped')
+
     try:
+        send = common.remember_entry_via_http
+        parameters = inspect.signature(send).parameters
+        accepts_mode = any(p.kind is inspect.Parameter.VAR_KEYWORD
+                           or (p.name == 'capture_mode' and p.kind in (
+                               inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY))
+                           for p in parameters.values())
+        send_options = {'capture_mode': 'automatic' if automatic else 'manual'} if accepts_mode else {}
         policy._pending_identity(dataset, session)
         # The lock is shared with normal hooks. Waiting never resubmits content.
         while not common._try_acquire_drain_lock():
             progress('waiting', 'sender_busy')
             if stopped():
-                progress('stopped', 'user_stopped')
+                report_cancelled()
                 return
             time.sleep(.5)
         lease = common._DRAIN_LOCK.stat()
@@ -392,7 +417,7 @@ def save(common, policy, payload, stopped, report=emit):
         while tokens:
             if stopped():
                 flush_confirmed()
-                progress('stopped', 'user_stopped')
+                report_cancelled()
                 return
             current = common._DRAIN_LOCK.stat()
             if (current.st_dev, current.st_ino) != (lease.st_dev, lease.st_ino):
@@ -400,9 +425,7 @@ def save(common, policy, payload, stopped, report=emit):
                 progress('paused', 'sender_lock_changed')
                 return
             os.utime(common._DRAIN_LOCK, None, follow_symlinks=False)
-            policy.require('write', dataset)
-            if payload.get('automatic'):
-                policy.require('capture', dataset)
+            policy.require('capture' if automatic else 'write', dataset)
             policy._pending_identity(dataset, session)
             with policy._state() as policy_state:
                 blocked = policy_state.get('blocked')
@@ -479,6 +502,16 @@ def save(common, policy, payload, stopped, report=emit):
                 progress()
                 continue
             was_ambiguous = bool(entry.get(ambiguous_key))
+            if not accepts_mode and not automatic:
+                rules = policy.current(dataset).get('capture_policy') or {}
+                if rules.get('project_enabled') is not True:
+                    flush_confirmed()
+                    progress('paused', 'plugin_upgrade_required')
+                    return
+            if stopped():
+                flush_confirmed()
+                report_cancelled()
+                return
             # Existing official journal is the single crash/unknown boundary.
             policy.stamp_pending_entry(dataset, session, entry, True)
             matched_ref.clear()
@@ -486,9 +519,13 @@ def save(common, policy, payload, stopped, report=emit):
             if cached_buf_path is not None:
                 cached_buf_stat = _path_stat_sig(cached_buf_path)
             try:
-                common.remember_entry_via_http(dataset, session, outgoing, timeout=12)
+                send(dataset, session, outgoing, timeout=12, **send_options)
             except policy.NotReady as error:
                 flush_confirmed()
+                if str(error) == 'capture_disabled':
+                    policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
+                    progress('paused', 'project_auto_capture_disabled')
+                    return
                 # A mismatched/lost receipt is message-local only when its
                 # original durable number exists; scope failures stay paused.
                 if numbered(entry) and str(error) == 'capture_receipt_unconfirmed':
@@ -507,6 +544,9 @@ def save(common, policy, payload, stopped, report=emit):
                 flush_confirmed()
                 if error.code in (401, 403):
                     policy.stamp_pending_entry(dataset, session, entry, was_ambiguous)
+                    if error.code == 403 and policy.is_capture_paused(error):
+                        progress('paused', 'project_auto_capture_disabled')
+                        return
                     policy.block(error.code)
                     progress('paused', 'write_denied')
                     return
@@ -544,9 +584,10 @@ def save(common, policy, payload, stopped, report=emit):
         progress('completed')
     except _ConfirmedQueueChanged:
         progress('paused', 'confirmed_queue_changed')
-    except policy.NotReady:
+    except policy.NotReady as error:
         flush_confirmed_best_effort()
-        progress('paused', 'policy_unconfirmed')
+        reason = str(error)
+        progress('paused', 'project_auto_capture_disabled' if reason == 'capture_disabled' else 'policy_unconfirmed')
     except Exception:
         flush_confirmed_best_effort()
         progress('paused', 'worker_state_unconfirmed')
@@ -677,7 +718,10 @@ def main():
                 stop.set()
                 return
     threading.Thread(target=watch, daemon=True).start()
-    stopped = lambda: stop.is_set() or Path(payload['cancel_file']).exists()
+    def stopped():
+        cancel_file = Path(payload['cancel_file'])
+        return stop.is_set() or (cancel_file.exists() and not
+                                 (payload['action'] == 'process' and capture_cancelled(cancel_file)))
     try:
         if payload['action'] == 'review':
             emit(review(common, policy, payload['dataset'], payload['host']))

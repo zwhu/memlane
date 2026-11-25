@@ -31,7 +31,8 @@ def explicit_access(permission, dataset):
 
 
 def request_fields(request):
-    if not isinstance(request, dict) or set(request) - {'operation', 'session_id', 'cwd', 'event_id', 'entry', 'query', 'content', 'data_id', 'final'}:
+    if not isinstance(request, dict) or set(request) - {'operation', 'session_id', 'cwd', 'event_id', 'turn_event_id',
+                                                        'entry', 'query', 'content', 'data_id', 'final'}:
         raise ValueError('invalid_request_fields')
     if request.get('operation') not in OPERATIONS:
         raise ValueError('unsupported_operation')
@@ -43,7 +44,7 @@ def request_fields(request):
     return request
 
 
-def setup(request):
+def prepare_session(request):
     marker = Path(__file__).resolve().parents[1] / '.memlane-installation.json'
     if marker.is_symlink() or marker.stat().st_mode & 0o077:
         raise ValueError('private_installation_binding_required')
@@ -61,12 +62,18 @@ def setup(request):
     # upstream loader is cached; always restore the immutable binding first.
     prepare_environment(parse_env_file)
     load_env_file()
-    from _plugin_common import set_session_key, ensure_launch_record
-    from _memlane_policy import bind
+    from _plugin_common import set_session_key
     key = binding['host_kind'] + '-' + hashlib.sha256(
         (binding['instance_id'] + '\0' + request['session_id']).encode()).hexdigest()
     os.environ['COGNEE_SESSION_PREFIX'] = binding['host_kind']
     set_session_key(key)
+    return key
+
+
+def setup(request):
+    key = prepare_session(request)
+    from _plugin_common import ensure_launch_record
+    from _memlane_policy import bind
     dataset = bind(request['cwd'], key)
     session, _ = ensure_launch_record(key, request['cwd'], dataset=dataset)
     from _project_memory import begin, prepare
@@ -82,7 +89,8 @@ def setup(request):
 
 def begin_turn(request, key):
     """Capture only source metadata at the prompt boundary, never a transcript."""
-    from _memlane_policy import permit
+    from _capture_policy import capture_enabled
+    from _memlane_policy import capture_decision
     from _coding_memory import _SessionState, git_root, git_head, git_branch, now_iso
     event = request.get('event_id')
     if not isinstance(event, str) or not event or len(event) > 512:
@@ -90,23 +98,27 @@ def begin_turn(request, key):
     with _SessionState(key) as state:
         if not state.acquired:
             raise ValueError('capture_state_locked')
-        if not permit('capture'):
-            state.data.pop('host_turn_context', None)
+        identifier = hashlib.sha256(event.encode()).hexdigest()
+        status, version = capture_decision() if capture_enabled() else ('disabled', None)
+        if status in ('disabled', 'denied'):
+            state.data['host_turn_context'] = {'event_id': identifier, 'skipped_policy': True}
             state.save()
             return
-        identifier = hashlib.sha256(event.encode()).hexdigest()
+        if status != 'enabled':
+            return
         if state.data.get('host_turn_context', {}).get('event_id') == identifier:
             return
         cwd = request['cwd']
         state.data['host_turn_context'] = {'event_id': identifier, 'cwd': git_root(cwd) or cwd,
                                          'session_cwd': cwd, 'start_commit': git_head(cwd),
-                                         'branch': git_branch(cwd), 'date': now_iso()[:10]}
+                                         'branch': git_branch(cwd), 'date': now_iso()[:10],
+                                         'capture_policy_version': version}
         state.save()
 
 
-def capture(request, key, session, dataset):
+def capture(request, key, session, dataset, *, expected_decision=None):
     from _capture_policy import capture_enabled, sanitize
-    from _memlane_policy import permit
+    from _memlane_policy import capture_decision
     from _coding_memory import _SessionState, _deliver, _drain, _truncate, trace_entry
     event_id = request.get('event_id')
     if not isinstance(event_id, str) or not event_id or len(event_id) > 512:
@@ -120,7 +132,19 @@ def capture(request, key, session, dataset):
             return {'status': seen[event_id], 'duplicate': True}
         # Store a metadata-only watermark before inspecting any content. An
         # event denied now is never re-read when permission later returns.
-        if not capture_enabled() or not permit('capture'):
+        status, version = capture_decision(dataset) if capture_enabled() else ('disabled', None)
+        if status == 'unknown':
+            return {'status': 'policy_unconfirmed'}
+        turn_event = request.get('turn_event_id')
+        skipped_turn = expected_decision is not None and expected_decision != (status, version)
+        if status == 'enabled' and isinstance(turn_event, str) and 0 < len(turn_event) <= 512:
+            turn = state.data.get('host_turn_context') or {}
+            if turn.get('event_id') != hashlib.sha256(turn_event.encode()).hexdigest():
+                return {'status': 'policy_unconfirmed'}
+            skipped_turn = skipped_turn or turn.get('skipped_policy') or turn.get('capture_policy_version') != version
+        if status != 'enabled' or skipped_turn:
+            if status != 'enabled' and state.data.get('host_turn_context'):
+                state.data['host_turn_context']['skipped_policy'] = True
             seen[event_id] = 'skipped_policy'
             state.save()
             return {'status': 'skipped_policy'}
@@ -147,7 +171,8 @@ def capture(request, key, session, dataset):
             clean['answer'] = _truncate(clean['answer'], 8000)
             from _coding_memory import git_root, git_head, git_branch, now_iso
             context = dict(state.data.get('host_turn_context') or {})
-            context.pop('event_id', None)
+            for field in ('event_id', 'capture_policy_version', 'skipped_policy'):
+                context.pop(field, None)
             cwd = request['cwd']
             if not context:
                 context = {'cwd': git_root(cwd) or cwd, 'session_cwd': cwd,
@@ -200,7 +225,6 @@ def handle(request):
         return capture(request, key, session, dataset)
     if operation == 'flush':
         from _coding_memory import _drain, _maybe_cooldown_improve, _SessionState
-        require('capture', dataset)
         if request.get('final') is True:
             with _SessionState(key) as state:
                 if not state.acquired:

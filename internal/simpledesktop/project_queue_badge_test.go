@@ -330,3 +330,35 @@ func TestInProgressAndNeutralNoticesDoNotCountAsProjectAlerts(t *testing.T) {
 		t.Fatalf("expected progress count=2 in mixed state, got %+v", progress)
 	}
 }
+
+func TestClosedAutomaticCaptureDoesNotCreatePermissionOrProgressBadge(t *testing.T) {
+	a, q := projectQueueFixture()
+	p := &a.access.Directory.Projects[0]
+	agent := a.access.Directory.Agents[0]
+	access := "maintain"
+	p.Overrides[agent.ID] = ProjectOverride{Access: &access}
+	q.Sessions = q.Sessions[:1]
+	q.Documents = nil
+	q.AutomaticSave = true
+	q.Backlog = &backlogJob{Automatic: true, Status: "running"}
+	if got := a.trayCachedSummary(); len(got.Alerts) != 0 || len(got.Progress) != 1 {
+		t.Fatalf("expected one active capture, got %+v", got)
+	}
+	enabled := false
+	p.AutoCapture, p.AutoCaptureVersion = &enabled, 2
+	if got := a.trayCachedSummary(); len(got.Alerts) != 0 || len(got.Progress) != 0 {
+		t.Fatalf("closed capture still appeared active or denied, got %+v", got)
+	}
+	q.Backlog = &backlogJob{Automatic: true, Status: "paused", Reason: "project_auto_capture_disabled"}
+	if got := a.trayCachedSummary(); len(got.Alerts) != 0 || len(got.Progress) != 0 {
+		t.Fatalf("intentional stop became a badge, got %+v", got)
+	}
+	q.Backlog = &backlogJob{Status: "running"}
+	if got := a.trayCachedSummary(); len(got.Alerts) != 0 || len(got.Progress) != 1 {
+		t.Fatalf("closed capture hid manual job progress, got %+v", got)
+	}
+	access = "read"
+	if got := a.trayCachedSummary(); len(got.Alerts) != 1 || got.Alerts[0].ActionCount != 1 {
+		t.Fatalf("closed capture hid an actual write restriction, got %+v", got)
+	}
+}

@@ -215,7 +215,7 @@ def files_for(kind, archive=None, *, source=None):
     # Claude Code and Cursor match QI01/QI03 idempotent per-entry delivery.
     common_text = patch.body(common_text, 'remember_entry_via_http', '''from _memlane_policy import NotReady, managed
 from _memlane_capture import numbered
-if managed() and not numbered(entry):
+if managed() and not numbered(entry) and capture_mode == "automatic":
     append_warmup_entry(dataset, session_id, entry)
     try:
         drained, remaining = drain_warmup_entries(dataset, session_id)
@@ -265,8 +265,8 @@ def patch_cursor(files, patch):
         text = patch.body(
             text, function,
             'from _capture_policy import capture_enabled\n'
-            'from _memlane_host import cursor_store_allowed\n'
-            'if not cursor_store_allowed(capture_enabled):\n'
+            'from _memlane_access import pending_capture_allowed\n'
+            'if not pending_capture_allowed(enabled=capture_enabled(), turn_id=str(payload.get("turn_id") or "")):\n'
             '    return',
         )
     text = patch.replace(

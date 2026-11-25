@@ -88,11 +88,18 @@ class ManagedOpenCodeRuntimeTests(unittest.TestCase):
             (root / 'types.ts').write_text(source_files['types.ts'])
             for helper in ('managed-http.ts', 'managed-outbox.ts'):
                 (root / helper).write_text((ROOT / 'engine/agents/opencode' / helper).read_text())
+            extra = []
+            if test_file == 'managed-outbox.test.mjs':
+                for name in ('managed-control', 'managed-delivery', 'managed-hooks', 'managed-capture-window',
+                             'managed-actions', 'managed-pending', 'managed-backlog'):
+                    source = root / (name + '.ts')
+                    source.write_text((ROOT / 'engine/agents/opencode' / source.name).read_text())
+                    extra.append(str(source))
             build = subprocess.run(['node', str(modules / 'typescript/bin/tsc'),
                                     '--target', 'ES2022', '--module', 'NodeNext',
                                     '--moduleResolution', 'NodeNext', '--skipLibCheck',
                                     '--types', 'node', '--typeRoots', str(modules / '@types'),
-                                    '--outDir', str(root / 'dist'), str(root / 'runtime.ts'), str(root / 'client.ts')],
+                                    '--outDir', str(root / 'dist'), str(root / 'runtime.ts'), str(root / 'client.ts'), *extra],
                                    capture_output=True, text=True, timeout=30)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             env = {**os.environ, 'MEMLANE_OPENCODE_TEST_RUNTIME': str(root / 'dist/runtime.js'),

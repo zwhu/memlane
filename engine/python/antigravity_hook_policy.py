@@ -98,7 +98,11 @@ def prepare_payload(payload, script):
     from _project_memory import begin, prepare
     begin(dataset, session, cwd)
     prepare(dataset, session)
-    mark_server_ready(os.environ['COGNEE_BASE_URL'])
+    try:
+        mark_server_ready(os.environ['COGNEE_BASE_URL'])
+    except OSError:
+        # Connection hints are optional when the host's state is read-only.
+        pass
     result = dict(payload)
     result.update(conversationId=key, session_id=key)
     return result

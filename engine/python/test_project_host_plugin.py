@@ -189,6 +189,7 @@ parent.mkdir(parents=True)
 os.environ["CLAUDE_CONFIG_DIR"] = str(profile)
 decision = {"revision": 7, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True}}
 policy.current = lambda *args, **kwargs: decision
+policy.capture_decision = lambda *args: ("enabled", decision.get("capture_version", 1))
 session = str(uuid.uuid4())
 common.set_session_key(session)
 path = parent / (session + ".jsonl")
@@ -214,6 +215,132 @@ assert policy.capture_boundary(str(existing)) == boundary
 assert coding.parse_claude(str(existing), boundary).get("request", "") == ""
 ''')
 
+    def test_cursor_and_antigravity_require_a_matching_live_pending_turn(self):
+        for kind in ('cursor', 'antigravity'):
+            with self.subTest(host=kind):
+                installation = self._shared_artifacts[kind] if kind == 'cursor' else self.artifact(kind)
+                self.isolated(installation, r'''
+import asyncio, importlib.util, pathlib, sys
+scripts = pathlib.Path(sys.argv[1])
+sys.path.insert(0, str(scripts))
+import _plugin_common as common, _memlane_policy as policy
+session, dataset = "synthetic-session", "11111111-1111-4111-8111-111111111111"
+common._read_map_record = lambda *a: {"session_id": session}
+policy.require = lambda *a, **kw: None
+status, version = "enabled", 1
+policy.capture_decision = lambda *a: (status, version)
+spec = importlib.util.spec_from_file_location("store", scripts / "store-to-session.py")
+store = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(store)
+store._load_session = lambda: (session, dataset, "")
+store.resolve_runtime_mode = lambda: {"mode": "http", "base_url": "http://127.0.0.1:18999"}
+store.load_config = lambda: {"backend": "cloud"}
+store.server_usable = lambda *a, **kw: True
+saved = []
+store.remember_entry_via_http = lambda _dataset, _session, entry, **kw: saved.append(entry) or {}
+
+def tool(turn):
+    asyncio.run(store._store_tool_call({"turn_id": turn, "tool_name": "Read",
+                 "tool_input": {"file_path": "/tmp/synthetic.py"}, "tool_response": "synthetic output"}))
+
+def stop(turn):
+    asyncio.run(store._store_assistant_stop({"turn_id": turn, "assistant_message": "synthetic reply"}))
+
+for blocked in ("denied", "disabled"):
+    common.remember_pending_prompt(session, "in-flight prompt", turn_id="before")
+    status = blocked
+    if blocked == "disabled": version += 1
+    common.remember_pending_prompt(session, "blocked prompt", turn_id="blocked")
+    assert not common._load_json_file(common._pending_file(session))
+    status = "enabled"
+    if blocked == "disabled": version += 1
+    count = len(saved)
+    tool("blocked")
+    stop("before")
+    assert len(saved) == count
+    common.remember_pending_prompt(session, "new prompt", turn_id="new")
+    tool("blocked")
+    assert len(saved) == count
+    tool("new")
+    stop("new")
+    assert [entry["type"] for entry in saved[count:]] == ["trace", "qa"], saved
+    assert saved[-1]["question"] == "new prompt"
+
+# A complete close/reopen while the host is idle also invalidates its pending turn.
+common.remember_pending_prompt(session, "must leave behind", turn_id="idle")
+version += 2
+count = len(saved)
+tool("idle")
+stop("idle")
+assert len(saved) == count
+
+# Short prompts (<5 chars like "继续") skip pending prompt persistence in the fixed hook,
+# yet must still capture tool calls for that authorized turn without creating a bogus QA entry.
+import _memlane_access as access
+assert access.pending_capture_allowed(enabled=True, turn_id="short-turn", new_turn=True)
+count = len(saved)
+tool("short-turn")
+stop("short-turn")
+assert [entry["type"] for entry in saved[count:]] == ["trace"], saved[count:]
+''')
+
+    def test_claude_fresh_start_keeps_version_across_unobserved_close_and_reopen(self):
+        self.isolated(self._shared_artifacts['claude_code'], r'''
+import os, pathlib, sys, uuid
+sys.path.insert(0, sys.argv[1])
+import _plugin_common as common
+import _memlane_policy as policy
+profile = pathlib.Path.home() / "claude-profile"
+parent = profile / "projects" / "synthetic"
+parent.mkdir(parents=True)
+os.environ["CLAUDE_CONFIG_DIR"] = str(profile)
+version = 1
+policy.current = lambda *a: {"revision": version, "policy": {"permissions": ["write"], "can_capture": True}}
+policy.capture_decision = lambda *a: ("enabled", version)
+session = str(uuid.uuid4())
+common.set_session_key(session)
+path = parent / (session + ".jsonl")
+policy.begin_capture_boundary(str(path), source="startup", session_key=session)
+with policy._state() as state:
+    assert state.pop("capture_policy_version") == 1
+path.write_text("first allowed turn\n")
+assert policy.capture_boundary(str(path)) == 0
+with policy._state(writable=False) as state:
+    assert state["capture_policy_version"] == 1
+version = 3
+with path.open("a") as out:
+    out.write("closed turn, with no hook for version 2\n")
+assert policy.capture_boundary(str(path)) is None
+boundary = path.stat().st_size
+with path.open("a") as out:
+    out.write("new allowed turn\n")
+assert policy.capture_boundary(str(path)) == boundary
+''')
+
+    def test_claude_denied_transcript_is_excluded_when_write_permission_returns(self):
+        self.isolated(self._shared_artifacts['claude_code'], r'''
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import _coding_memory as coding, _memlane_policy as policy
+path = pathlib.Path("claude.jsonl").absolute()
+path.touch()
+status = "enabled"
+policy.capture_decision = lambda *a: (status, 1)
+policy.begin_capture_boundary(str(path))
+def turn(question):
+    with path.open("a") as out:
+        for kind, content in (("user", question), ("assistant", "answer")):
+            out.write(json.dumps({"type": kind, "uuid": question + kind, "message": {"content": content}}) + "\n")
+status = "denied"
+turn("denied Claude question")
+assert policy.capture_boundary(str(path)) is None
+status = "enabled"
+assert policy.capture_boundary(str(path)) is None
+turn("authorized Claude question")
+offset = policy.capture_boundary(str(path))
+assert coding.parse_claude(str(path), offset)["request"] == "authorized Claude question"
+''')
+
     def test_claude_absent_resume_changed_policy_and_wrong_path_skip_first_turn(self):
         self.isolated(self._shared_artifacts['claude_code'], r'''
 import os, pathlib, sys, uuid
@@ -226,6 +353,7 @@ parent.mkdir(parents=True)
 os.environ["CLAUDE_CONFIG_DIR"] = str(profile)
 decision = {"revision": 7, "policy": {"permissions": ["read", "write"], "can_capture": True}}
 policy.current = lambda *args, **kwargs: decision
+policy.capture_decision = lambda *args: ("enabled", decision.get("capture_version", 1))
 for source in ("resume", "fork", "clear", "compact", "startup"):
     session = str(uuid.uuid4())
     common.set_session_key(session)
@@ -264,6 +392,7 @@ import _project_memory as projects
 dataset = "11111111-1111-4111-8111-111111111111"
 session = "synthetic-qi01"
 policy.current = lambda *a, **k: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": False}}
+policy.capture_status = lambda *a: "enabled"
 policy._pending_identity = lambda *a, **k: None
 projects.route = lambda d, s: {"write": d}
 seen = []

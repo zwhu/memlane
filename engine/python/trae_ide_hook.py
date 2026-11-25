@@ -64,19 +64,34 @@ def _load_turns(state):
     return valid
 
 
+def _clear_turns(state):
+    for field in ('trae_ide_turn', 'trae_ide_turns', 'trae_ide_evicted_stops', 'host_turn_context'):
+        state.data.pop(field, None)
+
+
 def observe_turn(event, key, payload):
     from _capture_policy import capture_enabled, sanitize
     from _coding_memory import _SessionState, _truncate
-    from _memlane_policy import permit
+    from _memlane_policy import capture_decision
 
     with _SessionState(key) as state:
         if not state.acquired:
             raise ValueError('capture_state_locked')
         if event == 'SessionStart':
-            for field in ('trae_ide_turn', 'trae_ide_turns', 'trae_ide_evicted_stops'):
-                state.data.pop(field, None)
+            _clear_turns(state)
             state.save()
             return None, []
+        status, version = capture_decision() if capture_enabled() else ('disabled', None)
+        if status == 'unknown':
+            return None, []
+        previous = state.data.get('trae_ide_capture_policy_version')
+        if version is not None:
+            state.data['trae_ide_capture_policy_version'] = version
+        if status != 'enabled' or (version is not None and previous is not None and previous != version):
+            _clear_turns(state)
+            if status != 'enabled':
+                state.save()
+                return None, []
         turns = _load_turns(state)
         evicted = state.data.get('trae_ide_evicted_stops', 0)
         if type(evicted) is not int or evicted < 0:
@@ -89,24 +104,28 @@ def observe_turn(event, key, payload):
                                 if isinstance(payload.get(field), str) and payload[field].strip()), None)
             duplicate = external_id is not None and any(turn.get('external_id') == external_id for turn in turns)
             if not duplicate and isinstance(prompt, str) and prompt.strip():
-                turn = {'id': uuid.uuid4().hex, 'time': now()}
+                turn = {'id': uuid.uuid4().hex, 'time': now(), 'capture_policy_version': version}
                 if external_id is not None:
                     turn['external_id'] = external_id
-                if capture_enabled() and permit('capture'):
-                    turn['question'] = _truncate(sanitize(prompt), 8000)
-                    turn_id = turn['id']
-                else:
-                    turn['skipped_policy'] = True
+                turn['question'] = _truncate(sanitize(prompt), 8000)
+                turn_id = turn['id']
                 turns.append(turn)
         elif event == 'Stop':
             pending = [dict(turn) for turn in turns]
             evicted = 0
-        elif event == 'PostToolUseFailure' or (event == 'PostToolUse' and tool_response_failed(payload)):
-            name = payload.get('tool_name')
-            if turns and not turns[-1].get('skipped_policy') and isinstance(name, str) and name.strip():
-                failures = turns[-1].setdefault('tool_failures', [])
-                failures.append(_truncate(sanitize(name), 80))
-                del failures[:-8]
+        elif event in ('PostToolUse', 'PostToolUseFailure') and turns:
+            active = turns[-1]
+            external_id = payload.get('turn_id')
+            if (not active.get('skipped_policy') and 'capture_policy_version' in active
+                    and active['capture_policy_version'] == version
+                    and (not external_id or external_id == active.get('external_id'))):
+                turn_id = active['id']
+                name = payload.get('tool_name')
+                failed = event == 'PostToolUseFailure' or tool_response_failed(payload)
+                if failed and isinstance(name, str) and name.strip():
+                    failures = active.setdefault('tool_failures', [])
+                    failures.append(_truncate(sanitize(name), 80))
+                    del failures[:-8]
         if event == 'SessionEnd' or (event == 'PostToolUseFailure' and payload.get('is_interrupt') is True):
             pending = [dict(turn) for turn in turns]
             evicted = 0
@@ -149,16 +168,20 @@ def capture_turns(turns, answer, request, key, session, dataset):
     for index, turn in enumerate(turns):
         if not turn.get('skipped_policy'):
             reply = answer if index == len(turns) - 1 and isinstance(answer, str) and answer.strip() else interrupted_answer_for(turn)
-            memory.capture({**request, 'event_id': 'qa:' + turn['id'], 'entry': {
+            options = ({'expected_decision': ('enabled', turn['capture_policy_version'])}
+                       if 'capture_policy_version' in turn else {})
+            outcome = memory.capture({**request, 'event_id': 'qa:' + turn['id'], 'entry': {
                 'type': 'qa', 'question': turn['question'], 'answer': reply,
                 'prompt_time': turn['time'], 'time': now(),
-            }}, key, session, dataset)
+            }}, key, session, dataset, **options)
+            if outcome.get('status') == 'policy_unconfirmed':
+                return
         _consume_turn(key, turn['id'])
 
 
-def capture_tool(payload, failed, request, key, session, dataset):
+def capture_tool(payload, failed, request, key, session, dataset, turn_id):
     tool_id, name = payload.get('tool_use_id'), payload.get('tool_name')
-    if not isinstance(tool_id, str) or not isinstance(name, str):
+    if not turn_id or not isinstance(tool_id, str) or not isinstance(name, str):
         return
     output = payload.get('tool_response', payload.get('error', {}) if failed else {})
     entry = {
@@ -168,7 +191,8 @@ def capture_tool(payload, failed, request, key, session, dataset):
     }
     if failed and isinstance(payload.get('error'), str):
         entry['error_message'] = payload['error']
-    memory.capture({**request, 'event_id': 'tool:' + tool_id, 'entry': entry}, key, session, dataset)
+    memory.capture({**request, 'event_id': 'tool:' + tool_id, 'turn_event_id': turn_id, 'entry': entry},
+                   key, session, dataset)
 
 
 def tool_response_failed(payload):
@@ -198,20 +222,20 @@ def handle(event, payload):
             result = memory.handle({**request, 'operation': 'recall', 'query': prompt[:16000]})
             return {'hookSpecificOutput': {'hookEventName': event, 'additionalContext': result.get('context', '')}}
     elif event == 'PostToolUse':
-        observe_turn(event, key, payload)
-        capture_tool(payload, tool_response_failed(payload), request, key, session, dataset)
+        turn_id, _ = observe_turn(event, key, payload)
+        capture_tool(payload, tool_response_failed(payload), request, key, session, dataset, turn_id)
     else:
         flush = {**request, 'operation': 'flush'}
         if event == 'SessionEnd':
             flush['final'] = True
         failed = event == 'PostToolUseFailure'
+        turn_id, turns = observe_turn(event, key, payload)
         tool_error = None
         if failed:
             try:
-                capture_tool(payload, True, request, key, session, dataset)
+                capture_tool(payload, True, request, key, session, dataset, turn_id)
             except Exception as error:
                 tool_error = error
-        _, turns = observe_turn(event, key, payload)
         answer = None if failed else payload.get('last_assistant_message')
         capture_turns(turns, answer, request, key, session, dataset)
         memory.handle(flush)
@@ -332,6 +356,28 @@ def payload_from(raw):
         return None
 
 
+def discard_closed_turns_offline(event, raw):
+    """The sandboxed forwarder can only remove pending prompts for a known pause."""
+    try:
+        payload = payload_from(raw)
+        if not isinstance(payload, dict) or payload.get('hook_event_name') != event:
+            return False
+        cwd = workspace(payload)
+        request = memory.request_fields({'operation': 'resolve', 'session_id': payload.get('session_id'), 'cwd': cwd})
+        key = memory.prepare_session(request)
+        from _memlane_policy import cached_capture_disabled
+        if not cached_capture_disabled(cwd):
+            return False
+        from _coding_memory import _SessionState
+        with _SessionState(key) as state:
+            if state.acquired:
+                _clear_turns(state)
+                state.save()
+        return True
+    except (OSError, ImportError, TypeError, ValueError, RuntimeError, KeyError):
+        return False
+
+
 def forward(event, raw):
     if event not in EVENTS:
         return {}
@@ -389,6 +435,8 @@ def forward(event, raw):
         finally:
             connection.close()
     except (OSError, http.client.HTTPException) as error:
+        if discard_closed_turns_offline(event, raw):
+            return {}
         return failure('network_error', type(error).__name__)
 
 

@@ -71,14 +71,14 @@ export default function (pi: ExtensionAPI) {
     const answer = text(event.message.content);
     if (!answer) return;
     const entry = { type: "qa", question: prompt, answer, prompt_time: promptTime, time: new Date().toISOString() };
-    await call(ctx, "capture", { event_id: turn + ":answer:" + hash(event.message), entry });
+    await call(ctx, "capture", { event_id: turn + ":answer:" + hash(event.message), turn_event_id: turn, entry });
   });
   pi.on("tool_execution_start", async event => { inputs.set(event.toolCallId, event.args); });
   pi.on("tool_execution_end", async (event, ctx) => {
     const args = inputs.get(event.toolCallId); inputs.delete(event.toolCallId);
     // Do not capture this extension's own memory output into itself.
     if (event.toolName.startsWith("cognee_")) return;
-    await call(ctx, "capture", { event_id: "tool:" + event.toolCallId, entry: {
+    await call(ctx, "capture", { event_id: "tool:" + event.toolCallId, turn_event_id: turn, entry: {
       type: "trace", origin_function: event.toolName, method_params: args ?? {},
       method_return_value: event.result, status: event.isError ? "error" : "success", time: new Date().toISOString(),
     } });

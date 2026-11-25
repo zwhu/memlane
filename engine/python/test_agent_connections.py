@@ -1514,6 +1514,7 @@ policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 policy.current = lambda *args: {"ready": True, "policy":{"permissions":["read","write","delete"]}}
 allowed = [True]
 policy.permit = lambda *args, **kwargs: allowed[0]
+policy.capture_decision = lambda *a: ("enabled" if allowed[0] else "disabled", None)
 coding._drain = lambda *args: None
 delivered = []
 coding._deliver = lambda *args: delivered.extend(args[-1])
@@ -1556,7 +1557,7 @@ assert isinstance(delivered[-1]["method_return_value"], str)
 delivered.pop()
 allowed[0] = False
 memory.handle({**request,"operation":"resolve","event_id":"turn-denied"})
-assert "host_turn_context" not in coding.read_state(memory.setup(request)[0])
+assert coding.read_state(memory.setup(request)[0])["host_turn_context"]["skipped_policy"] is True
 request["event_id"] = "denied"
 assert memory.handle(request)["status"] == "skipped_policy"
 allowed[0] = True
@@ -1651,6 +1652,7 @@ import _memlane_policy as policy
 import _project_memory as projects
 policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 policy.permit = lambda *args, **kwargs: True
+policy.capture_decision = lambda *a: ("enabled", 1)
 # Only the server capability answer is synthetic; official begin/route and
 # production import order stay intact, unlike prematurely importing coding.
 def prepare(dataset, session, **kwargs):
@@ -1675,6 +1677,37 @@ common.remember_entry_via_http(dataset, session, {"type":"qa", "question":"synth
 assert requests[-1]["entry"]["node_set"] == expected
 assert coding._project_ok({"project_node_sets":expected}, expected)
 assert not coding._project_ok({"project_node_sets":[]}, expected)
+
+# A Pi turn observed while closed must stay skipped even if its answer arrives
+# after reopening. A transient unconfirmed event remains retryable under its ID.
+status, version = "disabled", 2
+policy.capture_decision = lambda *a: (status, version)
+request = {"operation": "capture", "session_id": "scope-fixture", "cwd": os.environ["HOME"],
+           "event_id": "answer-after-reopen", "turn_event_id": "closed-turn",
+           "entry": {"type": "qa", "question": "closed question", "answer": "late reply"}}
+memory.begin_turn({**request, "event_id": "closed-turn"}, key)
+status, version = "enabled", 3
+assert memory.capture(request, key, session, dataset) == {"status": "skipped_policy"}
+assert memory.capture(request, key, session, dataset)["duplicate"]
+status = "unknown"
+unknown = {**request, "event_id": "unconfirmed", "turn_event_id": ""}
+assert memory.capture(unknown, key, session, dataset) == {"status": "policy_unconfirmed"}
+status = "enabled"
+coding._deliver = lambda *args: None
+coding._drain = lambda *args: None
+assert memory.capture(unknown, key, session, dataset)["status"] == "buffered"
+
+status = "denied"
+denied = {**request, "event_id": "denied-tool", "turn_event_id": ""}
+assert memory.capture(denied, key, session, dataset) == {"status": "skipped_policy"}
+memory.begin_turn({**request, "event_id": "denied-turn"}, key)
+status = "enabled"
+assert memory.capture(denied, key, session, dataset) == {"status": "skipped_policy", "duplicate": True}
+late = {**request, "event_id": "denied-turn-answer", "turn_event_id": "denied-turn"}
+assert memory.capture(late, key, session, dataset) == {"status": "skipped_policy"}
+memory.begin_turn({**request, "event_id": "fresh-turn"}, key)
+fresh = {**request, "event_id": "fresh-answer", "turn_event_id": "fresh-turn"}
+assert memory.capture(fresh, key, session, dataset)["status"] == "buffered"
 print("official capture/recall project scope matches; old unscoped rows unchanged")
 '''
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
@@ -1803,6 +1836,7 @@ projects.prepare = lambda *args, **kwargs: {}
 policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 allowed = True
 policy.permit = lambda *args, **kwargs: allowed
+policy.capture_decision = lambda *a: ("enabled" if allowed else "denied", 1)
 saved = []
 coding._deliver = lambda dataset, session, entries: saved.extend(entries)
 coding._drain = lambda *args: None
@@ -1860,10 +1894,15 @@ projects.prepare = lambda *args, **kwargs: {}
 os.environ["MEMLANE_PROCESSING_SESSION"] = "1"
 assert hook.handle("SessionStart", {}) == {}
 os.environ.pop("MEMLANE_PROCESSING_SESSION")
-policy.bind = lambda *args: "00000000-0000-0000-0000-000000000001"
 policy._connection = lambda: ("http://127.0.0.1:18998", "synthetic-control-token")
-allowed = True
-policy.permit = lambda *args, **kwargs: allowed
+allowed, online, version, project_enabled = True, True, 1, True
+def published(path, *args, **kwargs):
+    if not online:
+        raise policy.NotReady("synthetic control unavailable")
+    return {"ready": True, "project_id": "fixture", "dataset_id": "00000000-0000-0000-0000-000000000001",
+            "can_capture": allowed, "capture_policy": {"enabled": allowed, "project_enabled": project_enabled,
+                "version": version, "scope": "ok" if project_enabled else "project", "updated_at": ""}}
+policy._request = published
 calls, saved = [], []
 coding._deliver = lambda dataset, session, entries: saved.extend(entries)
 
@@ -1871,6 +1910,7 @@ def operation(request):
     calls.append(request)
     return {"context":"synthetic authorized context", "status":"buffered"}
 memory.handle = operation
+memory.capture = lambda request, *a, **kw: operation(request)
 root = Path.home() / ".trae" / "cli" / "sessions"
 root.mkdir(parents=True)
 rollout = root / "rollout-synthetic-host-session.jsonl"
@@ -1913,12 +1953,12 @@ assert "progress reply" in saved[0]["answer"]
 assert json.loads(saved[0]["context"])["interrupted"] is True
 assert calls[-1]["operation"] == "flush"
 assert hook.handle("Stop", payload)["qa"] == 0
+prompt("request with a reply")
 hook.handle("PostToolUseFailure", {**payload,"tool_use_id":"native-tool-id","tool_name":"bash",
             "tool_input":{"command":"synthetic"},"tool_response":{"exit_code":1}})
 assert calls[-1]["entry"]["status"] == "error"
 assert calls[-1]["event_id"] == "tool:native-tool-id"
 
-prompt("request with a reply")
 item("AgentMessage", "response before steering")
 prompt("steering with no reply")
 prompt("last steering request")
@@ -1926,15 +1966,55 @@ item("AgentMessage", "response after steering")
 assert hook.handle("Stop", payload)["qa"] == 2
 assert [row["question"] for row in saved[-2:]] == ["request with a reply", "last steering request"]
 
-allowed = False
+allowed, version, project_enabled = False, 2, False
 prompt("private question")
 item("AgentMessage", "private reply")
 hook.handle("Stop", payload)
-allowed = True
+online = False
+prompt("offline known-closed question")
+item("AgentMessage", "offline known-closed reply")
+assert hook.handle("Stop", payload)["status"] == "capture_boundary_observed"
+with policy._state(writable=False) as state:
+    assert state["cursor"]["size"] == rollout.stat().st_size and state["paused"]
+    assert "blocked" not in state
+online, allowed, version, project_enabled = True, True, 3, True
+before = len(calls)
+for event_name in ("PostToolUse", "PostToolUseFailure"):
+    hook.handle(event_name, {**payload, "tool_use_id":"closed-" + event_name, "tool_name":"Read"})
+assert len(calls) == before, calls[before:]
 prompt("resume boundary")
+hook.handle("PostToolUse", {**payload, "tool_use_id":"after-reopen", "tool_name":"Read"})
+assert calls[-1]["event_id"] == "tool:after-reopen"
 item("AgentMessage", "allowed reply")
 hook.handle("Stop", payload)
+assert saved[-1]["question"] == "resume boundary"
 assert "private question" not in [row["question"] for row in saved]
+assert "offline known-closed question" not in [row["question"] for row in saved]
+
+allowed = False  # Confirmed write denial with auto_capture still enabled at v3.
+prompt("read-only question")
+item("AgentMessage", "read-only reply")
+hook.handle("Stop", payload)
+with policy._state(writable=False) as state:
+    assert state["cursor"]["size"] == rollout.stat().st_size and state["paused"]
+allowed = True
+before = len(calls)
+hook.handle("PostToolUse", {**payload, "tool_use_id":"read-only-tool", "tool_name":"Read"})
+assert len(calls) == before
+prompt("allowed before outage")
+item("AgentMessage", "reply delivered after outage")
+with policy._state(writable=False) as state:
+    previous = state["cursor"]
+online = False
+try: hook.handle("Stop", payload)
+except policy.NotReady: pass
+else: raise AssertionError("known-enabled cache must not authorize an offline capture")
+with policy._state(writable=False) as state:
+    assert state["cursor"] == previous and not state.get("paused")
+online = True
+assert hook.handle("Stop", payload)["qa"] == 1
+assert saved[-1]["question"] == "allowed before outage"
+assert "read-only question" not in [row["question"] for row in saved]
 
 # Final capture still works when a shutdown hook omits the transcript path.
 prompt("last question")
@@ -1955,6 +2035,16 @@ item("AgentMessage", "fresh reply")
 hook.handle("Stop", payload)
 assert saved[-1]["question"] == "after upgrade"
 assert "already saved" not in [row["question"] for row in saved]
+
+allowed, version, project_enabled = False, 4, False
+prompt("closed while a tool is running")
+allowed, version, project_enabled = True, 5, True
+before = len(calls)
+hook.handle("PostToolUse", {**payload, "tool_use_id":"in-flight-on-reopen", "tool_name":"Read"})
+assert len(calls) == before
+prompt("first fresh tool after reopening")
+hook.handle("PostToolUse", {**payload, "tool_use_id":"first-fresh-tool", "tool_name":"Read"})
+assert calls[-1]["event_id"] == "tool:first-fresh-tool"
 '''
         environment = {key: value for key, value in os.environ.items() if not key.startswith(('COGNEE_', 'MEMLANE_', 'LLM_', 'EMBEDDING_'))}
         environment['HOME'] = str(self.workspace)

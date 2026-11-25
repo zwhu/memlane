@@ -97,10 +97,11 @@ def bind_session_start(config, cwd, session_key, hook_log, *, policy_mod=None):
 def iter_jsonl_lines(path, start_offset=0):
     with open(path, 'rb') as handle:
         if start_offset:
-            handle.seek(start_offset)
-            # A stat-only boundary cannot know whether it split a JSONL
-            # record. Drop the first suffix, never read back its prefix.
-            handle.readline()
+            # The paused state records only a stat. On resume, distinguish
+            # a complete boundary from a partial record using its delimiter.
+            handle.seek(start_offset - 1)
+            if handle.read(1) != b'\n':
+                handle.readline()
         for raw in handle:
             yield raw.decode('utf-8', errors='replace')
 
@@ -140,19 +141,76 @@ def managed_api_key_with_source(environ, *, policy_mod=None):
     return key, 'managed_agent_key'
 
 
-def managed_drain_precheck(dataset, session_id, load_json_file, bridge_file, bridge_cache_key, *, policy_mod=None):
+def pending_capture_allowed(session_id=None, *, enabled=True, turn_id='', new_turn=False,
+                            pending_entry=None, policy_mod=None, common_mod=None):
     policy = _policy(policy_mod)
-    if not policy.managed() or policy.permit('drain', dataset):
+    if not policy.managed():
+        return enabled
+    status, version = policy.capture_decision()
+    if not enabled:
+        status = 'disabled'
+    if status == 'unknown':
+        return False
+    common = common_mod if common_mod is not None else importlib.import_module('_plugin_common')
+    if not session_id:
+        session_id = common._read_map_record(common.get_session_key()).get('session_id')
+    if not session_id:
+        return status == 'enabled' and new_turn and pending_entry is None
+    with policy._state() as state:
+        previous = state.get('pending_capture_policy_version')
+        changed = previous != version
+        state['pending_capture_policy_version'] = version
+        path = common._pending_file(session_id)
+        data = common._load_json_file(path)
+        turn_key, scope = common._pending_keys(session_id, turn_id)
+        if status != 'enabled' or changed:
+            state.pop('active_pending_turn', None)
+            remaining = {key: entry for key, entry in data.items() if not key.startswith(scope)}
+            if len(data) != len(remaining):
+                common._write_json_file(path, remaining)
+            data = remaining
+        if status != 'enabled':
+            return False
+        if new_turn:
+            state['active_pending_turn'] = {
+                'session_id': session_id,
+                'turn_id': turn_id or '',
+                'version': version,
+            }
+            if pending_entry is not None:
+                entry = {**pending_entry, 'capture_policy_version': version}
+                data[turn_key] = data[scope] = entry
+                common._write_json_file(path, data)
+            return True
+        entry = data.get(turn_key)
+        if (isinstance(entry, dict) and bool(entry.get('prompt'))
+                and 'capture_policy_version' in entry and entry['capture_policy_version'] == version):
+            return True
+        active = state.get('active_pending_turn')
+        return (isinstance(active, dict) and active.get('session_id') == session_id
+                and active.get('version') == version
+                and (not turn_id or not active.get('turn_id') or active.get('turn_id') == turn_id))
+
+
+def managed_drain_precheck(dataset, session_id, load_json_file, bridge_file, bridge_cache_key, *, operation='drain',
+                           policy_mod=None):
+    policy = _policy(policy_mod)
+    if not policy.managed() or policy.permit(operation, dataset):
         return None
     snapshot = (load_json_file(bridge_file(session_id)).get(bridge_cache_key(dataset, session_id)) or {}).get('pending_entries') or []
     return 0, len(snapshot)
 
 
-def handle_drain_http_error(dataset, session_id, entry, code, *, policy_mod=None):
+def handle_drain_http_error(dataset, session_id, entry, error, *, was_ambiguous=False, policy_mod=None):
     policy = _policy(policy_mod)
+    code = getattr(error, 'code', error)
+    if policy.remember_capture_pause(error, dataset):
+        policy.stamp_pending_entry(dataset, session_id, entry, was_ambiguous)
+        return True
     policy.block(code)
     if policy.managed() and code in (401, 403):
         policy.stamp_pending_entry(dataset, session_id, entry, False)
+    return False
 
 
 def stamp_before_send(dataset, session_id, entry, *, policy_mod=None):
@@ -161,10 +219,13 @@ def stamp_before_send(dataset, session_id, entry, *, policy_mod=None):
         policy.stamp_pending_entry(dataset, session_id, entry, True)
 
 
-def record_managed_http_denial(method, path, code, *, policy_mod=None):
+def record_managed_http_denial(method, path, error, *, policy_mod=None):
     # Permission denial is sticky even if another entry point catches it.
+    policy = _policy(policy_mod)
     if method not in ('GET', 'HEAD') and path.split('?')[0] in ('/api/v1/remember/entry', '/api/v1/improve'):
-        _policy(policy_mod).block(code)
+        remember_pause = getattr(policy, 'remember_capture_pause', None)
+        if not (callable(remember_pause) and remember_pause(error)):
+            policy.block(getattr(error, 'code', error))
 
 
 def prepare_managed_remember(load_env_file, service_url, api_key, target, environ, *, error_fn, policy_mod=None):

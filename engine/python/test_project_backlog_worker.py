@@ -3,6 +3,7 @@ import types
 import unittest
 import contextlib
 import copy
+import io
 import json
 import math
 import os
@@ -253,6 +254,7 @@ class WorkerDrainFixture(DrainFixture):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.http_events = []
+        self.capture_modes = []
         self.receipts = {}
         self.session_detail = {"session_id": SESSION, "dataset_id": DATASET, "qas": [], "traces": []}
 
@@ -276,6 +278,7 @@ class WorkerDrainFixture(DrainFixture):
     def capture_http(self, path, body=None, *, method="POST", **kwargs):
         self.http_events.append((method, path))
         if method == "PUT":
+            self.capture_modes.append(kwargs.get("capture_mode"))
             return super().capture_http(path, body, method=method, **kwargs)
         if method == "GET" and path == "/api/v1/sessions/" + SESSION:
             return copy.deepcopy(self.session_detail)
@@ -304,7 +307,7 @@ class WorkerQueueIsolationTests(unittest.TestCase):
     isolated and must never add to saved or handled.
     """
 
-    def run_save(self, fixture, *, tokens=None, stopped=lambda: False, on_report=None):
+    def run_save(self, fixture, *, tokens=None, stopped=lambda: False, on_report=None, automatic=False, cancel_file=None):
         frozen = list(tokens if tokens is not None else review(fixture.common, fixture.policy, DATASET, HOST)["tokens"])
         reports = []
 
@@ -318,7 +321,8 @@ class WorkerQueueIsolationTests(unittest.TestCase):
             if on_report is not None:
                 on_report(value)
 
-        save(fixture.common, fixture.policy, {"dataset": DATASET, "session_id": SESSION, "tokens": frozen}, stopped, report)
+        save(fixture.common, fixture.policy, {"dataset": DATASET, "session_id": SESSION, "tokens": frozen,
+                                             "automatic": automatic, "cancel_file": cancel_file}, stopped, report)
         self.assertTrue(reports, "save emitted no terminal progress")
         self.assert_isolation_metadata(fixture.read())
         return reports[-1]
@@ -341,6 +345,81 @@ class WorkerQueueIsolationTests(unittest.TestCase):
     def assert_retained(self, actual, original):
         self.assertEqual({key: value for key, value in actual.items() if key != "_replay_ambiguous"},
                          {key: value for key, value in original.items() if key != "_replay_ambiguous"})
+
+    def test_legacy_sender_signature_preserves_unsent_entries_when_manual_requires_upgrade(self):
+        first = qa("legacy")
+        for automatic, enabled in ((True, True), (False, True), (False, False)):
+            with self.subTest(automatic=automatic, enabled=enabled), tempfile.TemporaryDirectory() as directory, \
+                    WorkerDrainFixture(directory, [first]) as fixture:
+                send = fixture.common.remember_entry_via_http
+
+                def legacy(dataset, session, entry, timeout=12):
+                    return send(dataset, session, entry, timeout=timeout)
+
+                def control(path, payload=None, **kwargs):
+                    result = fixture.control_http(path, payload, **kwargs)
+                    result["capture_policy"] = {"enabled": enabled, "project_enabled": enabled,
+                                                "version": 1, "scope": "ok" if enabled else "project"}
+                    return result
+
+                with patch.object(fixture.common, "remember_entry_via_http", legacy), \
+                        patch.object(fixture.policy, "_request", side_effect=control):
+                    result = self.run_save(fixture, tokens=[entry_key(first)], automatic=automatic)
+                if enabled:
+                    self.assertEqual((result["status"], result["saved"]), ("completed", 1))
+                    self.assertEqual(len(fixture.calls), 1)
+                else:
+                    self.assertEqual((result["status"], result["reason"]), ("paused", "plugin_upgrade_required"))
+                    self.assertEqual(fixture.calls, [])
+                    self.assertEqual(fixture.read()["pending_entries"], [first])
+
+    def test_automatic_pause_keeps_original_queue_available_to_manual_worker(self):
+        first, second = qa("raced"), qa("pending")
+        with tempfile.TemporaryDirectory() as directory, WorkerDrainFixture(directory, [first, second]) as fixture:
+            enabled = True
+
+            def control(path, payload=None, **kwargs):
+                rules = {"enabled": enabled, "project_enabled": enabled, "version": 1 if enabled else 2,
+                         "scope": "ok" if enabled else "project", "updated_at": ""}
+                if path.startswith("/v1/project/capture-policy?"):
+                    return {"project_id": "synthetic-project", "dataset_id": DATASET, "revision": rules["version"],
+                            "can_capture": enabled, "capture_policy": rules}
+                response = fixture.control_http(path, payload, **kwargs)
+                response["policy"]["can_capture"] = enabled
+                return {**response, "capture_policy": rules}
+
+            def pause(message, body):
+                nonlocal enabled
+                enabled = False
+                raise urllib.error.HTTPError("http://fixture/" + message, 403, "pause", {},
+                                             io.BytesIO(b'{"error":"capture_paused","permission_denied":false}'))
+
+            frozen = [entry_key(first), entry_key(second)]
+            with patch.object(fixture.policy, "_request", side_effect=control):
+                fixture.behavior = pause
+                raced = self.run_save(fixture, tokens=frozen, automatic=True)
+                self.assertEqual((raced["status"], raced["reason"], raced["remaining"]),
+                                 ("paused", "project_auto_capture_disabled", 2))
+                self.assertEqual(fixture.capture_modes, ["automatic"])
+                self.assertEqual(fixture.read()["pending_entries"], [first, second])
+                with fixture.policy._state() as policy_state:
+                    self.assertFalse(policy_state.get("blocked"))
+
+                stopped = self.run_save(fixture, tokens=frozen, automatic=True)
+                self.assertEqual(stopped["reason"], "project_auto_capture_disabled")
+                self.assertEqual(len(fixture.calls), 1)
+                marker = Path(directory) / "operation.stop"
+                marker.write_text("project_auto_capture_disabled")
+                cancelled = self.run_save(fixture, tokens=frozen, automatic=True,
+                                          stopped=lambda: True, cancel_file=marker)
+                self.assertEqual((cancelled["status"], cancelled["reason"]),
+                                 ("paused", "project_auto_capture_disabled"))
+                fixture.behavior = None
+                manual = self.run_save(fixture, tokens=frozen)
+                self.assertEqual((manual["status"], manual["saved"]), ("completed", 2))
+                self.assertEqual(fixture.capture_modes, ["automatic", "manual", "manual"])
+                self.assertEqual([message for message, _ in fixture.calls],
+                                 [first["_capture_id"], first["_capture_id"], second["_capture_id"]])
 
     def test_save_and_review_isolate_explicit_rejection(self):
         """QI01: definite per-entry rejection survives review, reopen and later save."""

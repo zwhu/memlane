@@ -325,6 +325,40 @@ builtins.open = guarded
 assert coding.capture({"transcript_path": str(transcript)}) == {"skipped": "managed_capture_paused"}
 ''')
 
+    def test_codex_denied_rollout_is_excluded_after_write_permission_returns(self):
+        self.run_isolated(r'''
+import json
+from pathlib import Path
+import _coding_memory as coding, _memlane_policy as policy
+dataset = "11111111-1111-4111-8111-111111111111"
+with policy._state() as state:
+    state["binding"] = {"project_id": "synthetic", "dataset_id": dataset}
+access = "maintain"
+def request(*args, **kwargs):
+    enabled = access == "maintain"
+    return {"ready": True, "dataset_id": dataset, "can_capture": enabled,
+            "capture_policy": {"enabled": enabled, "project_enabled": True, "version": 1, "scope": "ok"}}
+policy._request = request
+path = Path("rollout.jsonl")
+path.touch()
+assert policy.capture_boundary(path) == 0
+
+def turn(question, answer):
+    with path.open("a") as out:
+        for kind, text in (("UserMessage", question), ("AgentMessage", answer)):
+            out.write(json.dumps({"type": "event_msg", "payload": {"type": "item_completed",
+                                 "item": {"type": kind, "content": text}}}) + "\n")
+for denied in ("read", "none"):
+    access = denied
+    turn("denied question", "denied answer")
+    assert coding.capture({"transcript_path": str(path)}) == {"skipped": "managed_capture_paused"}
+    access = "maintain"
+    assert policy.capture_boundary(path) is None
+    turn("new question", "new answer")
+    result = coding.parse_codex(str(path), policy.capture_boundary(path))
+    assert [unit["request"] for unit in result["units"]] == ["new question"], result
+''')
+
     def test_parser_offset_skips_partial_and_pre_boundary_turn(self):
         self.run_isolated('''
 import json
@@ -403,6 +437,7 @@ assert not policy.permit("drain")
 import urllib.error
 import _plugin_common as common, _memlane_policy as policy
 dataset = "11111111-1111-4111-8111-111111111111"
+policy.capture_status = lambda *a, **k: "enabled"
 policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
 common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "legal pending"})
 calls = []
@@ -419,10 +454,33 @@ cache = common._load_json_file(common._bridge_file("synthetic"))
 assert len(cache[common._bridge_cache_key(dataset, "synthetic")]["pending_entries"]) == 1
 ''')
 
+    def test_legacy_capture_pause_is_not_a_sticky_write_denial(self):
+        self.run_isolated('''
+import io, urllib.error
+import _plugin_common as common, _memlane_policy as policy
+policy.current = lambda *a, **k: {"revision": 1,
+    "policy": {"permissions": ["read", "write"], "can_capture": False, "can_auto_process": True}}
+def paused(request, **kwargs):
+    assert request.get_header("X-memlane-capture-mode") == "automatic"
+    body = io.BytesIO(b'{"error":"capture_paused","capture_scope":"project","capture_policy_version":2}')
+    raise urllib.error.HTTPError(request.full_url, 403, "paused", {}, body)
+common.urlopen_following_307 = paused
+try:
+    common._json_http_request("/api/v1/remember/entry", {}, capture_mode="automatic")
+except urllib.error.HTTPError:
+    pass
+else:
+    raise AssertionError("legacy HTTP pause was swallowed")
+assert not policy.permit("drain")
+assert policy.permit("write")
+assert policy.permit("process", automatic=True)
+''')
+
     def test_ambiguous_buffer_never_blindly_replayed_on_failed_verification(self):
         self.run_isolated('''
 import _plugin_common as common, _memlane_policy as policy
 dataset = "11111111-1111-4111-8111-111111111111"
+policy.capture_status = lambda *a, **k: "enabled"
 policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
 common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "unknown outcome"}, ambiguous=True)
 common.get_session_detail_via_http = lambda *a, **k: None
@@ -435,6 +493,7 @@ assert not policy.permit("drain", dataset)
         self.run_isolated('''
 import _plugin_common as common, _memlane_policy as policy
 dataset = "11111111-1111-4111-8111-111111111111"
+policy.capture_status = lambda *a, **k: "enabled"
 policy.current = lambda *a, **k: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
 common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "lawful pending"})
 def interrupted(*a, **k):
@@ -458,7 +517,9 @@ import _plugin_common as common, _memlane_policy as policy
 dataset = "11111111-1111-4111-8111-111111111111"
 policy.dataset = lambda: dataset
 common._read_map_record = lambda *a: {"session_id": "synthetic"}
-policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
+closed = False
+policy.capture_status = lambda *a, **k: "disabled" if closed else "enabled"
+policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": not closed, "can_auto_process": True}}
 entry = {"type": "qa", "question": "synthetic", "answer": "lawful pending"}
 common.append_warmup_entry(dataset, "synthetic", entry)
 policy.block(403)
@@ -474,9 +535,11 @@ else:
     raise AssertionError("stale consent discarded new materials")
 review = policy.pending_materials(dataset, "synthetic")
 calls = []
-common.remember_entry_via_http = lambda *a, **k: calls.append(1)
+closed = True
+common.remember_entry_via_http = lambda *a, **k: calls.append(k["capture_mode"])
 assert policy.decide_pending(dataset, "synthetic", "replay", review["signature"])["drained"] == 2
-assert len(calls) == 2
+assert calls == ["manual", "manual"]
+closed = False
 common.append_warmup_entry(dataset, "synthetic", entry)
 policy.block(403)
 review = policy.pending_materials(dataset, "synthetic")
@@ -491,6 +554,7 @@ import _plugin_common as common, _memlane_policy as policy
 dataset = "11111111-1111-4111-8111-111111111111"
 policy.dataset = lambda: dataset
 common._read_map_record = lambda *a: {"session_id": "synthetic"}
+policy.capture_status = lambda *a, **k: "enabled"
 policy.current = lambda *a: {"revision": 1, "policy": {"permissions": ["read", "write", "delete"], "can_capture": True, "can_auto_process": True}}
 common.append_warmup_entry(dataset, "synthetic", {"type": "qa", "question": "synthetic", "answer": "unknown"}, ambiguous=True)
 policy.block(403)
@@ -589,6 +653,7 @@ policy.dataset=lambda:dataset
 common._read_map_record=lambda *a:{"session_id":"synthetic"}
 snapshot={"revision":1,"ready":True,"policy":{"permissions":["read","write","delete"],"can_capture":True,"can_auto_process":False}}
 policy.current=lambda *a,**k:snapshot
+policy.capture_status=lambda *a: ("enabled" if "write" in snapshot["policy"]["permissions"] else "denied")
 def append(n,ambiguous=False):
     common.append_warmup_entry(dataset,"synthetic",{"type":"qa","question":"q"+str(n),"answer":"answer"},ambiguous=ambiguous)
 def pending():

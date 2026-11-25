@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 import time
 import urllib.error
@@ -20,6 +21,10 @@ import uuid
 
 class NotReady(RuntimeError):
     pass
+
+
+class ControlResponseRejected(NotReady):
+    """An online control-plane response that cannot authorize an operation."""
 
 
 def managed():
@@ -130,8 +135,25 @@ def _request(path, payload=None, *, timeout=5):
                 raise NotReady('control_response_limit')
             result = json.loads(raw)
         return result
+    except urllib.error.HTTPError as error:
+        if error.code < 500:
+            raise ControlResponseRejected('project_policy_unconfirmed') from None
+        raise NotReady('project_policy_unconfirmed') from None
     except (urllib.error.URLError, OSError, ValueError):
         raise NotReady('project_policy_unconfirmed') from None
+
+
+def _atomic_json(root, path, data):
+    fd, temporary = tempfile.mkstemp(dir=root, prefix='.policy-')
+    try:
+        with os.fdopen(fd, 'w') as output:
+            json.dump(data, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 @contextlib.contextmanager
@@ -163,16 +185,68 @@ def _state(*, writable=True):
         try:
             yield data
         finally:
-            fd, temporary = tempfile.mkstemp(dir=root, prefix='.policy-')
-            try:
-                with os.fdopen(fd, 'w') as output:
-                    json.dump(data, output, sort_keys=True)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(temporary, path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
+            _atomic_json(root, path, data)
+
+
+def _capture_cache_path(project_id):
+    from _plugin_common import _PLUGIN_DIR
+    origin, token = _connection()
+    name = hashlib.sha256((origin + '\n' + token + '\n' + project_id).encode()).hexdigest()
+    return _PLUGIN_DIR / 'memlane-capture-policy' / (name + '.json')
+
+
+def _cached_capture_policy(project_id):
+    try:
+        path = _capture_cache_path(project_id)
+        if path.parent.is_symlink():
+            return {}
+        with open(path, 'r', opener=_private_open) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096:
+                return {}
+            value = json.load(stream)
+        if isinstance(value, dict) and value.get('project_id') == project_id:
+            return value
+    except (NotReady, OSError, ValueError):
+        pass
+    return {}
+
+
+def _save_capture_policy(project_id, result, checked_at):
+    policy = result.get('capture_policy')
+    if (not isinstance(policy, dict) or type(policy.get('enabled')) is not bool
+            or type(policy.get('project_enabled')) is not bool or type(policy.get('version')) is not int
+            or policy['version'] < 1 or policy.get('scope') not in ('ok', 'project', 'agent', 'default')):
+        return {}
+    record = {**{key: policy[key] for key in ('enabled', 'project_enabled', 'version', 'scope')},
+              'updated_at': str(policy.get('updated_at') or ''), 'project_id': project_id, 'checked_at': checked_at,
+              'ready': result.get('ready') is not False,
+              'can_capture': result.get('can_capture', policy['enabled']) is True}
+    try:
+        path = _capture_cache_path(project_id)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if path.parent.is_symlink() or stat.S_IMODE(path.parent.stat().st_mode) != 0o700:
+            return {}
+        with open(path.with_suffix('.lock'), 'a+', opener=_private_open) as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            existing = _cached_capture_policy(project_id)
+            if (record['version'], checked_at) < (existing.get('version', 0), existing.get('checked_at', 0)):
+                return existing
+            _atomic_json(path.parent, path, record)
+    except (NotReady, OSError, ValueError, TypeError):
+        # Read-only homes can still use the live response and any newer cache.
+        existing = _cached_capture_policy(project_id)
+        if (record['version'], checked_at) < (existing.get('version', 0), existing.get('checked_at', 0)):
+            return existing
+    return record
+
+
+def _private_open(path, flags):
+    return os.open(path, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+
+
+def _capture_disabled(policy):
+    return policy.get('enabled') is False and policy.get('scope') in ('project', 'agent', 'default')
 
 
 def bind(workspace, host_session_key):
@@ -208,8 +282,26 @@ def bind(workspace, host_session_key):
             elif (not profiles and binding.get('host_kind') == 'cursor'
                   and isinstance(binding.get('runtime_profile'), str) and binding['runtime_profile']):
                 payload['host_environment']['runtime_profile'] = str(Path(binding['runtime_profile']).expanduser().absolute())
-        result = _request('/v1/project/resolve', payload)
+        checked_at = time.time()
+        try:
+            result = _request('/v1/project/resolve', payload)
+        except ControlResponseRejected:
+            raise
+        except NotReady:
+            existing = state.get('binding') or {}
+            if (existing.get('project_id') and state.get('binding_workspace') == os.path.realpath(workspace)
+                    and _capture_disabled(_cached_capture_policy(existing['project_id']))):
+                return existing['dataset_id']
+            raise
+        if result.get('project_id'):
+            _save_capture_policy(result['project_id'], result, checked_at)
         if not result.get('ready') or not result.get('dataset_id'):
+            existing = state.get('binding') or {}
+            if (existing.get('project_id') == result.get('project_id')
+                    and existing.get('dataset_id') == result.get('dataset_id')
+                    and state.get('binding_workspace') == os.path.realpath(workspace)
+                    and _capture_disabled(result.get('capture_policy') or {})):
+                return existing['dataset_id']
             raise NotReady('project_policy_unconfirmed')
         uuid.UUID(result['dataset_id'])
         old = state.get('binding')
@@ -217,6 +309,7 @@ def bind(workspace, host_session_key):
         if old and binding != old:
             raise NotReady('session_binding_conflict')
         state['binding'] = binding
+        state['binding_workspace'] = os.path.realpath(workspace)
         return result['dataset_id']
 
 
@@ -234,7 +327,10 @@ def current(dataset=None, *, timeout=5):
         binding = state.get('binding')
         if not binding:
             raise NotReady('project_binding_required')
+        checked_at = time.time()
         result = _request('/v1/project/policy?project_id=' + urllib.parse.quote(binding['project_id'], safe=''), timeout=timeout)
+        if result.get('dataset_id') == binding['dataset_id']:
+            _save_capture_policy(binding['project_id'], result, checked_at)
         if not result.get('ready') or result.get('dataset_id') != binding['dataset_id']:
             raise NotReady('project_policy_unconfirmed')
         if dataset and dataset != binding['dataset_id']:
@@ -242,9 +338,69 @@ def current(dataset=None, *, timeout=5):
         return result
 
 
+def capture_decision(dataset=None):
+    """Return the capture status and version from the same policy snapshot."""
+    if not managed():
+        return 'enabled', None
+    try:
+        with _state(writable=False) as state:
+            binding = state.get('binding')
+        if not binding:
+            return 'unknown', None
+        if dataset and dataset != binding['dataset_id']:
+            return 'denied', None
+        project_id = binding['project_id']
+        checked_at = time.time()
+        try:
+            result = _request('/v1/project/capture-policy?project_id=' + urllib.parse.quote(project_id, safe=''))
+        except ControlResponseRejected:
+            return 'unknown', None
+        except (NotReady, OSError):
+            cached = _cached_capture_policy(project_id)
+            return ('disabled', cached['version']) if _capture_disabled(cached) else ('unknown', None)
+        if result.get('dataset_id') != binding['dataset_id'] or result.get('project_id', project_id) != project_id:
+            return 'unknown', None
+        rules = _save_capture_policy(project_id, result, checked_at)
+        if rules:
+            version = rules['version']
+            if _capture_disabled(rules):
+                return 'disabled', version
+            if rules.get('ready') is False:
+                return 'unknown', version
+            allowed = rules['enabled'] and rules.get('can_capture', rules['enabled'])
+            return ('enabled' if allowed else 'denied'), version
+        if result.get('ready') is False:
+            return 'unknown', None
+        # Older control services publish the decision inside policy.
+        previous = result.get('policy') or current(dataset)['policy']
+        if 'write' not in previous['permissions']:
+            return 'denied', None
+        return ('enabled' if previous['can_capture'] else 'disabled'), None
+    except (NotReady, KeyError, OSError, ValueError, TypeError):
+        return 'unknown', None
+
+
+def capture_status(dataset=None):
+    return capture_decision(dataset)[0]
+
+
+def cached_capture_disabled(workspace):
+    """Read a confirmed local stop only for this session's immutable binding."""
+    try:
+        with _state(writable=False) as state:
+            binding = state['binding']
+            if state.get('binding_workspace') != os.path.realpath(workspace):
+                return False
+        return _capture_disabled(_cached_capture_policy(binding['project_id']))
+    except (NotReady, KeyError, OSError, ValueError):
+        return False
+
+
 def permit(operation, dataset=None, *, automatic=False):
     if not managed():
         return True
+    if operation == 'capture':
+        return capture_status(dataset) == 'enabled'
     try:
         result = current(dataset)
         policy = result['policy']
@@ -253,8 +409,6 @@ def permit(operation, dataset=None, *, automatic=False):
         if operation == 'recall':
             common = result.get('common') or {}
             allowed = allowed or (common.get('ready') and common.get('readable'))
-        if operation == 'capture':
-            allowed = allowed and policy['can_capture']
         if operation == 'process' and automatic:
             allowed = allowed and policy['can_auto_process']
             with _state() as state:
@@ -266,12 +420,19 @@ def permit(operation, dataset=None, *, automatic=False):
                     return False
                 if not allowed:
                     state['blocked'] = {'reason': 'write_denied', 'at': time.time(), 'revision': result['revision']}
+            return allowed and policy['can_capture']
         return allowed
     except (NotReady, KeyError, OSError, ValueError):
         return False
 
 
 def require(operation, dataset=None, *, automatic=False):
+    if operation == 'capture':
+        status = capture_status(dataset)
+        if status != 'enabled':
+            raise NotReady({'disabled': 'capture_disabled', 'denied': 'project_write_denied'}.get(
+                status, 'project_policy_unconfirmed'))
+        return
     if not permit(operation, dataset, automatic=automatic):
         raise NotReady('当前 Agent 没有此项目的写入权限' if operation != 'read' else 'project_read_denied')
 
@@ -279,6 +440,45 @@ def require(operation, dataset=None, *, automatic=False):
 def block(status):
     if managed() and status in (401, 403):
         hold('official_http_' + str(status))
+
+
+def is_capture_paused(error):
+    if getattr(error, 'code', None) != 403:
+        return False
+    if '_memlane_capture_paused' not in vars(error):
+        try:
+            stream = vars(error).get('fp')
+            value = json.loads(stream.read(16385)) if stream is not None else {}
+            error._memlane_capture_paused = value if isinstance(value, dict) and value.get('error') == 'capture_paused' else None
+        except (OSError, ValueError, TypeError, AttributeError):
+            error._memlane_capture_paused = None
+    return bool(error._memlane_capture_paused)
+
+
+def remember_capture_pause(error, dataset=None):
+    if not is_capture_paused(error):
+        return False
+    try:
+        with _state(writable=False) as state:
+            binding = state['binding']
+        if dataset and dataset != binding['dataset_id']:
+            return True
+        body = error._memlane_capture_paused
+        scope = body.get('capture_scope')
+        previous = _cached_capture_policy(binding['project_id'])
+        _save_capture_policy(binding['project_id'], {'capture_policy': {
+            'enabled': False, 'project_enabled': scope != 'project', 'version': body.get('capture_policy_version'),
+            'scope': scope, 'updated_at': previous.get('updated_at', '') if previous.get('version') == body.get('capture_policy_version') else '',
+        }}, time.time())
+    except (NotReady, KeyError, OSError, ValueError, TypeError):
+        pass
+    return True
+
+
+def require_capture_write(dataset, mode):
+    if mode not in ('automatic', 'manual'):
+        raise NotReady('invalid_capture_mode')
+    require('write' if mode == 'manual' else 'capture', dataset)
 
 
 def hold(reason):
@@ -293,13 +493,17 @@ def _position(path):
             'size': stat.st_size, 'at': time.time()}
 
 
-def capture_boundary(transcript, *, enabled=True):
+def capture_boundary(transcript, *, enabled=True, decision=None, new_turn=False):
     """Return parser offset, or None to skip. Disabled periods are stat-only.
 
     First allowed hook after a pause establishes a fresh boundary and skips that
     hook's complete turn. Rotation/truncation remains paused, never resets to 0.
     """
-    allowed = permit('capture') and enabled
+    status, version = decision if decision is not None else capture_decision()
+    if not enabled:
+        status = 'disabled'
+    if status == 'unknown':
+        return None
     with _state() as state:
         if state.get('cursor_unconfirmed'):
             return None
@@ -313,14 +517,22 @@ def capture_boundary(transcript, *, enabled=True):
                     or position['size'] < old['size']):
             state['cursor_unconfirmed'] = True
             return None
-        if not allowed:
+        state['capture_policy_status'] = status
+        if status != 'enabled':
+            if version is not None:
+                state['capture_policy_version'] = version
             state['cursor'] = position
             state['paused'] = True
             return None
-        if state.pop('paused', False):
+        old_version = state.get('capture_policy_version')
+        if version is not None:
+            state['capture_policy_version'] = version
+        # Two rapid toggles may happen while no host hook is running.
+        changed_while_idle = old_version is not None and version is not None and old_version != version
+        if state.pop('paused', False) or changed_while_idle:
             state['cursor'] = position
             state['resume_at'] = position['at']
-            return None
+            return position['size'] if new_turn else None
         return state.get('cursor', {}).get('size', 0)
 
 
@@ -498,12 +710,18 @@ def decide_pending(dataset_id, session_id, action, expected_signature):
             if not isinstance(expected_signature, str) or expected_signature != signature:
                 raise NotReady('pending_materials_changed_review_again')
             if action == 'replay' and any(entry.get(_AMBIGUOUS_KEY) for entry in pending):
-                detail = get_session_detail_via_http(session_id)
-                known = _server_session_fingerprints(detail) if detail is not None else set()
-                if any(entry.get(_AMBIGUOUS_KEY) and _entry_fingerprint(entry) not in known for entry in pending):
-                    raise NotReady('original_write_result_still_unknown')
-                # Authoritatively matched copies are consumed, never sent twice.
-                pending = [entry for entry in pending if not entry.get(_AMBIGUOUS_KEY)]
+                try:
+                    from _memlane_capture import numbered
+                except ImportError:
+                    numbered = lambda entry: False
+                legacy = [entry for entry in pending if entry.get(_AMBIGUOUS_KEY) and not numbered(entry)]
+                if legacy:
+                    detail = get_session_detail_via_http(session_id)
+                    known = _server_session_fingerprints(detail) if detail is not None else set()
+                    if any(_entry_fingerprint(entry) not in known for entry in legacy):
+                        raise NotReady('original_write_result_still_unknown')
+                    # Authoritatively matched copies are consumed, never sent twice.
+                    pending = [entry for entry in pending if entry not in legacy]
             session_cache['pending_entries'] = [] if action == 'discard' else pending
             session_cache.pop('drain_fail_count', None)
             session_cache.pop('drain_fail_at', None)
@@ -515,7 +733,7 @@ def decide_pending(dataset_id, session_id, action, expected_signature):
         _release_drain_lock()
     if action == 'discard':
         return {'action': action, 'discarded': len(pending), 'pending': 0}
-    drained, remaining = drain_warmup_entries(dataset_id, session_id)
+    drained, remaining = drain_warmup_entries(dataset_id, session_id, capture_mode='manual')
     return {'action': action, 'drained': drained, 'pending': remaining}
 
 

@@ -31,8 +31,7 @@ func (a *App) saveProjectCheckbox(project, agent, field string, value any) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 		defer cancel()
-		enabled := value == "maintain"
-		directory, err := client.overrides(ctx, pending.Revision, project, agent, map[string]any{"access": value, "capture": enabled, "auto_process": enabled})
+		directory, err := client.overrides(ctx, pending.Revision, project, agent, map[string]any{"access": value})
 		a.Update(func() {
 			if request != a.access.Request {
 				return
@@ -77,13 +76,7 @@ func (a *App) confirmProjectCheckboxes(directory AccessDirectory) {
 			if p.ID != pending.Project || !p.permissionsReady(directory.Agents...) {
 				continue
 			}
-			actual := p.Overrides[pending.Agent].effective(directory.Defaults)
-			value := any(actual.Access)
-			enabled := pending.Value == "maintain"
-			if actual.Access == pending.Value && (actual.Capture != enabled || actual.AutoProcess != enabled) {
-				continue
-			}
-
+			value := p.Overrides[pending.Agent].effective(directory.Defaults).Access
 			delete(a.access.CheckboxPending, key)
 			if value != pending.Value {
 				a.access.Message = "设置已由其他操作更新，已显示最新值。"

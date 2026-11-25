@@ -15,6 +15,7 @@ import copy
 import hashlib
 import importlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -192,7 +193,7 @@ class DrainFixture:
         self.load_sender()
 
     def control_http(self, path, payload=None, **kwargs):
-        if not path.startswith("/v1/project/policy?"):
+        if not path.startswith(("/v1/project/policy?", "/v1/project/capture-policy?")):
             raise AssertionError("unexpected control HTTP: " + path)
         return {"ready": True, "dataset_id": DATASET, "revision": 1,
                 "policy": {"permissions": ["read", "write"], "can_capture": True, "can_auto_process": False}}
@@ -236,6 +237,43 @@ class DrainFixture:
 
 
 class PluginCaptureDrainTests(unittest.TestCase):
+    def test_gateway_capture_pause_keeps_number_and_manual_replay_works(self):
+        entry = qa("queued before closing")
+        with tempfile.TemporaryDirectory() as directory, DrainFixture(directory, [entry]) as fixture:
+            paused = False
+            commands = []
+            transport = fixture.capture_http
+
+            def control(path, payload=None, **kwargs):
+                result = fixture.control_http(path, payload, **kwargs)
+                if path.startswith("/v1/project/capture-policy?"):
+                    return {**result, "can_capture": not paused, "capture_policy": {
+                        "enabled": not paused, "project_enabled": not paused, "version": 2 if paused else 1,
+                        "scope": "project" if paused else "ok", "updated_at": "2026-11-25T10:00:00+00:00"}}
+                return {**result, "policy": {**result["policy"], "can_capture": not paused}}
+
+            def request(path, body=None, *, method, capture_mode, **kwargs):
+                nonlocal paused
+                commands.append((method, capture_mode, path))
+                if capture_mode == "automatic":
+                    paused = True
+                    body = b'{"error":"capture_paused","capture_policy_version":2,"capture_scope":"project"}'
+                    raise urllib.error.HTTPError(path, 403, "paused", {}, io.BytesIO(body))
+                return transport(path, body, method=method, **kwargs)
+
+            with patch.object(fixture.policy, "_request", side_effect=control), \
+                    patch.object(fixture.common, "_json_http_request", side_effect=request):
+                self.assertEqual(fixture.drain(), (0, 1))
+                self.assertEqual(fixture.read()["pending_entries"], [entry])
+                with fixture.policy._state(writable=False) as state:
+                    self.assertFalse(state.get("blocked"))
+                self.assertEqual(fixture.drain(), (0, 1))
+                self.assertEqual(fixture.drain(capture_mode="manual"), (1, 0))
+                self.assertEqual(commands, [
+                    ("PUT", "automatic", "/api/v1/capture/entries/" + entry["_capture_id"]),
+                    ("PUT", "manual", "/api/v1/capture/entries/" + entry["_capture_id"]),
+                ])
+
     def test_legacy_sender_cannot_replay_new_entry_holds(self):
         for failure in ("rejected", "unknown"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:

@@ -380,6 +380,8 @@ func connectionStatus(row AgentConnection) string {
 			return "采集状态读取失败"
 		case "project_disabled":
 			return "项目未开启自动采集"
+		case "project_write_denied":
+			return "Agent 无项目写入权限"
 		case "project_pending":
 			return "项目设置待确认"
 		default:

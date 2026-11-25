@@ -158,11 +158,14 @@ func TestNoticeRecoveryAndDetailsDoNotChangeQueue(t *testing.T) {
 		t.Fatal("detail dialog did not close")
 	}
 	q.Sessions[0].View.observe(PendingMaterials{Signature: "confirmed"})
+	enabled := false
+	a.access.Directory.Projects[0].AutoCapture = &enabled
 	tt.Frame()
-	if tt.HasText("1 条消息未收到采集结果") || !tt.HasText("自动采集已暂停") {
+	if tt.HasText("1 条消息未收到采集结果") || !tt.HasText("自动采集已关闭") {
 		t.Fatal("confirmed recovery did not transition to healthy single-row state")
 	}
 	q.AutomaticSave = true
+	enabled = true
 	tt.Frame()
 	if !tt.HasText("自动采集已开启 · 正常") {
 		t.Fatal("healthy automatic-save state missing")

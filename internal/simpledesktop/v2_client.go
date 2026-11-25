@@ -693,6 +693,8 @@ type v2UnreadPreviewItem struct {
 type v2MessageSummaryResponse struct {
 	ProjectID               string                          `json:"project_id"`
 	DatasetID               string                          `json:"dataset_id"`
+	AutoCapture             *bool                           `json:"auto_capture,omitempty"`
+	AutoCaptureVersion      int64                           `json:"auto_capture_version,omitempty"`
 	AutomaticSave           bool                            `json:"automatic_save"`
 	Backlog                 *backlogJob                     `json:"backlog"`
 	Checks                  []pendingCheckState             `json:"checks,omitempty"`

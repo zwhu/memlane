@@ -73,12 +73,29 @@ def validate_fields(values, *, allow_reset=False):
     return dict(values)
 
 
-def effective(defaults, overrides, *, protected=False):
+def project_capture_fields(project):
+    return {'auto_capture': project.get('auto_capture', True),
+            'auto_capture_version': project.get('auto_capture_version', 1),
+            'auto_capture_updated_at': project.get('auto_capture_updated_at', '')}
+
+
+def effective(defaults, overrides, *, protected=False, project_auto_capture=True,
+              auto_capture_version=1, auto_capture_updated_at=''):
     result = dict(PROTECTED_DEFAULTS if protected else defaults)
     result.update(overrides)
     permissions = sorted(ACCESS[result['access']])
+    project_enabled = bool(project_auto_capture)
+    can_capture = project_enabled and result['capture'] and 'write' in permissions
+    scope = 'ok'
+    if not project_enabled:
+        scope = 'project'
+    elif not result['capture']:
+        scope = 'agent' if 'capture' in overrides else 'default'
     return {**result, 'permissions': permissions,
-            'can_capture': result['capture'] and 'write' in permissions,
+            'can_capture': can_capture,
+            'capture_policy': {'enabled': can_capture, 'project_enabled': project_enabled,
+                               'version': auto_capture_version, 'scope': scope,
+                               'updated_at': auto_capture_updated_at},
             'can_auto_process': result['auto_process'] and 'write' in permissions}
 
 

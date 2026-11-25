@@ -147,6 +147,9 @@ func accessPolicyChanged(before, after AccessDirectory) bool {
 			old.Name, current.Name = "", ""
 			old.Aliases, current.Aliases = nil, nil
 			old.ToolGraph, current.ToolGraph = ToolGraphSettings{}, ToolGraphSettings{}
+			old.AutoCapture, current.AutoCapture = nil, nil
+			old.AutoCaptureVersion, current.AutoCaptureVersion = 0, 0
+			old.AutoCaptureUpdatedAt, current.AutoCaptureUpdatedAt = "", ""
 			if encode(old) != encode(current) {
 				return true
 			}
@@ -406,7 +409,7 @@ func (a *App) commonDatasetSettings(c *ui.Context) {
 				}
 				disabled := a.access.Busy || pending != nil
 				agentUnconfirmed := common.agentPolicyUnconfirmed(agent.ID)
-				ui.Column(c.Key("common-access-row-"+key)).FillWidth().Gap(4).Children(func() {
+				ui.Column(c.Key("common-access-row-" + key)).FillWidth().Gap(4).Children(func() {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 						agentLogo(c, accessAgentIcon(agent), 18)
 						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
@@ -499,7 +502,7 @@ func (a *App) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgen
 			errText = "尚未确认保存：" + a.access.Message
 		}
 	}
-	ui.Row(c.Key("agent-policy-"+key)).AlignItems(ui.Center).Gap(sp2).Children(func() {
+	ui.Row(c.Key("agent-policy-" + key)).AlignItems(ui.Center).Gap(sp2).Children(func() {
 		v4TriAccessSelect(c, "project-access-"+key, agentDisplayName(agent.Name), v4TriAccessState{
 			Value:    displayVal,
 			Saving:   saving,

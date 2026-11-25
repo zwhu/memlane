@@ -1,5 +1,6 @@
 /** Managed outbox state transitions, target snapshotting, and operator review helpers. */
 import { createHash } from "node:crypto";
+import { CapturePaused } from "./managed-http.js";
 
 export type ProjectTarget = { native: string; project_id: string; dataset_id: string };
 export type OutboxEntry = { type: "qa" | "trace"; [key: string]: unknown };
@@ -35,6 +36,8 @@ export class LocalPolicyDenied extends Error {
     this.name = "LocalPolicyDenied";
   }
 }
+
+export class SendCancelled extends Error {}
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -339,11 +342,16 @@ export async function runManagedOutboxFlush(
   store: OutboxStore,
   send: (item: ManagedPending) => Promise<void>,
   committed: (item: ManagedPending) => Promise<boolean>,
-  authorize?: (item: ManagedPending) => Promise<boolean>,
+  authorize?: (item: ManagedPending) => Promise<boolean | "paused">,
   selected?: ReadonlySet<string>,
 ): Promise<void> {
   const unresolved = new Set<string>();
+  const pausedProjects = new Set<string>();
   const rateLimitedSessions = new Set<string>();
+  const deferPaused = (item: ManagedPending) => {
+    if (item.target) pausedProjects.add(item.target.project_id);
+    else unresolved.add(item.id);
+  };
   for (;;) {
     const candidate = store.lock(() => {
       const now = Date.now();
@@ -352,6 +360,7 @@ export async function runManagedOutboxFlush(
         (entry) =>
           !entry.blocked &&
           !unresolved.has(entry.id) &&
+          (entry.uncertain || !entry.target || !pausedProjects.has(entry.target.project_id)) &&
           !rateLimitedSessions.has(sessionCooldownKey(entry.session, entry.target)) &&
           !(typeof entry.retry_after === "number" && entry.retry_after > now) &&
           !(activeSessionCooldown(state, entry.session, entry.target, now) > now) &&
@@ -362,7 +371,13 @@ export async function runManagedOutboxFlush(
     if (!candidate) return;
     // Policy lookup is read-only and occurs before marking an unsent write
     // uncertain. A control outage cannot manufacture an ambiguous write.
-    if (authorize && !await authorize(candidate)) {
+    const authorized = authorize ? await authorize(candidate) : true;
+    if (authorized === "paused") {
+      if (selected) throw new CapturePaused();
+      deferPaused(candidate);
+      continue;
+    }
+    if (!authorized) {
       if (candidate.uncertain) {
         unresolved.add(candidate.id);
         continue;
@@ -398,11 +413,13 @@ export async function runManagedOutboxFlush(
         await send(item);
       } catch (error) {
         const message = String(error);
+        const isCapturePaused = error instanceof CapturePaused;
+        const isCancelled = error instanceof SendCancelled;
         const isLocalDenied = error instanceof LocalPolicyDenied;
         const isAuthDenied = /(?:request|login) failed \((?:401|403)\)/.test(message);
         const isRequestRejected = /(?:request|login) failed \((?:400|404|409|413|422)\)/.test(message);
         const isRateLimited = /(?:request|login) failed \(429\)/.test(message);
-        if (isLocalDenied || isAuthDenied || isRequestRejected || isRateLimited) {
+        if (isCapturePaused || isCancelled || isLocalDenied || isAuthDenied || isRequestRejected || isRateLimited) {
           store.lock(() => {
             const state = store.read();
             const pending = state.pending.find((p) => p.id === item.id);
@@ -430,6 +447,10 @@ export async function runManagedOutboxFlush(
             }
             store.write(state);
           });
+          if (isCapturePaused && !selected) {
+            deferPaused(item);
+            continue;
+          }
           if (isRequestRejected) {
             continue;
           }

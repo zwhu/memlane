@@ -32,7 +32,7 @@ def managed_http_client(text):
         text,
         'import { hash } from "./runtime.js";\n',
         'import { hash } from "./runtime.js";\n'
-        'import { buildManagedHeaders, ensureManagedAuth, hasManagedSessionEntry, mergeManagedHeaders, rejectManagedLogin } from "./managed-http.js";\n',
+        'import { buildManagedHeaders, ensureManagedAuth, hasManagedSessionEntry, managedRequestError, mergeManagedHeaders, rejectManagedLogin } from "./managed-http.js";\n',
         'HTTP',
     )
     text = _replace_section(
@@ -57,12 +57,14 @@ def managed_http_client(text):
         ('headers: { ...this.buildHeaders(), ...(init.headers as Record<string, string>) },',
          'headers: this.managedHeaders(init),\n          redirect: "error",', 2),
         ('throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);',
-         'throw new Error(`Cognee request failed (${retryResponse.status})`);', 1),
+         'throw managedRequestError(retryResponse.status, errorText);', 1),
         ('throw new Error(`Cognee request failed (${response.status}): ${errorText}`);',
-         'throw new Error(`Cognee request failed (${response.status})`);', 1),
+         'throw managedRequestError(response.status, errorText);', 1),
         ('datasetId: response.dataset_id ?? params.datasetId ?? "",', 'datasetId: response.dataset_id ?? "",', 1),
-        ('body: JSON.stringify({ dataset_name: dataset, session_id: session, entry }),',
-         'body: JSON.stringify({ dataset_id: dataset, session_id: session, entry }),', 1),
+        ('async entry(dataset: string, session: string, entry: Record<string, unknown>):',
+         'async entry(dataset: string, session: string, entry: Record<string, unknown>, captureMode: "automatic" | "manual" = "automatic"):', 1),
+        ('method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dataset_name: dataset, session_id: session, entry }),',
+         'method: "POST", headers: { "Content-Type": "application/json", "X-Memlane-Capture-Mode": captureMode }, body: JSON.stringify({ dataset_id: dataset, session_id: session, entry }),', 1),
         ('dataset_names: [dataset]', 'dataset_ids: [dataset]', 1),
         ('    formData.append("datasetName", params.datasetName);',
          '    formData.append("datasetName", params.datasetName);\n    formData.append("run_in_background", "true");', 1),
@@ -183,7 +185,7 @@ def managed_outbox(text):
     text = _replace_section(
         text, flush_start, flush_end,
         '  flush(send: (item: Pending) => Promise<void>, committed: (item: Pending) => Promise<boolean>, '
-        'authorize?: (item: Pending) => Promise<boolean>, selected?: ReadonlySet<string>, senderToken?: object): Promise<void> {\n'
+        'authorize?: (item: Pending) => Promise<boolean | "paused">, selected?: ReadonlySet<string>, senderToken?: object): Promise<void> {\n'
         '    if (senderToken && (!this.senderHeld || senderToken !== this.senderToken)) throw new Error("sender_lease_required");\n'
         '    if (this.running) return this.running;\n'
         '    const run = () => runManagedOutboxFlush(this.store(), send, committed, authorize, selected);\n'
@@ -251,13 +253,14 @@ def managed_capture_callbacks(text):
         text,
         '      if (!cfg.autoCapture || input.tool.startsWith("cognee_") || !allowedTool(input.tool, input.args, cfg.captureTools)) return;',
         '      if (!cfg.autoCapture || input.tool.startsWith("cognee_") || !allowedTool(input.tool, input.args, cfg.captureTools)) return;\n'
-        '      if (!await allowManagedToolCapture(window, control, prompts.get(input.sessionID)?.id, input.sessionID)) return;',
+        '      const promptID = prompts.get(input.sessionID)?.id;\n'
+        '      if (!promptID || !await allowManagedToolCapture(window, control, promptID, input.sessionID)) return;',
         'capture',
     )
     text = _replace_once(
         text,
         'try { outbox.enqueue(id, sid(input.sessionID), entry); background(pump()); }',
-        'try { await delivery.enqueue(input.sessionID, id, sid(input.sessionID), entry); background(pump()); }',
+        'try { await delivery.enqueue(input.sessionID, id, sid(input.sessionID), entry, window.promptCreated(input.sessionID, promptID)); background(pump()); }',
         'capture',
     )
     text = _replace_once(

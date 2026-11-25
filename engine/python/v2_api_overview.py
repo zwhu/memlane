@@ -8,7 +8,7 @@ from local_body_reader import (
     verify_official_read_access,
 )
 from processing_notices import read_processing_notices
-from project_policy import PolicyError
+from project_policy import PolicyError, project_capture_fields
 from v2_api_context import (
     PayloadBuilder,
     PayloadTrimmer,
@@ -77,6 +77,7 @@ async def execute_overview_bootstrap(
             proj_summaries.append({
                 'project_id': proj['id'],
                 'dataset_id': ds,
+                **project_capture_fields(proj),
                 'knowledge_count': k_cnt,
                 'raw_doc_count': raw_cnt,
                 'session_count': sess_cnt,
@@ -338,7 +339,8 @@ async def execute_message_summary(
     pipeline_runs_lock = ctx.pipeline_runs_lock
     handles = ctx.handles
 
-    dataset_id = _require_verified_project(registry, project_id)['dataset_id']
+    project = _require_verified_project(registry, project_id)
+    dataset_id = project['dataset_id']
     await verify_official_read_access(getattr(registry, 'official', None), dataset_id)
 
     errors = {}
@@ -348,7 +350,7 @@ async def execute_message_summary(
     buffer_reviews, checks, processing_issues = [], [], []
 
     async def _load_backlog():
-        return await _read_backlog_slim(handles.backlog, project_id)
+        return await _read_backlog_slim(handles.backlog, project_id, project.get('auto_capture', True))
 
     async def _load_db_sections():
         sync_err = None
@@ -590,10 +592,12 @@ async def execute_message_summary(
         activity, _ = a_res
 
     def _make_summary_payload(_sub, _lo, _hi):
+        capture = project_capture_fields(registry.state['projects'][project_id])
         return {
             'project_id': project_id,
             'dataset_id': dataset_id,
-            'automatic_save': automatic_save,
+            **capture,
+            'automatic_save': capture['auto_capture'] and automatic_save,
             'backlog': dict(backlog_job) if isinstance(backlog_job, dict) else backlog_job,
             'buffer_reviews': list(buffer_reviews),
             'checks': list(checks),

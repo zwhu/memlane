@@ -18,7 +18,8 @@ def apply(text):
     lines.insert(index, '''    from _memlane_policy import managed
     from _memlane_capture import numbered, send
     if managed() and numbered(entry):
-        return send(__import__(__name__), dataset, session_id, entry, timeout=timeout, dataset_id=dataset_id)
+        return send(__import__(__name__), dataset, session_id, entry, timeout=timeout, dataset_id=dataset_id,
+                    capture_mode=capture_mode)
 ''')
     text = ''.join(lines)
     tree = ast.parse(text)
@@ -29,7 +30,7 @@ def apply(text):
     lines.insert(index, '''    from _memlane_policy import managed
     if managed():
         from _memlane_capture import drain
-        return drain(__import__(__name__), dataset, session_id, budget_seconds=budget_seconds)
+        return drain(__import__(__name__), dataset, session_id, budget_seconds=budget_seconds, capture_mode=capture_mode)
 ''')
     text = ''.join(lines)
     text = replace(text, '    entry[_BUFFERED_AT_KEY] = time.time()\n', '''    entry[_BUFFERED_AT_KEY] = time.time()

@@ -1,18 +1,178 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
-const { Outbox } = await import(pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_RUNTIME).href);
+const compiled = pathToFileURL(process.env.MEMLANE_OPENCODE_TEST_RUNTIME);
+const { Outbox, hash } = await import(compiled.href);
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "memlane-managed-outbox-"));
   return {root, queue: new Outbox("same-installation-and-project", root),
           close: () => rmSync(root, {recursive: true, force: true})};
 };
+
+const {ManagedProjectControl} = await import(new URL("managed-control.js", compiled));
+const {CogneeHttpClient} = await import(new URL("client.js", compiled));
+const {ManagedDelivery} = await import(new URL("managed-delivery.js", compiled));
+const {ManagedBacklog} = await import(new URL("managed-backlog.js", compiled));
+const {CaptureWindow} = await import(new URL("managed-capture-window.js", compiled));
+const {captureManagedConversation, recordManagedPrompt} = await import(new URL("managed-hooks.js", compiled));
+const project = "11111111-1111-4111-8111-111111111111";
+const dataset = "22222222-2222-4222-8222-222222222222";
+
+async function captureFixture(t) {
+  const f = fixture(), root = realpathSync(f.root), native = "long-session";
+  t.after(f.close);
+  const tokenFile = join(root, "agent-token"), managementTokenFile = join(root, "manager-token");
+  writeFileSync(tokenFile, "a".repeat(40), {mode: 0o600});
+  writeFileSync(managementTokenFile, "m".repeat(40), {mode: 0o600});
+  const origin = "http://127.0.0.1:19001", stateDir = join(root, "control-state");
+  const options = {instanceId: "local", directory: root, stateDir, origin, tokenFile};
+  const control = new ManagedProjectControl(options), client = new CogneeHttpClient(origin + "/cognee", "child-key");
+  const commands = {project_id: project, dataset_id: dataset, host_session_key: control.hostKey(native)};
+  const session = `opencode_${hash("local").slice(0,16)}_${hash(native).slice(0,24)}`;
+  const writes = [], requests = [];
+  const state = {enabled: true, ready: true, version: 1, updatedAt: "", offline: false, pauseNextAutomatic: false, process: false};
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const path = new URL(url).pathname;
+    requests.push(path);
+    if (path.startsWith("/v1/") && state.offline) throw new Error("offline");
+    const capture_policy = {enabled: state.enabled, project_enabled: state.enabled, version: state.version,
+      scope: state.enabled ? "ok" : "project", updated_at: state.updatedAt};
+    const common = {ready: true, readable: false};
+    const policy = {permissions: ["read", "write"], can_capture: state.enabled, can_auto_process: state.process};
+    if (path === "/v1/project/resolve" || path === "/v1/project/policy" || path === "/v1/project/capture-policy") {
+      return Response.json({...commands, dataset_name: "project", ready: state.ready, revision: state.version,
+        capture_policy, common, policy, can_capture: state.enabled});
+    }
+    if (path === "/v1/projects") {
+      return Response.json({projects: [{id: project, dataset_id: dataset}], agents: [{id: "local"}],
+        bindings: [{...commands, agent_id: "local"}]});
+    }
+    if (path === "/cognee/api/v1/remember/entry") {
+      const mode = new Headers(init.headers).get("X-Memlane-Capture-Mode");
+      if (mode === "automatic" && (state.pauseNextAutomatic || !state.enabled)) {
+        state.pauseNextAutomatic = false;
+        return Response.json({error: "capture_paused", permission_denied: false, capture_policy_version: state.version + 1,
+          capture_scope: "project"}, {status: 403});
+      }
+      writes.push({mode, ...JSON.parse(init.body)});
+      return Response.json({status: "saved"});
+    }
+    assert.fail("unexpected route " + path);
+  });
+  const delivery = new ManagedDelivery(control, client, f.queue);
+  const backlog = new ManagedBacklog(control, client, f.queue, {improve: async () => ({status: "accepted"})}, {
+    origin, instanceId: options.instanceId, managementTokenFile,
+  });
+  const activate = () => control.current(native);
+  return {...f, root, native, state, stateDir, control, options, delivery, backlog, commands, session, writes, requests, activate};
+}
+
+test("offline capture distinguishes a known pause from an unknown policy and resumes within the same session", async t => {
+  const f = await captureFixture(t);
+  const messages = new Map(), bodyReads = [];
+  const window = new CaptureWindow(1);
+  const deps = {autoCapture: true, directory: f.root, control: f.control, delivery: f.delivery,
+    window, sid: () => f.session, safeText: String, hash, sessionClient: {
+      message: async ({path}) => { bodyReads.push(path.messageID); return {data: messages.get(path.messageID)}; },
+    }};
+  async function turn(id, created, control = f.control) {
+    const prompt = "prompt-" + id, answer = "answer-" + id;
+    await recordManagedPrompt(window, control, true, f.native, prompt, created);
+    messages.set(prompt, {info: {id: prompt, sessionID: f.native, role: "user"}, parts: [{type: "text", text: prompt}]});
+    messages.set(answer, {info: {id: answer, sessionID: f.native, role: "assistant", parentID: prompt,
+      time: {completed: created + 1}}, parts: [{type: "text", text: answer}]});
+    window.completed(f.native, answer, prompt);
+  }
+  await f.activate();
+  f.state.ready = false;
+  await assert.rejects(f.control.captureStatus(f.native), /project_policy_unconfirmed/);
+  f.state.ready = true;
+  f.state.offline = true;
+  await turn("unconfirmed", 100);
+  await assert.rejects(captureManagedConversation(deps, f.native), /project_policy_unconfirmed/);
+  assert.deepEqual(bodyReads, []);
+  assert.equal(window.candidates(f.native).length, 1, "outage must keep the unread turn");
+  f.state.offline = false;
+  await captureManagedConversation(deps, f.native);
+  assert.equal(f.queue.status().pending, 1);
+  f.state.enabled = false;
+  f.state.version = 2;
+  f.state.updatedAt = new Date(200).toISOString();
+  await turn("closed-online", 220);
+  f.state.offline = true;
+  const restarted = new ManagedProjectControl(f.options);
+  await turn("closed-offline", 240, restarted);
+  assert.deepEqual(window.candidates(f.native), []);
+  const cachePath = join(f.stateDir, "capture-policies", project + ".json");
+  const cached = JSON.parse(readFileSync(cachePath));
+  assert.equal(statSync(cachePath).mode & 0o777, 0o600);
+  assert.deepEqual([cached.project_id, cached.enabled, cached.project_enabled, cached.version, cached.scope],
+    [project, false, false, 2, "project"]);
+  assert.ok(cached.checked_at && cached.updated_at);
+  f.state.offline = false;
+  f.state.enabled = true;
+  f.state.version = 3;
+  f.state.updatedAt = new Date(300).toISOString();
+  await turn("resumed", 350);
+  await captureManagedConversation(deps, f.native);
+  assert.deepEqual(bodyReads, ["answer-unconfirmed", "prompt-unconfirmed", "answer-resumed", "prompt-resumed"]);
+  assert.equal(f.queue.status().pending, 2);
+  await f.delivery.flush();
+  assert.equal(f.queue.status().saved, 2);
+  assert.ok(f.writes.every(w => w.mode === "automatic"));
+});
+
+test("a raced capture pause preserves the original pending entry for manual replay", async t => {
+  const f = await captureFixture(t);
+  const id = hash("original-number");
+  assert.equal(await f.delivery.enqueue(f.native, id, f.session, {type: "qa", question: "original"}), true);
+  f.state.pauseNextAutomatic = true;
+  await f.delivery.flush();
+  assert.deepEqual(f.queue.status(), {pending: 1, uncertain: 0, saved: 0, blocked: 0});
+  assert.deepEqual(f.writes, []);
+  f.state.enabled = false;
+  f.state.version = 2;
+  await f.delivery.flush();
+  assert.deepEqual(f.queue.status(), {pending: 1, uncertain: 0, saved: 0, blocked: 0});
+  const review = await f.backlog.run({...f.commands, action: "show"});
+  const replay = await f.backlog.run({...f.commands, action: "replay", signature: review.signature});
+  assert.equal(replay.drained, 1);
+  assert.equal(f.writes[0].mode, "manual");
+  assert.equal(f.writes[0].session_id, f.session);
+  assert.equal(f.writes[0].entry.question, "original");
+});
+
+test("OpenCode backlog pauses on a raced gateway denial and permits an explicit manual save while closed", async t => {
+  const f = await captureFixture(t);
+  const ids = [hash("first"), hash("second")];
+  for (const id of ids) await f.delivery.enqueue(f.native, id, f.session, {type: "qa", context: id});
+  const command = {...f.commands, action: "backlog_save", session_id: f.session, tokens: ids,
+    native_session: f.native, cancel_file: join(f.root, "job.stop")};
+  f.state.pauseNextAutomatic = true;
+  const automatic = await f.backlog.runBacklog({...command, automatic: true}, () => {});
+  assert.deepEqual([automatic.status, automatic.reason, automatic.remaining], ["paused", "project_auto_capture_disabled", 2]);
+  assert.equal(f.queue.status().blocked, 0);
+  assert.equal(f.queue.status().uncertain, 0);
+  f.state.enabled = false;
+  f.state.version = 2;
+  const stopped = await f.backlog.runBacklog({...command, automatic: true}, () => {});
+  assert.deepEqual([stopped.status, stopped.reason, stopped.remaining], ["paused", "project_auto_capture_disabled", 2]);
+  const manual = await f.backlog.runBacklog({...command, automatic: false}, () => {});
+  assert.deepEqual([manual.status, manual.saved], ["completed", 2]);
+  assert.deepEqual(f.writes.map(w => w.mode), ["manual", "manual"]);
+  f.state.process = true;
+  const {tokens, ...processCommand} = {...command, action: "backlog_process"};
+  writeFileSync(command.cancel_file, "project_auto_capture_disabled", {mode: 0o600});
+  assert.deepEqual(await f.backlog.runBacklog(processCommand, () => {}), {status: "submitted"});
+  writeFileSync(command.cancel_file, "stop", {mode: 0o600});
+  assert.deepEqual(await f.backlog.runBacklog(processCommand, () => {}), {status: "deferred"});
+});
 
 test("401 and 403 survive restart and automatic pumps without resubmission", async () => {
   for (const status of [401, 403]) {

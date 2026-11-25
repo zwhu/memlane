@@ -274,7 +274,7 @@ class BacklogBoundedAndBatchFlushTests(unittest.IsolatedAsyncioTestCase):
                     write_calls[0] += 1
                     store_cache.clear()
                     store_cache.update(copy.deepcopy(data))
-                def remember_entry_via_http(self, dataset, session, outgoing, timeout=12):
+                def remember_entry_via_http(self, dataset, session, outgoing, timeout=12, capture_mode='automatic'):
                     return {'ok': True}
 
             class _FakePolicy:

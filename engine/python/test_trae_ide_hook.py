@@ -1,5 +1,5 @@
 """Isolated TRAE IDE event and diagnostics tests."""
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from copy import deepcopy
 import errno
 import io
@@ -19,6 +19,8 @@ class TurnTests(unittest.TestCase):
         self.state = {}
         self.entries = []
         self.allowed = self.enabled = True
+        self.policy_status = None
+        self.policy_version = 1
         test = self
 
         class SessionState:
@@ -39,14 +41,16 @@ class TurnTests(unittest.TestCase):
         modules = {
             '_capture_policy': SimpleNamespace(capture_enabled=lambda: self.enabled, sanitize=lambda value: value),
             '_coding_memory': SimpleNamespace(_SessionState=SessionState, _truncate=lambda value, size: value[:size]),
-            '_memlane_policy': SimpleNamespace(permit=lambda permission: self.allowed),
+            '_memlane_policy': SimpleNamespace(
+                capture_decision=lambda: (self.policy_status or ('enabled' if self.allowed else 'denied'), self.policy_version),
+            ),
         }
         self.enterContext(patch.dict(sys.modules, modules))
         self.enterContext(patch.object(hook.memory, 'setup', return_value=('key', 'session', 'dataset')))
         self.begin = self.enterContext(patch.object(hook.memory, 'begin_turn'))
         self.handle = self.enterContext(patch.object(hook.memory, 'handle', return_value={'context': 'recalled'}))
         self.enterContext(patch.object(hook.memory, 'capture',
-                                      side_effect=lambda request, *_: self.entries.append(request)))
+                                      side_effect=lambda request, *_, **kw: self.entries.append(request) or {'status': 'buffered'}))
 
     def run_hook(self, event, **fields):
         return hook.handle(event, {'hook_event_name': event, 'cwd': '/tmp', 'workspace_roots': ['/tmp'],
@@ -147,27 +151,59 @@ class TurnTests(unittest.TestCase):
             self.run_hook('Stop', **fields)
         self.assertEqual(self.qa(), [('Q', '[Turn interrupted before assistant completion]')] * 2)
 
-    def test_policy_tombstone_keeps_paused_prompt_and_answer_out_of_capture(self):
+    def test_confirmed_pause_clears_pending_and_unknown_does_not(self):
         self.run_hook('UserPromptSubmit', prompt='allowed')
+        self.policy_status = 'unknown'
+        self.run_hook('Stop', last_assistant_message='unconfirmed')
+        self.assertEqual([turn['question'] for turn in self.state['trae_ide_turns']], ['allowed'])
+        self.policy_status = None
         self.enabled = False
         self.run_hook('UserPromptSubmit', prompt='private paused prompt')
         self.enabled = True
         self.allowed = False
         self.run_hook('UserPromptSubmit', prompt='private denied prompt')
         self.allowed = True
-        self.assertEqual(len(self.state['trae_ide_turns']), 3)
-        for tombstone in self.state['trae_ide_turns'][1:]:
-            self.assertEqual(set(tombstone), {'id', 'time', 'skipped_policy'})
-            self.assertTrue(tombstone['skipped_policy'])
+        self.assertNotIn('trae_ide_turns', self.state)
         self.begin.assert_called_once()
         self.run_hook('Stop', last_assistant_message='private denied answer')
-        self.assertEqual(self.qa(), [('allowed', hook.interrupted_answer_for({}))])
+        self.assertEqual(self.qa(), [])
         self.assertEqual(self.state['trae_ide_turns'], [])
+        self.run_hook('UserPromptSubmit', prompt='reopened')
+        self.run_hook('Stop', last_assistant_message='captured')
+        self.assertEqual(self.qa(), [('reopened', 'captured')])
+
+    def test_version_change_invalidates_turn_retained_while_forwarder_was_offline(self):
+        self.run_hook('UserPromptSubmit', prompt='old turn')
+        self.policy_version = 3
+        self.run_hook('Stop', last_assistant_message='must not attach to old turn')
+        self.run_hook('UserPromptSubmit', prompt='new turn')
+        self.run_hook('Stop', last_assistant_message='answer')
+        self.assertEqual(self.qa(), [('new turn', 'answer')])
+
+    def test_tool_callbacks_require_a_turn_allowed_at_prompt_time(self):
+        for blocked in ('denied', 'disabled'):
+            with self.subTest(blocked=blocked):
+                self.run_hook('UserPromptSubmit', prompt='in flight before pause')
+                self.policy_status = blocked
+                if blocked == 'disabled':
+                    self.policy_version += 1
+                self.run_hook('UserPromptSubmit', prompt='blocked prompt')
+                self.policy_status = 'enabled'
+                if blocked == 'disabled':
+                    self.policy_version += 1
+                self.entries.clear()
+                for event in ('PostToolUse', 'PostToolUseFailure'):
+                    self.run_hook(event, tool_use_id='old-' + event, tool_name='Read')
+                self.run_hook('Stop', last_assistant_message='blocked answer')
+                self.assertEqual(self.entries, [])
+                self.run_hook('UserPromptSubmit', prompt='new prompt')
+                self.run_hook('PostToolUse', tool_use_id='new', tool_name='Read')
+                self.run_hook('Stop', last_assistant_message='new answer')
+                self.assertEqual([r['entry']['type'] for r in self.entries], ['trace', 'qa'])
+                self.assertEqual(self.qa(), [('new prompt', 'new answer')])
 
     def test_overflow_keeps_reply_with_latest_turn(self):
-        self.enabled = False
-        self.run_hook('UserPromptSubmit', prompt='private paused prompt')
-        self.enabled = True
+        self.run_hook('UserPromptSubmit', prompt='oldest overflowed prompt')
         for number in range(hook.MAX_PENDING_TURNS):
             self.run_hook('UserPromptSubmit', prompt=f'Q{number}')
         self.assertEqual(self.state.get('trae_ide_evicted_stops'), 1)
@@ -183,12 +219,13 @@ class TurnTests(unittest.TestCase):
             self.run_hook('UserPromptSubmit', prompt=question)
         calls = 0
 
-        def flaky_capture(request, *_):
+        def flaky_capture(request, *_, **kw):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise ValueError('capture_state_locked')
             self.entries.append(request)
+            return {'status': 'buffered'}
 
         with patch.object(hook.memory, 'capture', side_effect=flaky_capture):
             with self.assertRaisesRegex(ValueError, 'capture_state_locked'):
@@ -256,6 +293,26 @@ class ForwardTests(unittest.TestCase):
         self.assertEqual(self.diagnostic.stat().st_mode & 0o777, 0o600)
         for private in ('private', 'credential', 'sk-secret'):
             self.assertNotIn(private, self.diagnostic.read_text())
+
+    def test_forward_offline_clears_only_confirmed_closed_pending_turns(self):
+        self.connection.request.side_effect = ConnectionRefusedError()
+        payload = {'hook_event_name': 'UserPromptSubmit', 'cwd': str(self.root), 'session_id': 'existing',
+                   'workspace_roots': [str(self.root)]}
+        self.raw = json.dumps(payload).encode()
+        session = SimpleNamespace(acquired=True, data={'trae_ide_turns': [{'question': 'old prompt'}],
+                                                      'host_events': {'numbered': 'buffered'}}, save=Mock())
+        closed = Mock(return_value=False)
+        modules = {'_memlane_policy': SimpleNamespace(cached_capture_disabled=closed),
+                   '_coding_memory': SimpleNamespace(_SessionState=lambda _: nullcontext(session))}
+        with patch.dict(sys.modules, modules), patch.object(hook.memory, 'prepare_session', return_value='bound'):
+            self.forward()
+            session.save.assert_not_called()
+            self.assertIn('trae_ide_turns', session.data)
+            closed.return_value = True
+            self.forward()
+            session.save.assert_called_once()
+            self.assertEqual(session.data, {'host_events': {'numbered': 'buffered'}})
+        self.assertEqual(len(self.entries()), 1)
 
     def test_invalid_origin_token_and_response(self):
         self.binding['hook_origin'] = 'https://example.test'

@@ -93,12 +93,30 @@ type projectQueueState struct {
 	Offset                         int
 	Backlog                        *backlogJob
 	AutomaticSave                  bool
+	AutoCapture                    *bool
+	AutoCaptureVersion             int64
+	AutoCaptureBusy                bool
+	AutoCaptureError               string
 	SaveDetailsOpen                bool
 	BacklogLoading, BacklogBusy    bool
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
 	localStateLoaded               bool
+}
+
+func (q *projectQueueState) projectAutoCapture(p AccessProject) bool {
+	if q.AutoCapture != nil && (p.AutoCapture == nil || q.AutoCaptureVersion >= p.AutoCaptureVersion) {
+		return *q.AutoCapture
+	}
+	return p.AutoCapture == nil || *p.AutoCapture
+}
+
+func (q *projectQueueState) applyAutoCapture(enabled *bool, version int64) {
+	if enabled != nil && version >= q.AutoCaptureVersion {
+		q.AutoCapture = enabled
+		q.AutoCaptureVersion = version
+	}
 }
 
 func (c Client) pendingProjectDocuments(ctx context.Context, p Project) ([]Item, error) {
@@ -617,6 +635,7 @@ func (a *App) applyProjectQueueResult(q *projectQueueState, p AccessProject, met
 		q.BacklogError = rec.BacklogError
 	}
 	if snap.v2SummaryOK {
+		q.applyAutoCapture(snap.v2Summary.AutoCapture, snap.v2Summary.AutoCaptureVersion)
 		if rec.UpdateBacklog {
 			q.Backlog = rec.Backlog
 			q.ProcessingIssues = rec.ProcessingIssues

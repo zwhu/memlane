@@ -612,6 +612,15 @@ class V2APITests(AioHTTPTestCase):
         self.assertEqual(len(ms['unread_preview']), 10)
         self.assertTrue(ms['unread_has_more'])
         self.assertEqual(ms['pending_documents_count'], 1)
+        self.assertTrue(ms['auto_capture'])
+        self.assertEqual(ms['auto_capture_version'], 1)
+        updated = await self.registry.set_auto_capture('p1', False)
+        paused_resp = await self.client.get('/v1/projects/p1/message-summary', headers=self.manager_headers)
+        self.assertEqual(paused_resp.status, 200)
+        paused = await paused_resp.json()
+        self.assertFalse(paused['auto_capture'])
+        self.assertFalse(paused['automatic_save'])
+        self.assertEqual(paused['auto_capture_version'], updated['auto_capture_version'])
 
         # 9. POST /v1/reading-state/mark-read & mark-all-read (Contract #1)
         mr = await (await self.client.post(

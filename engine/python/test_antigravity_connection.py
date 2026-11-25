@@ -827,10 +827,14 @@ import _plugin_common as common, _memlane_policy as policy, _memlane_capture as 
 dataset = '11111111-1111-4111-8111-111111111111'
 session_id = 'synthetic-session'
 policy.permit = lambda op, *a, **k: op == 'capture'
+policy.capture_decision = lambda *a: ('enabled', 1)
 policy.require = lambda op, *a, **k: None if op == 'capture' else (_ for _ in ()).throw(policy.NotReady('当前 Agent 没有此项目的写入权限'))
 policy._pending_identity = lambda *a, **k: None
 policy.dataset = lambda: dataset
-policy._state = lambda *a, **k: contextlib.nullcontext({})
+policy_state = {}
+policy._state = lambda *a, **k: contextlib.nullcontext(policy_state)
+common._read_map_record = lambda *a: {'session_id': session_id}
+common.remember_pending_prompt(session_id, 'synthetic user prompt')
 spec = importlib.util.spec_from_file_location('store_to_session', scripts / 'store-to-session.py')
 store_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(store_mod)

@@ -201,6 +201,16 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
             raise PolicyError('invalid_request_fields')
         return web.json_response(await registry.session_binding(identity, request.query['host_session_key']))
 
+    async def capture_policy(request):
+        identity = agent(request)
+        project = registry.state['projects'].get(request.query.get('project_id'))
+        if project is None:
+            raise PolicyError('project_not_found', 404)
+        view = registry.policy(project, identity)
+        return web.json_response({'project_id': view['project_id'], 'dataset_id': view['dataset_id'],
+                                  'revision': view['revision'], 'capture_policy': view['capture_policy'],
+                                  'can_capture': view['policy']['can_capture'], 'ready': view['ready']})
+
     async def directory(request):
         manager(request)
         return web.json_response(await directory_result_async())
@@ -226,6 +236,11 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
         payload = fields(await body(request), ('expected_revision', 'agent_id', 'fields'))
         return web.json_response(await registry.set_policy(payload['expected_revision'], payload['fields'],
                                                          project_id=request.match_info['id'], agent_id=payload['agent_id']))
+
+    async def auto_capture(request):
+        manager(request)
+        payload = fields(await body(request), ('enabled',))
+        return web.json_response(await registry.set_auto_capture(request.match_info['id'], payload['enabled']))
 
     async def create(request):
         manager(request)
@@ -444,9 +459,10 @@ def create_app(registry, manager_token, agent_tokens, *, plugin_source=None, con
     from knowledge_recall import attach_recall
     recall_store = attach_recall(app, registry)
     app.add_routes([web.post('/v1/project/resolve', resolve), web.get('/v1/project/policy', policy),
-                    web.get('/v1/project/binding', binding),
+                    web.get('/v1/project/binding', binding), web.get('/v1/project/capture-policy', capture_policy),
                     web.get('/v1/projects', directory), web.put('/v1/defaults', defaults),
                     web.put('/v1/projects/{id}/overrides', overrides), web.put('/v1/projects/{id}/name', rename), web.post('/v1/projects', create),
+                    web.put('/v1/projects/{id}/auto-capture', auto_capture),
                     web.post('/v1/projects/{id}/aliases', alias), web.post('/v1/projects/{id}/reconcile', reconcile),
                     web.put('/v1/projects/{id}/code', code),
                     web.put('/v1/tool-graph/settings', tool_graph_settings),

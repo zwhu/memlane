@@ -41,7 +41,7 @@ class SaveProcessingRecoveryTests(unittest.TestCase):
             self.assertEqual(progress[-1]["saved"], 1)
             self.assertEqual(progress[-1]["filtered"], 1)
             self.assertEqual(entries, [excluded], "excluded material was deleted or allowed material remained")
-            common.remember_entry_via_http.assert_called_once_with("ds", "s", healthy, timeout=12)
+            common.remember_entry_via_http.assert_called_once_with("ds", "s", healthy, timeout=12, capture_mode="manual")
 
     def test_partial_submit_is_distinct_from_unconfirmed_request(self):
         common = types.SimpleNamespace(improve_throttle_reason=Mock(return_value=""),

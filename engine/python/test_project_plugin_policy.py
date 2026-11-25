@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import project_plugin_policy as policy
+from project_access_hooks import pending_capture_allowed
 
 
 class PluginPolicyTests(unittest.TestCase):
@@ -75,7 +76,7 @@ class PluginPolicyTests(unittest.TestCase):
             if path == transcript:
                 raise AssertionError('disabled transcript was opened')
             return original(path, *args, **kwargs)
-        with patch.object(policy, 'permit', return_value=False), patch.object(Path, 'open', guarded):
+        with patch.object(policy, 'capture_decision', return_value=('disabled', 1)), patch.object(Path, 'open', guarded):
             self.assertIsNone(policy.capture_boundary(str(transcript)))
         with policy._state() as state:
             self.assertEqual(state['cursor']['size'], transcript.stat().st_size)
@@ -100,10 +101,10 @@ class PluginPolicyTests(unittest.TestCase):
     def test_restore_establishes_boundary_and_never_backfills(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('disabled\n')
-        with patch.object(policy, 'permit', return_value=False):
+        with patch.object(policy, 'capture_decision', return_value=('disabled', 1)):
             self.assertIsNone(policy.capture_boundary(str(transcript)))
         transcript.write_text('disabled\nstill disabled\nfirst resumed turn\n')
-        with patch.object(policy, 'permit', return_value=True):
+        with patch.object(policy, 'capture_decision', return_value=('enabled', 1)):
             self.assertIsNone(policy.capture_boundary(str(transcript)))
             boundary = transcript.stat().st_size
             with transcript.open('a') as output:
@@ -113,10 +114,10 @@ class PluginPolicyTests(unittest.TestCase):
     def test_truncation_does_not_reset_cursor(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('disabled long turn\n')
-        with patch.object(policy, 'permit', return_value=False):
+        with patch.object(policy, 'capture_decision', return_value=('disabled', 1)):
             policy.capture_boundary(str(transcript))
         transcript.write_text('short\n')
-        with patch.object(policy, 'permit', return_value=True):
+        with patch.object(policy, 'capture_decision', return_value=('enabled', 1)):
             self.assertIsNone(policy.capture_boundary(str(transcript)))
             transcript.write_text('longer replacement content\n' * 10)
             self.assertIsNone(policy.capture_boundary(str(transcript)))
@@ -124,12 +125,122 @@ class PluginPolicyTests(unittest.TestCase):
     def test_blocked_buffer_remains_blocked_after_permission_restored(self):
         allowed = {'ready': True, 'revision': 4,
                    'policy': {'permissions': ['read', 'write', 'delete'], 'can_capture': True, 'can_auto_process': True}}
-        with patch.object(policy, 'current', return_value=allowed):
+        with patch.object(policy, 'current', return_value=allowed), patch.object(policy, 'capture_status', return_value='enabled'):
             self.assertTrue(policy.permit('drain'))
             policy.block(403)
             self.assertFalse(policy.permit('drain'))
             self.assertTrue(policy.permit('capture'))
             self.assertTrue(policy.permit('process', automatic=False))
+
+    def test_project_policy_cache_controls_offline_cursor_and_binding(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        transcript = self.root / 'long-session.jsonl'
+        transcript.write_text('first turn\n')
+        decision = {'ready': True, 'project_id': 'fixture', 'dataset_id': dataset}
+
+        def snapshot(enabled, version):
+            return {**decision, 'can_capture': enabled, 'capture_policy': {
+                'enabled': enabled, 'project_enabled': enabled, 'version': version,
+                'scope': 'ok' if enabled else 'project', 'updated_at': '2026-11-25T10:00:00+00:00'}}
+
+        with patch.object(policy, '_request', return_value=snapshot(True, 1)):
+            self.assertEqual(policy.bind(str(self.root), 'host-one'), dataset)
+            self.assertEqual(policy.capture_boundary(transcript), 0)
+        with patch.object(policy, '_request', side_effect=policy.NotReady('offline')):
+            self.assertIsNone(policy.capture_boundary(transcript))
+            self.assertFalse(policy.cached_capture_disabled(str(self.root)))
+            with policy._state(writable=False) as state:
+                self.assertNotIn('cursor', state)
+                self.assertNotIn('paused', state)
+
+        with patch.object(policy, '_request', return_value=snapshot(False, 2)):
+            self.assertIsNone(policy.capture_boundary(transcript))
+        cache = policy._capture_cache_path('fixture')
+        self.assertEqual(cache.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(cache.read_text())['version'], 2)
+        transcript.write_text('first turn\nprivate closed turn\n')
+        with patch.object(policy, '_request', side_effect=policy.NotReady('offline')):
+            self.assertEqual(policy.bind(str(self.root), 'host-one'), dataset)
+            with self.assertRaises(policy.NotReady):
+                policy.bind(str(self.root / 'other-workspace'), 'host-one')
+            self.assertIsNone(policy.capture_boundary(transcript))
+            with policy._state(writable=False) as state:
+                self.assertTrue(state['paused'])
+                self.assertEqual(state['cursor']['size'], transcript.stat().st_size)
+                self.assertNotIn('blocked', state)
+        with patch.object(policy, '_request', return_value=snapshot(True, 3)):
+            self.assertIsNone(policy.capture_boundary(transcript))
+            offset = transcript.stat().st_size
+            with transcript.open('a') as output:
+                output.write('allowed again\n')
+            self.assertEqual(policy.capture_boundary(transcript), offset)
+        with patch.object(policy, '_request', return_value=snapshot(True, 5)):
+            # A full close/reopen may complete while the host is idle.
+            self.assertIsNone(policy.capture_boundary(transcript))
+        with patch.object(policy, '_request', return_value=snapshot(False, 4)):
+            self.assertEqual(policy.capture_decision(), ('enabled', 5))
+            self.assertEqual(policy.capture_boundary(transcript), transcript.stat().st_size)
+        self.assertEqual(json.loads(cache.read_text())['version'], 5)
+
+    def test_late_close_cannot_replace_reopened_decision_or_advance_cursor(self):
+        dataset = '11111111-1111-4111-8111-111111111111'
+        transcript = self.root / 'reopened.jsonl'
+        transcript.write_text('prompt written after reopening')
+        with policy._state() as state:
+            state['binding'] = {'project_id': 'fixture', 'dataset_id': dataset}
+
+        def response(enabled, version):
+            return {'ready': True, 'dataset_id': dataset, 'can_capture': enabled,
+                    'capture_policy': {'enabled': enabled, 'project_enabled': enabled,
+                                       'version': version, 'scope': 'ok' if enabled else 'project'}}
+
+        with patch.object(policy, '_request', return_value=response(True, 3)):
+            self.assertEqual(policy.capture_decision(), ('enabled', 3))
+            self.assertEqual(policy.capture_boundary(transcript), 0)
+        with patch.object(policy, '_request', return_value=response(False, 2)):
+            self.assertEqual(policy.capture_decision(), ('enabled', 3))
+            self.assertEqual(policy.capture_boundary(transcript), 0)
+        with policy._state(writable=False) as state:
+            self.assertFalse(state.get('paused'))
+            self.assertNotIn('cursor', state)
+            self.assertEqual(state['capture_policy_version'], 3)
+
+    def test_denied_transcript_advances_without_backfilling_at_same_policy_version(self):
+        transcript = self.root / 'rollout.jsonl'
+        transcript.write_text('before denial')
+        dataset = '11111111-1111-4111-8111-111111111111'
+        with policy._state() as state:
+            state['binding'] = {'project_id': 'fixture', 'dataset_id': dataset}
+        snapshot = {'ready': True, 'dataset_id': dataset, 'can_capture': False,
+                    'capture_policy': {'enabled': False, 'project_enabled': True, 'version': 1, 'scope': 'ok'}}
+        with patch.object(policy, '_request', return_value=snapshot):
+            self.assertIsNone(policy.capture_boundary(transcript))
+            with policy._state(writable=False) as state:
+                self.assertTrue(state.get('paused'))
+                self.assertEqual(state['cursor']['size'], transcript.stat().st_size)
+            transcript.write_text('before denial, denied and interrupted')
+            snapshot['can_capture'] = snapshot['capture_policy']['enabled'] = True
+            self.assertIsNone(policy.capture_boundary(transcript))
+            offset = transcript.stat().st_size
+            with transcript.open('a') as out:
+                out.write('restored')
+            self.assertEqual(policy.capture_boundary(transcript), offset)
+
+    def test_pending_prompt_cleanup_is_session_scoped_and_requires_confirmed_pause(self):
+        path = self.root / 'pending.json'
+        pending = {'host:': {'prompt': 'old alias'}, 'host:old': {'prompt': 'old turn'},
+                   'other:': {'prompt': 'other session'}}
+        path.write_text(json.dumps(pending))
+        common = types.SimpleNamespace(_pending_file=lambda _: path, _pending_keys=lambda *_: ('host:old', 'host:'),
+                                       _load_json_file=lambda path: json.loads(path.read_text()),
+                                       _write_json_file=lambda path, value: path.write_text(json.dumps(value)))
+        with patch.object(policy, 'capture_decision') as status:
+            status.return_value = ('unknown', None)
+            self.assertFalse(pending_capture_allowed('session', policy_mod=policy, common_mod=common))
+            self.assertEqual(json.loads(path.read_text()), pending)
+            status.return_value = ('disabled', 2)
+            self.assertFalse(pending_capture_allowed('session', policy_mod=policy, common_mod=common))
+            self.assertEqual(json.loads(path.read_text()), {'other:': {'prompt': 'other session'}})
 
     def test_auto_process_off_does_not_reject_manual(self):
         current = {'revision': 2, 'policy': {'permissions': ['read', 'write', 'delete'],

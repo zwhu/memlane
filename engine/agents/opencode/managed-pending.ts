@@ -66,9 +66,10 @@ export class ManagedPending {
     this.control.confirmTarget(original.target);
     return original;
   }
-  protected writable(policy: ProjectPolicy): void {
+  protected writable(policy: ProjectPolicy, automatic = false): void {
+    if (automatic && !policy.policy.can_capture && policy.capture_policy?.scope !== "ok") failure("project_auto_capture_disabled");
     if (!policy.policy.permissions.includes("write")) failure("project_write_denied");
-    if (!policy.policy.can_capture) failure("project_capture_disabled");
+    if (automatic && !policy.policy.can_capture) failure("project_auto_capture_disabled");
   }
   async run(input: Command) {
     const command = Object.freeze({...input});
@@ -105,7 +106,7 @@ export class ManagedPending {
       const decision = this.queue.decidePending(target, session, view.signature, "replay", matches);
       const delivery = new ManagedDelivery(this.control, this.client, this.queue);
       let error: string | undefined;
-      try { await delivery.flush(decision.released_ids, token); }
+      try { await delivery.flush(decision.released_ids, token, false); }
       catch { error = "pending_delivery_unconfirmed"; }
       const remaining = new Set(this.queue.pendingIds(target, session));
       const drained = decision.matched_unknown + decision.released_ids.filter(id => !remaining.has(id)).length;

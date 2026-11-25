@@ -112,7 +112,7 @@ if not permit("process", dataset, automatic=trigger not in ("manual", "switch"))
     # Persist a new number before any first send, using the official buffer.
     common = patch.body(common, 'remember_entry_via_http', '''from _memlane_policy import NotReady, managed
 from _memlane_capture import numbered
-if managed() and not numbered(entry):
+if managed() and not numbered(entry) and capture_mode == "automatic":
     append_warmup_entry(dataset, session_id, entry)
     try:
         drained, remaining = drain_warmup_entries(dataset, session_id)
@@ -147,8 +147,9 @@ return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalC
     files['scripts/session-context-lookup.py'] = text.encode()
     text = files['scripts/store-to-session.py'].decode()
     for name in ('_store_tool_call', '_store_assistant_stop'):
-        text = patch.body(text, name, '''from _memlane_policy import permit
-if not permit("capture"):
+        text = patch.body(text, name, '''from _capture_policy import capture_enabled
+from _memlane_access import pending_capture_allowed
+if not pending_capture_allowed(enabled=capture_enabled(), turn_id=str(payload.get("turn_id") or "")):
     return''')
     text = patch.replace(text, '    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))\n',
                          '    pending = pop_pending_prompt(session_id, turn_id=str(payload.get("turn_id") or ""))\n    if not pending.get("prompt"):\n        return\n')

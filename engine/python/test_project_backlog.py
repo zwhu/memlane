@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 import uuid
 
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from project_backlog import Backlog, attach_backlog
 from project_control_server import create_app
 from project_policy import PolicyError
@@ -256,6 +256,75 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
         await self.backlog.automatic_tick()
         self.assertEqual(pending, ['d'*64], 'explicit stop must persist')
 
+    async def test_project_pause_cancels_unsent_work_and_recovers_after_restart(self):
+        self.policy['policy']['can_capture'] = True
+        project = self.registry.state['projects']['p']
+        project.update(auto_capture=True, auto_capture_version=1)
+        self.registry.state['sessions'][json.dumps(['a', 'later'])] = 'p'
+        started = asyncio.Event()
+        release = asyncio.Event()
+        buffers = {'host': ['a'*64], 'later': ['b'*64]}
+        writes = []
+
+        async def worker(row, target, action, update):
+            host = target['host']
+            if action == 'review':
+                return {'session_id': host, 'tokens': list(buffers[host]), 'unknown': 0}
+            if action == 'process':
+                return {'status': 'submitted'}
+            if not writes:
+                started.set()
+                await release.wait()
+            writes.append((host, bool(row.get('automatic'))))
+            buffers[host].clear()
+            return {'status': 'completed', 'saved': 1, 'handled': 0, 'isolated': 0, 'remaining': 0}
+
+        self.backlog.worker = worker
+        self.backlog.monitor = asyncio.create_task(asyncio.Event().wait())
+        await self.backlog.automatic_tick()
+        await asyncio.wait_for(started.wait(), 2)
+        self.assertTrue(self.backlog.get('p')['automatic_enabled'])
+        project.update(auto_capture=False, auto_capture_version=2)
+        self.backlog.on_auto_capture_disabled('p')
+        operation = self.backlog.get('p')['job']['operation_id']
+        row = self.backlog.jobs[operation]
+        self.assertEqual(self.backlog.cancel_file(row).read_text(), 'project_auto_capture_disabled')
+        self.assertFalse(self.backlog.get('p')['automatic_enabled'])
+        release.set()
+        await self.backlog.task
+        self.assertEqual(writes, [('host', True)])
+        self.assertEqual(buffers['later'], ['b'*64])
+        self.assertEqual((row['status'], row['reason']), ('paused', 'project_auto_capture_disabled'))
+        self.assertEqual(row['targets'][0]['saved'], 1)
+
+        restarted = Backlog(self.registry, {}, worker=worker)
+        try:
+            for _ in range(3):
+                await restarted.automatic_tick()
+            self.assertEqual(list(restarted.jobs), [operation])
+            self.assertIsNone(restarted.task)
+            await restarted.processing_task
+            self.assertEqual(restarted.jobs[operation]['pending_processing'][json.dumps(['a', 'host'])]['processing'],
+                             'submitted')
+            manual = restarted.start('p', str(uuid.uuid4()))
+            restarted.on_auto_capture_disabled('p')
+            self.assertFalse(restarted.cancel_file(manual).exists())
+            self.assertEqual(restarted.jobs[manual['operation_id']]['status'], 'queued')
+            await restarted.task
+            self.assertEqual(restarted.jobs[manual['operation_id']]['status'], 'completed')
+            self.assertEqual(writes, [('host', True), ('later', False)])
+            self.assertFalse(restarted.get('p')['automatic_enabled'])
+            buffers['later'].append('c'*64)
+            cancelled = restarted.start('p', str(uuid.uuid4()))
+            restarted.stop('p', cancelled['operation_id'])
+            await restarted.task
+            project.update(auto_capture=True, auto_capture_version=3)
+            await restarted.automatic_tick()
+            await restarted.task
+            self.assertEqual(writes[-1], ('later', True))
+        finally:
+            await restarted.close()
+
     async def test_automatic_save_respects_disabled_capture_retirement_and_unknown_processing(self):
         self.gate.set()
         self.policy['policy']['can_capture'] = False
@@ -281,6 +350,45 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
             await self.backlog.automatic_tick()
             if self.backlog.task: await self.backlog.task
         self.assertEqual(self.processing, [1], 'unknown model submit was repeated')
+
+    async def test_stop_during_resume_review_keeps_cancel_file_and_job_stopped(self):
+        self.policy['policy']['can_capture'] = True
+        op = str(uuid.uuid4())
+        row = {'operation_id': op, 'project_id': 'p', 'created_at': 1,
+               'status': 'paused', 'reason': 'project_auto_capture_disabled',
+               'automatic': True, 'targets': [], 'pending_processing': {}}
+        self.backlog.jobs[op] = row
+        marker = self.backlog.cancel_file(row)
+        marker.write_bytes(b'project_auto_capture_disabled')
+        reviewing, resume = asyncio.Event(), asyncio.Event()
+
+        async def worker(row, target, action, update):
+            self.assertEqual(action, 'review')
+            reviewing.set()
+            await resume.wait()
+            return {'session_id': 'native-session', 'tokens': ['a' * 64], 'unknown': 0}
+
+        self.backlog.worker = worker
+        tick = asyncio.create_task(self.backlog.automatic_tick())
+        await asyncio.wait_for(reviewing.wait(), 3)
+        try:
+            app = create_app(self.registry, 'm' * 40, {})
+            with patch('project_backlog.Backlog', return_value=self.backlog):
+                attach_backlog(app, self.registry, {})
+            app.freeze()
+            request = make_mocked_request('POST', '/v1/projects/p/backlog/stop', app=app, headers={
+                'Authorization': 'Bearer ' + 'm' * 40, 'Content-Type': 'application/json',
+            })
+            request._read_bytes = json.dumps({'operation_id': op}).encode()
+            response = await app._handle(request)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.body)['job']['status'], 'stopped')
+        finally:
+            resume.set()
+            await tick
+        self.assertEqual(self.backlog.get('p')['job']['status'], 'stopped')
+        self.assertEqual(marker.read_bytes(), b'project_auto_capture_disabled')
+        self.assertIsNone(self.backlog.task)
 
     async def test_automatic_restart_reviews_fresh_buffer_but_user_pause_persists(self):
         self.policy['policy']['can_capture'] = True
@@ -1428,7 +1536,7 @@ class BacklogTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(evicted, self.backlog.jobs)
 
     async def test_retry_unconfirmed_requires_explicit_single_target_confirm_and_rejects_running_or_unavailable(self):
-        from aiohttp.test_utils import TestClient, TestServer
+        from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
         from datetime import datetime, timezone
         import time
         from project_backlog import attach_backlog

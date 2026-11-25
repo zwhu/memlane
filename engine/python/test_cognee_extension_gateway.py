@@ -1,21 +1,23 @@
 """Tests for the Memlane Cognee HTTP Extension Gateway mounted at /cognee."""
 import asyncio
-from contextlib import redirect_stderr
+from contextlib import asynccontextmanager, redirect_stderr
 import io
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 import uuid
 
 from aiohttp import FormData, web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _runtime_common import private_write
+from cognee_extension_gateway import create_gateway_app
 from knowledge_recall import RecallStore
 from project_control import Official, Registry
 from project_control_server import create_app
@@ -25,6 +27,71 @@ from project_policy import PolicyError
 class _FakeRegistry(Registry):
     def __init__(self, path, official):
         super().__init__(path, official)
+
+
+class CaptureSwitchGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_switch_during_upload_and_manual_replay_keep_receipt_access(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        registry = Registry(root / 'registry.json', None)
+        self.addCleanup(registry.close)
+        key_file = root / 'agent.key'
+        private_write(key_file, b'test-agent')
+        dataset = str(uuid.uuid4())
+        registry.state['agents']['a'] = {'name': 'A', 'key_file': str(key_file)}
+        registry.state['projects']['p'] = {
+            'id': 'p', 'dataset_id': dataset, 'dataset_name': 'memory', 'aliases': [],
+            'status': 'verified', 'desired_revision': 1, 'applied': {'a': {'revision': 1, 'status': 'verified'}},
+        }
+        entries = {}
+
+        @asynccontextmanager
+        async def upstream(method, url, **kwargs):
+            path = url.split('?', 1)[0]
+            if method == 'PUT':
+                entries[path] = kwargs['json']
+            value = entries.get(path) if method == 'GET' else {'accepted': True}
+
+            async def chunks(_):
+                yield json.dumps(value).encode()
+
+            yield SimpleNamespace(status=200 if value else 404, headers={'Content-Type': 'application/json'},
+                                  content=SimpleNamespace(iter_chunked=chunks))
+
+        app = create_gateway_app(registry, official_url='http://127.0.0.1:1',
+                                 session=SimpleNamespace(request=upstream))
+        app.freeze()
+        payload = {'dataset_id': dataset, 'session_id': 's', 'entry': {'type': 'qa', 'question': 'q', 'answer': 'a'}}
+
+        async def dispatch(method, path, *, mode=None, switch_during_upload=False):
+            async def body(_):
+                data = json.dumps(payload).encode()
+                yield data[:1]
+                if switch_during_upload:
+                    await registry.set_auto_capture('p', False)
+                yield data[1:]
+
+            headers = {'X-Api-Key': 'test-agent', 'Content-Type': 'application/json'}
+            if mode is not None:
+                headers['x-memlane-capture-mode'] = mode
+            request = make_mocked_request(method, '/cognee/api/v1' + path, headers=headers,
+                                          payload=SimpleNamespace(iter_chunked=body), app=app)
+            response = await app._handle(request)
+            return response.status, json.loads(response.body)
+
+        original = '/capture/entries/original'
+        self.assertEqual((await dispatch('PUT', original, mode='automatic'))[0], 200)
+        blocked = '/capture/entries/blocked'
+        denied_status, denied = await dispatch('PUT', blocked, mode='automatic', switch_during_upload=True)
+        self.assertEqual((denied_status, denied), (403, {
+            'error': 'capture_paused', 'permission_denied': False,
+            'capture_policy_version': 2, 'capture_scope': 'project',
+        }))
+        self.assertEqual((await dispatch('GET', original + '?dataset_id=' + dataset))[0], 200)
+        self.assertEqual((await dispatch('GET', blocked + '?dataset_id=' + dataset))[0], 404)
+        self.assertEqual((await dispatch('POST', '/remember/entry'))[0], 403)
+        self.assertEqual((await dispatch('POST', '/remember/entry', mode='MANUAL'))[0], 200)
+        self.assertEqual((await dispatch('PUT', blocked, mode='manual'))[0], 200)
+        self.assertEqual((await dispatch('POST', '/remember'))[0], 200)
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -691,25 +758,37 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([s['session_id'] for s in me_body['recent_sessions']], ['sess-ok'])
         self.assertEqual(me_body['recent_qas'], [])
 
-        # capture=False blocks PUT /capture/entries/{msg}, POST /remember/entry, and POST /remember.
-        self.registry.state['projects']['proj-1']['overrides'] = {'agent-a': {'capture': False, 'auto_process': True}}
-        self.registry.save()
-        msg_id = str(uuid.uuid4())
-        r_cap = await self.client.put(
-            f'/cognee/api/v1/capture/entries/{msg_id}',
-            headers=self._headers(),
-            json={'dataset_id': self.project_ds, 'session_id': 's1', 'entry': {'type': 'qa', 'question': 'q', 'answer': 'a'}},
-        )
-        self.assertEqual(r_cap.status, 403)
-        self.assertEqual((await r_cap.json())['error'], 'capture_paused')
+        paths = ['/cognee/api/v1/capture/entries/' + str(uuid.uuid4()), '/cognee/api/v1/remember/entry']
+        headers = self._headers()
+        payload = {'dataset_id': self.project_ds, 'session_id': 's1',
+                   'entry': {'type': 'qa', 'question': 'q', 'answer': 'a'}}
+        sent = await self.client.put(paths[0], headers=headers, json=payload)
+        self.assertEqual(sent.status, 200)
+        await self.registry.set_auto_capture('proj-1', False)
+        for request, path in zip((self.client.put, self.client.post), paths):
+            for mode in ({}, {'X-Memlane-Capture-Mode': 'automatic'},
+                         {'X-Memlane-Capture-Mode': 'invalid'}):
+                reply = await request(path, headers={**headers, **mode}, json=payload)
+                self.assertEqual(reply.status, 403)
+                self.assertEqual(await reply.json(), {
+                    'error': 'capture_paused', 'permission_denied': False,
+                    'capture_policy_version': 2, 'capture_scope': 'project',
+                })
+            manual = await request(path, headers={**headers, 'x-memlane-capture-mode': 'MANUAL'}, json=payload)
+            self.assertEqual(manual.status, 200)
+        receipt = await self.client.get(paths[0], headers=headers, params={'dataset_id': self.project_ds})
+        self.assertEqual(receipt.status, 200)
 
         r_rem = await self.client.post(
             '/cognee/api/v1/remember',
             headers=self._headers(),
             json={'dataset_id': self.project_ds, 'raw_data': 'fact'},
         )
-        self.assertEqual(r_rem.status, 403)
-        self.assertEqual((await r_rem.json())['error'], 'capture_paused')
+        self.assertEqual(r_rem.status, 200)
+        self.registry.state['projects']['proj-1']['overrides'] = {'agent-a': {'access': 'read'}}
+        denied = await self.client.put(paths[0], headers={**headers, 'X-Memlane-Capture-Mode': 'manual'}, json=payload)
+        self.assertEqual(denied.status, 403)
+        self.assertEqual((await denied.json())['error'], 'dataset_write_denied')
 
     async def test_connections_me_real_cognee_167_schema_and_acl_enforcement(self):
         user_id = self.registry.state['agents']['agent-a']['principal_id']

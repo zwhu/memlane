@@ -2,6 +2,24 @@
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+export class CapturePaused extends Error {
+  constructor(readonly version?: number, readonly scope?: string) {
+    super("project_auto_capture_disabled");
+  }
+}
+
+export function managedRequestError(status: number, body: string): Error {
+  if (status === 403) {
+    try {
+      const value = JSON.parse(body);
+      if (value?.error === "capture_paused") {
+        return new CapturePaused(value.capture_policy_version, value.capture_scope);
+      }
+    } catch { /* Preserve the ordinary status-only error. */ }
+  }
+  return new Error(`Cognee request failed (${status})`);
+}
+
 export function rejectManagedLogin(): never {
   throw new Error("Managed OpenCode does not use owner login");
 }

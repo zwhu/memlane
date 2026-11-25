@@ -2,13 +2,13 @@ package simpledesktop
 
 import (
 	"encoding/json"
-	"github.com/egoist/mygo/ui"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testing.T) {
@@ -17,7 +17,7 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 	os.WriteFile(token, []byte("private-test-control-credential-1234567890"), 0600)
 	posts := 0
 	job := &backlogJob{Operation: "server-operation", Status: "running", Saved: 20, Remaining: 75, Total: 95, Isolated: 20}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer private-test-control-credential-1234567890" {
 			t.Error("wrong management identity")
 		}
@@ -30,9 +30,9 @@ func TestBacklogUIStartsOneOwnedJobThenOnlyPollsAndShowsIsolatedCounts(t *testin
 			}
 		}
 		json.NewEncoder(w).Encode(map[string]any{"job": job})
-	}))
-	defer server.Close()
-	a.Config.ProjectControl = &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}
+	})
+	a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
+	a.Client.HTTP = &http.Client{Transport: transport}
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	p := a.access.Directory.Projects[0]
@@ -95,6 +95,81 @@ func TestAutomaticBacklogPresentationKeepsExistingUnknownVisible(t *testing.T) {
 	}
 	if (!tt.HasText("2 条消息等待采集") || !tt.HasText("1 条消息未收到采集结果")) || tt.HasText("任务已采集 8 条 · 任务内剩余 7 条 · 待核对 0 条") {
 		t.Fatal("automatic job hid an older unknown record outside its send range")
+	}
+}
+
+func TestProjectAutoCaptureSwitchWorksWithoutBacklogJob(t *testing.T) {
+	a, q := projectQueueFixture()
+	q.Sessions, q.Documents = nil, nil
+	token := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(token, []byte("private-test-control-credential-1234567890"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var directory AccessDirectory
+	payload, _ := json.Marshal(a.access.Directory)
+	if err := json.Unmarshal(payload, &directory); err != nil {
+		t.Fatal(err)
+	}
+	writes := make(chan bool, 2)
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/projects/p/auto-capture":
+			var body struct {
+				Enabled *bool `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Enabled == nil {
+				t.Error("missing automatic capture setting", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			p := &directory.Projects[0]
+			if p.AutoCaptureVersion == 0 {
+				p.AutoCaptureVersion = 1
+			}
+			p.AutoCapture = body.Enabled
+			p.AutoCaptureVersion++
+			directory.Revision++
+			writes <- *body.Enabled
+			_ = json.NewEncoder(w).Encode(p)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/projects":
+			_ = json.NewEncoder(w).Encode(directory)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	a.Config.ProjectControl = &ProjectControlConfig{URL: coldStartTestURL, ManagementTokenFile: token}
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 10)
+	a.Update = func(fn func()) { updates <- fn }
+	deferPoll := func() {
+		q.Next = time.Now().Add(time.Hour)
+		q.BacklogNext = q.Next
+	}
+	deferPoll()
+	tt := ui.NewTester(func(c *ui.Context) {
+		a.projectQueueSection(c, a.access.Directory.Projects[0])
+	}, 1200, 820)
+	if !tt.HasText("自动采集已开启") {
+		t.Fatal("old directory record did not default to enabled")
+	}
+	for _, enabled := range []bool{false, true} {
+		clickProjectUI(t, tt, "自动采集")
+		drainReading(t, updates, func() bool { return !q.AutoCaptureBusy && !a.access.Loading })
+		if len(writes) != 1 || <-writes != enabled || q.Backlog != nil {
+			t.Fatal("the project switch must write one setting and leave backlog empty")
+		}
+		stale := !enabled
+		q.applyAutoCapture(&stale, q.AutoCaptureVersion-1)
+		deferPoll()
+		tt.Frame()
+		label := "自动采集已关闭"
+		if enabled {
+			label = "自动采集已开启"
+		}
+		if !tt.HasText(label) || q.projectAutoCapture(a.access.Directory.Projects[0]) != enabled {
+			t.Fatalf("switch did not show confirmed project setting %v", enabled)
+		}
 	}
 }
 

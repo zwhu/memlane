@@ -225,12 +225,43 @@ func backlogOperation() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+func (a *App) changeProjectAutoCapture(q *projectQueueState, p AccessProject, enabled bool) {
+	client, ok := a.accessClient()
+	if !ok || a.isSetupOnlyRuntime() || a.Update == nil || a.access.Busy || q.AutoCaptureBusy {
+		return
+	}
+	q.AutoCaptureBusy = true
+	q.AutoCaptureError = ""
+	identity := a.cachedBaseReadingIdentity()
+	update := a.Update
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		result, err := client.SetProjectAutoCapture(ctx, p.ID, enabled)
+		update(func() {
+			q.AutoCaptureBusy = false
+			current, ok := a.accessClient()
+			if !ok || current.Config != client.Config || a.cachedBaseReadingIdentity() != identity {
+				return
+			}
+			if err == nil {
+				q.applyAutoCapture(result.AutoCapture, result.AutoCaptureVersion)
+			} else {
+				q.AutoCaptureError = "自动采集设置暂未确认，将重新读取当前设置。"
+			}
+			q.Next = time.Time{}
+			q.BacklogNext = time.Time{}
+			a.RefreshProjectDirectory()
+		})
+	}()
+}
+
 func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 	if a.isSetupOnlyRuntime() {
 		return
 	}
 	client, ok := a.accessClient()
-	if !ok || q.BacklogBusy {
+	if !ok || q.BacklogBusy || a.Update == nil {
 		return
 	}
 	operation := q.BacklogOperation
@@ -271,9 +302,6 @@ func (a *App) changeBacklog(q *projectQueueState, p AccessProject, stop bool) {
 			q.BacklogError = ""
 			q.Backlog = result.Job
 			q.BacklogOperation = ""
-			if stop {
-				q.AutomaticSave = false
-			}
 			q.Next = time.Time{}
 			q.BacklogNext = time.Time{}
 		})
@@ -360,6 +388,8 @@ func backlogReason(code string) string {
 		return "正在等待当前发送结束，随后自动继续"
 	case "write_denied", "policy_unconfirmed", "backlog_write_denied":
 		return "系统未能确认当前写入权限，采集已暂停；原消息仍保留。"
+	case "project_auto_capture_disabled":
+		return "项目已关闭自动采集，未发送的原消息仍保留。"
 	case "request_result_unknown":
 		return "一条新请求的结果未知，已保留原记录并暂停；不会自动重发"
 	case "owner_interrupted":
@@ -389,7 +419,7 @@ func (a *App) backlogControls(c *ui.Context, q *projectQueueState, p AccessProje
 				switch {
 				case paused:
 					title, detail = "会话采集已暂停", backlogReason(j.Reason)
-				case q.AutomaticSave || (j != nil && j.Automatic && j.active()):
+				case q.projectAutoCapture(p) && q.AutomaticSave:
 					title, detail = "自动采集已开启", "新会话记录会在后台持续采集，状态待确认的记录不会重复发送。"
 				case j.active():
 					title, detail = "正在采集会话", "切换页面后会继续采集。"
@@ -403,17 +433,12 @@ func (a *App) backlogControls(c *ui.Context, q *projectQueueState, p AccessProje
 				homeText(c, detail, homeMeta).MaxLines(2)
 			})
 			switch {
-			case !paused && (q.AutomaticSave || j.active()):
-				label := "暂停自动采集"
-				if j != nil && !j.Automatic {
-					label = "停止后续采集"
-				}
-				if j != nil && j.Status == "stopping" {
+			case j.active():
+				label := "停止后续采集"
+				if j.Status == "stopping" {
 					label = "正在停止…"
 				}
-				if j != nil {
-					queueAction(c, label, func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || j.Status == "stopping")
-				}
+				queueAction(c, label, func() { a.changeBacklog(q, p, true) }).Disabled(q.BacklogBusy || j.Status == "stopping")
 			case paused && (j.Reason == "write_denied" || j.Reason == "policy_unconfirmed" || j.Reason == "backlog_write_denied"):
 				queueAction(c, "重新检查权限", a.RefreshProjectDirectory).Disabled(a.access.Loading || a.access.Busy)
 			default:

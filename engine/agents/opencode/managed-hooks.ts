@@ -29,6 +29,13 @@ const extractText = (parts: TextPart[]): string =>
     .map((part) => (part.type === "text" ? (part.text ?? "") : ""))
     .join("\n");
 
+async function checkCapture(window: CaptureWindow, control: ManagedProjectControl, native: string) {
+  const policy = await control.captureStatus(native);
+  if (!policy.enabled) window.disable(native);
+  else window.resume(native, policy.updated_at);
+  return policy;
+}
+
 export async function captureManagedConversation(
   deps: {
     autoCapture: boolean;
@@ -48,16 +55,11 @@ export async function captureManagedConversation(
     return;
   }
   if (deps.window.candidates(native).length === 0) return;
-  if (!await deps.control.permits(native, "capture")) {
-    deps.window.disable(native);
-    return;
-  }
+  if (!(await checkCapture(deps.window, deps.control, native)).enabled) return;
   // Read only IDs observed after activation, never list a session's history.
   for (const [messageID, parentID] of deps.window.candidates(native)) {
-    if (!await deps.control.permits(native, "capture")) {
-      deps.window.disable(native);
-      return;
-    }
+    if (!(await checkCapture(deps.window, deps.control, native)).enabled) return;
+    if (!deps.window.allowed(native, parentID)) continue;
     const response = await deps.sessionClient!.message!({ path: { id: native, messageID }, query: { directory: deps.directory } });
     if (response.error || !response.data) throw new Error("Cannot read observed completed message");
     const message = response.data;
@@ -66,10 +68,8 @@ export async function captureManagedConversation(
       deps.window.finish(native, messageID);
       continue;
     }
-    if (!await deps.control.permits(native, "capture")) {
-      deps.window.disable(native);
-      return;
-    }
+    if (!(await checkCapture(deps.window, deps.control, native)).enabled) return;
+    if (!deps.window.allowed(native, parentID)) continue;
     const questionResponse = await deps.sessionClient!.message!({ path: { id: native, messageID: parentID }, query: { directory: deps.directory } });
     if (questionResponse.error || !questionResponse.data) throw new Error("Cannot read observed parent message");
     const parent = questionResponse.data;
@@ -81,7 +81,8 @@ export async function captureManagedConversation(
     const answer = deps.safeText(extractText(message.parts));
     if (question && answer) {
       const id = deps.hash(deps.sid(native) + ":qa:" + message.info.id);
-      await deps.delivery.enqueue(native, id, deps.sid(native), { type: "qa", question, answer, context: `opencode_capture:${id}` });
+      await deps.delivery.enqueue(native, id, deps.sid(native),
+        { type: "qa", question, answer, context: `opencode_capture:${id}` }, deps.window.promptCreated(native, parentID));
     }
     deps.window.finish(native, messageID);
   }
@@ -95,13 +96,16 @@ export async function recordManagedPrompt(
   messageID: string,
   created: number,
 ): Promise<void> {
-  let capture = false;
-  try {
-    capture = autoCapture && await control.permits(sessionID, "capture");
-  } catch {
-    /* Unconfirmed turns are never backfilled. */
+  window.prompt(sessionID, messageID, created, autoCapture ? undefined : false);
+  if (!autoCapture) {
+    window.disable(sessionID);
+    return;
   }
-  window.prompt(sessionID, messageID, created, capture);
+  try {
+    await checkCapture(window, control, sessionID);
+  } catch {
+    // Keep only observed IDs so an online retry can validate the same turn.
+  }
 }
 
 export async function allowManagedToolCapture(
@@ -110,11 +114,12 @@ export async function allowManagedToolCapture(
   promptID: string | undefined,
   sessionID: string,
 ): Promise<boolean> {
-  if (!promptID || !window.allowed(sessionID, promptID) || !await control.permits(sessionID, "capture")) {
-    window.disable(sessionID);
+  if (!promptID || !window.allowed(sessionID, promptID)) return false;
+  try {
+    return (await checkCapture(window, control, sessionID)).enabled && window.allowed(sessionID, promptID);
+  } catch {
     return false;
   }
-  return true;
 }
 
 export function observeManagedMessageEvent(

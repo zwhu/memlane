@@ -24,8 +24,16 @@ def _coding_memory(coding_mod=None):
     return coding_mod if coding_mod is not None else importlib.import_module('_coding_memory')
 
 
+def _capture_decision(policy_mod):
+    fn = getattr(policy_mod, 'capture_decision', None)
+    if callable(fn):
+        return fn()
+    return ('enabled' if policy_mod.permit('capture') else 'disabled', None)
+
+
 def begin_capture_boundary(policy_mod, transcript):
     """Record only a stat at installation/session activation; never read history."""
+    _, version = _capture_decision(policy_mod)
     with policy_mod._state() as state:
         if state.get('host_boundary_established'):
             return
@@ -37,6 +45,8 @@ def begin_capture_boundary(policy_mod, transcript):
             # Unknown material arriving later cannot be assumed to be new.
             # The first live capture establishes its stat and skips that turn.
             state['paused'] = True
+        if version is not None:
+            state['capture_policy_version'] = version
         state['host_boundary_established'] = True
 
 
@@ -46,7 +56,8 @@ def claude_begin_capture_boundary(policy_mod, transcript, *, source=None, sessio
     common = _plugin_common(common_mod)
     path = Path(transcript).absolute() if transcript else None
     fresh = None
-    if path and source == 'startup' and session_key == common.get_session_key():
+    status, version = _capture_decision(policy_mod)
+    if status == 'enabled' and path and source == 'startup' and session_key == common.get_session_key():
         try:
             if str(uuid.UUID(session_key)) != session_key:
                 raise ValueError()
@@ -65,6 +76,7 @@ def claude_begin_capture_boundary(policy_mod, transcript, *, source=None, sessio
                     'parent_inode': parent.st_ino,
                     'parent_device': parent.st_dev,
                     'revision': decision['revision'],
+                    'capture_policy_version': version,
                     'observed_absent_at': time.time(),
                 }
         except (ValueError, OSError, KeyError, policy_mod.NotReady):
@@ -80,6 +92,8 @@ def claude_begin_capture_boundary(policy_mod, transcript, *, source=None, sessio
             state['paused'] = True
             if fresh:
                 state['fresh_host_transcript'] = fresh
+        if version is not None:
+            state['capture_policy_version'] = version
         state['host_boundary_established'] = True
 
 
@@ -87,13 +101,17 @@ def claude_capture_boundary(policy_mod, fallback_boundary, transcript, *, enable
     with policy_mod._state() as state:
         fresh = state.get('fresh_host_transcript')
     if fresh:
+        status, version = _capture_decision(policy_mod)
+        if enabled and status == 'unknown':
+            return None
         path = Path(transcript).absolute()
         try:
             decision = policy_mod.current()
             parent = path.parent.stat()
             stat = path.stat()
             valid = (
-                enabled
+                enabled and status == 'enabled'
+                and version == fresh.get('capture_policy_version')
                 and decision['revision'] == fresh['revision']
                 and 'write' in decision['policy']['permissions']
                 and decision['policy']['can_capture']
@@ -116,6 +134,8 @@ def claude_capture_boundary(policy_mod, fallback_boundary, transcript, *, enable
                 if valid and not state.get('cursor_unconfirmed'):
                     state.pop('paused', None)
                     state['cursor'] = {**policy_mod._position(path), 'size': 0}
+                    if version is not None:
+                        state['capture_policy_version'] = version
                     return 0
     return fallback_boundary(transcript, enabled=enabled)
 
@@ -173,10 +193,6 @@ def cursor_context_lookup(prompt, cwd, *, policy_mod=None, coding_mod=None):
         return None
     context = _coding_memory(coding_mod).build_block(prompt, cwd)
     return {'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': context}}
-
-
-def cursor_store_allowed(capture_enabled, *, policy_mod=None):
-    return bool(capture_enabled() and _policy(policy_mod).permit('capture'))
 
 
 def cursor_hold_record(turn, query, cwd, sanitize):

@@ -33,7 +33,7 @@ def transcript_path(value, session_id):
 def capture_questions(event, payload, request, key, session, dataset):
     from _capture_policy import capture_enabled, sanitize
     from _coding_memory import _SessionState, _deliver, _qa_entries, parse_codex
-    from _memlane_policy import capture_boundary, permit
+    from _memlane_policy import capture_boundary, capture_decision
 
     with _SessionState(key) as state:
         if not state.acquired:
@@ -44,20 +44,37 @@ def capture_questions(event, payload, request, key, session, dataset):
         if not previous_path and (existing_history or 'traex_exclude_history' not in data):
             data['traex_exclude_history'] = bool(existing_history or data.get('host_events'))
         path = transcript_path(payload.get('transcript_path') or previous_path, request['session_id'])
-        allowed = capture_enabled() and permit('capture', dataset)
+        decision = capture_decision(dataset) if capture_enabled() else ('disabled', None)
+        status, version = decision
+        if event in ('SessionStart', 'UserPromptSubmit'):
+            data.pop('traex_active_turn', None)
+        if status == 'unknown':
+            state.save()
+            return {'status': 'capture_policy_unconfirmed'}
         if path is None or (previous_path and str(path) != previous_path):
-            if not allowed:
+            if status != 'enabled':
                 data['traex_exclude_history'] = True
+                data.pop('traex_active_turn', None)
             state.save()
             return {'status': 'transcript_unavailable'}
 
         if data.pop('traex_exclude_history', False):
-            # Baseline existing/unauthorized history with the same stat-only
-            # policy boundary used by Codex before any transcript read.
-            capture_boundary(path, enabled=False)
+            # Baseline existing and unauthorized history without reading it.
+            capture_boundary(path, enabled=False, decision=decision)
         data['traex_transcript'] = str(path)
-        offset = capture_boundary(path, enabled=allowed)
+        new_turn = event == 'UserPromptSubmit'
+        offset = capture_boundary(path, decision=decision, new_turn=new_turn)
+        turn_id = str(payload.get('turn_id') or '')
+        if new_turn and offset is not None:
+            data['traex_active_turn'] = {'version': version, 'turn_id': turn_id}
+        elif offset is None or event in ('Stop', 'SessionEnd'):
+            data.pop('traex_active_turn', None)
+        turn = data.get('traex_active_turn')
         state.save()
+        if event.startswith('PostToolUse'):
+            if turn and turn['version'] == version and (not turn_id or turn_id == turn['turn_id']):
+                return {'status': 'tool_allowed', 'decision': decision}
+            return {'status': 'skipped_policy'}
         if offset is None or event not in ('Stop', 'SessionEnd'):
             return {'status': 'capture_boundary_observed'}
 
@@ -97,15 +114,15 @@ def handle(event, payload):
         tool_id, name = payload.get('tool_use_id'), payload.get('tool_name')
         if not isinstance(tool_id, str) or not isinstance(name, str):
             raise ValueError('traex_tool_identity_required')
-        result = memory.handle({**request, 'operation': 'capture', 'event_id': 'tool:' + tool_id, 'entry': {
+        boundary = capture_questions(event, payload, request, key, session, dataset)
+        if boundary['status'] != 'tool_allowed':
+            return boundary
+        return memory.capture({**request, 'operation': 'capture', 'event_id': 'tool:' + tool_id, 'entry': {
             'type': 'trace', 'origin_function': name, 'method_params': payload.get('tool_input', {}),
             'method_return_value': payload.get('tool_response', ''),
             'status': 'error' if event == 'PostToolUseFailure' else 'success',
             'time': datetime.now(timezone.utc).isoformat(),
-        }})
-        if result.get('status') == 'skipped_policy':
-            capture_questions(event, payload, request, key, session, dataset)
-        return result
+        }}, key, session, dataset, expected_decision=boundary['decision'])
     result = capture_questions(event, payload, request, key, session, dataset)
     flushed = memory.handle({**request, 'operation': 'flush', 'final': event == 'SessionEnd'})
     return result if event == 'Stop' else flushed

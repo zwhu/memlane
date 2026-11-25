@@ -489,7 +489,7 @@ def _read_recall_events_summary(recall_store, allowed_datasets: set[str], agents
     return page['items'], bool(page['more']), started_at
 
 
-async def _read_backlog_slim(backlog, project_id: str):
+async def _read_backlog_slim(backlog, project_id: str, project_auto_capture=True):
     if backlog is None:
         return None, False, [], [], []
     reader = getattr(backlog, 'get', None) or getattr(backlog, 'status', None)
@@ -501,9 +501,7 @@ async def _read_backlog_slim(backlog, project_id: str):
     if not isinstance(result, dict):
         raise PolicyError('backlog_unavailable', 503)
     job = result.get('job')
-    automatic_save = bool(result['automatic_save']) if 'automatic_save' in result else bool(
-        result.get('automatic_enabled', False)
-    )
+    automatic_save = project_auto_capture and bool(result.get('automatic_save', result.get('automatic_enabled', False)))
     return (
         job, automatic_save,
         *(result[key] if isinstance(result.get(key), list) else []
