@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 from generation_config import GenerationStore, compile_environment, runtime_generation, validate_profile
+import generation_probe
 from generation_probe import probe
 from generation_ollama import receipt_for, register_verified_schema
 from project_policy import PolicyError
@@ -131,6 +132,17 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
         cls.runtime = {'official_source': str(ROOT / '.cache/coding-memory-components' / ('service-' + manifest['commit'])),
                        'official_archive': str(ROOT / '.cache/coding-memory-components' / (manifest['commit'] + '.tar.gz')),
                        'generation_mode': 'provider'}
+        real_verify_source = generation_probe.verify_source
+        cls.verified_source = real_verify_source(cls.runtime)
+
+        def _reuse_verified_source(config):
+            if (config.get('official_source') == cls.runtime['official_source']
+                    and config.get('official_archive') == cls.runtime['official_archive']):
+                return cls.verified_source
+            return real_verify_source(config)
+
+        cls.verify_patch = patch.object(generation_probe, 'verify_source', side_effect=_reuse_verified_source)
+        cls.verify_patch.start()
         sys.path.insert(0, cls.runtime['official_source'])
         with contextlib.redirect_stdout(io.StringIO()):
             from cognee.infrastructure.llm.config import LLMConfig
@@ -139,6 +151,7 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.verify_patch.stop()
         cls.environment.stop()
         cls.temporary.cleanup()
 
@@ -206,7 +219,7 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
                 self.wfile.write(raw)
 
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
         thread.start()
         endpoint = 'http://127.0.0.1:' + str(server.server_port)
         environment = compile_environment({**PROFILE, **(options or {}), 'endpoint': endpoint}, {})
@@ -276,7 +289,7 @@ class OllamaWireTests(unittest.IsolatedAsyncioTestCase):
                 self.end_headers()
                 self.wfile.write(raw)
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
         thread.start()
         endpoint = 'http://127.0.0.1:' + str(server.server_port)
         cfg = self.LLMConfig(llm_provider='ollama', llm_model='ollama_chat/synthetic',

@@ -300,6 +300,8 @@ class BacklogBoundedAndBatchFlushTests(unittest.IsolatedAsyncioTestCase):
             fake_cp.sanitize = lambda raw: raw
             fake_pc = _t.ModuleType('plugin_capture')
             fake_pc.capture_entry_key = lambda e: e.get('message_id', '')
+            fake_pc.capture_payload = lambda raw, ambiguous=False: raw
+            fake_pc.persist_capture_summary = lambda common, policy, ds, sess, entry, summary: entry
             fake_pc.entry_held = lambda st, e: False
             fake_pc.retain_failure = lambda *a, **k: None
             fake_pc.release_entry_hold = lambda *a, **k: None

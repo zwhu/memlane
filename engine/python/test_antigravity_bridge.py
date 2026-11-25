@@ -20,8 +20,9 @@ SCHEMA = {'type': 'object', 'properties': {'text': {'type': 'string'}},
 
 FAKE = r'''
 import json,os,pathlib,signal,subprocess,sys,time
-record=pathlib.Path(__RECORD__)
-mode=__MODE__
+cfg=json.loads(pathlib.Path(__DISPATCH__).read_text())
+record=pathlib.Path(cfg['record'])
+mode=cfg['mode']
 argv=sys.argv[1:]
 def flag(key):return argv[argv.index(key)+1]
 schema=json.loads(pathlib.Path(flag('--json-schema')).read_text())
@@ -59,12 +60,12 @@ if mode=='cancel':
     signal.signal(signal.SIGINT,interrupt)
     time.sleep(300)
 if mode=='stream-stdout':
-    for idx in range(7):
-        time.sleep(0.2)
+    for idx in range(5):
+        time.sleep(0.07)
         print(json.dumps({'event':'step_update','step_update':{'conversation_id':'controlled-conversation','step_type':'agent_response','state':'ACTIVE','text_delta':f'part-{idx}'}}),flush=True)
 if mode=='stream-stderr':
-    for idx in range(7):
-        time.sleep(0.2)
+    for idx in range(5):
+        time.sleep(0.07)
         print(f'agy heartbeat {idx}',file=sys.stderr,flush=True)
 if mode=='unexpected-exit':
     print('agy unexpected crash',file=sys.stderr,flush=True)
@@ -81,6 +82,19 @@ sys.stdin.read()
 
 
 class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._shared_temp = tempfile.TemporaryDirectory()
+        cls._shared_root = Path(cls._shared_temp.name).resolve()
+        cls._dispatch_path = cls._shared_root / 'dispatch.json'
+        cls._shared_script = cls._shared_root / 'native-agy'
+        cls._shared_script.write_text('#!' + sys.executable + '\n' + FAKE.replace('__DISPATCH__', repr(str(cls._dispatch_path))))
+        cls._shared_script.chmod(0o700)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._shared_temp.cleanup()
+
     async def asyncSetUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -95,11 +109,9 @@ class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     def args(self, mode='success'):
         record = self.root / (mode + '.json')
-        script = self.root / ('native-' + mode)
-        script.write_text('#!' + sys.executable + '\n' + FAKE.replace('__RECORD__', repr(str(record))).replace('__MODE__', repr(mode)))
-        script.chmod(0o700)
+        self._dispatch_path.write_text(json.dumps({'mode': mode, 'record': str(record)}))
         return SimpleNamespace(bridge_kind='antigravity', model='stale profile label', auth_home=self.profile,
-                               agent_executable=script, codex_executable=script, timeout=10,
+                               agent_executable=self._shared_script, codex_executable=self._shared_script, timeout=10,
                                owned_processes={}, record=record)
 
     async def test_native_default_snapshot_and_inflight_freeze(self):
@@ -189,7 +201,7 @@ class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
                 'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
         for mode in ('stream-stdout', 'stream-stderr'):
             with self.subTest(mode=mode):
-                args = self.http_args(mode, timeout=0.9)
+                args = self.http_args(mode, timeout=0.25)
                 client = TestClient(TestServer(create_app(args)))
                 await client.start_server()
                 try:
@@ -209,7 +221,7 @@ class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_silent_hang_returns_504_interrupts_and_reaps_process_group(self):
         body = {'model': 'stale profile label', 'messages': [{'role': 'user', 'content': 'material'}],
                 'response_format': {'type': 'json_schema', 'json_schema': {'schema': SCHEMA}}}
-        args = self.http_args('cancel', timeout=0.9)
+        args = self.http_args('cancel', timeout=0.3)
         client = TestClient(TestServer(create_app(args)))
         await client.start_server()
         try:
@@ -248,7 +260,7 @@ class AgyBridgeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_hang_after_result_hits_idle_timeout_with_504_and_reaps_group(self):
         args = self.args('hang-after-result')
-        args.timeout = 0.9
+        args.timeout = 0.3
         with self.assertRaises(CompletionError) as caught:
             await execute(args, 'system', 'material', SCHEMA, SCHEMA)
         self.assertEqual((caught.exception.code, caught.exception.status), ('antigravity_timeout', 504))

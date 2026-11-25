@@ -273,13 +273,16 @@ class BuildReleaseTests(unittest.TestCase):
     def _init_git_repo(self, repo: Path, *, with_graph: bool = True) -> str:
         self._write_fake_repo(repo, with_graph=with_graph)
         (repo / 'README.md').write_text('# fixture\n', encoding='utf-8')
-        subprocess.run(['git', 'init'], cwd=repo, check=True, capture_output=True)
-        subprocess.run(['git', 'config', 'user.email', 'test@example.com'], cwd=repo, check=True, capture_output=True)
-        subprocess.run(['git', 'config', 'user.name', 'Tester'], cwd=repo, check=True, capture_output=True)
-        subprocess.run(['git', 'add', '.'], cwd=repo, check=True, capture_output=True)
-        tree = subprocess.check_output(['git', 'write-tree'], cwd=repo, text=True).strip()
-        commit = subprocess.check_output(['git', 'commit-tree', tree, '-m', 'init'], cwd=repo, text=True).strip()
-        subprocess.run(['git', 'update-ref', 'HEAD', commit], cwd=repo, check=True, capture_output=True)
+        git_env = {
+            **os.environ,
+            'GIT_AUTHOR_NAME': 'Tester', 'GIT_AUTHOR_EMAIL': 'test@example.com',
+            'GIT_COMMITTER_NAME': 'Tester', 'GIT_COMMITTER_EMAIL': 'test@example.com',
+        }
+        subprocess.run(['git', 'init', '-q'], cwd=repo, env=git_env, check=True, capture_output=True)
+        subprocess.run(['git', 'add', '.'], cwd=repo, env=git_env, check=True, capture_output=True)
+        tree = subprocess.check_output(['git', 'write-tree'], cwd=repo, env=git_env, text=True).strip()
+        commit = subprocess.check_output(['git', 'commit-tree', tree, '-m', 'init'], cwd=repo, env=git_env, text=True).strip()
+        subprocess.run(['git', 'update-ref', 'HEAD', commit], cwd=repo, env=git_env, check=True, capture_output=True)
         return commit
 
     def test_dry_run_git_ref_validates_target_ref_not_dirty_workspace(self):

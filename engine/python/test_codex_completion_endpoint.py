@@ -18,6 +18,7 @@ import codex_completion_endpoint as endpoint
 from process_groups import group_exists
 
 SCHEMA = {'type': 'object', 'properties': {'answer': {'type': 'string'}}, 'required': ['answer']}
+# Retained verbatim for downstream test modules (test_generation_bridge, test_performance_trace).
 FAKE = '''#!{python}
 import json,os,sys,time
 from pathlib import Path
@@ -63,6 +64,127 @@ for line in sys.stdin:
  if method=='turn/interrupt':
   send({{'id':m['id'],'result':{{}}}})
   send({{'method':'turn/completed','params':{{'threadId':'t','turn':{{'id':'u','status':'interrupted'}}}}}})
+'''
+SHARED_FAKE = '''#!{python}
+import json, os, subprocess, sys, time
+from pathlib import Path
+cfg = json.loads(Path({dispatch_path!r}).read_text())
+mode = cfg['mode']
+if sys.argv[1:] == ['features', 'list']:
+    listing = cfg.get('features_list')
+    if listing is not None:
+        print(listing)
+        sys.exit(cfg.get('features_list_exit', 0))
+    sys.exit(cfg.get('features_list_exit', 2))
+if cfg.get('assert_strict_argv'):
+    assert sys.argv[1:] == ['app-server', '--strict-config', '--stdio'], sys.argv
+if mode == 'stderr-overflow':
+    sys.stderr.write('synthetic-start-error' + 'x' * 40000)
+    sys.exit(1)
+if mode == 'startup-timeout-noise':
+    sys.stderr.write('debug log: unknown field `hooks` mentioned in prose\\n')
+    sys.stderr.flush()
+    time.sleep(10)
+    sys.exit(0)
+kind = cfg.get('kind', 'codex')
+provider = 'trae' if kind == 'traex' else 'openai'
+home_env = 'TRAE_HOME' if kind == 'traex' else 'CODEX_HOME'
+config_name = 'traecli.toml' if kind == 'traex' else 'config.toml'
+config = (Path(os.environ[home_env]) / config_name).read_text()
+for key, message, code in cfg.get('reject_features', ()):
+    if key + ' = false' in config:
+        sys.stderr.write(message)
+        sys.exit(code)
+for key in cfg.get('reject_keys', ()):
+    if key == 'unrelated_option' or key + ' = false' in config:
+        sys.stderr.write("unknown feature '" + key + "'")
+        sys.exit(2)
+assert 'hooks = false' in config and 'plugins = false' in config
+if not cfg.get('idle_mode'):
+    assert 'shell_tool = false' in config
+    assert not (Path(os.environ[home_env]) / 'daily-marker').exists()
+if cfg.get('check_effort'):
+    assert 'model_reasoning_effort = "medium"' in config
+    assert 'service_tier = "fast"' in config
+    assert 'extract_model = "fixture-model"' in config
+    assert 'consolidation_model = "fixture-model"' in config
+record_file = cfg.get('record_path')
+record = {{'interrupted': False, 'grandchild': None, 'turn_elapsed': 0.0}}
+def save():
+    if record_file:
+        tmp = record_file + '.tmp'
+        Path(tmp).write_text(json.dumps(record))
+        os.replace(tmp, record_file)
+def send(x):
+    print(json.dumps(x), flush=True)
+disconnect = {{'codexErrorInfo': {{'responseStreamDisconnected': {{'httpStatusCode': None}}}},
+              'message': 'synthetic error detail that must stay private'}}
+for line in sys.stdin:
+    m = json.loads(line); method = m['method']; p = m.get('params', {{}})
+    if method == 'initialize':
+        send({{'id': m['id'], 'result': {{}}}})
+    elif method == 'thread/start':
+        send({{'id': m['id'], 'result': {{'thread': {{'id': 't'}}, 'model': 'fixture-model', 'modelProvider': provider, 'runtimeWorkspaceRoots': [], 'activePermissionProfile': {{'id': 'memlane_completion'}}}}}})
+    elif method == 'turn/start':
+        if mode == 'retry-before-reply':
+            send({{'method': 'turn/started', 'params': {{'threadId': 't', 'turn': {{'id': 'u'}}}}}})
+        else:
+            send({{'id': m['id'], 'result': {{'turn': {{'id': 'u'}}}}}})
+        if cfg.get('idle_mode'):
+            turn_started = time.monotonic()
+            if mode == 'stream-stdout':
+                for idx in range(5):
+                    time.sleep(0.07)
+                    send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': f'step-{{idx}}'}}}})
+            elif mode == 'stream-stderr':
+                for idx in range(5):
+                    time.sleep(0.07)
+                    sys.stderr.write(f'thinking heartbeat {{idx}}\\n')
+                    sys.stderr.flush()
+            elif mode == 'silent-hang':
+                child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+                record['grandchild'] = child.pid
+                save()
+                send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': 'started'}}}})
+                continue
+            elif mode == 'unexpected-exit':
+                sys.stderr.write('fatal crash mid-turn\\n')
+                sys.stderr.flush()
+                sys.exit(1)
+            record['turn_elapsed'] = time.monotonic() - turn_started
+            save()
+            send({{'method': 'item/completed', 'params': {{'threadId': 't', 'turnId': 'u', 'item': {{'type': 'agentMessage', 'text': json.dumps({{'answer': 'ok'}})}}}}}})
+            send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'completed', 'error': None}}}}}})
+            continue
+        if mode in ('retry-success', 'retry-terminal', 'retry-wrong-turn', 'retry-hang', 'retry-before-reply', 'terminal'):
+            if mode == 'retry-success':
+                send({{'method': 'item/completed', 'params': {{'threadId': 't', 'turnId': 'u', 'item': {{'type': 'agentMessage', 'text': '{{"answer":"stale"}}'}}}}}})
+            turn_id = 'wrong' if (mode == 'retry-wrong-turn' or cfg.get('force_wrong_turn')) else 'u'
+            send({{'method': 'error', 'params': {{'threadId': 't', 'turnId': turn_id,
+                                                 'willRetry': mode != 'terminal', 'error': disconnect}}}})
+            if mode == 'retry-before-reply':
+                send({{'id': m['id'], 'result': {{'turn': {{'id': 'u'}}}}}})
+            if mode == 'retry-terminal':
+                send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'failed', 'error': disconnect}}}}}})
+                continue
+        if mode in ('hang', 'retry-hang'):
+            continue
+        if mode == 'slow-success':
+            time.sleep(.06)
+        thread = 'wrong' if mode == 'wrong-id' else 't'
+        if mode == 'plain':
+            assert p['outputSchema']['properties']['text']['type'] == 'string'
+            assert p['outputSchema']['additionalProperties'] is False
+            item = {{'type': 'agentMessage', 'text': json.dumps({{'text': 'test'}})}}
+        else:
+            item = {{'type': 'commandExecution'}} if mode == 'tool' else {{'type': 'agentMessage', 'text': json.dumps({{'answer': 4 if mode == 'bad-schema' else 'ok'}})}}
+        send({{'method': 'item/completed', 'params': {{'threadId': thread, 'turnId': 'u', 'item': item}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'completed', 'error': None}}}}}})
+    elif method == 'turn/interrupt':
+        record['interrupted'] = True
+        save()
+        send({{'id': m['id'], 'result': {{}}}})
+        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'interrupted'}}}}}})
 '''
 
 
@@ -142,9 +264,26 @@ class SchemaTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        import sys
+        cls._shared_temp = tempfile.TemporaryDirectory()
+        cls._shared_root = Path(cls._shared_temp.name)
+        cls._dispatch_path = cls._shared_root / 'dispatch.json'
+        cls._shared_executable = cls._shared_root / 'codex'
+        cls._shared_executable.write_text(
+            SHARED_FAKE.format(python=sys.executable, dispatch_path=str(cls._dispatch_path))
+        )
+        cls._shared_executable.chmod(0o700)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._shared_temp.cleanup()
+
     async def asyncSetUp(self):
         import sys
         self.python = sys.executable
+        endpoint._feature_cache.clear()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.auth = self.root / 'daily'
@@ -153,7 +292,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
         (self.auth/'daily-marker').write_text('must not copy')
         (self.auth/'config.toml').write_text('model = "fixture-model"\n')
         (self.auth/'traecli.toml').write_text('model = "fixture-model"\n')
-        self.executable = self.root / 'codex'
+        self.executable = self._shared_executable
         self.args = SimpleNamespace(model='fixture-model',codex_executable=self.executable,auth_home=self.auth,timeout=2,diagnostics_dir=self.root/'diagnostics')
         self.processes = []
         self.peak_live = 0
@@ -168,24 +307,24 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self.patcher.stop()
+        endpoint._feature_cache.clear()
         for p in self.processes:
             self.assertIsNotNone(p.returncode)
             with self.assertRaises(ProcessLookupError): os.killpg(p.pid, 0)
         self.temporary.cleanup()
 
-    def fake_source(self, mode, kind='codex'):
-        source = FAKE.format(python=self.python, mode=mode)
-        if kind == 'traex':
-            source = source.replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'")
-            source = source.replace("'config.toml'", "'traecli.toml'")
-        return source
-
     def write_executable(self, source):
-        self.executable.write_text(source)
-        self.executable.chmod(0o700)
+        target = self.root / 'codex-local'
+        target.write_text(source)
+        target.chmod(0o700)
+        self.executable = target
+        self.args.codex_executable = target
+        return target
 
-    def fake(self, mode, kind='codex'):
-        self.write_executable(self.fake_source(mode, kind))
+    def fake(self, mode, kind='codex', **options):
+        self.executable = self._shared_executable
+        self.args.codex_executable = self._shared_executable
+        self._dispatch_path.write_text(json.dumps({'mode': mode, 'kind': kind, **options}))
 
     async def run_fake(self, mode):
         self.fake(mode)
@@ -241,7 +380,7 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 ('retry-hang', 'codex_timeout', 504),
             ):
                 with self.subTest(kind=kind, mode=mode):
-                    status, result, rows = await self.retry_request(kind, mode, timeout=.8 if mode == 'retry-hang' else 3)
+                    status, result, rows = await self.retry_request(kind, mode, timeout=.25 if mode == 'retry-hang' else 3)
                     self.assertEqual(status, expected_status, result)
                     self.assertEqual(result['error']['code'], code)
                     retries = [row for row in rows if row.get('event') == 'codex_turn_error']
@@ -258,23 +397,12 @@ class ExecutionTests(unittest.IsolatedAsyncioTestCase):
                 if kind == 'traex':
                     (self.auth/'cli').mkdir(exist_ok=True)
                     (self.auth/'cli/auth.json').write_text('{"synthetic":true}')
-                self.fake('success')
-                source = self.executable.read_text()
-                if kind == 'traex':
-                    source = source.replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'").replace("'config.toml'", "'traecli.toml'")
-                source = source.replace('def send(x):', '''assert 'model_reasoning_effort = "medium"' in config
-assert 'service_tier = "fast"' in config
-assert 'extract_model = "fixture-model"' in config
-assert 'consolidation_model = "fixture-model"' in config
-def send(x):''')
-                self.executable.write_text(source)
+                self.fake('success', kind, check_effort=True)
                 self.assertEqual(json.loads(await endpoint.execute(self.args,'system','prompt',SCHEMA,endpoint.strict_schema(SCHEMA))),{'answer':'ok'})
                 self.assertEqual(self.args.model,'obsolete-saved-model')
 
     async def test_traex_keeps_subscription_auth_in_its_own_cli_layout(self):
-        self.fake('success')
-        source = self.executable.read_text().replace("'openai'", "'trae'").replace("'CODEX_HOME'", "'TRAE_HOME'").replace("'config.toml'", "'traecli.toml'")
-        self.executable.write_text(source)
+        self.fake('success', 'traex')
         directory = self.auth / 'cli'
         directory.mkdir()
         (directory / 'auth.json').write_text('{"synthetic_traex":true}')
@@ -357,20 +485,16 @@ sys.exit({status})
 
     async def test_strict_config_retries_unsupported_keys_and_caches_rejections(self):
         args = self.prepare_http_args('traex', timeout=3)
-        source = self.fake_source('success', 'traex')
-        source = source.replace("root=Path(", """if sys.argv[1:] == ['features', 'list']:
- print('shell_tool stable true\\nshell_unused stable false\\nhooks stable true\\nplugins stable true'
-       '\\nview_image stable true\\nremote_plugin stable false')
- sys.exit(0)
-assert sys.argv[1:] == ['app-server', '--strict-config', '--stdio']
-root=Path(""")
-        source = source.replace('def send(x):', """for key, message in [('view_image', 'Error: /tmp/traecli.toml:2:1: unknown configuration field `features.view_image`\\n'),
-                     ('remote_plugin', 'invalid feature "remote_plugin"')]:
- if key + ' = false' in config:
-  sys.stderr.write(message)
-  sys.exit(2)
-def send(x):""")
-        self.write_executable(source)
+        self.fake(
+            'success', 'traex',
+            features_list='shell_tool stable true\nshell_unused stable false\nhooks stable true\nplugins stable true\nview_image stable true\nremote_plugin stable false',
+            features_list_exit=0,
+            assert_strict_argv=True,
+            reject_features=[
+                ['view_image', 'Error: /tmp/traecli.toml:2:1: unknown configuration field `features.view_image`\n', 2],
+                ['remote_plugin', 'invalid feature "remote_plugin"', 2],
+            ],
+        )
         for expected_spawns in (3, 1):
             before = len(self.processes)
             result = await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
@@ -381,12 +505,10 @@ def send(x):""")
 
     async def test_cancellation_during_startup_cleanup_does_not_retry_worker(self):
         args = self.prepare_http_args('traex', timeout=3)
-        source = self.fake_source('success', 'traex')
-        source = source.replace('def send(x):', """if 'hooks = false' in config:
- sys.stderr.write('Error: /tmp/traecli.toml:2:1: unknown configuration field `features.hooks`\\n')
- sys.exit(1)
-def send(x):""")
-        self.write_executable(source)
+        self.fake(
+            'success', 'traex',
+            reject_features=[['hooks', 'Error: /tmp/traecli.toml:2:1: unknown configuration field `features.hooks`\n', 1]],
+        )
         entered = asyncio.Event()
         release = asyncio.Event()
         real_terminate = endpoint.terminate
@@ -407,15 +529,8 @@ def send(x):""")
         self.assertEqual(len(self.processes) - before, 1)
 
     async def test_startup_timeout_with_log_noise_does_not_exclude_disabled_feature(self):
-        args = self.prepare_http_args('traex', timeout=.3)
-        self.write_executable(f"""#!{self.python}
-import sys, time
-if sys.argv[1:] == ['features', 'list']:
-    sys.exit(2)
-sys.stderr.write('debug log: unknown field `hooks` mentioned in prose\\n')
-sys.stderr.flush()
-time.sleep(10)
-""")
+        args = self.prepare_http_args('traex', timeout=.25)
+        self.fake('startup-timeout-noise', 'traex', features_list_exit=2)
         before = len(self.processes)
         with self.assertRaises(endpoint.CompletionError) as caught:
             await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
@@ -427,27 +542,17 @@ time.sleep(10)
 
     async def test_terminal_error_with_wrong_turn_id_rejected(self):
         args = self.prepare_http_args('traex', timeout=3)
-        source = self.fake_source('terminal', 'traex').replace(
-            "'turnId':'wrong' if mode == 'retry-wrong-turn' else 'u'",
-            "'turnId':'wrong'",
-        )
-        self.write_executable(source)
+        self.fake('terminal', 'traex', force_wrong_turn=True)
         with self.assertRaises(endpoint.CompletionError) as caught:
             await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
         self.assertEqual((caught.exception.code, caught.exception.status), ('codex_event_identity_invalid', 502))
 
     async def test_strict_config_ignores_nonfeature_errors_and_limits_retries(self):
         args = self.prepare_http_args('traex', timeout=3)
-        source = self.fake_source('success', 'traex')
         for keys, expected_spawns in ((['unrelated_option'], 1), (['apps', 'memories', 'code_mode_host'], 3)):
             with self.subTest(keys=keys):
-                rejection = f"""
-for key in {keys!r}:
- if key == 'unrelated_option' or key + ' = false' in config:
-  sys.stderr.write("unknown feature '" + key + "'")
-  sys.exit(2)
-"""
-                self.write_executable(source.replace('def send(x):', rejection + 'def send(x):'))
+                endpoint._feature_cache.clear()
+                self.fake('success', 'traex', reject_keys=keys)
                 before = len(self.processes)
                 with self.assertRaisesRegex(endpoint.CompletionError, 'codex_transport_closed'):
                     await endpoint.execute(args, 'system', 'prompt', SCHEMA, endpoint.strict_schema(SCHEMA))
@@ -461,8 +566,7 @@ for key in {keys!r}:
                     self.assertEqual(len(self.processes) - before, 1)
 
     async def test_startup_stderr_retained_privately_and_bounded(self):
-        self.executable.write_text('#!' + self.python + '\nimport sys\nsys.stderr.write("synthetic-start-error" + "x" * 40000)\nsys.exit(1)\n')
-        self.executable.chmod(0o700)
+        self.fake('stderr-overflow')
         with self.assertRaises(endpoint.CompletionError) as caught:
             await endpoint.execute(self.args, 's', 'p', SCHEMA, endpoint.strict_schema(SCHEMA))
         self.assertEqual(caught.exception.code, 'codex_transport_closed')
@@ -483,7 +587,11 @@ for key in {keys!r}:
     async def test_cancel_interrupt_and_exit(self):
         self.fake('hang')
         task = asyncio.create_task(endpoint.execute(self.args, 's','p', SCHEMA,endpoint.strict_schema(SCHEMA)))
-        await asyncio.sleep(.15)
+        for _ in range(100):
+            if self.processes:
+                break
+            await asyncio.sleep(.01)
+        await asyncio.sleep(.03)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError): await task
 
@@ -498,64 +606,7 @@ for key in {keys!r}:
         self.assertGreaterEqual(len(hits), 6)
 
     def write_idle_fake(self, kind, mode, record_path=None):
-        provider = 'trae' if kind == 'traex' else 'openai'
-        home_env = 'TRAE_HOME' if kind == 'traex' else 'CODEX_HOME'
-        config_name = 'traecli.toml' if kind == 'traex' else 'config.toml'
-        script = f'''#!{self.python}
-import json, os, subprocess, sys, time
-from pathlib import Path
-config = (Path(os.environ[{home_env!r}]) / {config_name!r}).read_text()
-assert 'hooks = false' in config and 'plugins = false' in config
-record_file = {repr(str(record_path)) if record_path else None}
-record = {{'interrupted': False, 'grandchild': None, 'turn_elapsed': 0.0}}
-def save():
-    if record_file:
-        tmp = record_file + '.tmp'
-        Path(tmp).write_text(json.dumps(record))
-        os.replace(tmp, record_file)
-def send(x):
-    print(json.dumps(x), flush=True)
-mode = {mode!r}
-for line in sys.stdin:
-    m = json.loads(line); method = m['method']
-    if method == 'initialize':
-        send({{'id': m['id'], 'result': {{}}}})
-    elif method == 'thread/start':
-        send({{'id': m['id'], 'result': {{'thread': {{'id': 't'}}, 'model': 'fixture-model', 'modelProvider': {provider!r}, 'runtimeWorkspaceRoots': [], 'activePermissionProfile': {{'id': 'memlane_completion'}}}}}})
-    elif method == 'turn/start':
-        send({{'id': m['id'], 'result': {{'turn': {{'id': 'u'}}}}}})
-        turn_started = time.monotonic()
-        if mode == 'stream-stdout':
-            for idx in range(7):
-                time.sleep(0.2)
-                send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': f'step-{{idx}}'}}}})
-        elif mode == 'stream-stderr':
-            for idx in range(7):
-                time.sleep(0.2)
-                sys.stderr.write(f'thinking heartbeat {{idx}}\\n')
-                sys.stderr.flush()
-        elif mode == 'silent-hang':
-            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
-            record['grandchild'] = child.pid
-            save()
-            send({{'method': 'item/reasoning/summaryTextDelta', 'params': {{'threadId': 't', 'turnId': 'u', 'delta': 'started'}}}})
-            continue
-        elif mode == 'unexpected-exit':
-            sys.stderr.write('fatal crash mid-turn\\n')
-            sys.stderr.flush()
-            sys.exit(1)
-        record['turn_elapsed'] = time.monotonic() - turn_started
-        save()
-        send({{'method': 'item/completed', 'params': {{'threadId': 't', 'turnId': 'u', 'item': {{'type': 'agentMessage', 'text': json.dumps({{'answer': 'ok'}})}}}}}})
-        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'completed', 'error': None}}}}}})
-    elif method == 'turn/interrupt':
-        record['interrupted'] = True
-        save()
-        send({{'id': m['id'], 'result': {{}}}})
-        send({{'method': 'turn/completed', 'params': {{'threadId': 't', 'turn': {{'id': 'u', 'status': 'interrupted'}}}}}})
-'''
-        self.executable.write_text(script)
-        self.executable.chmod(0o700)
+        self.fake(mode, kind, idle_mode=True, record_path=str(record_path) if record_path else None)
 
     def prepare_http_args(self, kind, timeout):
         token = self.root / 'token'
@@ -578,7 +629,7 @@ for line in sys.stdin:
                 with self.subTest(kind=kind, mode=mode):
                     record_path = self.root / f'active-{kind}-{mode}.json'
                     self.write_idle_fake(kind, mode, record_path=record_path)
-                    args = self.prepare_http_args(kind, timeout=0.9)
+                    args = self.prepare_http_args(kind, timeout=0.25)
                     client = TestClient(TestServer(endpoint.create_app(args)))
                     await client.start_server()
                     try:
@@ -601,7 +652,7 @@ for line in sys.stdin:
             with self.subTest(kind=kind):
                 record_path = self.root / f'hang-{kind}.json'
                 self.write_idle_fake(kind, 'silent-hang', record_path=record_path)
-                args = self.prepare_http_args(kind, timeout=0.9)
+                args = self.prepare_http_args(kind, timeout=0.3)
                 client = TestClient(TestServer(endpoint.create_app(args)))
                 await client.start_server()
                 before = len(self.processes)

@@ -16,6 +16,7 @@ from unittest.mock import patch
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+import generation_probe
 from generation_probe import probe, CompletionObservation, ProbeFailure
 from generation_config import compile_environment
 
@@ -50,6 +51,17 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
         cls.runtime = {'official_source': str(ROOT / '.cache/coding-memory-components' / ('service-' + manifest['commit'])),
                        'official_archive': str(ROOT / '.cache/coding-memory-components' / (manifest['commit'] + '.tar.gz')),
                        'generation_mode': 'provider'}
+        real_verify_source = generation_probe.verify_source
+        cls.verified_source = real_verify_source(cls.runtime)
+
+        def _reuse_verified_source(config):
+            if (config.get('official_source') == cls.runtime['official_source']
+                    and config.get('official_archive') == cls.runtime['official_archive']):
+                return cls.verified_source
+            return real_verify_source(config)
+
+        cls.verify_patch = patch.object(generation_probe, 'verify_source', side_effect=_reuse_verified_source)
+        cls.verify_patch.start()
         sys.path.insert(0, cls.runtime['official_source'])
         with contextlib.redirect_stdout(io.StringIO()):
             from cognee.infrastructure.llm.config import LLMConfig
@@ -58,6 +70,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.verify_patch.stop()
         cls.environment.stop()
         cls.temporary.cleanup()
 
@@ -76,7 +89,7 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
             if mode in ('401', '429'):
                 return web.json_response({'error': {'message': 'synthetic-only-secret-body', 'type': 'invalid_request_error'}}, status=int(mode))
             if mode == 'timeout':
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.25)
             shape = body.get('response_format', {}).get('type')
             if structured and mode in ('json_fallback', 'unsupported') and shape == 'json_schema':
                 return web.json_response({'error': {'message': 'response_format schema unsupported', 'type': 'invalid_request_error'}}, status=400)

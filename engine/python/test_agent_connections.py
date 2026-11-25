@@ -1,6 +1,7 @@
 import asyncio
 import copy
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -101,9 +102,78 @@ class CheckedConnectionViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(adapter.home for adapter in selected_adapters.values() if isinstance(adapter, CodexConnection)), replacement)
 
 
+_SLIM_PLUGIN_COMMON = '''import os, time
+_BUFFERED_AT_KEY = "_buffered_at"
+CACHE_DIR = ".cognee-plugin" / "codex"
+CACHE_PATH = ".cognee-plugin/codex"
+
+
+def _normalize(value):
+    return value
+
+
+def _host_suffix():
+    suffix = "_codex"
+    agent = _normalize("codex-agent")
+    prefix = (os.environ.get("COGNEE_SESSION_PREFIX", "") or "codex") or "codex"
+    return suffix, agent, prefix
+
+
+def _session_key(agent, host):
+    if host:
+        return f"{agent}_{host}"
+    return agent
+
+
+def remember_entry_via_http(dataset, session_id, entry, timeout=10, dataset_id=None):
+    return {}
+
+
+def drain_warmup_entries(dataset, session_id, budget_seconds=5):
+    return 0, 0
+
+
+def _buffer_entry(entry, send_entry, managed, ambiguous, verified, server_prints, _entry_fingerprint):
+    entry[_BUFFERED_AT_KEY] = time.time()
+    for _ in (0,):
+        if True:
+            if managed() and ambiguous and (not verified or _entry_fingerprint(send_entry) not in server_prints):
+                continue
+            if ambiguous and verified and _entry_fingerprint(send_entry) in server_prints:
+                continue
+'''
+
+_SLIM_MANAGED_FILES = (
+    '.codex-plugin/plugin.json',
+    'hooks.json',
+    'scripts/_memlane_policy.py',
+    'scripts/cognee-forget.sh',
+    'scripts/_remember_http.py',
+    'scripts/_coding_memory.py',
+)
+
+_SLIM_OFFICIAL_EXACT = frozenset({
+    'scripts/cognee-forget.sh',
+    'scripts/_remember_http.py',
+    'scripts/_memlane_policy.py',
+    '.claude-plugin/plugin.json',
+    '.cursor-plugin/plugin.json',
+    'plugin.json',
+})
+
+
+def _keep_slim_official_file(name):
+    return (
+        name in _SLIM_OFFICIAL_EXACT
+        or Path(name).name == 'hooks.json'
+        or name.startswith('scripts/run-')
+    )
+
+
 class ConnectionTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        import project_host_plugin
         cls.temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temp.name).resolve()
         spec = importlib.util.spec_from_file_location('managed_builder', ROOT / 'scripts/build_project_plugin.py')
@@ -111,10 +181,79 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         spec.loader.exec_module(builder)
         cls.plugin = cls.root / 'fixed-plugin'
         builder.build(ROOT / '.cache/coding-memory-components/plugin-a176248914fdb32a78354854b300174203b15a5c/integrations/codex/plugins/cognee', cls.plugin)
+        # Build a structurally valid minimal-file managed plugin derived from cls.plugin
+        # (only the manifest/hooks/patch-anchor files, excluding docs/skills/evals) for
+        # repetitive multi-host state-machine/journal/recovery matrix tests. All artifact,
+        # tamper, staging-failure, and subprocess integration tests keep cls.plugin intact.
+        cls.slim_plugin = cls.root / 'slim-plugin'
+        slim_hashes = {}
+        for rel in _SLIM_MANAGED_FILES:
+            src = cls.plugin / rel
+            dst = cls.slim_plugin / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            data = src.read_bytes()
+            dst.write_bytes(data)
+            shutil.copymode(src, dst)
+            slim_hashes[rel] = hashlib.sha256(data).hexdigest()
+        common_bytes = _SLIM_PLUGIN_COMMON.encode('utf-8')
+        (cls.slim_plugin / 'scripts/_plugin_common.py').write_bytes(common_bytes)
+        slim_hashes['scripts/_plugin_common.py'] = hashlib.sha256(common_bytes).hexdigest()
+        base_manifest = json.loads((cls.plugin / '.memlane-project-access.json').read_text())
+        cls.slim_manifest = {**base_manifest, 'files': slim_hashes}
+        (cls.slim_plugin / '.memlane-project-access.json').write_text(
+            json.dumps(cls.slim_manifest, sort_keys=True)
+        )
+        # Cache immutable upstream archive extractions per (kind, resolved_archive, lstat)
+        # while always running real files_for() on first access or any changed/invalid archive.
+        real_files_for = project_host_plugin.files_for
+        cache = {}
+        cls._use_slim_official = False
+
+        def _cached_files_for(kind, archive=None, *, source=None):
+            resolved = Path(archive) if archive is not None else project_host_plugin.resolve_official_archive(source)
+            try:
+                st = os.lstat(resolved)
+                key = (kind, str(resolved), st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+            except OSError:
+                return real_files_for(kind, archive=archive, source=source)
+            hit = cache.get(key)
+            if hit is None:
+                files, upstream = real_files_for(kind, archive=archive, source=source)
+                slim_files = {k: v for k, v in files.items() if _keep_slim_official_file(k)}
+                hit = (dict(files), slim_files, copy.deepcopy(upstream))
+                cache[key] = hit
+            selected = hit[1] if cls._use_slim_official else hit[0]
+            return dict(selected), copy.deepcopy(hit[2])
+
+        cls._files_for_patch = patch.object(project_host_plugin, 'files_for', side_effect=_cached_files_for)
+        cls._files_for_patch.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls._files_for_patch.stop()
         cls.temp.cleanup()
+
+    @contextmanager
+    def _slim_state_machine_fixture(self):
+        import project_installation
+        real_match = project_installation.match_managed_plugin_manifest
+        slim_manifest = self.slim_manifest
+
+        def _match_with_slim(engine_dir, receipt):
+            if receipt == slim_manifest:
+                return slim_manifest, True
+            return real_match(engine_dir, receipt)
+
+        prev_plugin_dir = self.config['project_control']['plugin_dir']
+        prev_slim = type(self)._use_slim_official
+        self.config['project_control']['plugin_dir'] = str(self.slim_plugin)
+        type(self)._use_slim_official = True
+        with patch.object(project_installation, 'match_managed_plugin_manifest', side_effect=_match_with_slim):
+            try:
+                yield
+            finally:
+                type(self)._use_slim_official = prev_slim
+                self.config['project_control']['plugin_dir'] = prev_plugin_dir
 
     async def asyncSetUp(self):
         self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory(dir=self.root)))
@@ -199,6 +338,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.registry.path.read_bytes(), saved)
 
     async def test_first_preparation_unknown_recovers_after_checking_staged_artifacts(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from project_installation import prepare
 
         for kind in NATIVE_KINDS:
@@ -252,6 +392,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual((await adapter.review(self.registry.state['revision']))['status'], 'prepared')
 
     async def test_upgrade_preparation_unknown_recovers_new_and_legacy_journals(self):
+        self.enterContext(self._slim_state_machine_fixture())
         for kind in NATIVE_KINDS:
             with self.subTest(kind=kind):
                 adapter = self.native_adapter(kind, 'upgrade')
@@ -327,6 +468,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse({'prepared_installation', 'active_installation', 'active_record'} & restored.keys())
 
     async def test_trae_ide_dispatch_uses_active_generation_until_upgrade_activation(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from trae_ide_connection import EVENTS, HookDispatch
 
         adapter = self.native_adapter('trae_ide', 'dispatch')
@@ -398,6 +540,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         await assert_dispatch(v2)
 
     async def test_pi_reprepares_upgrade_and_recovers_completed_activation(self):
+        self.enterContext(self._slim_state_machine_fixture())
         adapter = self.adapter
         state = self.registry.state
         prepared = await adapter.prepare(state['revision'])
@@ -428,6 +571,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                          & state['connections'][adapter.id].keys())
 
     async def test_explicit_beta2_migration_rolls_forward_and_dispatches(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from test_trae_ide_connection import beta2_hooks
         from trae_hooks_migration import apply_trae_hooks_repair, inspect_trae_hooks_repair
         from trae_ide_connection import EVENTS, HookDispatch, proposal
@@ -482,6 +626,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(spawn.await_args.args[2].startswith(agent['installation']['plugin_dir']))
 
     async def test_interrupted_trae_repair_recovers_on_either_side_of_hooks_write(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from test_trae_ide_connection import beta2_hooks
         from trae_hooks_migration import apply_trae_hooks_repair, inspect_trae_hooks_repair
         from trae_ide_connection import EVENTS, HookDispatch, proposal
@@ -689,6 +834,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((target / '.memlane-installation.json').is_file(), not corrupt)
 
     async def test_readonly_http_preview_hash_activates_each_supported_host(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from aiohttp.test_utils import make_mocked_request
         from project_control_server import create_app
 
@@ -705,10 +851,34 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         config = {**self.config, 'agent_hosts': hosts}
         self.registry.state['host_targets'] = {kind: host['profile'] for kind, host in hosts.items()}
 
-        def snapshot():
-            return {path.relative_to(self.workspace): (
-                (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None)
-                    for path in self.workspace.rglob('*')}
+        def snapshot(current_adapter):
+            result = {}
+
+            def record_tree(root_path):
+                if not root_path.exists():
+                    return
+                for path in (root_path, *root_path.rglob('*')):
+                    result[path.relative_to(self.workspace)] = (
+                        (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+                    )
+
+            # Record top-level workspace entries, registry/credentials files, current host profile,
+            # and managed-marketplaces directory names (plus full tree of current_adapter.id) to
+            # verify GET /preview is strictly read-only without O(N^2) re-reading of prior hosts.
+            for entry in self.workspace.iterdir():
+                rel = entry.relative_to(self.workspace)
+                result[rel] = (entry.read_bytes(), entry.stat().st_mtime_ns) if entry.is_file() else None
+            priv = self.registry.path.parent
+            if priv.exists():
+                for entry in priv.iterdir():
+                    if entry.name == 'managed-marketplaces':
+                        result[entry.relative_to(self.workspace)] = sorted(p.name for p in entry.iterdir())
+                        record_tree(entry / current_adapter.id)
+                    else:
+                        record_tree(entry)
+            profile_root = self.workspace / '.gemini' if getattr(current_adapter, 'kind', '') == 'antigravity' else Path(hosts[getattr(current_adapter, 'kind', 'codex')]['profile'])
+            record_tree(profile_root)
+            return result
 
         async def request(method, path, payload=None):
             headers = {'Authorization': 'Bearer ' + 'm' * 40}
@@ -737,7 +907,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     self.registry.state['agents'][adapter.id] = {
                         'name': kind, 'key_file': str(self.workspace / 'key'),
                         'control_token_file': str(self.workspace / 'control')}
-                    baseline = snapshot()
+                    baseline = snapshot(adapter)
                     state = copy.deepcopy(self.registry.state)
                     endpoint = f'/v1/connections/{adapter.id}'
                     status, preview = await request('GET', endpoint + '/preview')
@@ -751,7 +921,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(preview['enabled_plugin'].startswith('cognee@memlane-'))
                     self.assertEqual((preview['reviewed_sha'], preview['preview']['proposed_sha256'], preview['plan_digest']),
                                      (digest, digest, digest))
-                    self.assertEqual(snapshot(), baseline)
+                    self.assertEqual(snapshot(adapter), baseline)
                     self.assertEqual(self.registry.state, state)
                     with patch('project_codex_connection.stage_install', side_effect=stage):
                         status, prepared = await request('POST', endpoint + '/prepare', {
@@ -778,6 +948,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(row['status'], 'configured_pending_new_session')
 
     async def test_trae_ide_dispatch_checks_bindings_even_without_workspace(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from trae_ide_connection import HookDispatch
 
         adapter = self.native_adapter('trae_ide', 'invalid-workspace')
@@ -819,6 +990,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await dispatch.run(adapter.id, 'Stop', raw), {})
 
     async def test_hook_activate_verifies_candidate_marker_before_host_write_and_legacy_proposal(self):
+        self.enterContext(self._slim_state_machine_fixture())
         state = self.registry.state
         for kind in ('cursor', 'trae_ide'):
             with self.subTest(kind=kind):
@@ -850,6 +1022,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                                      'configured_pending_new_session')
 
     async def test_hook_reprepare_restores_same_generation_marker_on_failure(self):
+        self.enterContext(self._slim_state_machine_fixture())
         state = self.registry.state
         for kind in ('trae_ide', 'cursor'):
             with self.subTest(kind=kind):
@@ -884,6 +1057,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     await adapter.prepare(state['revision'])
 
     async def test_prepared_cancel_is_transactional_and_settles_only_pending_prepare(self):
+        self.enterContext(self._slim_state_machine_fixture())
         adapter = self.native_adapter('trae_ide', 'cancel')
         state = self.registry.state
         prepared = await adapter.prepare(state['revision'])
@@ -923,6 +1097,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state['connection_operations']['completed-prepare'], completed)
 
     async def test_activation_review_restores_or_commits_installed_generation(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from aiohttp.test_utils import make_mocked_request
         from project_control_server import create_app
 
@@ -1062,6 +1237,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.view()['preview']['proposed_sha256'], 'fixed')
 
     async def test_pi_reprepare_preserves_existing_buffer_home_without_runtime_override(self):
+        self.enterContext(self._slim_state_machine_fixture())
         await self.adapter.prepare(self.registry.state['revision'])
         original_home = self.registry.state['agents'][self.adapter.id]['installation']['home']
         pending = Path(original_home) / '.cognee-plugin' / ('pi-' + self.adapter.id) / 'pending.json'
@@ -1073,6 +1249,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending.read_bytes(), b'{"pending":"synthetic-original-record"}')
 
     async def test_pi_reprepare_honors_explicit_buffer_home_override(self):
+        self.enterContext(self._slim_state_machine_fixture())
         await self.adapter.prepare(self.registry.state['revision'])
         replacement = self.workspace / 'explicit-home'
         replacement.mkdir()
@@ -1128,6 +1305,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
             verify_artifact(installation)
 
     async def test_idempotent_management_operation_and_unknown_never_reexecutes(self):
+        self.enterContext(self._slim_state_machine_fixture())
         config = {**self.config, 'agent_hosts': {'pi': {'profile': str(self.profile), 'executable': sys.executable}}}
         connections = Connections(self.registry, config)
         first = await connections.perform(self.adapter.id, 'prepare', 0, 'prepare-one')
@@ -1263,6 +1441,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['last_receipt_at'], 0)
 
     async def test_host_upgrade_review_requires_fresh_receipt_without_reinstalling(self):
+        self.enterContext(self._slim_state_machine_fixture())
         from unittest.mock import patch
         connections = Connections(self.registry, {**self.config, 'agent_hosts': {'pi': {
             'profile': str(self.profile), 'executable': sys.executable}}})
@@ -1287,6 +1466,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(row['awaiting_post_upgrade_receipt'])
 
     async def test_host_upgrade_review_preserves_verified_post_upgrade_receipt(self):
+        self.enterContext(self._slim_state_machine_fixture())
         import time
         from unittest.mock import patch
         executable = self.workspace / 'pi-upgraded'

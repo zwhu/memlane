@@ -2,10 +2,12 @@
 import json
 import os
 from pathlib import Path
+import select
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,7 +30,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import insert
 
 source = Path(sys.argv[1])
-home = Path(sys.argv[2])
 
 from cognee.infrastructure.databases.cache.sql.SqlCacheAdapter import SqlCacheAdapter
 from cognee.infrastructure.databases.cache.sql.tables import cache_kv
@@ -38,7 +39,7 @@ from capture_receipts import Capture, install_capture_routes
 from external_capture_store import ExternalCaptureStore
 
 
-async def scenario():
+async def scenario(home, scripts_dir=None):
     adapter = SqlCacheAdapter(f"sqlite+aiosqlite:///{home / 'cache.sqlite3'}")
     await adapter._ensure_initialized()
     manager = SessionManager(cache_engine=adapter)
@@ -227,75 +228,210 @@ async def scenario():
             assert (await client3.put("/api/v1/capture/entries/" + legacy_msg, json=changed)).status_code == 409
 
             # 6. Prepared host sender drain scenario (lost response -> replay -> backlog check)
-            if len(sys.argv) > 3:
+            if scripts_dir:
                 import copy, importlib
-                sys.path.insert(0, sys.argv[3])
-                import _plugin_common as common, _memlane_policy as policy, _project_memory as routing
-                import _memlane_capture as delivery
-                common.set_session_key("capture-test-host")
-                policy.require = lambda *a, **kw: None
-                policy._pending_identity = lambda *a, **kw: None
-                routing.route = lambda *a, **kw: {"write": str(dataset)}
-                legacy_buf = dict(type="trace", origin_function="Read", status="success", generate_feedback_with_llm=False,
-                                  method_params={}, method_return_value="legacy", _replay_ambiguous=True, _buffered_at=1)
-                bfile = common._bridge_file("session")
-                bkey = common._bridge_cache_key(str(dataset), "session")
-                common._write_json_file(bfile, {bkey: {"pending_entries": [copy.deepcopy(legacy_buf)]}})
-                common.append_warmup_entry(str(dataset), "session", payload["entry"])
-                raw = common._load_json_file(bfile)[bkey]["pending_entries"]
-                message_id = raw[1]["_capture_id"]
-                loop = asyncio.get_running_loop()
-                calls = []
-                lost = [False]
+                saved_path = list(sys.path)
+                before_modules = set(sys.modules)
+                scripts_resolved = str(Path(scripts_dir).resolve())
+                sys.path.insert(0, scripts_dir)
+                try:
+                    import _plugin_common as common, _memlane_policy as policy, _project_memory as routing
+                    import _memlane_capture as delivery
+                    common.set_session_key("capture-test-host")
+                    policy.require = lambda *a, **kw: None
+                    policy._pending_identity = lambda *a, **kw: None
+                    routing.route = lambda *a, **kw: {"write": str(dataset)}
+                    legacy_buf = dict(type="trace", origin_function="Read", status="success", generate_feedback_with_llm=False,
+                                      method_params={}, method_return_value="legacy", _replay_ambiguous=True, _buffered_at=1)
+                    bfile = common._bridge_file("session")
+                    bkey = common._bridge_cache_key(str(dataset), "session")
+                    common._write_json_file(bfile, {bkey: {"pending_entries": [copy.deepcopy(legacy_buf)]}})
+                    common.append_warmup_entry(str(dataset), "session", payload["entry"])
+                    raw = common._load_json_file(bfile)[bkey]["pending_entries"]
+                    message_id = raw[1]["_capture_id"]
+                    loop = asyncio.get_running_loop()
+                    calls = []
+                    lost = [False]
 
-                def transport(url, body=None, *, method="POST", timeout=12, **kwargs):
-                    calls.append((method, url))
-                    async def invoke():
-                        response = await client3.request(method, url, json=body)
-                        assert response.status_code == 200, response.text
-                        return response.json()
-                    receipt = asyncio.run_coroutine_threadsafe(invoke(), loop).result(12)
-                    if not lost[0]:
-                        lost[0] = True
-                        raise TimeoutError("synthetic response lost after COMMIT")
-                    return receipt
+                    def transport(url, body=None, *, method="POST", timeout=12, **kwargs):
+                        calls.append((method, url))
+                        async def invoke():
+                            response = await client3.request(method, url, json=body)
+                            assert response.status_code == 200, response.text
+                            return response.json()
+                        receipt = asyncio.run_coroutine_threadsafe(invoke(), loop).result(12)
+                        if not lost[0]:
+                            lost[0] = True
+                            raise TimeoutError("synthetic response lost after COMMIT")
+                        return receipt
 
-                common._json_http_request = transport
-                assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (0, 2)
-                raw = common._load_json_file(bfile)
-                assert raw[bkey]["pending_entries"][1]["_capture_id"] == message_id
-                assert raw[bkey]["pending_entries"][1]["_replay_ambiguous"] is True
-                raw[bkey]["capture_retries"][message_id]["after"] = 0
-                common._write_json_file(bfile, raw)
-                importlib.reload(delivery)
-                assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (1, 1)
-                assert len(calls) == 2 and calls[0] == calls[1]
-                assert len(await manager.get_agent_trace_session(user_id=str(user.id), session_id="session")) == 4
+                    common._json_http_request = transport
+                    assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (0, 2)
+                    raw = common._load_json_file(bfile)
+                    assert raw[bkey]["pending_entries"][1]["_capture_id"] == message_id
+                    assert raw[bkey]["pending_entries"][1]["_replay_ambiguous"] is True
+                    raw[bkey]["capture_retries"][message_id]["after"] = 0
+                    common._write_json_file(bfile, raw)
+                    importlib.reload(delivery)
+                    assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (1, 1)
+                    assert len(calls) == 2 and calls[0] == calls[1]
+                    assert len(await manager.get_agent_trace_session(user_id=str(user.id), session_id="session")) == 4
 
-                common.append_warmup_entry(str(dataset), "session", payload["entry"])
-                lost[0] = False
-                assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (0, 2)
-                from project_backlog_worker import check
-                common._read_map_record = lambda host: {"session_id": "session"}
-                common.get_session_detail_via_http = lambda *a, **kw: {"session_id": "session", "dataset_id": str(dataset)}
-                result = await asyncio.to_thread(check, common, policy, str(dataset), "capture-test-host")
-                assert result["unknown"] == 1 and result["reason"] == "original_receipt_unavailable"
-                assert calls[-1][0] == "GET" and len(calls) == 4, calls
-                assert len(await manager.get_agent_trace_session(user_id=str(user.id), session_id="session")) == 5
+                    common.append_warmup_entry(str(dataset), "session", payload["entry"])
+                    lost[0] = False
+                    assert await asyncio.to_thread(common.drain_warmup_entries, str(dataset), "session", budget_seconds=12) == (0, 2)
+                    from project_backlog_worker import check
+                    common._read_map_record = lambda host: {"session_id": "session"}
+                    common.get_session_detail_via_http = lambda *a, **kw: {"session_id": "session", "dataset_id": str(dataset)}
+                    result = await asyncio.to_thread(check, common, policy, str(dataset), "capture-test-host")
+                    assert result["unknown"] == 1 and result["reason"] == "original_receipt_unavailable"
+                    assert calls[-1][0] == "GET" and len(calls) == 4, calls
+                    assert len(await manager.get_agent_trace_session(user_id=str(user.id), session_id="session")) == 5
+                finally:
+                    sys.path[:] = saved_path
+                    for mod_name in list(sys.modules):
+                        if mod_name in before_modules:
+                            mod_file = getattr(sys.modules.get(mod_name), "__file__", None) or ""
+                            if not (mod_file and str(Path(mod_file).resolve()).startswith(scripts_resolved)):
+                                continue
+                        sys.modules.pop(mod_name, None)
 
     receipt_store.close()
     await adapter.close()
-    print("CAPTURE_RESULT=" + json.dumps(dict(
+    return dict(
         concurrent_retry=True, atomic_rollback=True, reopen_idempotent=True,
         response_loss_recovered=True, payload_conflict=True, acl_preserved=True,
-    )))
+    )
 
 
-asyncio.run(scenario())
+async def main():
+    import traceback
+    print("CAPTURE_READY", flush=True)
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        home = Path(req["home"])
+        scripts_dir = req.get("scripts")
+        os.environ["HOME"] = str(home)
+        os.chdir(home)
+        if scripts_dir:
+            os.environ["COGNEE_BASE_URL"] = "http://127.0.0.1:18999"
+            os.environ["COGNEE_API_KEY"] = "test-child"
+            os.environ["MEMLANE_PROJECT_CONTROL_URL"] = "http://127.0.0.1:18998"
+        else:
+            for key in ("COGNEE_BASE_URL", "COGNEE_API_KEY", "MEMLANE_PROJECT_CONTROL_URL"):
+                os.environ.pop(key, None)
+        try:
+            res = await scenario(home, scripts_dir)
+            print("CAPTURE_RESULT=" + json.dumps(res), flush=True)
+        except BaseException:
+            print("CAPTURE_ERROR=" + json.dumps(traceback.format_exc()), flush=True)
+
+
+asyncio.run(main())
 '''
 
 
 class CaptureReceiptTests(unittest.TestCase):
+    _worker_proc = None
+    _worker_temp = None
+    _worker_stderr_path = None
+    _worker_stderr_file = None
+
+    @classmethod
+    def _readline_with_timeout(cls, proc, timeout):
+        deadline = time.monotonic() + timeout
+        fd = proc.stdout.fileno()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stderr_tail = cls._read_stderr_tail()
+                cls._stop_worker()
+                raise TimeoutError(f'capture worker timed out after {timeout}s:\n{stderr_tail}')
+            ready, _, _ = select.select([fd], [], [], min(0.5, remaining))
+            if not ready:
+                if proc.poll() is not None:
+                    return ''
+                continue
+            return proc.stdout.readline()
+
+    @classmethod
+    def _read_stderr_tail(cls):
+        if cls._worker_stderr_path and cls._worker_stderr_path.exists():
+            return cls._worker_stderr_path.read_text(encoding='utf-8', errors='replace')[-4500:]
+        return ''
+
+    @classmethod
+    def _ensure_worker(cls):
+        if cls._worker_proc is not None and cls._worker_proc.poll() is None:
+            return cls._worker_proc
+        cls._stop_worker()
+        manifest = json.loads((ROOT / 'engine/coding-memory-components.json').read_text())['service']
+        source = ROOT / '.cache/coding-memory-components' / ('service-' + manifest['commit'])
+        cls._worker_temp = tempfile.TemporaryDirectory()
+        base = Path(cls._worker_temp.name)
+        cls._worker_stderr_path = base / 'worker.stderr'
+        cls._worker_stderr_file = cls._worker_stderr_path.open('w+', encoding='utf-8')
+        env = {k: v for k, v in os.environ.items() if k in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR')}
+        env.update(
+            HOME=str(base), SYSTEM_ROOT_DIRECTORY=str(base / 'system'), DATA_ROOT_DIRECTORY=str(base / 'data'),
+            CACHE_ROOT_DIRECTORY=str(base / 'cache'), LOGS_ROOT_DIRECTORY=str(base / 'logs'),
+            COGNEE_LOGS_DIR=str(base / 'logs'), HF_HOME=str(base / 'hf'),
+            HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
+            TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false',
+            PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='true',
+            PYTHONPATH=os.pathsep.join([str(source), str(ROOT / 'engine/python')]),
+        )
+        proc = subprocess.Popen(
+            [sys.executable, '-B', '-c', WORKER, str(source)],
+            cwd=base, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=cls._worker_stderr_file, text=True, bufsize=1,
+        )
+        cls._worker_proc = proc
+        while True:
+            line = cls._readline_with_timeout(proc, 45)
+            if not line:
+                break
+            if line.strip() == 'CAPTURE_READY':
+                return proc
+        stderr_tail = cls._read_stderr_tail()
+        cls._stop_worker()
+        raise AssertionError(f'capture worker failed to start:\n{stderr_tail}')
+
+    @classmethod
+    def _stop_worker(cls):
+        proc = cls._worker_proc
+        cls._worker_proc = None
+        if proc is not None:
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+                proc.wait(timeout=5)
+            finally:
+                if proc.stdout and not proc.stdout.closed:
+                    proc.stdout.close()
+        if cls._worker_stderr_file is not None:
+            try:
+                cls._worker_stderr_file.close()
+            except Exception:
+                pass
+            cls._worker_stderr_file = None
+        cls._worker_stderr_path = None
+        if cls._worker_temp is not None:
+            cls._worker_temp.cleanup()
+            cls._worker_temp = None
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._stop_worker()
     def test_symlink_ledger_rejected(self):
         from external_capture_store import ExternalCaptureStore, ensure_qa_context_date
 
@@ -364,32 +500,23 @@ class CaptureReceiptTests(unittest.TestCase):
                     self.run_worker(str(Path(installed['plugin_dir']) / 'scripts'))
 
     def run_worker(self, scripts=None):
-        manifest = json.loads((ROOT / 'engine/coding-memory-components.json').read_text())['service']
-        source = ROOT / '.cache/coding-memory-components' / ('service-' + manifest['commit'])
+        proc = self._ensure_worker()
         with tempfile.TemporaryDirectory() as temporary:
-            home = Path(temporary)
-            env = {k: v for k, v in os.environ.items() if k in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR')}
-            env.update(
-                HOME=str(home), SYSTEM_ROOT_DIRECTORY=str(home / 'system'), DATA_ROOT_DIRECTORY=str(home / 'data'),
-                CACHE_ROOT_DIRECTORY=str(home / 'cache'), LOGS_ROOT_DIRECTORY=str(home / 'logs'),
-                COGNEE_LOGS_DIR=str(home / 'logs'), HF_HOME=str(home / 'hf'),
-                HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1',
-                TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false',
-                PYTHON_DOTENV_DISABLED='1', LITELLM_LOCAL_MODEL_COST_MAP='true',
-                PYTHONPATH=os.pathsep.join([str(source), str(ROOT / 'engine/python')]),
-            )
-            if scripts:
-                env.update(
-                    COGNEE_BASE_URL='http://127.0.0.1:18999', COGNEE_API_KEY='test-child',
-                    MEMLANE_PROJECT_CONTROL_URL='http://127.0.0.1:18998',
-                )
-            result = subprocess.run(
-                [sys.executable, '-c', WORKER, str(source), str(home)] + ([scripts] if scripts else []),
-                cwd=home, env=env, capture_output=True, text=True, timeout=50,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout[-1000:] + result.stderr[-4500:])
-            report = json.loads(next(line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('CAPTURE_RESULT=')))
-            self.assertTrue(all(report.values()))
+            proc.stdin.write(json.dumps({'home': temporary, 'scripts': scripts}) + '\n')
+            proc.stdin.flush()
+            while True:
+                line = self._readline_with_timeout(proc, 45)
+                if not line:
+                    break
+                if line.startswith('CAPTURE_RESULT='):
+                    report = json.loads(line.split('=', 1)[1])
+                    self.assertTrue(all(report.values()))
+                    return
+                if line.startswith('CAPTURE_ERROR='):
+                    self.fail(json.loads(line.split('=', 1)[1]))
+            stderr_tail = self._read_stderr_tail()
+            self._stop_worker()
+            self.fail(f'capture worker exited prematurely:\n{stderr_tail}')
 
 
 if __name__ == '__main__':

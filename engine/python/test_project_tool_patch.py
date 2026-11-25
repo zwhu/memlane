@@ -26,6 +26,27 @@ class ToolPatchTests(unittest.TestCase):
         cls.source = cls.root/'fixed-input'
         builder.build(ROOT/'.cache/coding-memory-components/plugin-a176248914fdb32a78354854b300174203b15a5c/integrations/codex/plugins/cognee', cls.source)
         cls.manifest = (cls.source/'.memlane-project-access.json').read_bytes()
+        # Pre-prepare read-only plugin scripts once per host kind and share one fake curl
+        # wrapper (parameterized by env) to eliminate repeated prepare() fsyncs and macOS cold-exec scans.
+        cls.shared_root = cls.root / 'shared-prepared'
+        cls.shared_root.mkdir()
+        shared_home = cls.shared_root / 'home'
+        shared_home.mkdir()
+        private_write(cls.shared_root / 'agent-key', b'synthetic-child-never-output')
+        private_write(cls.shared_root / 'control-key', b'c' * 40)
+        cls.prepared_scripts = {}
+        for kind in ('codex', 'pi', 'traex', 'claude_code'):
+            installation = prepare(
+                cls.source, cls.shared_root, kind + '-tools',
+                {'key_file': str(cls.shared_root / 'agent-key'), 'control_token_file': str(cls.shared_root / 'control-key')},
+                'http://127.0.0.1:18999', 'http://127.0.0.1:18998', str(shared_home), host_kind=kind, python=sys.executable,
+            )
+            cls.prepared_scripts[kind] = Path(installation['plugin_dir']) / 'scripts'
+        cls.fake_bin = cls.root / 'shared-bin'
+        cls.fake_bin.mkdir()
+        fake_curl = cls.fake_bin / 'curl'
+        fake_curl.write_text('#!/bin/sh\ntouch "$MEMLANE_TEST_CURL_MARKER"\nprintf "synthetic response\\nHTTP 200\\n"\n')
+        fake_curl.chmod(0o700)
 
     @classmethod
     def tearDownClass(cls):
@@ -35,12 +56,7 @@ class ToolPatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=self.root) as temporary:
             root = Path(temporary)
             home = root/'home'; home.mkdir()
-            private_write(root/'agent-key', b'synthetic-child-never-output')
-            private_write(root/'control-key', b'c'*40)
-            installation = prepare(self.source, root, kind+'-tools', {
-                'key_file': str(root/'agent-key'), 'control_token_file': str(root/'control-key')},
-                'http://127.0.0.1:18999', 'http://127.0.0.1:18998', str(home), host_kind=kind, python=sys.executable)
-            scripts = Path(installation['plugin_dir'])/'scripts'
+            scripts = self.prepared_scripts[kind]
             project, shared = '11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'
             spy = root/'spy'; spy.mkdir()
             decision = {'revision': 1, 'ready': True, 'dataset_id': project, 'policy': {'permissions': permissions},
@@ -49,13 +65,11 @@ class ToolPatchTests(unittest.TestCase):
                 'import _memlane_policy as p\n'
                 + ('def missing(*a, **k): raise p.NotReady("synthetic unavailable")\np.current=missing\n' if unavailable
                    else 'p.current=lambda *a, **k: '+repr(decision)+'\n'))
-            binary = root/'bin'; binary.mkdir()
             marker = root/'curl-called'
-            (binary/'curl').write_text('#!/bin/sh\ntouch "'+str(marker)+'"\nprintf "synthetic response\\nHTTP 200\\n"\n')
-            (binary/'curl').chmod(0o700)
             environment = {k:v for k,v in os.environ.items() if k in ('PATH','LANG','LC_ALL','TMPDIR')}
-            environment.update(HOME=str(home), PATH=str(Path(sys.executable).parent)+os.pathsep+str(binary)+os.pathsep+os.environ['PATH'],
-                               PYTHONPATH=str(spy)+os.pathsep+str(scripts), COGNEE_SESSION_KEY='synthetic-explicit-tools')
+            environment.update(HOME=str(home), PATH=str(Path(sys.executable).parent)+os.pathsep+str(self.fake_bin)+os.pathsep+os.environ['PATH'],
+                               PYTHONPATH=str(spy)+os.pathsep+str(scripts), COGNEE_SESSION_KEY='synthetic-explicit-tools',
+                               MEMLANE_TEST_CURL_MARKER=str(marker), PYTHONDONTWRITEBYTECODE='1')
             target = shared if common else project
             command = ['bash', str(scripts/'cognee-forget.sh'), operation, target, '33333333-3333-4333-8333-333333333333']
             if operation == 'remember':
