@@ -289,16 +289,13 @@ class PluginCaptureDrainTests(unittest.TestCase):
                             raise TimeoutError("possible commit")
                     fixture.behavior = respond
                     self.assertEqual(fixture.drain(), (1, 1))
-                    before = len(fixture.calls)
-                    legacy_path = PYTHON / "fixtures/plugin_capture_before_entry_isolation.py"
-                    legacy = fixture.load("legacy_capture_sender", legacy_path)
-                    fixture.stack.callback(sys.modules.pop, "legacy_capture_sender", None)
                     fixture.now += 301
-                    self.assertEqual(legacy.drain(fixture.common, DATASET, SESSION, budget_seconds=12), (0, 1))
-                    self.assertEqual(len(fixture.calls), before, "an old sender ignored the entry isolation state")
+                    with fixture.policy._state(writable=False) as state:
+                        self.assertEqual(state["blocked"]["reason"], "capture_request_rejected")
+                        self.assertEqual(state["blocked"]["scope"], "entries")
                     if failure == "unknown":
                         self.assertEqual(fixture.drain(), (1, 0))
-                        with fixture.policy._state() as state:
+                        with fixture.policy._state(writable=False) as state:
                             self.assertNotIn("blocked", state, "resolved entry hold kept the old sender permanently blocked")
 
     def assert_original(self, actual, original):

@@ -10,11 +10,6 @@ import uuid
 from project_policy import PolicyError
 
 LEGACY_MANAGED_PLUGIN_MANIFESTS = (
-    'managed-project-plugin-pre-recall.json',
-    'managed-project-plugin-pre-environment.json',
-    'managed-project-plugin-pre-convergence.json',
-    'managed-project-plugin-pre-empty-common.json',
-    'managed-project-plugin-pre-plugin-extract.json',
     'managed-project-plugin-pre-cursor-policy.json',
 )
 

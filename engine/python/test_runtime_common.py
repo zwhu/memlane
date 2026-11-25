@@ -94,11 +94,14 @@ class RuntimeCommonTests(unittest.TestCase):
         engine_dir = Path(__file__).resolve().parents[1]
         current = json.loads((engine_dir / 'managed-project-plugin.json').read_text())
         self.assertEqual(match_managed_plugin_manifest(engine_dir, current), (current, True))
-        legacy = json.loads((engine_dir / LEGACY_MANAGED_PLUGIN_MANIFESTS[0]).read_text())
-        self.assertEqual(match_managed_plugin_manifest(engine_dir, legacy), (legacy, False))
+        self.assertEqual(LEGACY_MANAGED_PLUGIN_MANIFESTS, ('managed-project-plugin-pre-cursor-policy.json',))
+        for name in LEGACY_MANAGED_PLUGIN_MANIFESTS:
+            path = engine_dir / name
+            self.assertTrue(path.is_file(), f'Missing legacy manifest: {path}')
+            legacy = json.loads(path.read_text())
+            self.assertEqual(match_managed_plugin_manifest(engine_dir, legacy), (legacy, False))
         with self.assertRaises(PolicyError):
             match_managed_plugin_manifest(engine_dir, {'files': {'unexpected': 'deadbeef'}})
-        self.assertIn('managed-project-plugin-pre-cursor-policy.json', LEGACY_MANAGED_PLUGIN_MANIFESTS)
 
     def test_shared_uuid_sqlite_and_doc_classification_helpers(self):
         import sqlite3
