@@ -2,9 +2,8 @@
 
 package supervisor
 
-import "errors"
+import "github.com/zwhu/memlane/kit/daemon"
 
-// ProcessArgs is unsupported outside macOS.
 func ProcessArgs(pid int) ([]string, error) {
-	return nil, errors.New("process args inspection unsupported on this platform")
+	return daemon.ProcessArgs(pid)
 }
