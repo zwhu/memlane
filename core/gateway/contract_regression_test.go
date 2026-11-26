@@ -728,3 +728,370 @@ func TestContractCompletionHealthEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func writeSyntheticExecutable(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+	return path
+}
+
+func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	emptyApps := filepath.Join(home, "apps")
+	if err := os.MkdirAll(emptyApps, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	codexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "codex"))
+	piBin := writeSyntheticExecutable(t, filepath.Join(binDir, "pi"))
+	traexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "traecli"))
+	agyBin := writeSyntheticExecutable(t, filepath.Join(binDir, "agy"))
+
+	fixtures := map[string]string{
+		filepath.Join(home, ".codex", "auth.json"):                   `{"token":"synthetic-secret-codex-never-leak"}`,
+		filepath.Join(home, ".codex", "config.toml"):                 "model = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\nservice_tier = \"fast\"\n",
+		filepath.Join(home, ".pi", "agent", "auth.json"):             `{"token":"synthetic-secret-pi-never-leak"}`,
+		filepath.Join(home, ".pi", "agent", "settings.json"):         `{"defaultProvider":"deepseek","defaultModel":"deepseek-reasoner","defaultThinkingLevel":"medium"}`,
+		filepath.Join(home, ".trae", "cli", "auth.json"):             `{"token":"synthetic-secret-traex-never-leak"}`,
+		filepath.Join(home, ".trae", "traecli.toml"):                 "model = \"doubao-seed-code\"\n",
+		filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"): `{"model":"gemini-2.5-pro"}`,
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".gemini", "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range fixtures {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	discovery := agents.DiscoveryOptions{
+		Home:    home,
+		AppDirs: []string{emptyApps},
+		Kinds:   []string{agents.HostCodex, agents.HostPi, agents.HostTraeX, agents.HostAntigravity},
+		LookPath: func(name string) (string, error) {
+			candidate := filepath.Join(binDir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+			return "", errors.New("not found")
+		},
+		Environ: func(string) string { return "" },
+		RuntimeOverrides: map[string]agents.HostOverride{
+			agents.HostCodex:       {Executable: codexBin, ProfileDir: filepath.Join(home, ".codex")},
+			agents.HostPi:          {Executable: piBin, ProfileDir: filepath.Join(home, ".pi", "agent")},
+			agents.HostTraeX:       {Executable: traexBin, ProfileDir: filepath.Join(home, ".trae")},
+			agents.HostAntigravity: {Executable: agyBin, ProfileDir: filepath.Join(home, ".gemini", "config")},
+		},
+	}
+
+	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	eng := newContractMockEngine()
+	srv, err := gateway.NewServer(gateway.Config{
+		Store:            store,
+		Engine:           eng,
+		Projector:        eng,
+		ManagementToken:  contractMgmtToken,
+		DiscoveryOptions: discovery,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	for _, route := range []string{"/api/generation", "/v1/generation"} {
+		code, resp := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
+		if code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %+v", route, code, resp)
+		}
+		raw, _ := json.Marshal(resp)
+		if strings.Contains(string(raw), "never-leak") {
+			t.Fatalf("GET %s leaked auth secret: %s", route, string(raw))
+		}
+
+		detectedRaw, ok := resp["detected_processing_clis"].([]any)
+		if !ok || len(detectedRaw) != 4 {
+			t.Fatalf("GET %s detected_processing_clis = %#v, want 4 entries", route, resp["detected_processing_clis"])
+		}
+		var detected []string
+		for _, v := range detectedRaw {
+			detected = append(detected, v.(string))
+		}
+		for _, kind := range []string{"codex", "pi", "traex", "antigravity"} {
+			if !slices.Contains(detected, kind) {
+				t.Fatalf("GET %s missing %s in detected_processing_clis: %v", route, kind, detected)
+			}
+		}
+
+		defaultsMap, ok := resp["agent_defaults"].(map[string]any)
+		if !ok || len(defaultsMap) != 4 {
+			t.Fatalf("GET %s agent_defaults = %#v, want 4 entries", route, resp["agent_defaults"])
+		}
+		bridgesMap, ok := resp["agent_bridges"].(map[string]any)
+		if !ok || len(bridgesMap) != 4 {
+			t.Fatalf("GET %s agent_bridges = %#v, want 4 entries", route, resp["agent_bridges"])
+		}
+
+		codexDef := defaultsMap["codex"].(map[string]any)
+		if codexDef["model"] != "gpt-5.4" || codexDef["provider"] != "openai" || codexDef["source"] != "agent_config" ||
+			codexDef["reasoning_effort"] != "high" || codexDef["service_tier"] != "fast" {
+			t.Fatalf("unexpected codex agent_defaults: %+v", codexDef)
+		}
+		piDef := defaultsMap["pi"].(map[string]any)
+		if piDef["model"] != "deepseek-reasoner" || piDef["provider"] != "deepseek" || piDef["thinking_level"] != "medium" {
+			t.Fatalf("unexpected pi agent_defaults: %+v", piDef)
+		}
+		traexDef := defaultsMap["traex"].(map[string]any)
+		if traexDef["model"] != "doubao-seed-code" || traexDef["provider"] != "trae" {
+			t.Fatalf("unexpected traex agent_defaults: %+v", traexDef)
+		}
+		agyDef := defaultsMap["antigravity"].(map[string]any)
+		if agyDef["model"] != "gemini-2.5-pro" || agyDef["provider"] != "google" || agyDef["configuration_source"] != "agy_cli_settings" {
+			t.Fatalf("unexpected antigravity agent_defaults: %+v", agyDef)
+		}
+
+		codexBridge := bridgesMap["codex"].(map[string]any)
+		if codexBridge["mode"] != "agent_bridge" || codexBridge["bridge_kind"] != "codex" || codexBridge["model"] != "gpt-5.4" {
+			t.Fatalf("unexpected codex agent_bridges: %+v", codexBridge)
+		}
+		piBridge := bridgesMap["pi"].(map[string]any)
+		if piBridge["mode"] != "agent_bridge" || piBridge["bridge_kind"] != "pi" || piBridge["bridge_provider"] != "deepseek" || piBridge["model"] != "deepseek-reasoner" {
+			t.Fatalf("unexpected pi agent_bridges: %+v", piBridge)
+		}
+
+		// Verify returned bridge profiles round-trip cleanly through PUT /api/generation/profiles/{id}.
+		if route == "/api/generation" {
+			for _, kind := range []string{"codex", "pi", "traex", "antigravity"} {
+				profileBytes, err := json.Marshal(bridgesMap[kind])
+				if err != nil {
+					t.Fatal(err)
+				}
+				saveCode, saveResp := doHTTPJSON(t, srv, http.MethodPut, "/api/generation/profiles/agent-"+kind, string(profileBytes), mgmtHeaders())
+				if saveCode != http.StatusOK {
+					t.Fatalf("PUT bridge profile %s = %d: %+v (payload=%s)", kind, saveCode, saveResp, string(profileBytes))
+				}
+			}
+		}
+	}
+
+	// Unauthenticated / unconfigured CLI must be skipped silently and return non-nil empty maps.
+	emptyHome := t.TempDir()
+	unconfiguredBin := writeSyntheticExecutable(t, filepath.Join(emptyHome, "bin", "codex"))
+	srvEmpty, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          eng,
+		Projector:       eng,
+		ManagementToken: contractMgmtToken,
+		DiscoveryOptions: agents.DiscoveryOptions{
+			Home:     emptyHome,
+			AppDirs:  []string{emptyApps},
+			Kinds:    []string{agents.HostCodex},
+			LookPath: func(string) (string, error) { return "", errors.New("not found") },
+			Environ:  func(string) string { return "" },
+			RuntimeOverrides: map[string]agents.HostOverride{
+				agents.HostCodex: {Executable: unconfiguredBin, ProfileDir: filepath.Join(emptyHome, ".codex")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer empty: %v", err)
+	}
+	code, emptyResp := doHTTPJSON(t, srvEmpty, http.MethodGet, "/api/generation", "", mgmtHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/generation unconfigured = %d: %+v", code, emptyResp)
+	}
+	if defMap, ok := emptyResp["agent_defaults"].(map[string]any); !ok || len(defMap) != 0 {
+		t.Fatalf("expected empty agent_defaults object, got %#v", emptyResp["agent_defaults"])
+	}
+	if brMap, ok := emptyResp["agent_bridges"].(map[string]any); !ok || len(brMap) != 0 {
+		t.Fatalf("expected empty agent_bridges object, got %#v", emptyResp["agent_bridges"])
+	}
+}
+
+func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	appsDir := filepath.Join(home, "Applications")
+
+	codexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "codex"))
+	piBin := writeSyntheticExecutable(t, filepath.Join(binDir, "pi"))
+	claudeBin := writeSyntheticExecutable(t, filepath.Join(binDir, "claude"))
+
+	// Create synthetic Trae CN.app bundle with Info.plist version and executable.
+	traeApp := filepath.Join(appsDir, "Trae CN.app")
+	writeSyntheticExecutable(t, filepath.Join(traeApp, "Contents", "MacOS", "Electron"))
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>1.9.8</string>
+</dict></plist>`
+	if err := os.WriteFile(filepath.Join(traeApp, "Contents", "Info.plist"), []byte(plist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{
+		filepath.Join(home, ".codex"),
+		filepath.Join(home, ".pi", "agent"),
+		filepath.Join(home, ".trae-cn"),
+		filepath.Join(home, ".claude"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	eng := newContractMockEngine()
+	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if err := store.UpsertRegistryDefaults(ctx, domain.RegistryDefaults{
+		Access: domain.AccessMaintain, Capture: true, AutoProcess: true, Revision: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertProject(ctx, domain.Project{
+		ID: "proj-conn", Name: "conn-app", DatasetID: "ds-conn", DatasetName: "conn-app", AutoCapture: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ag := range []domain.Agent{
+		{ID: "agent-codex", Kind: agents.HostCodex, Name: "Codex", PrincipalID: "u-codex", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-trae", Kind: agents.HostTraeIDE, Name: "TRAE CN", PrincipalID: "u-trae", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-pi", Kind: agents.HostPi, Name: "pi", PrincipalID: "u-pi", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-claude", Kind: agents.HostClaudeCode, Name: "Claude Code", PrincipalID: "u-claude", DefaultAccess: domain.AccessMaintain},
+	} {
+		if err := store.UpsertAgent(ctx, ag); err != nil {
+			t.Fatalf("UpsertAgent %s: %v", ag.ID, err)
+		}
+	}
+
+	const codexTok = "tok-conn-codex"
+	srv, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          eng,
+		Projector:       eng,
+		ManagementToken: contractMgmtToken,
+		AgentTokens:     map[string]string{"agent-codex": codexTok},
+		DiscoveryOptions: agents.DiscoveryOptions{
+			Home:    home,
+			AppDirs: []string{appsDir},
+			Kinds:   []string{agents.HostCodex, agents.HostTraeIDE, agents.HostPi, agents.HostClaudeCode, agents.HostCursor},
+			LookPath: func(name string) (string, error) {
+				candidate := filepath.Join(binDir, name)
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+				return "", errors.New("not found")
+			},
+			Environ: func(string) string { return "" },
+			RuntimeOverrides: map[string]agents.HostOverride{
+				agents.HostCodex:      {Executable: codexBin, ProfileDir: filepath.Join(home, ".codex")},
+				agents.HostPi:         {Executable: piBin, ProfileDir: filepath.Join(home, ".pi", "agent")},
+				agents.HostClaudeCode: {Executable: claudeBin, ProfileDir: filepath.Join(home, ".claude")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	// 1. Seed a real succeeded capture for agent-codex via POST /ingest + InboxWorker.ProcessOnce.
+	status, _ := doHTTPJSON(t, srv, http.MethodPost, "/ingest", `{
+		"project_id":"proj-conn","session_id":"sess-codex-1","message_id":"msg-1",
+		"kind":"capture_qa","content":{"question":"connection check","answer":"captured"}
+	}`, agentHeaders(codexTok))
+	if status != http.StatusAccepted {
+		t.Fatalf("POST /ingest = %d, want 202", status)
+	}
+	if worked, err := srv.Inbox().ProcessOnce(ctx); err != nil || !worked {
+		t.Fatalf("ProcessOnce = (%v, %v), want (true, nil)", worked, err)
+	}
+
+	// 2. Seed a saved capture_receipt directly for agent-trae (legacy-imported receipt pattern).
+	if _, _, err := store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "trae-key-1", UserID: "u-trae", DatasetID: "ds-conn", SessionID: "sess-trae-1",
+		MessageID: "m-trae-1", PayloadSHA256: "sha-trae-1", EntryType: "capture_qa",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCaptureReceiptSaved(ctx, "trae-key-1", "entry-trae-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify GET /api/connections is strictly read-only.
+	var changesBefore, changesAfter int
+	if err := store.DB().QueryRow("SELECT total_changes()").Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
+	code, resp := doHTTPJSON(t, srv, http.MethodGet, "/api/connections", "", mgmtHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/connections = %d: %+v", code, resp)
+	}
+	if err := store.DB().QueryRow("SELECT total_changes()").Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if changesAfter != changesBefore {
+		t.Fatalf("GET /api/connections mutated SQLite: changes %d -> %d", changesBefore, changesAfter)
+	}
+	if resp["revision"] != float64(3) {
+		t.Fatalf("revision = %v, want 3", resp["revision"])
+	}
+
+	byID := map[string]map[string]any{}
+	for _, raw := range resp["connections"].([]any) {
+		row := raw.(map[string]any)
+		byID[row["instance_id"].(string)] = row
+	}
+
+	// agent-codex: healthy with capture stats and profile.
+	codexRow := byID["agent-codex"]
+	codexCap, _ := codexRow["capture"].(map[string]any)
+	if codexRow["status"] != "configured_pending_new_session" || codexRow["detected"] != true ||
+		codexRow["agent_registered"] != true || codexRow["profile"] != filepath.Join(home, ".codex") ||
+		codexRow["new_sessions"] != float64(1) || codexRow["needs_hook_repair"] != false ||
+		codexCap == nil || codexCap["state"] != "healthy" || codexCap["saved_count"] != float64(1) ||
+		codexCap["last_saved_at"].(float64) <= 0 {
+		t.Fatalf("unexpected agent-codex connection row: %+v", codexRow)
+	}
+
+	// agent-trae: healthy with Info.plist host_version and profile.
+	traeRow := byID["agent-trae"]
+	traeCap, _ := traeRow["capture"].(map[string]any)
+	if traeRow["status"] != "configured_pending_new_session" || traeRow["detected"] != true ||
+		traeRow["host_version"] != "1.9.8" || traeRow["profile"] != filepath.Join(home, ".trae-cn") ||
+		traeRow["new_sessions"] != float64(1) || traeCap == nil || traeCap["state"] != "healthy" ||
+		traeCap["last_saved_at"].(float64) <= 0 {
+		t.Fatalf("unexpected agent-trae connection row: %+v", traeRow)
+	}
+
+	// agent-pi: registered & detected, no saved receipts -> waiting_session.
+	piRow := byID["agent-pi"]
+	piCap, _ := piRow["capture"].(map[string]any)
+	if piRow["status"] != "configured_pending_new_session" || piRow["detected"] != true ||
+		piRow["profile"] != filepath.Join(home, ".pi", "agent") || piRow["new_sessions"] != float64(0) ||
+		piCap == nil || piCap["state"] != "waiting_session" {
+		t.Fatalf("unexpected agent-pi connection row: %+v", piRow)
+	}
+
+	// agent-claude: registered & detected, non-capture-managed kind -> stays registered with profile.
+	claudeRow := byID["agent-claude"]
+	if claudeRow["status"] != "registered" || claudeRow["detected"] != true ||
+		claudeRow["profile"] != filepath.Join(home, ".claude") || claudeRow["capture"] != nil {
+		t.Fatalf("unexpected agent-claude connection row: %+v", claudeRow)
+	}
+}

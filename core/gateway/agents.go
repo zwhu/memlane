@@ -3,8 +3,11 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/kit/agents"
@@ -165,35 +168,190 @@ func (s *Server) activeAgents(ctx context.Context) ([]accessAgent, error) {
 	return out, nil
 }
 
+type connectionCaptureState struct {
+	ProjectID   string  `json:"project_id,omitempty"`
+	State       string  `json:"state"`
+	Permission  string  `json:"permission,omitempty"`
+	ReviewSHA   string  `json:"review_sha,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
+	SavedCount  int     `json:"saved_count,omitempty"`
+	LastSavedAt float64 `json:"last_saved_at,omitempty"`
+	CheckedAt   float64 `json:"checked_at,omitempty"`
+}
+
+type connectionView struct {
+	ID              string                  `json:"instance_id"`
+	Kind            string                  `json:"kind"`
+	Status          string                  `json:"status"`
+	Detected        bool                    `json:"detected"`
+	Registered      bool                    `json:"agent_registered"`
+	Version         string                  `json:"host_version,omitempty"`
+	Profile         string                  `json:"profile,omitempty"`
+	NewSessions     int                     `json:"new_sessions"`
+	NeedsHookRepair bool                    `json:"needs_hook_repair"`
+	LastReceiptAt   float64                 `json:"last_receipt_at,omitempty"`
+	Capture         *connectionCaptureState `json:"capture,omitempty"`
+}
+
+type captureActivityStats struct {
+	newSessions int
+	savedCount  int
+	lastSavedAt float64
+}
+
+func isCaptureManagedHostKind(kind string) bool {
+	switch kind {
+	case agents.HostCodex, agents.HostPi, agents.HostTraeX, agents.HostTraeIDE, agents.HostAntigravity:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseUnixTimestamp(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02 15:04:05.999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+	} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return float64(t.UnixMilli()) / 1000
+		}
+	}
+	if sec, err := strconv.ParseFloat(raw, 64); err == nil && sec > 0 && !math.IsNaN(sec) && !math.IsInf(sec, 0) {
+		return sec
+	}
+	return 0
+}
+
+func (s *Server) loadCaptureActivity(ctx context.Context) (map[string]captureActivityStats, map[string]captureActivityStats, error) {
+	type activityRow struct {
+		key         string
+		newSessions int
+		savedCount  int
+		maxUpdated  string
+	}
+	scanRow := func(row rowScanner) (activityRow, error) {
+		var r activityRow
+		err := row.Scan(&r.key, &r.newSessions, &r.savedCount, &r.maxUpdated)
+		return r, err
+	}
+	inboxRows, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT agent_id, COUNT(DISTINCT session_id), COUNT(*), COALESCE(MAX(updated_at), '')
+		 FROM capture_inbox WHERE status='succeeded' GROUP BY agent_id`, nil, scanRow)
+	if err != nil {
+		return nil, nil, err
+	}
+	receiptRows, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT user_id, COUNT(DISTINCT session_id), COUNT(*), COALESCE(MAX(updated_at), '')
+		 FROM capture_receipts WHERE status='saved' GROUP BY user_id`, nil, scanRow)
+	if err != nil {
+		return nil, nil, err
+	}
+	toMap := func(rows []activityRow) map[string]captureActivityStats {
+		out := make(map[string]captureActivityStats, len(rows))
+		for _, r := range rows {
+			out[r.key] = captureActivityStats{
+				newSessions: r.newSessions,
+				savedCount:  r.savedCount,
+				lastSavedAt: parseUnixTimestamp(r.maxUpdated),
+			}
+		}
+		return out
+	}
+	return toMap(inboxRows), toMap(receiptRows), nil
+}
+
+func mergeCaptureStats(a domain.Agent, inboxByAgent, receiptByUser map[string]captureActivityStats) captureActivityStats {
+	stats := inboxByAgent[a.ID]
+	merge := func(candidate captureActivityStats) {
+		stats.newSessions = max(stats.newSessions, candidate.newSessions)
+		stats.savedCount = max(stats.savedCount, candidate.savedCount)
+		stats.lastSavedAt = max(stats.lastSavedAt, candidate.lastSavedAt)
+	}
+	if a.PrincipalID != "" {
+		if r, ok := receiptByUser[a.PrincipalID]; ok {
+			merge(r)
+		}
+	}
+	if r, ok := receiptByUser[a.ID]; ok {
+		merge(r)
+	}
+	return stats
+}
+
 func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	registered, err := s.activeAgents(ctx)
+	allAgents, err := s.cfg.Store.ListAgents(ctx, false)
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+	registered := make([]domain.Agent, 0, len(allAgents))
+	for _, a := range allAgents {
+		if strings.TrimSpace(a.RetiredAt) == "" {
+			registered = append(registered, a)
+		}
 	}
 	defaults, err := s.cfg.Store.GetRegistryDefaults(ctx)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	type connection struct {
-		ID         string `json:"instance_id"`
-		Kind       string `json:"kind"`
-		Status     string `json:"status"`
-		Detected   bool   `json:"detected"`
-		Registered bool   `json:"agent_registered"`
-		Version    string `json:"host_version,omitempty"`
+	inboxByAgent, receiptByUser, err := s.loadCaptureActivity(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
 	}
 	hosts := agents.DetectHosts(s.cfg.DiscoveryOptions)
-	out := make([]connection, 0, len(hosts)+len(registered))
+	hostByKind := make(map[string]agents.DetectedHost, len(hosts))
+	for _, host := range hosts {
+		hostByKind[host.Kind] = host
+	}
+	checkedAt := float64(time.Now().UnixMilli()) / 1000
+	out := make([]connectionView, 0, len(hosts)+len(registered))
 	seen := map[string]bool{}
 	for _, a := range registered {
-		row := connection{ID: a.ID, Kind: a.Kind, Status: "registered", Registered: true}
-		for _, host := range hosts {
-			if a.Kind == host.Kind {
-				row.Detected, row.Version = host.Detected, host.Version
-				break
+		row := connectionView{
+			ID:         a.ID,
+			Kind:       a.Kind,
+			Status:     "registered",
+			Registered: true,
+			Profile:    strings.TrimSpace(a.HostProfile),
+		}
+		if host, ok := hostByKind[a.Kind]; ok {
+			row.Detected = host.Detected
+			row.Version = host.Version
+			if row.Profile == "" {
+				row.Profile = host.ProfileDir
+			}
+		}
+		stats := mergeCaptureStats(a, inboxByAgent, receiptByUser)
+		row.NewSessions = stats.newSessions
+		if isCaptureManagedHostKind(a.Kind) && row.Detected {
+			row.Status = "configured_pending_new_session"
+			if stats.newSessions > 0 {
+				row.Capture = &connectionCaptureState{
+					State:       "healthy",
+					Permission:  "observed",
+					SavedCount:  stats.savedCount,
+					LastSavedAt: stats.lastSavedAt,
+					CheckedAt:   checkedAt,
+				}
+				row.LastReceiptAt = stats.lastSavedAt
+			} else {
+				row.Capture = &connectionCaptureState{
+					State:      "waiting_session",
+					Permission: "observed",
+					CheckedAt:  checkedAt,
+				}
 			}
 		}
 		seen[a.Kind] = true
@@ -201,7 +359,18 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, host := range hosts {
 		if !seen[host.Kind] {
-			out = append(out, connection{ID: host.Kind, Kind: host.Kind, Status: "not_connected", Detected: host.Detected, Version: host.Version})
+			profile := ""
+			if host.Detected || host.ProfileFound {
+				profile = host.ProfileDir
+			}
+			out = append(out, connectionView{
+				ID:       host.Kind,
+				Kind:     host.Kind,
+				Status:   "not_connected",
+				Detected: host.Detected,
+				Version:  host.Version,
+				Profile:  profile,
+			})
 		}
 	}
 	writeJSON(w, 200, map[string]any{"revision": defaults.Revision, "connections": out})

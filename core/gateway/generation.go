@@ -30,6 +30,82 @@ type generationView struct {
 	CredentialConfigured bool `json:"credential_configured"`
 }
 
+type agentModelDefaultsView struct {
+	Model               string `json:"model"`
+	Provider            string `json:"provider"`
+	Source              string `json:"source,omitempty"`
+	ConfigurationSource string `json:"configuration_source,omitempty"`
+	ReasoningEffort     string `json:"reasoning_effort,omitempty"`
+	ThinkingLevel       string `json:"thinking_level,omitempty"`
+	ServiceTier         string `json:"service_tier,omitempty"`
+}
+
+type agentBridgeProfileView struct {
+	Mode           string `json:"mode"`
+	BridgeKind     string `json:"bridge_kind"`
+	BridgeProvider string `json:"bridge_provider,omitempty"`
+	Model          string `json:"model"`
+}
+
+func hasAnyCredential(secrets []string, values ...string) bool {
+	for _, value := range values {
+		if value != "" && containsCredential(value, secrets) {
+			return true
+		}
+	}
+	return false
+}
+
+func detectGenerationBridges(opts agents.DiscoveryOptions, credentials []string) ([]string, map[string]agentModelDefaultsView, map[string]agentBridgeProfileView) {
+	processing := []string{}
+	agentDefaults := map[string]agentModelDefaultsView{}
+	agentBridges := map[string]agentBridgeProfileView{}
+	modelOpts := agents.ModelDefaultsOptions{Environ: opts.Environ}
+	for _, host := range agents.DetectHosts(opts) {
+		if !host.Detected || !host.SupportsProcessingCLI || host.Executable == "" {
+			continue
+		}
+		processing = append(processing, host.Kind)
+		profileDir := host.ProfileDir
+		if profileDir == "" {
+			profileDir = agents.DefaultProfileDir(host.Kind, opts)
+		}
+		runtime, err := agents.CheckBridgeRuntime(host.Kind, host.Executable, profileDir, modelOpts)
+		if err != nil {
+			continue
+		}
+		defaults, err := agents.ReadModelDefaults(host.Kind, runtime.Home, modelOpts)
+		if err != nil || defaults.Model == "" {
+			continue
+		}
+		if hasAnyCredential(credentials, defaults.Model, defaults.Provider, defaults.Source,
+			defaults.ConfigurationSource, defaults.ReasoningEffort, defaults.ThinkingLevel, defaults.ServiceTier) {
+			continue
+		}
+		agentDefaults[host.Kind] = agentModelDefaultsView{
+			Model:               defaults.Model,
+			Provider:            defaults.Provider,
+			Source:              defaults.Source,
+			ConfigurationSource: defaults.ConfigurationSource,
+			ReasoningEffort:     defaults.ReasoningEffort,
+			ThinkingLevel:       defaults.ThinkingLevel,
+			ServiceTier:         defaults.ServiceTier,
+		}
+		bridge := agentBridgeProfileView{
+			Mode:       "agent_bridge",
+			BridgeKind: host.Kind,
+			Model:      defaults.Model,
+		}
+		// domain.ValidateGenerationProfile requires bridge_provider only for pi
+		// and rejects non-empty bridge_provider for fixed-provider CLIs.
+		if host.Kind == agents.HostPi {
+			bridge.BridgeProvider = defaults.Provider
+		}
+		agentBridges[host.Kind] = bridge
+	}
+	return processing, agentDefaults, agentBridges
+}
+
 func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	state, err := s.cfg.Store.GetGenerationState(ctx)
@@ -60,12 +136,7 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	processing := []string{}
-	for _, host := range agents.DetectHosts(s.cfg.DiscoveryOptions) {
-		if host.Detected && host.SupportsProcessingCLI && host.Executable != "" {
-			processing = append(processing, host.Kind)
-		}
-	}
+	processing, agentDefaults, agentBridges := detectGenerationBridges(s.cfg.DiscoveryOptions, credentials)
 	var model any
 	outputLanguage := s.cfg.OutputLanguage
 	if !languageTag.MatchString(outputLanguage) || containsCredential(outputLanguage, credentials) {
@@ -97,7 +168,8 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"state": map[string]any{"active_profile_id": state.ActiveProfileID,
 		"active_revision": state.ActiveRevision, "next_profile_id": state.NextProfileID, "next_revision": state.NextRevision,
 		"revision": state.Revision, "startup_error": startup}, "profiles": out, "model_status": model, "validations": validations,
-		"handoff_available": s.cfg.Models != nil, "output_language": outputLanguage, "detected_processing_clis": processing})
+		"handoff_available": s.cfg.Models != nil, "output_language": outputLanguage, "detected_processing_clis": processing,
+		"agent_defaults": agentDefaults, "agent_bridges": agentBridges})
 }
 
 type validationView struct {
