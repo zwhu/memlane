@@ -219,4 +219,41 @@ func TestRawRecordsChildrenPreviewAndSubagentHistory(t *testing.T) {
 	if histChild["parent_label"] != "主会话规划" || histChild["parent_session_id"] != "parent-many" || histChild["is_subagent"] != true {
 		t.Fatalf("child history = %+v", histChild)
 	}
+
+	// /children with parent's user_id=u1 returns all 6 children (including cross-user child-2) when parent ID is unique in dataset.
+	childrenCross := decodeResponse[pageResult[rawItem]](t, manage(t, s, "GET",
+		"/v1/projects/p/raw-records/sessions/parent-many/children?user_id=u1&limit=10", "", 200))
+	if len(childrenCross.Items) != 6 {
+		t.Fatalf("expected 6 children across users, got %d: %+v", len(childrenCross.Items), childrenCross.Items)
+	}
+
+	// Top-level rows (is_top_level=1) must not appear in child queries even if parent_session_id matches.
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "stale-top-level", UserID: "u1",
+		ParentSessionID: "parent-many", IsTopLevel: true, SortTSDescKey: -430,
+	}))
+	childrenFiltered := decodeResponse[pageResult[rawItem]](t, manage(t, s, "GET",
+		"/v1/projects/p/raw-records/sessions/parent-many/children?limit=10", "", 200))
+	if len(childrenFiltered.Items) != 6 {
+		t.Fatalf("top-level row leaked into /children: %d", len(childrenFiltered.Items))
+	}
+
+	// When two distinct users share the same parent session_id in one dataset, ?user_id= disambiguates cleanly.
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "shared-parent", UserID: "u1", IsTopLevel: true, ChildCount: 1, SortTSDescKey: -200,
+	}))
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "shared-parent", UserID: "u2", IsTopLevel: true, ChildCount: 1, SortTSDescKey: -199,
+	}))
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "shared-child-u1", UserID: "u1", ParentSessionID: "shared-parent", IsTopLevel: false, SortTSDescKey: -198,
+	}))
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "shared-child-u2", UserID: "u2", ParentSessionID: "shared-parent", IsTopLevel: false, SortTSDescKey: -197,
+	}))
+	disambiguated := decodeResponse[pageResult[rawItem]](t, manage(t, s, "GET",
+		"/v1/projects/p/raw-records/sessions/shared-parent/children?user_id=u1&limit=10", "", 200))
+	if len(disambiguated.Items) != 1 || disambiguated.Items[0].SessionID != "shared-child-u1" {
+		t.Fatalf("shared-parent disambiguation failed: %+v", disambiguated.Items)
+	}
 }

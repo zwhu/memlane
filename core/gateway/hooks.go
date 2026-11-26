@@ -208,26 +208,18 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 	// Once the reservation exists, finish publication even if the client disconnects.
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	status := http.StatusOK
-	response["status"], response["deduplicated"] = state, true
-	if state == "reserved" {
-		item, err := s.cfg.Store.EnqueueInboxItem(persist, domain.CaptureInboxItem{ID: itemID, ProjectID: project.ID,
-			DatasetID: project.DatasetID, AgentID: agent.ID, SessionID: req.SessionID, MessageID: req.MessageID,
-			CaptureKey: captureKey, Kind: string(req.Kind), PayloadJSON: string(encoded)})
-		if err != nil {
+	abortPending := func(err error) {
+		if state == "reserved" {
 			cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 			defer stop()
-			writeDomainError(w, errors.Join(err, s.cfg.Store.AbortPendingCaptureReceipt(cleanup, captureKey)))
-			return
+			err = errors.Join(err, s.cfg.Store.AbortPendingCaptureReceipt(cleanup, captureKey))
 		}
-		s.inbox.Notify()
-		status = http.StatusAccepted
-		response["status"], response["deduplicated"] = item.Status, false
+		writeDomainError(w, err)
 	}
 	if explicitSession != "" {
 		key := sessionBindingKey(agent.ID, explicitSession)
 		if err := s.cfg.Store.UpsertSessionBinding(persist, key, project.ID, float64(time.Now().UnixMilli())/1000); err != nil {
-			writeDomainError(w, err)
+			abortPending(err)
 			return
 		}
 		parentSessionID := strings.TrimSpace(req.ParentSessionID)
@@ -244,8 +236,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 				}
 			}
 		}
-		if parentSessionID == req.SessionID {
+		if parentSessionID != "" && parentSessionID == req.SessionID {
 			parentSessionID = ""
+			subagentRole = ""
 		}
 		if parentSessionID != "" || subagentRole != "" {
 			if err := s.cfg.Store.UpsertSessionRelation(persist, domain.SessionRelation{
@@ -254,10 +247,24 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 				ParentSessionID: parentSessionID,
 				SubagentRole:    subagentRole,
 			}); err != nil {
-				writeDomainError(w, err)
+				abortPending(err)
 				return
 			}
 		}
+	}
+	status := http.StatusOK
+	response["status"], response["deduplicated"] = state, true
+	if state == "reserved" {
+		item, err := s.cfg.Store.EnqueueInboxItem(persist, domain.CaptureInboxItem{ID: itemID, ProjectID: project.ID,
+			DatasetID: project.DatasetID, AgentID: agent.ID, SessionID: req.SessionID, MessageID: req.MessageID,
+			CaptureKey: captureKey, Kind: string(req.Kind), PayloadJSON: string(encoded)})
+		if err != nil {
+			abortPending(err)
+			return
+		}
+		s.inbox.Notify()
+		status = http.StatusAccepted
+		response["status"], response["deduplicated"] = item.Status, false
 	}
 	writeJSON(w, status, response)
 }

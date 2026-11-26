@@ -321,20 +321,23 @@ type RawItem struct {
 	AgentID         string `json:"agent_id,omitempty"`
 	Title           string `json:"title"`
 	Label           string `json:"label,omitempty"`
-	MsgCount        int    `json:"msg_count"`
-	ToolCalls       int    `json:"tool_calls"`
-	DocName         string `json:"doc_name,omitempty"`
-	DocLabel        string `json:"doc_label,omitempty"`
-	Status          string `json:"status,omitempty"`
-	StartedAt       string `json:"started_at,omitempty"`
-	LastActivityAt  string `json:"last_activity_at,omitempty"`
-	ParentSessionID string `json:"parent_session_id,omitempty"`
-	RootSessionID   string `json:"root_session_id,omitempty"`
-	SubagentRole    string `json:"subagent_role,omitempty"`
-	NestingDepth    int    `json:"nesting_depth,omitempty"`
-	IsTopLevel      bool   `json:"is_top_level"`
-	ChildCount      int    `json:"child_count"`
-	EffectiveDate   string `json:"effective_date,omitempty"`
+	MsgCount        int       `json:"msg_count"`
+	ToolCalls       int       `json:"tool_calls"`
+	IsSubagent      bool      `json:"is_subagent,omitempty"`
+	DocName         string    `json:"doc_name,omitempty"`
+	DocLabel        string    `json:"doc_label,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	StartedAt       string    `json:"started_at,omitempty"`
+	LastActivityAt  string    `json:"last_activity_at,omitempty"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	RootSessionID   string    `json:"root_session_id,omitempty"`
+	SubagentRole    string    `json:"subagent_role,omitempty"`
+	NestingDepth    int       `json:"nesting_depth,omitempty"`
+	IsTopLevel      bool      `json:"is_top_level"`
+	ChildCount      int       `json:"child_count"`
+	ChildrenPreview []RawItem `json:"children_preview,omitempty"`
+	ChildrenHasMore bool      `json:"children_has_more"`
+	EffectiveDate   string    `json:"effective_date,omitempty"`
 	CreatedAt       string `json:"created_at,omitempty"`
 	UpdatedAt       string `json:"updated_at,omitempty"`
 }

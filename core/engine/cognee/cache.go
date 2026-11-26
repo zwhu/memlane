@@ -17,6 +17,8 @@ var (
 	reUserRequestBlock        = regexp.MustCompile(`(?is)<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>`)
 	reAdditionalMetadataBlock = regexp.MustCompile(`(?is)<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>`)
 	reAdditionalMetadataOpen  = regexp.MustCompile(`(?is)<ADDITIONAL_METADATA>.*$`)
+	reUserSettingsChangeBlock = regexp.MustCompile(`(?is)<USER_SETTINGS_CHANGE>.*?</USER_SETTINGS_CHANGE>`)
+	reUserSettingsChangeOpen  = regexp.MustCompile(`(?is)<USER_SETTINGS_CHANGE>.*$`)
 	reUserRequestTag          = regexp.MustCompile(`(?i)</?USER_REQUEST>`)
 )
 
@@ -30,6 +32,8 @@ func cleanSessionLabel(raw string) string {
 	}
 	text = reAdditionalMetadataBlock.ReplaceAllString(text, "")
 	text = reAdditionalMetadataOpen.ReplaceAllString(text, "")
+	text = reUserSettingsChangeBlock.ReplaceAllString(text, "")
+	text = reUserSettingsChangeOpen.ReplaceAllString(text, "")
 	text = reUserRequestTag.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 	if text == "" {

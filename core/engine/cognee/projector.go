@@ -537,6 +537,8 @@ func applySessionRelations(sessions []domain.CatalogSession, relations []domain.
 		for _, idx := range idxs {
 			s := &sessions[idx]
 			if inCycle[idx] {
+				s.ParentSessionID = ""
+				s.SubagentRole = ""
 				s.IsTopLevel = true
 				s.NestingDepth = 0
 				if s.RootSessionID == "" {

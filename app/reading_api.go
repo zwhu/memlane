@@ -103,7 +103,7 @@ func rawSessionFromAPI(row api.RawItem) rawSessionEntry {
 	return rawSessionEntry{
 		Session: Session{
 			ID: row.SessionID, Dataset: row.DatasetID, User: row.UserID, Agent: row.AgentID,
-			Started: row.StartedAt, Updated: row.LastActivityAt, IsSubagent: row.ParentSessionID != "",
+			Started: row.StartedAt, Updated: row.LastActivityAt, IsSubagent: row.IsSubagent || row.ParentSessionID != "",
 			ParentSessionID: row.ParentSessionID, SubagentRole: row.SubagentRole, NestingDepth: row.NestingDepth,
 		},
 		Label:     label,
@@ -128,10 +128,19 @@ func (c ProjectControlClient) rawPage(ctx context.Context, project, kind, cursor
 		switch row.Kind {
 		case "session":
 			session := rawSessionFromAPI(row)
+			var childrenPreview []rawSessionEntry
+			if len(row.ChildrenPreview) > 0 {
+				childrenPreview = make([]rawSessionEntry, 0, len(row.ChildrenPreview))
+				for _, childRow := range row.ChildrenPreview {
+					childrenPreview = append(childrenPreview, rawSessionFromAPI(childRow))
+				}
+			}
 			entry.Session = &v2RawSessionEntry{
 				Session: session.Session, Label: session.Label,
 				MsgCount: session.MsgCount, ToolCalls: session.ToolCalls,
-				ChildCount: row.ChildCount, ChildrenHasMore: row.ChildCount > 0,
+				ChildCount:      row.ChildCount,
+				ChildrenPreview: childrenPreview,
+				ChildrenHasMore: row.ChildrenHasMore || row.ChildCount > len(childrenPreview),
 			}
 		case "document":
 			id := row.DocID

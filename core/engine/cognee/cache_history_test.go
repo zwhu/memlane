@@ -71,8 +71,9 @@ func TestCacheStripsAntigravityRequestTagsFromSessionLabel(t *testing.T) {
 		INSERT INTO cache_qa_entries VALUES
 			(1, ?, 's-wrapped', 'q1', '{"question":"<USER_REQUEST>\n实现子会话聚合后端\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nworkspace: /tmp\n</ADDITIONAL_METADATA>","answer":"好的"}', '2026-11-26', '2099-01-01 00:00:00'),
 			(2, ?, 's-meta-first', 'q2', '{"question":"<ADDITIONAL_METADATA>\nfoo: bar\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\n  排查缓存标签  \n</USER_REQUEST>","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00'),
-			(3, ?, 's-truncated', 'q3', '{"question":"<USER_REQUEST>\n未闭合的提问内容","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00');
-	`, uid, uid, uid)
+			(3, ?, 's-truncated', 'q3', '{"question":"<USER_REQUEST>\n未闭合的提问内容","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00'),
+			(4, ?, 's-settings', 'q4', '{"question":"<USER_SETTINGS_CHANGE>\nmodel: gemini\n</USER_SETTINGS_CHANGE>\n真正的问题内容","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00');
+	`, uid, uid, uid, uid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +84,13 @@ func TestCacheStripsAntigravityRequestTagsFromSessionLabel(t *testing.T) {
 		"s-wrapped":    "实现子会话聚合后端",
 		"s-meta-first": "排查缓存标签",
 		"s-truncated":  "未闭合的提问内容",
+		"s-settings":   "真正的问题内容",
 	}
 	refs := []SessionRef{
 		{UserID: uid, SessionID: "s-wrapped"},
 		{UserID: uid, SessionID: "s-meta-first"},
 		{UserID: uid, SessionID: "s-truncated"},
+		{UserID: uid, SessionID: "s-settings"},
 	}
 	hydrated, err := projector.HydrateSessionsFromCache(ctx, refs)
 	if err != nil {

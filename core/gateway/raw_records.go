@@ -191,11 +191,19 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		case "session":
 			source = sessions
 			if parent != "" {
-				source = rawSessions + scope + " WHERE x.parent_session_id=?"
+				source = rawSessions + scope + " WHERE x.parent_session_id=? AND x.is_top_level=0"
 				args = append(args, parent)
 				if userID := q.Get("user_id"); userID != "" {
-					source += " AND x.user_id=?"
-					args = append(args, userID)
+					var distinctParentUsers int
+					if err := tx.QueryRowContext(ctx,
+						"SELECT COUNT(DISTINCT user_id) FROM catalog_sessions WHERE dataset_id=? AND session_id=?",
+						dataset, parent).Scan(&distinctParentUsers); err != nil {
+						return err
+					}
+					if distinctParentUsers > 1 {
+						source += " AND x.user_id=?"
+						args = append(args, userID)
+					}
 				}
 			}
 		}
@@ -215,7 +223,7 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		}
 		if parent == "" {
 			const childrenPreviewLimit = 5
-			childQuery := rawSessions + " CROSS JOIN (SELECT ? AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=? ORDER BY k1,k3,k4 LIMIT ?"
+			childQuery := rawSessions + " CROSS JOIN (SELECT ? AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=? AND x.is_top_level=0 ORDER BY k1,k3,k4 LIMIT ?"
 			for i := range out.Items {
 				if out.Items[i].Kind != "session" || out.Items[i].ChildCount <= 0 {
 					continue
@@ -381,7 +389,7 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 
 	var subagents []rawItem
 	if sess.ChildCount > 0 {
-		childQuery := rawSessions + " CROSS JOIN (SELECT '' AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=?"
+		childQuery := rawSessions + " CROSS JOIN (SELECT '' AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=? AND x.is_top_level=0"
 		childArgs := []any{ds, sid}
 		if rows, err := readRows(ctx, s.cfg.Store.DB(), childQuery+" ORDER BY k1,k3,k4 LIMIT 50", childArgs, scanRaw); err == nil {
 			subagents = make([]rawItem, 0, len(rows))

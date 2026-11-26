@@ -372,9 +372,9 @@ func TestIngestPersistsSessionRelations(t *testing.T) {
 		"source_meta":{"external_metadata":{"parent_session_id":"parent-2","subagent_role":"worker"}}
 	}`, http.StatusAccepted)
 
-	// 4. Self-parent is ignored cleanly without failing /ingest.
+	// 4. Self-parent (even with subagent_role) is ignored cleanly without failing /ingest or leaking role.
 	agentRequest(t, s, "/ingest", `{
-		"project_id":"p","session_id":"self-loop","parent_session_id":"self-loop",
+		"project_id":"p","session_id":"self-loop","parent_session_id":"self-loop","subagent_role":"bogus",
 		"message_id":"m4","kind":"capture_trace","content":{"origin_function":"Edit"}
 	}`, http.StatusAccepted)
 
@@ -392,6 +392,51 @@ func TestIngestPersistsSessionRelations(t *testing.T) {
 	}
 	if r := byID["child-ext"]; r.ParentSessionID != "parent-2" || r.SubagentRole != "worker" {
 		t.Fatalf("child-ext relation = %+v", r)
+	}
+	if _, leaked := byID["self-loop"]; leaked {
+		t.Fatalf("self-parent leaked into session_relations: %+v", byID["self-loop"])
+	}
+}
+
+type relationCheckProjector struct {
+	syncDone chan []domain.SessionRelation
+}
+
+func (p *relationCheckProjector) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
+	rels, err := store.ListSessionRelations(ctx, "ds")
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case p.syncDone <- rels:
+	default:
+	}
+	return &engine.SyncStats{}, nil
+}
+
+func (p *relationCheckProjector) ReadLocalBody(context.Context, engine.LocalBodyRef) (string, error) {
+	return "", nil
+}
+
+func TestIngestPersistsSessionRelationBeforeInboxWorkerSync(t *testing.T) {
+	proj := &relationCheckProjector{syncDone: make(chan []domain.SessionRelation, 1)}
+	s, _, _ := testServer(t, func(c *Config) {
+		c.Projector = proj
+	})
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+	s.Inbox().Start(ctx)
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"race-child","parent_session_id":"race-parent","subagent_role":"worker",
+		"message_id":"race-1","kind":"capture_trace","content":{"origin_function":"Read"}
+	}`, http.StatusAccepted)
+	select {
+	case rels := <-proj.syncDone:
+		if len(rels) != 1 || rels[0].SessionID != "race-child" || rels[0].ParentSessionID != "race-parent" || rels[0].SubagentRole != "worker" {
+			t.Fatalf("SyncCatalog observed missing/incomplete session_relations: %+v", rels)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for InboxWorker SyncCatalog")
 	}
 }
 

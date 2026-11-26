@@ -534,7 +534,7 @@ func TestProjectorMergesSessionRelationsAndHierarchy(t *testing.T) {
 	}
 	for _, id := range []string{"cycleA", "cycleB"} {
 		c := byID[id]
-		if !c.IsTopLevel || c.NestingDepth != 0 || c.ChildCount != 0 {
+		if !c.IsTopLevel || c.ParentSessionID != "" || c.SubagentRole != "" || c.NestingDepth != 0 || c.ChildCount != 0 {
 			t.Fatalf("%s = %+v", id, c)
 		}
 	}
