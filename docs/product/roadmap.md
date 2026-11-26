@@ -31,7 +31,7 @@
 - [x] 新增完成页；同一宿主统一显示为「TRAE CN」。
 - [x] 已同步更新 [公测安装指南](beta-install-guide.md) 中涉及页内同意与延后配置的描述。
 - [ ] 待补齐：在真实 macOS Native `1200×820` 窗口下按浅色、深色和「减少动态效果」逐屏实窗验收（headless `1200×820` 浅/深色渲染图及全量 Go 回归与性能预算均已通过）。
-- **参考位置**：[onboarding_shell.go](../../internal/simpledesktop/onboarding_shell.go)、[onboarding_env.go](../../internal/simpledesktop/onboarding_env.go)、[onboarding_connect.go](../../internal/simpledesktop/onboarding_connect.go)、[onboarding_generation.go](../../internal/simpledesktop/onboarding_generation.go)、[initial_setup.go](../../internal/simpledesktop/initial_setup.go)、[onboarding_agents.go](../../internal/simpledesktop/onboarding_agents.go)、[first_generation_setup.go](../../internal/simpledesktop/first_generation_setup.go)。
+- **参考位置**：[app/settings/](../../app/settings/) 与 [app/](../../app/) 中首次启动向导相关实现（原 `internal/simpledesktop/onboarding_*.go` 已于 Wave 4 迁移至 `app/`）。
 - **状态**：已实现并通过双路对抗审查、Go 全量单测与 headless 1200×820 浅/深色渲染核验（`cccb1bb`），待实窗验收。
 
 ### App 记录与日志的可读性和时间（含 TRAE CLI 补丁过滤提示）
@@ -44,7 +44,7 @@
 
 - **来源**：2026-11-21 用户反馈「冷启动新的项目记忆的时候，那个交互效果非常突兀」。
 - [ ] 排查并优化冷启动首次进入尚未加载的项目「记忆」页（`!s.Loaded`）时 `Page Rise`、骨架占位、首批预热渲染与 `Stagger Cascade` 入场、以及右侧阅读区空态/首条选中过渡之间的衔接，在浅色与深色两套外观下实窗验收。
-- **参考位置**：[app.go](../../internal/simpledesktop/app.go)、[knowledge_waterfall.go](../../internal/simpledesktop/knowledge_waterfall.go)、[project_reading_ui.go](../../internal/simpledesktop/project_reading_ui.go)、[motion_tokens.go](../../internal/simpledesktop/motion_tokens.go)、[MyGo 动效契约](../design/motion-implementation.md)。
+- **参考位置**：[app/app.go](../../app/app.go)、[app/reading/](../../app/reading/)、[motion_tokens.go](../../kit/ui/motion_tokens.go)、[MyGo 动效契约](../design/motion-implementation.md)。
 
 ### 遗留未覆盖验收边界（收口备忘）
 
@@ -63,12 +63,12 @@
 
 ## P3 · `v1.0` 正式版增量
 
-由原公测发版规划（[v0.1.0-beta.1 发版归档](../archive/release-v0.1.0-beta.1-20261121.md)）沉淀的正式版必做增量：
+由早期公测发版规划沉淀的正式版必做增量：
 
 - [ ] **Apple Developer ID 签名与 `notarytool` 公证装订**：消除首次打开的 Gatekeeper 拦截，同时解锁 macOS `SMAppService`「登录时静默启动」完整系统登录项体验。
 - [ ] **自维护只读国内静态镜像源**：将 Cognee 上游源码与官方插件原始归档（保持原归档字节与固定 SHA256）同步至自维护国内静态存储作为一级源，公益反代（`gh-proxy.org` / `gh-proxy.com`）降级为二级备选。
 - [ ] **应用内自动更新（`mygo.Updater`）**：落地 [macOS 更新调研](../research/macos-updater-20261119.md) 规划的签名兼容清单与停服/独占锁协调机制。
-- [ ] **图形化卸载与依赖资源清理**：在 M2 已交付的 [CLI 安全卸载器](../../scripts/uninstall.py) 基础上补齐 GUI 卸载入口——执行前展示独占/共享/用户原有资源清单与预计释放空间，允许保留记忆库与配置，按所有权备份清理宿主接入项并严禁删除运行中或其他应用仍引用的资源（防复发规则见 [运行包误清理复盘](../engineering/runtime-package-cleanup-incident-20261111.md)）。
+- [ ] **图形化卸载与依赖资源清理**：在早期 CLI 安全卸载能力（原 `scripts/uninstall.py`）基础上补齐 GUI 卸载入口——执行前展示独占/共享/用户原有资源清单与预计释放空间，允许保留记忆库与配置，按所有权备份清理宿主接入项并严禁删除运行中或其他应用仍引用的资源（防复发规则见 [运行包误清理复盘](../engineering/runtime-package-cleanup-incident-20261111.md)）。
 - [ ] **逐步开放其余编码宿主**：按真机闭环验收进度恢复开放 Claude Code、Cursor 与 OpenCode。
 
 ---
@@ -78,13 +78,13 @@
 ### 本机 Docker、远程 Cognee 与跨主机记忆管理
 
 - **来源**：2026-11-07、2026-11-17 提出，2026-11-25 完成架构调研。
-- [ ] 评估并落地本机 Docker 与远程 Cognee 部署，以及桌面端管理其他主机记忆的能力（见 [Docker 部署架构调研](../research/docker-deployment-architecture-20261125.md) 与 [历史部署方向](../archive/deployment-options-20261117.md)）。
+- [ ] 评估并落地本机 Docker 与远程 Cognee 部署，以及桌面端管理其他主机记忆的能力（见 [Docker 部署架构调研](../research/docker-deployment-architecture-20261125.md)）。
 - **边界**：坚持单人定位、不做多租户；远程管理不自动包含主机间数据同步、合并或本地/远程库自动合并；当前不提前引入多主机数据模型或远程端口。
 
 ### 大量 Agent 统一驱动适配与多客户端能力识别
 
 - **来源**：2026-11-12（多客户端形态识别）、2026-11-18（大量 Agent 统一驱动）。
-- [ ] 核对各家官方 SDK / RPC / ACP / 结构化 CLI 接口，建立覆盖 Agent 家族、CLI 与桌面形态、执行位置、实际配置目录及逐项能力证据的连接能力账本（参考 [多 Agent 驱动协议](../research/agent-driving-protocols-20261118.md) 与 [电脑级接入契约](../architecture/agent-connection-contract.md)）。任务驱动、官方采集/召回与画像导出分别验证，不由品牌外观推定覆盖。
+- [ ] 核对各家官方 SDK / RPC / ACP / 结构化 CLI 接口，建立覆盖 Agent 家族、CLI 与桌面形态、执行位置、实际配置目录及逐项能力证据的连接能力账本（参考 [多 Agent 驱动协议](../research/agent-driving-protocols-20261118.md) 与 [架构边界契约](../architecture/boundaries.md)）。任务驱动、官方采集/召回与画像导出分别验证，不由品牌外观推定覆盖。
 
 ### 基础配置集中记录（2026-11-11）
 

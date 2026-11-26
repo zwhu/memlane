@@ -245,6 +245,6 @@ tools只有作为 `LanguageModelChatRequestOptions.tools`传入才对该次请�
 本节只提供源证与精确接口条件；extensionHost实际可达、参数序列化、真实账号推理／取消和Memlane任务关联仍未运行验证。当前四项CLI处理者由同轮根代理核对现有实现确认。源码结论是内部入口存在，交付结论是Memlane尚未适配，二者不混写。
 
 - [T10] TRAE官方 [Hook configuration reference](https://docs.trae.ai/ide/hook-configuration-reference?_lang=en)、[Automate actions with hooks](https://docs.trae.ai/ide/automate-actions-with-hooks?_lang=en)，本次完整读取；reference发布／更新2026-11-06，明确Stop续query／循环次数及输出优先级。
-- [L3] 本机 [workbench源码](</Applications/Trae CN.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js>)、[第一方IM扩展](</Applications/Trae CN.app/Contents/Resources/app/extensions/cloudide.icube-im-bridge/dist/extension.js>)，只读源码。
-- [L4] 本机 [extensionHostProcess源码](</Applications/Trae CN.app/Contents/Resources/app/out/vs/workbench/api/node/extensionHostProcess.js>)，实际API对象、门禁与event实现。
-- [L5] 本机完整 [vscode.d.ts](</Applications/Trae CN.app/Contents/Resources/app/out/vscode-dts/vscode.d.ts:19781>)，模型、consent、request生命周期和取消声明。
+- [L3] 本机 workbench 源码（`/Applications/Trae CN.app/Contents/Resources/app/out/vs/workbench/workbench.desktop.main.js`）、第一方 IM 扩展（`/Applications/Trae CN.app/Contents/Resources/app/extensions/cloudide.icube-im-bridge/dist/extension.js`），只读源码。
+- [L4] 本机 extensionHostProcess 源码（`/Applications/Trae CN.app/Contents/Resources/app/out/vs/workbench/api/node/extensionHostProcess.js`），实际API对象、门禁与event实现。
+- [L5] 本机完整 `vscode.d.ts`（`/Applications/Trae CN.app/Contents/Resources/app/out/vscode-dts/vscode.d.ts:19781`），模型、consent、request生命周期和取消声明。

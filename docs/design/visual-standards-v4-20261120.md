@@ -1,9 +1,9 @@
 # Memlane 视觉规范 V4
 
-2026-11-20，v1；2026-11-21，v2（补齐剩余页面交互、新增组件与文案规范）；2026-11-21，v3（移除独立「检索结果」页、重构项目消息模块与用户画像阅读、新增 macOS 顶部状态栏弹层及通用记忆／图谱 V4 外壳）。用户在访谈中确认了 V4 方向与项目三栏，并在 2026-11-21 评审通过剩余页面交互稿（含 R2 调整）与后续模块 V4 原型。本文取代 [A 视觉规范（20261113）](../archive/visual-standards-20261113.md) 和 [设计规格 V3](../archive/memlane-design-spec-v3.html)，作为后续所有 Native 界面改动的依据。
+2026-11-20，v1；2026-11-21，v2（补齐剩余页面交互、新增组件与文案规范）；2026-11-21，v3（移除独立「检索结果」页、重构项目消息模块与用户画像阅读、新增 macOS 顶部状态栏弹层及通用记忆／图谱 V4 外壳）。用户在访谈中确认了 V4 方向与项目三栏，并在 2026-11-21 评审通过剩余页面交互稿（含 R2 调整）与后续模块 V4 原型。本文取代已退役的早期视觉规范（20261113）与设计规格 V3，作为后续所有 Native 界面改动的依据。
 
 > [!IMPORTANT]
-> 本文为现行唯一界面与交互设计基线（已吸收原 `design.md` 的有效交互不变量与品牌资产规范），历史 V4 分阶段 Native 落地记录见 [V4 实施归档](../archive/visual-v4-implementation-20261120.md)。
+> 本文为现行唯一界面与交互设计基线（已吸收原 `design.md` 的有效交互不变量与品牌资产规范）。
 
 ## 1. 依据与适用范围
 
@@ -279,7 +279,7 @@
 
 **③ 接入**
 
-- 遵循 [电脑级接入契约](../architecture/agent-connection-contract.md) 的「连接所选 → 同页查看具体配置变更 → 确认连接」流程。每个已选 Agent 一行（发丝分隔），描述直接写**将修改的配置文件**，同页可展开查看具体变更。
+- 遵循 [架构边界契约 §3](../architecture/boundaries.md#3-宿主接入与-cognee-冲突处理边界) 的「连接所选 → 同页查看具体配置变更 → 确认连接」流程。每个已选 Agent 一行（发丝分隔），描述直接写**将修改的配置文件**，同页可展开查看具体变更。
 - 主按钮「全部接入（N）」一次批量确认，写入前自动备份；部分已接入时改为「接入其余（N）」。行尾 `···` 菜单提供：只接入这个、跳过这个、更换配置目录、立即重新检测。
 - 状态徽标依次为：待接入 → 写入中 → 待新会话 → 已生效，跳过的显示「已跳过」。
 - 个别 Agent 才需要的额外步骤（例如 TRAE CN 需在「设置 → Hooks → 全局」打开开关）以一行 `warning` 色说明写在该 Agent 行内。
@@ -364,9 +364,9 @@
 | 文档 | 处理 |
 | --- | --- |
 | `docs/design/design.md` | 有效交互不变量、2026-11-25 专注式向导补充决议与海獭品牌规范已合并吸收至本文，不再单独维护 |
-| [visual-v4-implementation-20261120.md](../archive/visual-v4-implementation-20261120.md) | 历史分阶段实施记录，已归档至 `docs/archive/` |
-| [visual-standards-20261113.md](../archive/visual-standards-20261113.md) | 已被本文取代，保留作为历史记录 |
-| [memlane-design-spec-v3.html](../archive/memlane-design-spec-v3.html) | 已被本文取代，保留作为历史记录 |
+| `visual-v4-implementation-20261120.md` | 历史分阶段实施记录，已完成并退役 |
+| `visual-standards-20261113.md` | 已被本文取代并退役 |
+| `memlane-design-spec-v3.html` | 已被本文取代并退役 |
 | `docs/images/ui-redesign/client-simplification-20261112/` | 旧设计图，不再作为改动依据 |
 | [motion-implementation.md](motion-implementation.md) | 继续有效；弹簧参数以本文第 6 节为准 |
-| [product.md](../product/product.md)、[agent-connection-contract.md](../architecture/agent-connection-contract.md) | 职责独立，不受影响（原 `content-model.md` 已合并入 `product.md`） |
+| [product.md](../product/product.md)、[boundaries.md](../architecture/boundaries.md) | 职责独立，不受影响（原 `content-model.md` 已合并入 `product.md`） |

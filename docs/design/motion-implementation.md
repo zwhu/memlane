@@ -51,7 +51,7 @@ flowchart LR
 
 ## 3. 生产组件与复用边界
 
-桌面端共享动效令牌、弹簧预设与自绘帧调度统一集中在 [motion_tokens.go](../../internal/simpledesktop/motion_tokens.go)，并受 `scripts/lint.py` 静态门禁强制守护（`ML008` 禁止在非动效模块直调 `AnimationFrame()` 且强制 `ReduceMotion` 守卫、`ML009` 禁止 `<500ms` 高频 `c.After` 轮询、`ML010`/`ML011` 禁止在 `Draw`/`DrawOver`/`App.View` 热路径做磁盘 I/O、休眠或网络调用）。
+桌面端共享动效令牌、弹簧预设与自绘帧调度统一集中在 [motion_tokens.go](../../kit/ui/motion_tokens.go)，并受 `scripts/lint.py` 静态门禁强制守护（`ML008` 禁止在非动效模块直调 `AnimationFrame()` 且强制 `ReduceMotion` 守卫、`ML009` 禁止 `<500ms` 高频 `c.After` 轮询、`ML010`/`ML011` 禁止在 `Draw`/`DrawOver`/`App.View` 热路径做磁盘 I/O、休眠或网络调用）。
 
 - **稳定 Key 与代次隔离**：组件与列表项必须使用稳定 `Key`，禁止用帧时间、随机值、Token 数或进度数字当 `Key`；同阶段收到文案/数据更新时只更新内容、不重播整段入场。`TimelineOptions.Run` 与 `KeyframeOptions.Run` 仅在阶段或尝试代次真实变化时递增。
 - **阶段中断与重入**：阶段快速变化时从当前视觉位置平滑过渡到新目标，不额外等待旧动画结束；重开面板或切回页面只读取当前任务快照，不重发后台任务；任务取消、失败或新尝试出现时立即停掉旧循环并隔离过期回执。

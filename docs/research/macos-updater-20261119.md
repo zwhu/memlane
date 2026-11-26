@@ -23,7 +23,7 @@
 - [resources.go](../../internal/bootstrap/resources.go) 根据全部运行资源摘要生成 `runtime-<摘要>` 私有目录，逐文件检查原内容，不就地覆盖不同版本。这是升级时同时保留旧运行资源与候选资源的基础，不代表更新事务已经实现。
 - [first_runtime.go](../../internal/bootstrap/first_runtime.go) 从明确资源目录启动后台，保存官方库路径与身份；当前仍复用资源目录中的开发启动器，正式更新协调未接入。
 - [组件清单](../../engine/coding-memory-components.json) 固定官方服务和插件输入；[安装器](../../internal/bootstrap/installer.go)已有绑定具体计划摘要的确认及恢复机制。
-- [插件准备](../../engine/python/project_installation.py)生成独立安装产物，宿主的启用与信任仍按现有流程处理；新 App 不自动证明已有 Agent 已切换插件。
+- 插件准备（重构前为 `engine/python/project_installation.py`，现收口于 [kit/agents/](../../kit/agents/) 与 [core/hooks/](../../core/hooks/)）管理宿主受管配置，宿主的启用与信任仍按现有流程处理；新 App 不自动证明已有 Agent 已切换配置。
 
 ## 用户流程
 

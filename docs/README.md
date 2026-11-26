@@ -1,13 +1,13 @@
 # Memlane 文档总目录
 
-按职责分类收纳当前有效文档、专项调研、工程规范与历史归档。术语与分层定义见仓库根目录 [CONTEXT.md](../CONTEXT.md)。
+按职责分类收纳当前有效文档、专项调研、工程规范与过程产物说明。术语与分层定义见仓库根目录 [CONTEXT.md](../CONTEXT.md)。
 
 ## 1. 产品定义与路线 (`product/`)
 
 | 文档 | 说明 |
 | --- | --- |
 | [product.md](product/product.md) | Memlane 产品定位、内容分层与唯一真相、核心页面交互与依赖复用原则（已合并原 `content-model.md`） |
-| [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录（含 2026-11-25 首次启动向导专注式重设计与 `v1.0` 正式版增量） |
+| [roadmap.md](product/roadmap.md) | 后续演进方向与待办记录（含首次启动向导专注式重设计与 `v1.0` 正式版增量） |
 | [beta-install-guide.md](product/beta-install-guide.md) | `v0.1.0-beta.3` 内测安装、Gatekeeper 放行、零 Skill Setup CLI、首次下载源与安全卸载指南 |
 | [THIRD_PARTY_LICENSES.md](../THIRD_PARTY_LICENSES.md) | 第三方开源组件、本地运行依赖与向量模型许可说明 |
 
@@ -15,13 +15,10 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [overview.md](architecture/overview.md) | 当前系统分层、源码模块映射、核心数据流与架构全景图 |
-| [boundaries.md](architecture/boundaries.md) | 目标架构边界契约（Go 单二进制收口、Python ≤3.5k 引擎薄壳、方案 C `memlane hook` 与冲突策略、6 原语可替换引擎接口、`kit/*` 跨 App 复用预留与 5 万行预算红线） |
-| [refactor-roadmap-20261126.md](architecture/refactor-roadmap-20261126.md) | 目标架构重构实施蓝图（Stage 0 技术约束、功能处置账本、六层完整性与正确性保障体系、三权分立协同机制与 Wave 0–4 垂直切片路线图） |
-| [development.md](architecture/development.md) | 日常开发入口 `scripts/dev.py`、统一门禁、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
-| [agent-connection-contract.md](architecture/agent-connection-contract.md) | 电脑级 5 宿主发现、官方插件优先接入与零项目授权契约 |
+| [overview.md](architecture/overview.md) | 现行系统分层、Go 单二进制 + `kit/*`/`core/*`/`app/*`/`engines/cognee` 源码映射、五条核心数据流与架构全景图 |
+| [boundaries.md](architecture/boundaries.md) | 现行生效架构边界契约（Go 单二进制收口、Python ≤3.5k 无状态引擎薄壳、方案 C `memlane hook` 与三级冲突策略、6 原语 `MemoryEngine`、`kit/*` 跨 App 复用边界与机械门禁） |
+| [development.md](architecture/development.md) | 日常开发入口 `cmd/memlane dev`、统一门禁（`check.py` / `lint.py` / `diff_guard.py`）、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
-| [queue-isolation-20261119.md](architecture/queue-isolation-20261119.md) | QI01–QI06 异常隔离规则、per-entry buffer 兼容契约与回归边界 |
 
 ## 3. 界面、视觉与动效设计 (`design/`)
 
@@ -49,8 +46,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
-| [architecture-governance-and-py-freeze.md](engineering/architecture-governance-and-py-freeze.md) | 防过度防御硬门禁（`diff_guard.py`）、非 Cognee Python 新增冻结（`DG005`）、旧回退清理清单及定时 Loop 架构/僵尸规则巡检规划 |
-| [architecture-boundary-and-loc-facts-20261125.md](engineering/architecture-boundary-and-loc-facts-20261125.md) | `b1a82e0` 基线全仓代码行数、19 日增长曲线、目录扁平度、Python 外部依赖分级与现行架构边界客观事实记录 |
+| [architecture-governance-and-py-freeze.md](engineering/architecture-governance-and-py-freeze.md) | 架构守护硬门禁（`diff_guard.py` `DG001–DG006`、`arch_guard_test.go`、`ML023` 无状态 `engines/cognee` 护栏）、Wave 0–4 收口状态及定时 Loop 巡检规划 |
 | [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
 | [defect-postmortems.md](engineering/defect-postmortems.md) | 近期关键缺陷复盘汇总（登录启动窗、画像文档误入项目队列、Codex 重试通知） |
@@ -62,23 +58,10 @@
 
 ## 6. 图表与参考截图 (`images/`)
 
-- [memlane-architecture-20261120.svg](images/memlane-architecture-20261120.svg)：系统架构与五条动态数据流全景图（SVG 流动箭头版）
+- [memlane-architecture-20261126.svg](images/memlane-architecture-20261126.svg)：系统架构与五条动态数据流全景图（Wave 0–4 收口版）
 - [visual-v4-20261120/](images/visual-v4-20261120/)：V4 原型浅色/深色关键界面参考截图
+- [memlane-gatekeeper-open-anyway-20261123.jpg](images/memlane-gatekeeper-open-anyway-20261123.jpg)：macOS Gatekeeper 首次放行操作示意
 
-## 7. 历史归档 (`archive/`)
-
-已被 V4、合并后的当前基准或新工程流程取代的历史设计稿、旧规范、阶段改造记录及退役执行说明，仅供追溯，不作为新改动依据：
-
-- [memlane-design-spec-v3.html](archive/memlane-design-spec-v3.html)
-- [visual-standards-20261113.md](archive/visual-standards-20261113.md)
-- [scenario-runner.md](archive/scenario-runner.md)
-- [client-simplification-20261112/](archive/client-simplification-20261112/)
-- [deployment-options-20261117.md](archive/deployment-options-20261117.md)（核心边界已并入 `research/docker-deployment-architecture-20261125.md`）
-- [release-v0.1.0-beta.1-20261121.md](archive/release-v0.1.0-beta.1-20261121.md)（国内镜像源实测与终端兜底已并入 `architecture/development.md`，`v1.0` 增量已并入 `product/roadmap.md`）
-- [architecture-refactor-20261120.md](archive/architecture-refactor-20261120.md)（四阶段架构改造阶段记录）
-- [environment-readiness-reliability-20261117.html](archive/environment-readiness-reliability-20261117.html)（早期环境准备调研报告）
-- [visual-v4-implementation-20261120.md](archive/visual-v4-implementation-20261120.md)（视觉 V4 实施账本）
-
-## 8. 过程文档与验收媒体 (`process/`)
+## 7. 过程文档与验收媒体 (`process/`)
 
 「过程文档」指仅服务于当次需求探索、调试排查、评审或验收留证、不构成项目长期基线的临时文档、草稿、界面截图及录屏视频等（任务完成后删掉不影响理解当前系统设计与契约）。所有过程产物统一存放在 [process/](process/README.md) 目录（完整正反边界见该说明）；仓库根目录 `.gitignore` 已配置忽略该目录下除 `README.md` 外的全部文件，不提交入库。

@@ -1,4 +1,4 @@
-> **状态说明（已退役，仅作 P0 历史基线保留）**：本文记录的是早期 Rust 原文检索实验阶段的本地 embedding 基线，已不再作为当前运行入口。**现行生产与首次安装统一使用的本地嵌入模型为 `BAAI/bge-small-zh-v1.5`**（经 FastEmbed 加载，7 个固定哈希文件清单见 [embedding-components.json](../../engine/embedding-components.json) 与 [公测发版方案](../../docs/product/release-v0.1.0-beta.1-20261121.md)）。本目录中的历史清单仅作对照留存。
+> **状态说明（已退役，仅作 P0 历史基线保留）**：本文记录的是早期 Rust 原文检索实验阶段的本地 embedding 基线，已不再作为当前运行入口。**现行生产与首次安装统一使用的本地嵌入模型为 `BAAI/bge-small-zh-v1.5`**（经 FastEmbed 加载，7 个固定哈希文件清单见 [embedding-components.json](../../engine/embedding-components.json) 与 [开发说明](../../docs/architecture/development.md)）。本目录中的历史清单仅作对照留存。
 
 # P0 本地 embedding 基线（历史）
 

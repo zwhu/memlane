@@ -2,20 +2,20 @@
 
 2026-11-25，源码基线 `6b005c2`（[mygo.json](../../mygo.json) 版本 `0.1.0-beta.3`，最低系统要求 `macOS 26.0`，目标架构 `darwin/arm64`）。基于受管环境 `.local/cognee-python` 全量文件计量、171 个锁定发行包精确 wheel 字节与 SHA-256 核对、`otool -L` 动态库链接分析、以及隔离只读沙箱单包/组合断包导入探针，梳理 Memlane 首次安装的真实体积构成、Cognee `1.6.7`（`ec6f408`）真实导入链及严格遵守 Cognee 零侵入红线的分级瘦身方案。
 
-> **红线边界**：全文方案严守 [AGENTS.md](../../AGENTS.md) 中的 **Cognee 零侵入红线**——不修改上游 Cognee `1.6.7`（`ec6f408`）源码、不维护私有 Fork/本地源码补丁、不绕过 [official_service_dev.py](../../engine/python/official_service_dev.py#L280) 的 `verify_source` v2 逐文件 SHA-256 与无 `.pyc`/`.pyo` 校验、不对 Cognee 内部做无契约 monkey-patch，且保持单一日常库与现有向量空间不变（[first-install-components.json](../../engine/first-install-components.json#L46) `change_existing_vector_space: false`）。
+> **红线边界**：全文方案严守 [AGENTS.md](../../AGENTS.md) 中的 **Cognee 零侵入红线**——不修改上游 Cognee `1.6.7`（`ec6f408`）源码、不维护私有 Fork/本地源码补丁、不绕过 `engine/python/official_service_dev.py#L280` 的 `verify_source` v2 逐文件 SHA-256 与无 `.pyc`/`.pyo` 校验、不对 Cognee 内部做无契约 monkey-patch，且保持单一日常库与现有向量空间不变（[first-install-components.json](../../engine/first-install-components.json#L46) `change_existing_vector_space: false`）。
 
 ## 1. 核心结论
 
 1. **「2 GiB 下载」为 Go UI 层的保守硬编码预算，而非真实下载量**：
    - [environment.go](../../internal/bootstrap/environment.go#L165-L170) 将 6 组安装项（含归入 `runtime` 的 OpenSSL 共 7 项下载资产）预算写死为 **下载约 `2.34 GiB` / 落盘约 `4.57 GiB`**（其中 `runtime` 单独标为 `2 GiB` 下载 / `4 GiB` 落盘；beta.3 新增的 Setup CLI `internal/setupcli/` 同样复用该安装计划与 `requirements.lock`）。
-   - **实测结果（171/171 包精确匹配 [requirements.lock](../../engine/python/requirements.lock) SHA-256）**：Apple Silicon（`darwin/arm64`）下 `runtime` 的 171 个锁定 wheel **真实总下载量仅为 `339.61 MiB`（`356.10 MB`）**；全部 7 项首次安装资产在无复用的净室环境下，**真实总下载量仅 `550.58 MiB`（官方源） / `551.28 MiB`（国内镜像源）**，实测 venv 解压后逻辑大小 **`979.02 MiB`**（运行生成 `__pycache__` 后 **`1,076.31 MiB`**，APFS 物理块 **`1,165.52 MiB`**）。
+   - **实测结果（171/171 包精确匹配 [requirements.lock](../../core/setup/requirements.lock) SHA-256）**：Apple Silicon（`darwin/arm64`）下 `runtime` 的 171 个锁定 wheel **真实总下载量仅为 `339.61 MiB`（`356.10 MB`）**；全部 7 项首次安装资产在无复用的净室环境下，**真实总下载量仅 `550.58 MiB`（官方源） / `551.28 MiB`（国内镜像源）**，实测 venv 解压后逻辑大小 **`979.02 MiB`**（运行生成 `__pycache__` 后 **`1,076.31 MiB`**，APFS 物理块 **`1,165.52 MiB`**）。
    - 安装后表观磁盘膨胀至 `1.8–2.4 GiB` 的主因并非下载量，而是 [runtime.go](../../internal/bootstrap/runtime.go#L109-L118) 为 `uv` 指定 `<runtime>/cache` 后**安装成功从未清理**，叠加 `python` / `uv` / `agent-plugin` 解包后保留的原始归档与 `__pycache__`。
 2. **锁文件中不存在 `torch` / `transformers` / `scipy` / `playwright` / `docling` 等常见重型 AI 依赖**：
-   - 上游 Cognee `1.6.7` 已将这些放入 41 个可选 extras，[requirements.in](../../engine/python/requirements.in#L1-L4) 未开启任何 extra。
+   - 上游 Cognee `1.6.7` 已将这些放入 41 个可选 extras，`engine/python/requirements.in#L1-L4` 未开启任何 extra。
    - **真正的体积前 5 名全为二进制/Rust/C++ 库**：`pylance`（`169.94 MiB`）、`lancedb`（`141.28 MiB`）、`pyarrow`（`124.07 MiB`）、`litellm`（`98.69 MiB`）、`onnxruntime`（`74.40 MiB`）——这 5 个包占 `runtime` 下载的 **`64.4%`**、解压体积的 **`62.1%`**。
 3. **最大「零侵入结构性冗余」来自双重安装 `cognee==1.6.7`**：
    - Memlane 运行时通过 `sys.path.insert(0, str(source))` 加载经 `verify_source` 校验的 GitHub `ec6f408` 源码树（`68.95 MiB` 归档 + `39.09 MiB` 解包），但 `requirements.in` 同时从 PyPI 安装了 `cognee==1.6.7` wheel（**`22.24 MiB` 下载 / `61.18 MiB` 落盘**）。
-   - 经逐文件 SHA-256 比对，GitHub `ec6f408` 比 PyPI `1.6.7` 更新了 `175` 个文件并新增 `62` 个文件（含 coding 提炼 prompt），PyPI wheel 中的 `.py` 代码在运行时 **100% 被遮蔽**；其唯一实质用途仅是被 [ladybug_extension.py](../../engine/python/ladybug_extension.py#L49-L51) 用来提取 1 个 **`0.60 MiB`**（`630,440 B`）的 `osx_arm64/libjson.lbug_extension`——却为此附带下载并落盘了 **`26.53 MiB` 的 Windows DLL**、`5.15 MiB` Linux/x86_64/旧版扩展与 `18.73 MiB` 重复 `tests/`+`eval_framework/`，并被迫锁死了 Cognee 全部 51 项核心依赖。
+   - 经逐文件 SHA-256 比对，GitHub `ec6f408` 比 PyPI `1.6.7` 更新了 `175` 个文件并新增 `62` 个文件（含 coding 提炼 prompt），PyPI wheel 中的 `.py` 代码在运行时 **100% 被遮蔽**；其唯一实质用途仅是被 `engine/python/ladybug_extension.py#L49-L51` 用来提取 1 个 **`0.60 MiB`**（`630,440 B`）的 `osx_arm64/libjson.lbug_extension`——却为此附带下载并落盘了 **`26.53 MiB` 的 Windows DLL**、`5.15 MiB` Linux/x86_64/旧版扩展与 `18.73 MiB` 重复 `tests/`+`eval_framework/`，并被迫锁死了 Cognee 全部 51 项核心依赖。
 4. **分梯度瘦身收益**：
    - **Tier 1（零代码改动，仅删 `requirements.in` 中遗留的 `pyinstaller`）**：减 4 包，下载 **`-1.48 MiB`** / 解压 **`-3.39 MiB`**。
    - **Tier 2（A 类全部：脱钩 PyPI `cognee` wheel + 独立三平台 Ladybug 扩展资产 + 去 12 个零引用核心包）**：减 17 包（macOS 净补 `0.60 MiB` 扩展），下载 **`-26.43 MiB`（`-7.8%`）** / 解压 **`-73.51 MiB`（`-7.5%`）**。
@@ -35,17 +35,17 @@
 | **1. 引擎运行库 `runtime`**（171 包） | `2 GiB` / `4 GiB` | **`339.61 MiB`**（`356,101,905 B`，171/171 实测） | **`979.02 MiB`** 逻辑 / **`1,049.76 MiB`** 块（无 `.pyc`）；含 `__pycache__` 后 **`1,076.31 MiB`** 逻辑 / **`1,165.52 MiB`** 块 | [runtime.go](../../internal/bootstrap/runtime.go#L109-L118) 写入 `<runtime>/cache`，**成功后不清理**（估算表观另增 `+340~980 MiB`，APFS clone 物理增量估算 `+50~350 MiB`） | 现有环境 171 包版本全匹配且原生探针通过 |
 | **2. OpenSSL 3.5.9**（`native_openssl_arm64`，归入 `runtime`） | 含于 `runtime` 预算 | **`10.33 MiB`**（`10,829,301 B`） | **`15.83 MiB`**（`artifact.tar.gz` `10.33` + `libssl.3.dylib` `0.85` + `libcrypto.3.dylib` `4.65`） | [native.go](../../internal/bootstrap/native.go#L43-L54) 持续重读 `native/artifact.tar.gz` 校验，**永久保留原归档** | 若复用已有兼容 venv 且 `_lbug` 可加载可跳过 |
 | **3. 本地向量模型 `embedding`**（`bge-small-zh-v1.5`，7 文件） | `91.23 MiB` / `91.23 MiB`（发版文档写 `~95.7 MiB` 实为十进制 `95.66 MB`） | **`91.23 MiB`**（`95,660,924 B`） | **`91.23 MiB`**（其中 `model_optimized.onnx` 占 `90.39 MiB`；两仓库重复存 `tokenizer.json` `0.42 MiB`） | 直接落 HF snapshot 布局，无额外压缩包 | 已有兼容缓存可只读复用 |
-| **4. Cognee 源码 `cognee-source`**（`ec6f408`） | `150 MiB` / `300 MiB` | **`68.95 MiB`**（`72,296,858 B`） | **`108.04 MiB`** 逻辑 / 约 **`118.7 MiB`** 块（`service.tar.gz` `68.95` + 解包 3 包 `39.09` 逻辑 / `49.7` 块） | [source.go](../../internal/bootstrap/source.go#L62)、[official_service_dev.py](../../engine/python/official_service_dev.py#L280) 需原归档逐文件核验，**永久保留 `service.tar.gz`** | 可指定已有验证通过的源码+归档 |
+| **4. Cognee 源码 `cognee-source`**（`ec6f408`） | `150 MiB` / `300 MiB` | **`68.95 MiB`**（`72,296,858 B`） | **`108.04 MiB`** 逻辑 / 约 **`118.7 MiB`** 块（`service.tar.gz` `68.95` + 解包 3 包 `39.09` 逻辑 / `49.7` 块） | [source.go](../../internal/bootstrap/source.go#L62)、`engine/python/official_service_dev.py#L280` 需原归档逐文件核验，**永久保留 `service.tar.gz`** | 可指定已有验证通过的源码+归档 |
 | **5. 安装工具 `uv`**（`0.12.3`） | `16.87 MiB` / `60 MiB` | 官方 `tar.gz` **`16.87 MiB`**（`17,686,637 B`）；国内 `whl` **`17.57 MiB`**（`18,426,262 B`） | **`55.99–56.69 MiB`**（保留原归档 `16.87/17.57` + `uv` 二进制实测 `39.12 MiB`） | [tools.go](../../internal/bootstrap/tools.go#L124-L170) 仅删 `.payload-*` staging，**永久保留归档及 `payload/uv`** | 宿主 `PATH`/`~/.local/bin`/`brew` 已有兼容 `uv` 直接复用（`runtime` 就绪后计划跳过 `uv`） |
 | **6. Python 解释器 `python`**（`3.12.12`） | `16.85 MiB` / `100 MiB` | **`16.85 MiB`**（`17,667,661 B`） | **`68.71 MiB`**（保留 `artifact.tar.gz` `16.85` + `payload/` 实测 `51.86 MiB`） | [tools.go](../../internal/bootstrap/tools.go#L138-L170) **永久保留 `artifact.tar.gz`** | 宿主已有 `arm64` CPython `3.12.x` 直接复用 |
 | **7. 官方插件 `agent-plugin`**（`a176248`） | `20 MiB` / `60 MiB` | **`6.74 MiB`**（`7,070,055 B`） | **`9.32 MiB`**（`integrations-upstream/service.tar.gz` `6.74` + `source/` `1.35` + 最终 `plugin/` `1.23`） | [plugin.go](../../internal/bootstrap/plugin.go#L315-L347) 构建完 `plugin/` 后**保留整个 `integrations-upstream/`**（`8.09 MiB`），而 `VerifyPlugin` 仅核验 `plugin/` | 可复用已验证插件目录 |
 | **合计（首次净室安装）** | **下载 ~`2.34 GiB` / 落盘 ~`4.57 GiB`** | **官方 `550.58 MiB`（`577.3 MB`）**<br>**国内 `551.28 MiB`（`578.1 MB`）** | **无 `.pyc`/缓存：`1,328.84 MiB`（`1.30 GiB`）**<br>**含 `.pyc`：`1,426.10 MiB`（`1.39 GiB` 逻辑 / `1.50 GiB` 块）**<br>**含 `<runtime>/cache`（估算）：`1.8–2.4 GiB` 表观 / `1.45–1.85 GiB` 物理** | — | 若复用宿主 `python`+`uv`，净室下载降至 **`516.86 MiB`** |
 
-> **附：`Memlane.app` 本体**：按 [build_release.py](../../scripts/build_release.py) 与 [公测发版方案](../archive/release-v0.1.0-beta.1-20261121.md) 实测，DMG 约 `6.0 MB`，解压后 `Memlane.app` 约 `22.3 MB`（含内嵌 `web/official-graph/dist/*` 与 `engine/python/` 脚本），不是体积瓶颈。
+> **附：`Memlane.app` 本体**：按 [build_release.py](../../scripts/build_release.py) 与 公测发版方案（历史路径 `docs/archive/release-v0.1.0-beta.1-20261121.md`） 实测，DMG 约 `6.0 MB`，解压后 `Memlane.app` 约 `22.3 MB`（含内嵌 `web/official-graph/dist/*` 与 `engine/python/` 脚本），不是体积瓶颈。
 
 ### 2.2 `runtime` 171 个锁定依赖 Top 30 体积大户明细（全量实测）
 
-[requirements.in](../../engine/python/requirements.in#L1-L4) 仅有 3 个直接输入：`cognee==1.6.7`、`fastembed==0.9.1`、`pyinstaller==6.16.0`。解析 [requirements.lock](../../engine/python/requirements.lock)（`4,193` 行）共锁定 **171 个发行包**（`305` 条 `# via` 边），与本机 `.local/cognee-python` 的 171 个已装发行包 **100% 一一对应（0 缺失、0 额外）**。
+`engine/python/requirements.in#L1-L4` 仅有 3 个直接输入：`cognee==1.6.7`、`fastembed==0.9.1`、`pyinstaller==6.16.0`。解析 [requirements.lock](../../core/setup/requirements.lock)（`4,193` 行）共锁定 **171 个发行包**（`305` 条 `# via` 边），与本机 `.local/cognee-python` 的 171 个已装发行包 **100% 一一对应（0 缺失、0 额外）**。
 
 下表按 **解压后 `RECORD` 逻辑体积** 排序列出 Top 30（已覆盖全部 `runtime` 解压体积的 **`95.2%`**、下载体积的 **`94.8%`**）：
 
@@ -99,7 +99,7 @@
 | `kuzu/` | `2` | `0` | `0` | `0` |
 
 **机制成因**：
-- `ec6f408` 是上游在 PyPI `1.6.7` 发布之后的 commit（`pyproject.toml` 版本号仍为 `1.6.7`，[coding-memory-components.json](../../engine/coding-memory-components.json#L9) 记为 `1.6.7-memlane.14-coding-ec6f408`）。[official_service_dev.py](../../engine/python/official_service_dev.py#L394-L395) 安装仅读 `.py` 的 `_install_source_only_import_hook(source)` 并将 `source` 插入 `sys.path[0]`，因此**运行时 100% 执行的是 `ec6f408` 源码，`site-packages` 中的 `cognee/` 代码完全被遮蔽**。
+- `ec6f408` 是上游在 PyPI `1.6.7` 发布之后的 commit（`pyproject.toml` 版本号仍为 `1.6.7`，[coding-memory-components.json](../../engine/coding-memory-components.json#L9) 记为 `1.6.7-memlane.14-coding-ec6f408`）。`engine/python/official_service_dev.py#L394-L395` 安装仅读 `.py` 的 `_install_source_only_import_hook(source)` 并将 `source` 插入 `sys.path[0]`，因此**运行时 100% 执行的是 `ec6f408` 源码，`site-packages` 中的 `cognee/` 代码完全被遮蔽**。
 - Cognee 自身读取版本号时（上游 `cognee/version.py:7-26`）**优先解析源码树同级 `pyproject.toml`** 并返回 `1.6.7-local`，不依赖 `importlib.metadata.version('cognee')`（已通过 `-I -B -S` 离线复核）。
 
 ### 3.2 移除 PyPI `cognee` wheel 的 4 处阻塞点与零侵入解耦方案
@@ -108,12 +108,12 @@
 
 1. **Ladybug JSON 原生扩展提取（硬阻塞）**：
    - 经空 `HOME` 离线实测，`ladybug 0.19.0` 在 macOS `arm64` 上**已不再静态内置 JSON 扩展**，直接执行 `LOAD EXTENSION JSON;` 抛出 `RuntimeError: Binder exception: Extension: json is an official extension and has not been installed`。
-   - Memlane 在 [first_install_store.py](../../engine/python/first_install_store.py#L122-L136) 与 [official_service_dev.py](../../engine/python/official_service_dev.py#L387-L392) 调用 [ladybug_extension.py](../../engine/python/ladybug_extension.py#L34-L51)，从 `distribution('cognee').locate_file('cognee_db_workers/ladybug_extensions/v0.19.0/osx_arm64/libjson.lbug_extension')` 拷出该 **`630,440 B`（`0.60 MiB`）** 二进制至 `$HOME/.lbdb/extension/0.19.0/osx_arm64/json/`。
+   - Memlane 在 `engine/python/first_install_store.py#L122-L136` 与 `engine/python/official_service_dev.py#L387-L392` 调用 `engine/python/ladybug_extension.py#L34-L51`，从 `distribution('cognee').locate_file('cognee_db_workers/ladybug_extensions/v0.19.0/osx_arm64/libjson.lbug_extension')` 拷出该 **`630,440 B`（`0.60 MiB`）** 二进制至 `$HOME/.lbdb/extension/0.19.0/osx_arm64/json/`。
    - **零侵入解法（macOS / Linux 三平台统一资产表）**：按上游 `cognee_db_workers/ladybug_extensions/README.md:66-75` 说明，该二进制来源于官方 `extension.ladybugdb.com`（底层镜像 `ghcr.io/ladybugdb/extension-repo`）。将其升级为与 PyPI `cognee` wheel 完全解耦的**三平台固定 SHA-256 资产**（登记在 [first-install-components.json](../../engine/first-install-components.json) / 容器构建清单中，国内可镜像到自维护静态源，macOS 亦可评估许可后随 `.app` `Resources` 分发；PyPI wheel 提取仅作脱钩前的过渡路径），即可同时服务原生 macOS 与 [Docker 部署架构调研](docker-deployment-architecture-20261125.md) 镜像，并彻底摆脱 `22.24 MiB` 下载 / `61.18 MiB` 落盘的 PyPI `cognee` wheel：
      - `osx_arm64`（`v0.19.0`）：**`630,440 B`（`0.60 MiB`）**，SHA-256 `e6482a025de31d662ee4b32a39c991706b8cc3c2ec49673ef5d8ce45cc23ce7a`
      - `linux_arm64`（`v0.19.0`，glibc）：**`896,464 B`（`0.85 MiB`）**，SHA-256 `e5bedcd4e51f4acbe9505efb9f4ab7ba970bb5359f64b131ef8bc9c3e026712f`
      - `linux_amd64`（`v0.19.0`，glibc）：**`846,920 B`（`0.81 MiB`）**，SHA-256 `39c51fa9b1915590a500eef732c76913aeb10cd942e46e1c259497e609b97426`
-2. **开发探针版本断言**：[local_prepare.py](../../scripts/local_prepare.py#L207) 硬编码 `assert importlib.metadata.version('cognee') == '1.6.7'`。改为校验 `cognee.__version__.startswith('1.6.7')` 叠加 `verify_source` 即可。
+2. **开发探针版本断言**：`scripts/local_prepare.py#L207` 硬编码 `assert importlib.metadata.version('cognee') == '1.6.7'`。改为校验 `cognee.__version__.startswith('1.6.7')` 叠加 `verify_source` 即可。
 3. **Native 锁定探针**：[dependencies.go](../../internal/bootstrap/dependencies.go#L38-L61) 逐项核对 `requirements.lock` 中的发行包版本；同步更新 `requirements.lock` 后自动适配，无需特殊补丁。
 4. **CLI 入口与 GLiNER 元数据**：PyPI wheel 声明了 `cognee-cli` console script，GLiNER demo (`cognee/tasks/graph/gliner_demo/install.py:109`) 读取 `importlib.metadata.requires('cognee')`。Memlane 不使用 GLiNER（使用 `agent_bridge` / 直连 LLM），也不通过 `cognee-cli` 启动服务（直接 `official_service_dev.py` 启动 `uvicorn.Server`）；仅需回归确认首发宿主插件脚本不调用 `cognee-cli`。
 
@@ -122,17 +122,17 @@
 ### 4.1 Memlane 自身代码（`engine/python/` 与 `scripts/`）的第三方依赖
 
 经 `6b005c2` 全仓 AST 扫描，`engine/python/` 与 `scripts/` 生产代码仅直接导入 **12 个第三方发行包**：
-- **`aiohttp`**：[project_control_server.py](../../engine/python/project_control_server.py#L11)、[cognee_extension_gateway.py](../../engine/python/cognee_extension_gateway.py#L19-L20)、[codex_completion_endpoint.py](../../engine/python/codex_completion_endpoint.py#L22)、[bench_scaling.py](../../scripts/bench_scaling.py)
-- **`httpx`**：[language_egress.py](../../engine/python/language_egress.py#L10)、[generation_capacity.py](../../engine/python/generation_capacity.py#L16)、[generation_http.py](../../engine/python/generation_http.py#L13)
-- **`litellm`**：[official_service_dev.py](../../engine/python/official_service_dev.py#L405)、[generation_handoff_runtime.py](../../engine/python/generation_handoff_runtime.py#L36)
-- **`uvicorn`**：[official_service_dev.py](../../engine/python/official_service_dev.py#L406)
-- **`fastapi` / `starlette` / `pydantic`**：[session_history.py](../../engine/python/session_history.py#L12)、[capture_receipts.py](../../engine/python/capture_receipts.py#L81-L82)、[provenance_store.py](../../engine/python/provenance_store.py#L1063)、[generation_handoff_runtime.py](../../engine/python/generation_handoff_runtime.py#L357-L382)、[tool_graph_service.py](../../engine/python/tool_graph_service.py#L473)
-- **`sqlalchemy`**：[capture_receipts.py](../../engine/python/capture_receipts.py#L57)、[generation_handoff_runtime.py](../../engine/python/generation_handoff_runtime.py#L121)
-- **`ladybug`**：[ladybug_extension.py](../../engine/python/ladybug_extension.py#L55)、[official_service_dev.py](../../engine/python/official_service_dev.py#L398)
-- **`jsonschema`**（**易遗漏**）：[antigravity_completion.py](../../engine/python/antigravity_completion.py#L11)、[codex_completion_endpoint.py](../../engine/python/codex_completion_endpoint.py#L23)、[pi_completion.py](../../engine/python/pi_completion.py#L8) 顶层导入
-- **`tomlkit`**（**高优易遗漏**）：[agent_connections.py](../../engine/python/agent_connections.py#L14)、[project_codex_connection.py](../../engine/python/project_codex_connection.py#L16)、[user_profiles/providers/codex.py](../../engine/python/user_profiles/providers/codex.py#L16) 顶层/函数内导入；**当前 `tomlkit==0.15.2` 在 `requirements.lock` 中仅靠 `# via dlt` 间接带入**，脱钩 PyPI `cognee` wheel 编写 `requirements-slim.in` 或拆出 Docker 宿主机微型环境 `requirements-host.in` 时，必须将 Memlane 直接依赖的 `tomlkit`、`aiohttp`、`jsonschema`、`httpx`、`tenacity` 显式顶层锁定
-- **`tenacity`**：[generation_probe.py](../../engine/python/generation_probe.py#L203)
-- 测试专用额外引入：`openai`（[test_generation_capacity.py](../../engine/python/test_generation_capacity.py#L17)）。
+- **`aiohttp`**：`engine/python/project_control_server.py#L11`、`engine/python/cognee_extension_gateway.py#L19-L20`、`engine/python/codex_completion_endpoint.py#L22`、`scripts/bench_scaling.py`
+- **`httpx`**：`engine/python/language_egress.py#L10`、`engine/python/generation_capacity.py#L16`、`engine/python/generation_http.py#L13`
+- **`litellm`**：`engine/python/official_service_dev.py#L405`、`engine/python/generation_handoff_runtime.py#L36`
+- **`uvicorn`**：`engine/python/official_service_dev.py#L406`
+- **`fastapi` / `starlette` / `pydantic`**：`engine/python/session_history.py#L12`、`engine/python/capture_receipts.py#L81-L82`、`engine/python/provenance_store.py#L1063`、`engine/python/generation_handoff_runtime.py#L357-L382`、`engine/python/tool_graph_service.py#L473`
+- **`sqlalchemy`**：`engine/python/capture_receipts.py#L57`、`engine/python/generation_handoff_runtime.py#L121`
+- **`ladybug`**：`engine/python/ladybug_extension.py#L55`、`engine/python/official_service_dev.py#L398`
+- **`jsonschema`**（**易遗漏**）：`engine/python/antigravity_completion.py#L11`、`engine/python/codex_completion_endpoint.py#L23`、`engine/python/pi_completion.py#L8` 顶层导入
+- **`tomlkit`**（**高优易遗漏**）：`engine/python/agent_connections.py#L14`、`engine/python/project_codex_connection.py#L16`、user_profiles/providers/codex.py（历史路径 `engine/python/user_profiles/providers/codex.py#L16`） 顶层/函数内导入；**当前 `tomlkit==0.15.2` 在 `requirements.lock` 中仅靠 `# via dlt` 间接带入**，脱钩 PyPI `cognee` wheel 编写 `requirements-slim.in` 或拆出 Docker 宿主机微型环境 `requirements-host.in` 时，必须将 Memlane 直接依赖的 `tomlkit`、`aiohttp`、`jsonschema`、`httpx`、`tenacity` 显式顶层锁定
+- **`tenacity`**：`engine/python/generation_probe.py#L203`
+- 测试专用额外引入：`openai`（`engine/python/test_generation_capacity.py#L17`）。
 
 ### 4.2 上游 Cognee `1.6.7` 在 Memlane 启用后端组合下的真实导入与断包实证
 
@@ -176,8 +176,8 @@
 
 | 子级 | 依赖包清单 | 数量 | 实测可省下载 (`MiB`) | 实测可省解压 (`MiB`) | 实施前置与零侵入依据 |
 | --- | --- | ---: | ---: | ---: | --- |
-| **A1（立即可删）** | `pyinstaller`、`pyinstaller-hooks-contrib`、`macholib`、`altgraph` | 4 | `1.48` | `3.39` | 直接从 [requirements.in](../../engine/python/requirements.in#L4) 删除 `pyinstaller==6.16.0` 并重编译锁文件；[build_release.py](../../scripts/build_release.py) 已完全采用 `mygo build` |
-| **A2-a（脱钩 PyPI `cognee` wheel）** | `cognee==1.6.7`（替换为三平台固定 SHA-256 `libjson.lbug_extension` 独立资产：`osx_arm64` `0.60 MiB` / `linux_arm64` `0.85 MiB` / `linux_amd64` `0.81 MiB`） | 1 | 净 **`21.64`**（`22.24 - 0.60`，macOS 口径） | 净 **`60.58`**（`61.18 - 0.60`，macOS 口径） | ① [first-install-components.json](../../engine/first-install-components.json) / 容器构建清单登记官方 `ghcr.io/ladybugdb/extension-repo` 三平台固定 SHA-256 资产（见 3.2）；② [ladybug_extension.py](../../engine/python/ladybug_extension.py#L49) 改读该独立资产路径（PyPI wheel 提取仅作过渡）；③ [local_prepare.py](../../scripts/local_prepare.py#L207) 改验源码版本与 `verify_source`；④ `requirements-slim.in`（及 Docker 宿主机 `requirements-host.in`）显式顶层锁定 Cognee 1.6.7 核心依赖与 Memlane 直接导入的 `tomlkit`（当前仅 `# via dlt` 间接带入）、`aiohttp`、`jsonschema`、`httpx`、`tenacity` |
+| **A1（立即可删）** | `pyinstaller`、`pyinstaller-hooks-contrib`、`macholib`、`altgraph` | 4 | `1.48` | `3.39` | 直接从 `engine/python/requirements.in#L4` 删除 `pyinstaller==6.16.0` 并重编译锁文件；[build_release.py](../../scripts/build_release.py) 已完全采用 `mygo build` |
+| **A2-a（脱钩 PyPI `cognee` wheel）** | `cognee==1.6.7`（替换为三平台固定 SHA-256 `libjson.lbug_extension` 独立资产：`osx_arm64` `0.60 MiB` / `linux_arm64` `0.85 MiB` / `linux_amd64` `0.81 MiB`） | 1 | 净 **`21.64`**（`22.24 - 0.60`，macOS 口径） | 净 **`60.58`**（`61.18 - 0.60`，macOS 口径） | ① [first-install-components.json](../../engine/first-install-components.json) / 容器构建清单登记官方 `ghcr.io/ladybugdb/extension-repo` 三平台固定 SHA-256 资产（见 3.2）；② `engine/python/ladybug_extension.py#L49` 改读该独立资产路径（PyPI wheel 提取仅作过渡）；③ `scripts/local_prepare.py#L207` 改验源码版本与 `verify_source`；④ `requirements-slim.in`（及 Docker 宿主机 `requirements-host.in`）显式顶层锁定 Cognee 1.6.7 核心依赖与 Memlane 直接导入的 `tomlkit`（当前仅 `# via dlt` 间接带入）、`aiohttp`、`jsonschema`、`httpx`、`tenacity` |
 | **A2-b（Cognee 零启用核心包）** | `fakeredis`、`lupa`、`sortedcontainers`、`nbformat`、`jupyter-core`、`traitlets`、`fastjsonschema`、`gunicorn`、`websockets`、`pympler`、`cbor2`、`langdetect` | 12 | `3.32` | `9.53` | 脱钩 PyPI `cognee` wheel 后自然不引入；**必须显式保留 `redis`**（因 `session_manager.py:9` 强导入）；已通过单包与组合断包探针 |
 | **A 类小计** | — | **17** | **净 `26.43`** | **净 `73.51`** | 零功能降级、零 Cognee 源码改动 |
 
@@ -200,7 +200,7 @@
 
 | 依赖项 | 实测下载 (`MiB`) | 实测解压 (`MiB`) | 触发条件、取舍与风险 |
 | --- | ---: | ---: | --- |
-| **`enola-cli==0.4.30`** | `11.28` | `51.11` | **产品取舍 / 按需下载**：Memlane 项目默认 `code_enabled: False`（[project_control.py](../../engine/python/project_control.py#L395)、[#L625](../../engine/python/project_control.py#L625)、[#L1031](../../engine/python/project_control.py#L1031)），仅在用户显式开启「代码结构图谱」索引（[graph.go](../../internal/simpledesktop/graph.go#L790) 发送 `POST /api/v1/remember` `content_type=code`）或调用 `cognee-index-repo.sh` 时启动 `bin/enola`。**推荐方案**：首次安装不预装，用户首次点击开启项目代码结构索引时按需下载单个 `enola` 二进制（约 `11.3 MiB`），普通用户立省 `51.11 MiB` 磁盘。 |
+| **`enola-cli==0.4.30`** | `11.28` | `51.11` | **产品取舍 / 按需下载**：Memlane 项目默认 `code_enabled: False`（`engine/python/project_control.py#L395`、#L625（历史路径 `engine/python/project_control.py#L625`）、#L1031（历史路径 `engine/python/project_control.py#L1031`）），仅在用户显式开启「代码结构图谱」索引（`internal/simpledesktop/graph.go#L790` 发送 `POST /api/v1/remember` `content_type=code`）或调用 `cognee-index-repo.sh` 时启动 `bin/enola`。**推荐方案**：首次安装不预装，用户首次点击开启项目代码结构索引时按需下载单个 `enola` 二进制（约 `11.3 MiB`），普通用户立省 `51.11 MiB` 磁盘。 |
 | **`pylance==12.0.0`** | `68.99` | `169.94` | **高风险，默认本地版不建议删除**：虽不阻塞启动，但每次 `cognify` 结束后固定回调 `compact_vector_store()`（`cognify.py:630`）→ `LanceDBAdapter.compact()`（`LanceDBAdapter.py:835`）→ `_compaction_skip_reason()`（`LanceDBAdapter.py:819-833`，L825 调用 `lance_core_mismatch()`）→ `lancedb_compaction.py:77` **直接 `import lance` 无异常降级**，缺包会令 `cognify` 收尾抛 `ModuleNotFoundError`；同时丧失碎片压缩（上游 #4684 记录 6 GB 向量膨胀至 136 GB）与就地 payload schema 升级能力。仅当上游 Cognee 未来改为 `lancedb` 原生 compaction 或官方提供关闭开关时才可移除。 |
 | **本地模型 INT8 量化（`bge-small-zh-v1.5`）** | 可省约 `67.9`（`91.23 → 23.32`） | 可省约 `67.9` | **触发向量空间红线**：[first-install-components.json](../../engine/first-install-components.json#L46) 显式约束 `"change_existing_vector_space": false`。FP32 切 INT8 会改变向量坐标并影响既有日常单库召回一致性，**当前版本不可更换**；仅可作为未来全库重建架构的备选。另 [embedding-components.json](../../engine/embedding-components.json) 中重复的 `tokenizer.json`（`0.42 MiB`）可复用单次下载+硬链接。 |
 
@@ -209,9 +209,9 @@
 | 治理项 | 涉及代码位置 | 影响下载 | 可省落盘空间 | 口径说明与风险 |
 | --- | --- | --- | --- | --- |
 | **1. 清理 `<runtime>/cache`（`uv` 缓存）** | [runtime.go](../../internal/bootstrap/runtime.go#L109-L118) | `0` | **表观 `340–980 MiB` / APFS 物理 `50–350 MiB`（估算）** | `uv pip sync` 成功后删除 `filepath.Join(r.Destination, "cache")` 或改用 `--no-cache`；失败重试期间保留以支持断点续装 |
-| **2. 统一透传 `PYTHONDONTWRITEBYTECODE=1`** | [dev.py](../../scripts/dev.py)、[first_runtime.go](../../internal/bootstrap/first_runtime.go) | `0` | **`97.26 MiB` 逻辑 / `115.70 MiB` 块（已实测）** | 目前仅安装期（[runtime.go](../../internal/bootstrap/runtime.go#L181)）与 [official_service_dev.py](../../engine/python/official_service_dev.py#L393) 禁写了 `.pyc`，`project_control_server` 等运行后在 venv 写入大量 `.pyc`；统一禁写对常驻进程仅微增冷启几十毫秒，且符合 `verify_source` 零字节码原则 |
+| **2. 统一透传 `PYTHONDONTWRITEBYTECODE=1`** | `scripts/dev.py`、[first_runtime.go](../../internal/bootstrap/first_runtime.go) | `0` | **`97.26 MiB` 逻辑 / `115.70 MiB` 块（已实测）** | 目前仅安装期（[runtime.go](../../internal/bootstrap/runtime.go#L181)）与 `engine/python/official_service_dev.py#L393` 禁写了 `.pyc`，`project_control_server` 等运行后在 venv 写入大量 `.pyc`；统一禁写对常驻进程仅微增冷启几十毫秒，且符合 `verify_source` 零字节码原则 |
 | **3. 解包验证后清理一次性归档与 `uv`** | [tools.go](../../internal/bootstrap/tools.go#L124-L170)、[plugin.go](../../internal/bootstrap/plugin.go#L315-L347)、[environment.go](../../internal/bootstrap/environment.go#L319) | `0` | **`81.63 MiB`（已实测）** | 含 `python/artifact.tar.gz`（`16.85`）+ `uv` 归档与二进制（`17.57 + 39.12 = 56.69`，`environment.go:319` 已明示非永久运行前提，若保留 `uv` 二进制仅删归档则省 `17.57`）+ `plugin/integrations-upstream/`（`6.74 + 1.35 = 8.09`，`VerifyPlugin` 不读它） |
-| **4. （可选）以随 App 嵌入的逐文件 SHA-256 清单替代永久留盘原始 tarball** | [probe.go](../../internal/bootstrap/probe.go#L231)、[native.go](../../internal/bootstrap/native.go#L43)、[official_service_dev.py](../../engine/python/official_service_dev.py#L280) | `0` | **`79.28 MiB`（已实测）** | `cognee/service.tar.gz`（`68.95`）+ `native/artifact.tar.gz`（`10.33`）。下载后仍核对整包 SHA-256，校验通过解包后即删原归档，日常启动校验改为对照内嵌的固定 commit 逐文件 SHA-256 清单（与现行安全强度完全等价，且不违背 Cognee 零侵入红线） |
+| **4. （可选）以随 App 嵌入的逐文件 SHA-256 清单替代永久留盘原始 tarball** | [probe.go](../../internal/bootstrap/probe.go#L231)、[native.go](../../internal/bootstrap/native.go#L43)、`engine/python/official_service_dev.py#L280` | `0` | **`79.28 MiB`（已实测）** | `cognee/service.tar.gz`（`68.95`）+ `native/artifact.tar.gz`（`10.33`）。下载后仍核对整包 SHA-256，校验通过解包后即删原归档，日常启动校验改为对照内嵌的固定 commit 逐文件 SHA-256 清单（与现行安全强度完全等价，且不违背 Cognee 零侵入红线） |
 | **5. 修正 UI 估算预算文案** | [environment.go](../../internal/bootstrap/environment.go#L167-L170) | `0` | 体验优化 | 将 `runtime` 估算从 `2 GiB / 4 GiB` 改为实测准确值（现状 `~350 MiB / ~1.0 GiB`；瘦身后 `~290 MiB / ~0.85 GiB`），消除公测用户心理门槛 |
 | **B3 合计** | — | **`0`** | **已实测 `178.9–258.2 MiB` + `uv cache`（估算 `50–350 MiB` 物理 / `340–980 MiB` 表观）** | 完全不修改任何 Python 包集合，独立可先落地 |
 
@@ -221,7 +221,7 @@
    - `lancedb` (`141.28 MiB`) + `pyarrow` (`124.07 MiB`) + `lance-namespace` + `lance-namespace-urllib3-client` (`2.76 MiB`) + `deprecation`
    - `onnxruntime` (`74.40 MiB`) + `protobuf` (`1.59 MiB`) + `flatbuffers` + `fastembed` (`0.46 MiB`) + `tokenizers` (`8.11 MiB`) + `huggingface-hub` (`2.15 MiB`) + `numpy` (`19.64 MiB`) + `tqdm`
    - `ladybug` (`12.88 MiB`) + `native_openssl_arm64`（`10.33 MiB` 下载，`_lbug` `otool -L` 实测硬链接 `/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib` 与 `libcrypto.3.dylib`；CPython 3.12.12 的 `_ssl` 为内置 OpenSSL 3.5.5，仅 `_lbug` 依赖外部 dylib）+ `libjson.lbug_extension`（`0.60 MiB`，0.19.0 离线动态加载必需）
-   - `SQLAlchemy` (`8.65 MiB`) + `greenlet` + `aiosqlite` + `alembic` + `mako`（首装迁移 [first_install_store.py](../../engine/python/first_install_store.py#L122-L138) 必需）
+   - `SQLAlchemy` (`8.65 MiB`) + `greenlet` + `aiosqlite` + `alembic` + `mako`（首装迁移 `engine/python/first_install_store.py#L122-L138` 必需）
 2. **核心 LLM、网关、认证与 Memlane 自身依赖（约 `145 MiB` 解压 / `48 MiB` 下载）**：
    - `litellm` (`98.69 MiB` — 含未用的 `36.94 MiB` proxy 与 `27.67 MiB` rust_bridge，但在单一上游 wheel 内，零侵入前提下无法只装子集) + `fastuuid` + `openai` (`9.24 MiB`) + **`httpx2`/`httpcore2`/`truststore`**（`openai/_types.py:34` 强导入）+ `tiktoken` (`2.83 MiB`)
    - `fastapi` + `starlette` + `uvicorn` + `pydantic` + `pydantic-core` + `pydantic-settings` + `fastapi-users` + `fastapi-users-db-sqlalchemy` + `pwdlib` + `argon2-cffi`/`argon2-cffi-bindings` + `bcrypt` + `email-validator` + `dnspython` + `pyjwt` + `cryptography` (`10.50 MiB`) + `cffi`/`pycparser` + `python-multipart` + `makefun`
@@ -350,7 +350,7 @@ print(f"ALL {len(targets)} CORE MODULES IMPORTED CLEANLY")
 ## 8. 推荐落地顺序
 
 1. **P0（零风险立即可做）**：
-   - **A1**：删除 [requirements.in](../../engine/python/requirements.in#L4) 中遗留的 `pyinstaller==6.16.0` 并重锁。
+   - **A1**：删除 `engine/python/requirements.in#L4` 中遗留的 `pyinstaller==6.16.0` 并重锁。
    - **B3（缓存/归档/字节码 + UI 预算修正）**：`runtime.go` 安装成功后清理 `<runtime>/cache`；`tools.go` 与 `plugin.go` 解包/构建校验后删 `python/artifact.tar.gz`、`uv` 归档、`integrations-upstream/`；统一运行环境透传 `PYTHONDONTWRITEBYTECODE=1`；将 `environment.go` 的 `2 GiB / 4 GiB` 预算更正为实测值。
    - **收益**：立省 **约 `180+ MiB` 实测落盘 + `uv cache` 释放**，且 UI 展示下载量从 `~2.34 GiB` 回归真实的 `~550 MiB`。
 2. **P1（高性价比瘦身）**：
@@ -362,6 +362,6 @@ print(f"ALL {len(targets)} CORE MODULES IMPORTED CLEANLY")
 ## 关联文档
 
 - [Docker 部署架构调研](docker-deployment-architecture-20261125.md)
-- [单人记忆库部署方向评估（历史归档）](../archive/deployment-options-20261117.md)
-- [公测发版方案与国内镜像源调研（历史归档）](../archive/release-v0.1.0-beta.1-20261121.md)
+- 单人记忆库部署方向评估（历史归档）（历史路径 `docs/archive/deployment-options-20261117.md`）
+- 公测发版方案与国内镜像源调研（历史归档）（历史路径 `docs/archive/release-v0.1.0-beta.1-20261121.md`）
 - [系统架构总览](../architecture/overview.md) · [本地开发与配置说明](../architecture/development.md) · [工程规范](../engineering/workflow.md)

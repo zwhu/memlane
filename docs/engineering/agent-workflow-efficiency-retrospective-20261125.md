@@ -20,7 +20,7 @@
 | 5. UTM 真包与双 CLI 实机验收 + 审计 | `11-25 09:30 → 11:55` | **145 min** | **16.3%** | 无快照反复克隆重定位组件；在 `--wait 55` 缺陷上撞墙 4 轮；夹具脚本认证头/导入错误返工 |
 | 6. UTM 登录态 `Trae CN` 实机与 E2E 续跑 | `11-25 11:59 → 14:59` | **180 min** | **20.2%** | 前置截图清理误删登录态引发重登等待；无复热库每次冷建库 ~74–82s；宿主机代理阻断客体模型回包导致多次 120s+ 干等 |
 | 7. P1/P2/P3 修复编码（36 文件，2 路并行） | `11-25 15:13 → 15:30` | **16 min** | 1.8% | 编码本身仅 16 分钟 |
-| 8. P1/P2/P3 双独立代码审核（**7 轮**） | `11-25 15:31 → 17:14` | **103 min** | **11.6%** | **审核耗时是编码的 6.4 倍**；其中 R3→R7 共 **5 轮 / 47 分钟**全部耗在单个验收脚本 [verify_setup_cli.py](../../scripts/verify_setup_cli.py) 上 |
+| 8. P1/P2/P3 双独立代码审核（**7 轮**） | `11-25 15:31 → 17:14` | **103 min** | **11.6%** | **审核耗时是编码的 6.4 倍**；其中 R3→R7 共 **5 轮 / 47 分钟**全部耗在单个验收脚本 `scripts/verify_setup_cli.py` 上 |
 | 9. 重打包 DMG + 本地提交 | `11-25 17:14 → 17:33` | 3 min | 0.3% | 打包自检 1.8 min + 本地提交 0.8 min，开销极低 |
 
 ---
@@ -28,7 +28,7 @@
 ## 2. 六大慢点根因分析
 
 ### 根因 1：双审核缺少「代码分层口径」与「收敛上限」，把测试夹具当生产代码无限追轮
-- **实证**：P1/P2/P3 修复中，所有 Go / Python 引擎与桌面端生产代码在第 3 轮就已达到零 P0 / 零 P1；但 R3→R7 仍连续消耗 **5 轮（47 分钟）**，只为反复打磨单个验收驱动脚本 [verify_setup_cli.py](../../scripts/verify_setup_cli.py) 中仅在合成 mock 场景才会出现的轮询边角。第 7 轮甚至因复审提示词未重申第 2 轮已确认的契约例外，触发了一次纯形式上的 `REQUEST_CHANGES`。
+- **实证**：P1/P2/P3 修复中，所有 Go / Python 引擎与桌面端生产代码在第 3 轮就已达到零 P0 / 零 P1；但 R3→R7 仍连续消耗 **5 轮（47 分钟）**，只为反复打磨单个验收驱动脚本 `scripts/verify_setup_cli.py` 中仅在合成 mock 场景才会出现的轮询边角。第 7 轮甚至因复审提示词未重申第 2 轮已确认的契约例外，触发了一次纯形式上的 `REQUEST_CHANGES`。
 - **机制缺陷**：
   1. 未区分「生产核心代码」与「测试/验收脚手架」的 P1 准入门槛；
   2. 无状态只读审查员（`--ephemeral`）每轮缺乏既有契约裁决摘要，容易围绕上一轮新补的防御代码继续递归挖边角；
@@ -51,7 +51,7 @@
 - **实证**：即便是追加 2 条文档 TODO 或执行一次 `git commit`，也经历了「主控写长 brief → 新建 worker 冷启动 → 再调用 `codex exec` 冷读代码 → 写回板面 → 主控读回执 → 销毁 worker」的链路；大任务修复中所有 worker 也必须等最慢一路完成后才能统一进入审查，产生串行长尾。
 
 ### 根因 6：纯逻辑/协议缺陷拖到重型 UTM 阶段才暴露
-- **实证**：本次在 UTM 实机才发现的 3 个真实缺陷——组件齐备时 `install --apply --wait 55` 同步超时（[install.go](../../internal/setupcli/install.go)）、已装未登录 CLI 导致 `/v1/generation` 返回空 `agent_bridges` 引发误报（[agent_bridge_runtime.py](../../engine/python/agent_bridge_runtime.py)）、`repair --apply` 丢失 `preserved_third_party_groups`（[trae_hooks_migration.py](../../engine/python/trae_hooks_migration.py)）——本质都是**无须 macOS 虚拟机即可在本地 10 秒复现的契约问题**。因早期单测过度 mock 了对应边界，才推迟到耗时 2 小时的 UTM 阶段暴露。
+- **实证**：本次在 UTM 实机才发现的 3 个真实缺陷——组件齐备时 `install --apply --wait 55` 同步超时（[install.go](../../internal/setupcli/install.go)）、已装未登录 CLI 导致 `/v1/generation` 返回空 `agent_bridges` 引发误报（原 `engine/python/agent_bridge_runtime.py`）、`repair --apply` 丢失 `preserved_third_party_groups`（原 `engine/python/trae_hooks_migration.py`）——本质都是**无须 macOS 虚拟机即可在本地 10 秒复现的契约问题**。因早期单测过度 mock 了对应边界，才推迟到耗时 2 小时的 UTM 阶段暴露。
 
 ---
 

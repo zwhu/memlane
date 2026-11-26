@@ -45,7 +45,7 @@ Memlane 把这些项目知识沉淀在你自己的 Mac 上，供所有接入的 
 | pi | ✅ 已支持 |
 | TraeX（TRAE CLI） | ✅ 已支持 |
 | TRAE CN（IDE） | ✅ 已支持（4 事件 Hook 自动采集与召回；记忆提炼配合本机 CLI 或模型 API） |
-| Claude Code、Cursor、OpenCode | 🚧 规划中 |
+| Claude Code、Cursor、OpenCode 等其他 MCP 宿主 | ✅ 支持标准 `/mcp` 接入（专用一键接入引导持续完善中） |
 
 ## 安装
 
@@ -60,13 +60,13 @@ Memlane 把这些项目知识沉淀在你自己的 Mac 上，供所有接入的 
 
 ## 工作原理
 
-![Memlane 系统架构](docs/images/memlane-architecture-20261120.svg)
+![Memlane 系统架构](docs/images/memlane-architecture-20261126.svg)
 
-- **原生桌面端**：基于 [MyGo](https://github.com/egoist/mygo) 的 macOS 原生客户端，只通过本地回环接口读取数据，不缓存正文副本。
-- **接入网关**：管理项目注册、Agent 连接、采集与提炼队列，并在外置网关中统一执行项目权限校验与召回合并。
-- **记忆引擎**：固定版本的官方 [Cognee](https://github.com/topoteretes/cognee)（`1.6.7`）。Memlane 不修改上游源码，所有扩展都放在外置网关、外置存储与插件层，便于原样升级。
+- **单一 Go 二进制（`cmd/memlane`）**：统一承载 `app`（基于 [MyGo](https://github.com/egoist/mygo) 的原生 macOS 桌面端，只通过本地回环接口读取数据、不缓存正文副本）、`daemon`（本地接入网关、Agent 模型代理与进程守护）、`hook`（宿主事件无状态转发）、`setup`（自举诊断 CLI）与 `dev`（本地开发运维），底层按零业务通用底座（`kit/*`）、领域与网关（`core/*`）、无环页面包（`app/*`）分层隔离。
+- **方案 C 宿主接入**：核心宿主统一经 `memlane hook` 转发事件（`pi` 保留极薄无状态扩展 `engine/agents/pi/`），长尾宿主接入网关原生标准 `/mcp`；项目 ACL、两层流转（`Capture → Memory`）与召回合并 100% 收归 Go 网关与单点私有 `memlane.sqlite3`。
+- **无状态记忆引擎薄壳（`engines/cognee`）**：固定版本的官方 [Cognee](https://github.com/topoteretes/cognee)（`1.6.7`）作为 `MemoryEngine` 6 原语接口的 1 号实现。Memlane 不修改上游源码、启动前逐文件校验 SHA-256，引擎薄壳仅保留 ~2.6k 行零业务状态胶水，便于原样升级或未来替换引擎。
 
-详细设计见 [架构总览](docs/architecture/overview.md)。
+详细设计见 [架构总览](docs/architecture/overview.md) 与 [架构边界契约](docs/architecture/boundaries.md)。
 
 ## 隐私与数据
 
@@ -76,15 +76,14 @@ Memlane 把这些项目知识沉淀在你自己的 Mac 上，供所有接入的 
 
 ## 从源码构建
 
-开发环境需要受管 Python 3.12（由 `scripts/dev.py prepare` 准备）与仓库自带的 Go 工具链脚本：
+开发环境需要仓库自带的 Go 工具链脚本，以及 `runtime.json` 指定的受管 Python 3.12（供无状态 Cognee 引擎薄壳运行）：
 
 ```sh
 # 启动后台服务与桌面窗口（runtime.json 为本机私有配置）
-.local/cognee-python/bin/python scripts/dev.py start --config /path/to/runtime.json
+sh scripts/go.sh run ./cmd/memlane dev start --config /path/to/runtime.json
 
-# 测试与静态检查
-sh scripts/go.sh test ./...
-python3 scripts/task.py -- python3 scripts/lint.py
+# 统一全量测试与静态门禁（含 lint.py、diff_guard.py、go vet/test 与 engines/cognee 单测）
+python3 scripts/task.py -- python3 scripts/check.py --full
 ```
 
 首次准备、运行配置、运维命令与测试说明见 [开发说明](docs/architecture/development.md)；提交前请先执行 `sh scripts/install-hooks.sh` 启用仓库钩子，协作约定见 [工程规范](docs/engineering/workflow.md)。
@@ -98,7 +97,7 @@ Memlane 目前处于**公开内测**阶段（`v0.1.0-beta`），功能与数据�
 | 面向 | 文档 |
 | --- | --- |
 | 用户 | [内测安装指南](docs/product/beta-install-guide.md) · [产品定义与内容分层](docs/product/product.md) · [Roadmap](docs/product/roadmap.md) |
-| 开发者 | [架构总览](docs/architecture/overview.md) · [开发说明](docs/architecture/development.md) · [Agent 接入契约](docs/architecture/agent-connection-contract.md) · [工程规范](docs/engineering/workflow.md) |
+| 开发者 | [架构总览](docs/architecture/overview.md) · [架构边界契约](docs/architecture/boundaries.md) · [开发说明](docs/architecture/development.md) · [工程规范](docs/engineering/workflow.md) |
 | 设计 | [视觉与交互规范 V4](docs/design/visual-standards-v4-20261120.md) · [MyGo 动效契约](docs/design/motion-implementation.md) |
 
 全部文档索引见 [docs/README.md](docs/README.md)，领域术语见 [CONTEXT.md](CONTEXT.md)。

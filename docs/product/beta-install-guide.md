@@ -107,7 +107,7 @@ Memlane 默认将运行依赖与本地数据库全部隔离存放在 `~/Library/
 
 ### 7.2 使用安全卸载脚本（推荐）
 
-卸载脚本 [`scripts/uninstall.py`](../../scripts/uninstall.py) 仅使用 macOS 自带 Python 3 标准库（零第三方依赖），内置 `.service-owner` 运行锁 / 残留进程端口检测与防符号链接逃逸保护：服务仍在运行时会自动拒绝执行。
+卸载脚本 `scripts/uninstall.py`（发版分支提供）仅使用 macOS 自带 Python 3 标准库（零第三方依赖），内置 `.service-owner` 运行锁 / 残留进程端口检测与防符号链接逃逸保护：服务仍在运行时会自动拒绝执行。
 
 如果你仅安装了 `.dmg`（本地未克隆仓库），可先下载该脚本到临时目录再运行（如已克隆仓库，将下方 `/tmp/memlane-uninstall.py` 替换为 `scripts/uninstall.py` 即可）：
 

@@ -48,7 +48,7 @@ Memlane keeps that project knowledge on your own Mac, lets every connected agent
 | pi | ✅ Supported |
 | TraeX (TRAE CLI) | ✅ Supported |
 | TRAE CN (IDE) | ✅ Supported (4-event hooks for capture & recall; distillation uses a local CLI or LLM API) |
-| Claude Code, Cursor, OpenCode | 🚧 Planned |
+| Claude Code, Cursor, OpenCode & other MCP hosts | ✅ Standard `/mcp` endpoint supported (dedicated one-click onboarding in progress) |
 
 ## Installation
 
@@ -63,13 +63,13 @@ See the [beta installation guide](docs/product/beta-install-guide.md) (Chinese) 
 
 ## How it works
 
-![Memlane architecture](docs/images/memlane-architecture-20261120.svg)
+![Memlane architecture](docs/images/memlane-architecture-20261126.svg)
 
-- **Native desktop app** — a macOS client built with [MyGo](https://github.com/egoist/mygo); it reads data only through local loopback APIs and keeps no copy of memory content.
-- **Access gateway** — manages project registration, agent connections, and capture/distillation queues, and enforces project ACLs and recall merging in an external gateway.
-- **Memory engine** — a pinned, unmodified release of [Cognee](https://github.com/topoteretes/cognee) (`1.6.7`). All Memlane extensions live in the external gateway, external stores, and plugin layer, so upstream can be upgraded as-is.
+- **Single Go binary (`cmd/memlane`)** — unifies `app` (native macOS client built with [MyGo](https://github.com/egoist/mygo), reading exclusively over loopback APIs with no local body cache), `daemon` (loopback access gateway, agent model bridge, and process supervisor), `hook` (stateless host event forwarder), `setup` (zero-skill Setup CLI), and `dev` (local dev lifecycle), structured cleanly into business-free `kit/*`, domain/gateway `core/*`, and acyclic UI subpackages `app/*`.
+- **Option C host integration** — core hosts forward events via `memlane hook` (`pi` keeps a thin stateless extension under `engine/agents/pi/`), and long-tail hosts connect via the gateway's native `/mcp` endpoint; project ACLs, the 2-layer `Capture → Memory` pipeline, and recall merging all live in the Go gateway backed by a single-writer private `memlane.sqlite3`.
+- **Stateless memory engine adapter (`engines/cognee`)** — a pinned, unmodified release of [Cognee](https://github.com/topoteretes/cognee) (`1.6.7`) implementing the engine-agnostic 6-primitive `MemoryEngine` contract. Upstream source is verified file-by-file via SHA-256 before startup, and the Python shell stays ~2.6k LOC with zero business state so upstream can be upgraded or swapped cleanly.
 
-See the [architecture overview](docs/architecture/overview.md) (Chinese) for details.
+See the [architecture overview](docs/architecture/overview.md) and [architecture boundaries](docs/architecture/boundaries.md) (Chinese) for details.
 
 ## Privacy
 
@@ -79,15 +79,14 @@ See the [architecture overview](docs/architecture/overview.md) (Chinese) for det
 
 ## Building from source
 
-Development requires the managed Python 3.12 (prepared by `scripts/dev.py prepare`) and the Go toolchain wrapper shipped in this repo:
+Development uses the Go toolchain wrapper shipped in this repo together with the managed Python 3.12 configured in `runtime.json` (for the stateless Cognee engine adapter):
 
 ```sh
 # Start background services and the desktop window (runtime.json is your private local config)
-.local/cognee-python/bin/python scripts/dev.py start --config /path/to/runtime.json
+sh scripts/go.sh run ./cmd/memlane dev start --config /path/to/runtime.json
 
-# Tests and static checks
-sh scripts/go.sh test ./...
-python3 scripts/task.py -- python3 scripts/lint.py
+# Full verification gate (lint.py, diff_guard.py, go vet/test, and engines/cognee unit tests)
+python3 scripts/task.py -- python3 scripts/check.py --full
 ```
 
 See the [development guide](docs/architecture/development.md) (Chinese) for setup, runtime configuration, operations, and testing. Run `sh scripts/install-hooks.sh` before your first commit to enable the repository hooks; collaboration rules are in the [engineering workflow](docs/engineering/workflow.md).

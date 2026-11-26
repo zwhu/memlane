@@ -1,6 +1,6 @@
 # 第三方开源组件与模型许可声明
 
-Memlane 基于多个开源项目与预训练模型构建。本文件按核心直接依赖清单列出关键组件、版本、许可协议及上游来源；完整传递依赖版本分别锁定于 [`go.mod`](go.mod) 与 [`engine/python/requirements.lock`](engine/python/requirements.lock)。
+Memlane 基于多个开源项目与预训练模型构建。本文件按核心直接依赖清单列出关键组件、版本、许可协议及上游来源；完整传递依赖版本分别锁定于 [`go.mod`](go.mod) 与 [`core/setup/requirements.lock`](core/setup/requirements.lock)。
 
 ## 1. Go 与原生桌面依赖（`go.mod`）
 
