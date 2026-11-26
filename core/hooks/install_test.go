@@ -77,7 +77,7 @@ func TestInstallAllHosts(t *testing.T) {
 				if !ok || len(memlane) != 4 {
 					t.Fatalf("expected 4 events in antigravity memlane hook, got: %s", raw)
 				}
-				for _, flat := range []string{SessionStart, "PreInvocation", Stop} {
+				for _, flat := range []string{SessionStart, PreInvocation, Stop} {
 					rows, ok := memlane[flat].([]any)
 					if !ok || len(rows) != 1 {
 						t.Fatalf("expected flat array for %s, got: %s", flat, raw)

@@ -243,8 +243,8 @@ func editAntigravityHooks(doc object, opts InstallOptions, remove bool) error {
 		SessionStart: []any{
 			object{"type": "command", "command": commandFor(SessionStart)},
 		},
-		"PreInvocation": []any{
-			object{"type": "command", "command": commandFor("PreInvocation")},
+		PreInvocation: []any{
+			object{"type": "command", "command": commandFor(PreInvocation)},
 		},
 		PostToolUse: []any{
 			object{
@@ -263,7 +263,7 @@ func editAntigravityHooks(doc object, opts InstallOptions, remove bool) error {
 
 func stripManagedHookGroups(groups object) (bool, error) {
 	changed := false
-	for _, event := range []string{SessionStart, UserPromptSubmit, "PreInvocation", PostToolUse, PostToolUseFailure, Stop, SessionEnd} {
+	for _, event := range []string{SessionStart, UserPromptSubmit, PreInvocation, PostToolUse, PostToolUseFailure, Stop, SessionEnd} {
 		raw, exists := groups[event]
 		if !exists {
 			continue
