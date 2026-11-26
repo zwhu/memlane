@@ -33,6 +33,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **Go 单二进制�
 - **隐私与交付范围**：实际运行配置、凭据与真实记忆库位于 Git 跟踪之外的 `.local/`；不提交密钥、真实库、聊天记录或本机 Agent 配置。除非用户明确要求，不构建 DMG 或执行签名、公证、更新与 helper 安装。
 - **提交身份**：本仓库所有提交（含 cherry-pick、rebase、标签）身份固定为 `zwhu <331946763@qq.com>`，只写仓库级配置、不改全局 `~/.gitconfig`。独立副本、Agent 工作区或新克隆在首次提交前先执行 `sh scripts/install-hooks.sh`（写入仓库级 `user.*` 并启用 `.githooks/_identity_guard.sh`：`pre-commit` 校验当前身份，`pre-push` 拒绝推送任何身份不符的提交或标签）。
 - **过程文档定义与隔离（`docs/process/`）**：「过程文档」指仅服务于当次需求探索、调试排查、评审或验收留证、不构成项目长期基线的全部临时产物——无论格式是文档/草稿、图片/截图（PNG/JPG/WebP/GIF）还是录屏视频（MP4/MOV/WebM）与实验原始报告（判定口诀：任务完成后删掉不影响理解当前系统设计、契约或长期复盘）。所有过程文档一律放入 `docs/process/` 子目录（`.gitignore` 已忽略，仅保留 `docs/process/README.md` 入库），不得散落到 `docs/design/`、`docs/images/` 或源码目录；临时编译产物（`.app`、可执行二进制、源码覆盖拷贝）一律走系统 `$TMPDIR` 并在退出时清理，不进 `docs/process/`。单次命令超时、环境插曲与待重启提示仅在会话汇报，未定稿内容禁止提前写入正式 `docs/`；长期生效的规范、架构契约、专题调研、防复发复盘与正式文档直接引用的少量静态图表才分别入库对应 `docs/` 分类目录与 `docs/images/`，且正式 `docs/` 必须自包含、严禁引用 `docs/process/`（由 `ML018` 与 `pre-commit` 自动拦截），定稿晋升后顺手清理同主题原始日志（完整边界见 [docs/process/README.md](docs/process/README.md)）。
+- **正式文档生命周期与清理标准**：坚持「**无 `docs/archive/`、唯一事实源、淘汰即删、变更必同步**」——已被新契约/新规范取代的旧文档、已完工的阶段实施计划与一次性基线快照、以及被替换的旧静态图表一律直接 `git rm`（历史靠 Git 追溯，严禁囤积 `docs/archive/`）；目录、命令、分层或门禁变更时须同步对齐 `AGENTS.md`、`README*.md`、`CONTEXT.md`、`docs/README.md` 与 `docs/architecture/`（架构图保持可流动 SVG 并渲染 PNG 目视复核）；防复发复盘、现行产品/设计规范与仍具前瞻价值的 `docs/research/` 严禁误删；每次清理须通过全仓 `.md` 零断链校验与 `lint.py`（`ML018`）门禁（完整细则见 [工程规范 · 文档生命周期与清理标准](docs/engineering/workflow.md#文档生命周期与清理标准2026-11-26-起执行)）。
 
 ## 3. 文档路由
 

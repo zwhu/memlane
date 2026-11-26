@@ -1,6 +1,6 @@
 # Memlane 文档总目录
 
-按职责分类收纳当前有效文档、专项调研、工程规范与过程产物说明。术语与分层定义见仓库根目录 [CONTEXT.md](../CONTEXT.md)。
+按职责分类收纳当前有效文档、专项调研、工程规范与过程产物说明。本仓库**不设 `docs/archive/`**，已淘汰或已完工的历史文档按[文档生命周期与清理标准](engineering/workflow.md#文档生命周期与清理标准2026-11-26-起执行)直接删除并依靠 Git 历史追溯；术语与分层定义见仓库根目录 [CONTEXT.md](../CONTEXT.md)。
 
 ## 1. 产品定义与路线 (`product/`)
 
@@ -45,7 +45,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约与“四次失败停止”规则 |
+| [workflow.md](engineering/workflow.md) | 工程执行节奏、任务分级与垂直切片、双审 2+1 收敛、Go/MyGo 检查、Level 0/1/2a/2b 发版门禁、模型参数留证契约、“四次失败停止”规则与文档生命周期清理标准 |
 | [architecture-governance-and-py-freeze.md](engineering/architecture-governance-and-py-freeze.md) | 架构守护硬门禁（`diff_guard.py` `DG001–DG006`、`arch_guard_test.go`、`ML023` 无状态 `engines/cognee` 护栏）、Wave 0–4 收口状态及定时 Loop 巡检规划 |
 | [agent-workflow-efficiency-retrospective-20261125.md](engineering/agent-workflow-efficiency-retrospective-20261125.md) | `v0.1.0-beta.3` 多 Agent 研发、双审与 UTM 验收耗时复盘及提速改进方案 |
 | [beta-install-issues.md](engineering/beta-install-issues.md) | Beta 安装问题、根因、修复与 UTM 复验边界 |
