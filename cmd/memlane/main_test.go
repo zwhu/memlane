@@ -15,6 +15,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zwhu/memlane/core/domain"
+	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/core/gateway/mcp"
 )
 
 func invoke(t *testing.T, input string, args ...string) (int, string, string) {
@@ -30,7 +34,7 @@ func TestHeadlessDispatch(t *testing.T) {
 		if code != 0 || notes != "" {
 			t.Fatalf("%d %q %q", code, out, notes)
 		}
-		for _, command := range []string{"app", "daemon", "hook", "setup", "dev"} {
+		for _, command := range []string{"app", "daemon", "hook", "mcp", "setup", "dev"} {
 			if !strings.Contains(out, command) {
 				t.Fatal(out)
 			}
@@ -268,5 +272,213 @@ func TestDevSyncHooksDryRunApplyAndIdempotent(t *testing.T) {
 	code, _, _ = invoke(t, "", "dev", "sync-hooks", "--config", cfgPath, "--host", "traex", "--binary", fakeBin, "--dry-run", "--json")
 	if code == 0 {
 		t.Fatal("expected error for unconnected host without existing key file")
+	}
+}
+
+type stubMCPEngine struct {
+	lastReq engine.SearchRequest
+}
+
+func (s *stubMCPEngine) Health(context.Context) (engine.HealthStatus, error) {
+	return engine.HealthStatus{OK: true, Engine: "cognee"}, nil
+}
+func (s *stubMCPEngine) Ingest(context.Context, engine.IngestRequest) (engine.IngestResult, error) {
+	return engine.IngestResult{OK: true}, nil
+}
+func (s *stubMCPEngine) Extract(context.Context, engine.ExtractRequest) (engine.ExtractResult, error) {
+	return engine.ExtractResult{OK: true}, nil
+}
+func (s *stubMCPEngine) Search(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
+	s.lastReq = req
+	return engine.SearchResult{
+		OK: true,
+		Hits: []engine.SearchHit{{
+			DatasetID:  "ds-demo",
+			DocumentID: "doc-1",
+			Title:      "MCP Bridge Note",
+			Snippet:    "Stdio MCP bridge forwards X-Api-Key cleanly.",
+		}},
+	}, nil
+}
+func (s *stubMCPEngine) ListItems(context.Context, engine.ListRequest) (engine.ListResult, error) {
+	return engine.ListResult{}, nil
+}
+func (s *stubMCPEngine) GetItem(context.Context, engine.Scope, string) (engine.Item, error) {
+	return engine.Item{}, nil
+}
+func (s *stubMCPEngine) DeleteItem(context.Context, engine.Scope, string) error {
+	return nil
+}
+func (s *stubMCPEngine) Graph(context.Context, engine.GraphRequest) (engine.GraphPayload, error) {
+	return engine.GraphPayload{}, nil
+}
+
+func TestMCPStdioBridgeEndToEnd(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	t.Setenv("MEMLANE_GATEWAY_URL", "")
+	t.Setenv("MEMLANE_AGENT_KEY_FILE", "")
+
+	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
+	require(t, err)
+	defer store.Close()
+	ctx := context.Background()
+
+	keyFile := filepath.Join(t.TempDir(), "codex.token")
+	const secret = "mcp-bridge-test-secret-0123456789"
+	require(t, os.WriteFile(keyFile, []byte(secret+"\n"), 0o600))
+	require(t, store.ConnectAgent(ctx, domain.Agent{
+		ID: "codex-1", Kind: "codex", Name: "Codex", KeyFile: keyFile, DefaultAccess: domain.AccessNone,
+	}))
+	require(t, store.UpsertProject(ctx, domain.Project{
+		ID: "proj-demo", Name: "Demo", DatasetID: "ds-demo", Aliases: []string{"/tmp/demo"},
+	}))
+	readAccess := domain.AccessRead
+	require(t, store.SetACLOverride(ctx, domain.ACLOverride{
+		TargetKind: "project", TargetID: "proj-demo", AgentID: "codex-1", Access: &readAccess,
+	}))
+
+	eng := &stubMCPEngine{}
+	mcpSrv, err := mcp.NewServer(mcp.Config{Store: store, Engine: eng})
+	require(t, err)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require(t, err)
+	gw := &httptest.Server{Listener: listener, Config: &http.Server{Handler: mcpSrv.Handler()}}
+	gw.Start()
+	defer gw.Close()
+
+	// 1. Full handshake + notification (202 -> no output) + tools/list + tools/call recall.
+	stdin := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall","arguments":{"query":"stdio bridge"}}}`,
+	}, "\n") + "\n"
+	code, out, notes := invoke(t, stdin, "mcp", "--gateway-url", gw.URL, "--key-file", keyFile)
+	if code != 0 || notes != "" {
+		t.Fatalf("mcp bridge failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 JSON-RPC responses (notification must emit none), got %d:\n%s", len(lines), out)
+	}
+	byID := map[float64]map[string]any{}
+	for _, line := range lines {
+		var msg map[string]any
+		require(t, json.Unmarshal([]byte(line), &msg))
+		id, ok := msg["id"].(float64)
+		if !ok {
+			t.Fatalf("unexpected message without numeric id: %s", line)
+		}
+		byID[id] = msg
+	}
+	initResult := byID[1]["result"].(map[string]any)
+	if initResult["protocolVersion"] != "2025-03-26" {
+		t.Fatalf("unexpected initialize result: %+v", initResult)
+	}
+	toolsResult := byID[2]["result"].(map[string]any)
+	if len(toolsResult["tools"].([]any)) == 0 {
+		t.Fatalf("expected non-empty tools list: %+v", toolsResult)
+	}
+	recallText, _ := json.Marshal(byID[3]["result"])
+	if !strings.Contains(string(recallText), "MCP Bridge Note") || eng.lastReq.Mode != engine.SearchModeHybrid {
+		t.Fatalf("unexpected recall response=%s lastReq=%+v", recallText, eng.lastReq)
+	}
+
+	// 2. Wrong key returns -32001 without leaking token, and notification emits nothing.
+	wrongKey := filepath.Join(t.TempDir(), "wrong.token")
+	require(t, os.WriteFile(wrongKey, []byte("wrong-secret-canary\n"), 0o600))
+	authIn := "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":\"a1\",\"method\":\"tools/list\"}\n"
+	code, out, notes = invoke(t, authIn, "mcp", "--gateway-url", gw.URL, "--key-file", wrongKey)
+	if code != 0 || notes != "" || strings.Contains(out, "wrong-secret-canary") {
+		t.Fatalf("auth error handling failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+	var authResp struct {
+		ID    string `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	require(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &authResp))
+	if authResp.ID != "a1" || authResp.Error.Code != -32001 {
+		t.Fatalf("unexpected auth error response: %s", out)
+	}
+
+	// 3. Unreachable gateway returns -32603 for request and nothing for notification.
+	downIn := "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n"
+	code, out, notes = invoke(t, downIn, "mcp", "--gateway-url", "http://127.0.0.1:1", "--key-file", keyFile, "--timeout", "200ms")
+	if code != 0 || notes != "" {
+		t.Fatalf("down gateway failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+	var downResp struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	require(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &downResp))
+	if downResp.ID != 9 || downResp.Error.Code != -32603 {
+		t.Fatalf("unexpected down gateway response: %s", out)
+	}
+
+	// 4. Processing session disables tools locally without calling gateway.
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "1")
+	procIn := "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"recall\",\"arguments\":{\"query\":\"x\"}}}\n"
+	code, out, notes = invoke(t, procIn, "mcp", "--gateway-url", "http://127.0.0.1:1", "--key-file", "/nonexistent")
+	if code != 0 || notes != "" {
+		t.Fatalf("processing session mcp failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+	if !strings.Contains(out, `"tools":[]`) || !strings.Contains(out, `"isError":true`) {
+		t.Fatalf("expected empty tools and disabled call in processing session: %s", out)
+	}
+
+	// 5. Oversized frame returns -32600 without aborting subsequent valid requests.
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	oversized := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("a", mcpMaxFrameBytes+64) + `"}}` + "\n" +
+		`{"jsonrpc":"2.0","id":77,"method":"ping"}` + "\n"
+	code, out, notes = invoke(t, oversized, "mcp", "--gateway-url", gw.URL, "--key-file", keyFile)
+	if code != 0 || notes != "" {
+		t.Fatalf("oversized frame test failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+	if !strings.Contains(out, `-32600`) || !strings.Contains(out, `"id":77`) {
+		t.Fatalf("expected -32600 followed by id 77 response, got: %s", out)
+	}
+
+	// 6. http://localhost:<port> is pinned to IPv4 127.0.0.1 (tcp4-only listener succeeds).
+	localhostURL := strings.Replace(gw.URL, "127.0.0.1", "localhost", 1)
+	code, out, notes = invoke(t, `{"jsonrpc":"2.0","id":55,"method":"ping"}`+"\n", "mcp", "--gateway-url", localhostURL, "--key-file", keyFile)
+	if code != 0 || notes != "" || !strings.Contains(out, `"id":55`) || strings.Contains(out, `"error"`) {
+		t.Fatalf("localhost IPv4 pinning failed: code=%d stderr=%q out=%q", code, notes, out)
+	}
+
+	// 7. Invalid JSON-RPC IDs ({} / [] / bool) and invalid objects return -32600 with id:null
+	// in both processing mode and gateway-failure mode.
+	badFrames := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":{},"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":[],"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":true,"method":"ping"}`,
+		`{}`,
+	}, "\n") + "\n"
+	for _, tc := range []struct {
+		name string
+		proc string
+		url  string
+	}{
+		{"processing", "1", "http://127.0.0.1:1"},
+		{"gateway-down", "", "http://127.0.0.1:1"},
+	} {
+		t.Setenv("MEMLANE_PROCESSING_SESSION", tc.proc)
+		code, out, notes = invoke(t, badFrames, "mcp", "--gateway-url", tc.url, "--key-file", keyFile, "--timeout", "100ms")
+		if code != 0 || notes != "" {
+			t.Fatalf("%s invalid-id test failed: code=%d stderr=%q out=%q", tc.name, code, notes, out)
+		}
+		gotLines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(gotLines) != 4 {
+			t.Fatalf("%s expected 4 -32600 errors, got %d:\n%s", tc.name, len(gotLines), out)
+		}
+		for _, line := range gotLines {
+			if !strings.Contains(line, `"id":null`) || !strings.Contains(line, `-32600`) {
+				t.Fatalf("%s expected id:null -32600, got: %s", tc.name, line)
+			}
+		}
 	}
 }

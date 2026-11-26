@@ -17,8 +17,9 @@ const usage = `Usage: memlane [command]
   app       Open the desktop app
   daemon    Run the local Go gateway
   hook      Forward a host hook event
+  mcp       Bridge stdio MCP requests to the local gateway
   setup     Manage installation and host connections
-  dev       Start, inspect, open, stop or recover a local runtime
+  dev       Start, inspect, open, stop, recover or sync hooks for a local runtime
 `
 
 func main() { os.Exit(runMain(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
@@ -41,6 +42,8 @@ func runMain(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return runDaemon(ctx, args[1:], stdout, stderr)
 	case "hook":
 		return runHook(ctx, args[1:], stdin, stdout, stderr)
+	case "mcp":
+		return runMCP(ctx, args[1:], stdin, stdout, stderr)
 	case "dev":
 		return runDev(ctx, args[1:], stdout, stderr)
 	case "setup":

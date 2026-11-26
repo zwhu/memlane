@@ -143,7 +143,7 @@ func TestContractAntigravityInstallAndMigration(t *testing.T) {
 			t.Fatalf("unexpected PostToolUse command: %q", nestedCmd)
 		}
 
-		// 0-byte mcp_config.json populated cleanly.
+		// 0-byte mcp_config.json populated cleanly with authenticated stdio bridge.
 		mcpRaw, err := os.ReadFile(filepath.Join(profileDir, "mcp_config.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -154,8 +154,15 @@ func TestContractAntigravityInstallAndMigration(t *testing.T) {
 		}
 		servers, _ := mcpDoc["mcpServers"].(map[string]any)
 		memlaneMCP, _ := servers["memlane"].(map[string]any)
-		if memlaneMCP["serverUrl"] != syntheticGatewayURL+"/mcp" {
+		wantArgs := []any{"mcp", "--gateway-url", syntheticGatewayURL, "--key-file", keyFile}
+		gotArgs, _ := memlaneMCP["args"].([]any)
+		if memlaneMCP["command"] != syntheticBinaryPath || memlaneMCP["serverUrl"] != nil || len(gotArgs) != len(wantArgs) {
 			t.Fatalf("unexpected mcp_config.json memlane server: %+v", mcpDoc)
+		}
+		for i, want := range wantArgs {
+			if gotArgs[i] != want {
+				t.Fatalf("mcp_config.json args[%d] = %v, want %v", i, gotArgs[i], want)
+			}
 		}
 
 		// config.json disables legacy memlane-cognee while keeping swarm untouched.
@@ -477,8 +484,15 @@ func TestContractCodexAndTraeIDELegacyMigration(t *testing.T) {
 		if userTools["url"] != "http://127.0.0.1:9910/mcp" {
 			t.Fatalf("unrelated mcp_servers.user_tools altered: %+v", servers)
 		}
-		if memlaneSrv["url"] != syntheticGatewayURL+"/mcp" || memlaneSrv["bearer_token_file"] != keyFile {
+		wantArgs := []any{"mcp", "--gateway-url", syntheticGatewayURL, "--key-file", keyFile}
+		gotArgs, _ := memlaneSrv["args"].([]any)
+		if memlaneSrv["command"] != syntheticBinaryPath || memlaneSrv["url"] != nil || memlaneSrv["bearer_token_file"] != nil || len(gotArgs) != len(wantArgs) {
 			t.Fatalf("unexpected mcp_servers.memlane: %+v", memlaneSrv)
+		}
+		for i, want := range wantArgs {
+			if gotArgs[i] != want {
+				t.Fatalf("mcp_servers.memlane args[%d] = %v, want %v", i, gotArgs[i], want)
+			}
 		}
 		plugins, _ := tomlDoc["plugins"].(map[string]any)
 		fluxPlugin, _ := plugins["flux"].(map[string]any)

@@ -54,6 +54,7 @@ func runUninstall(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return reportError(stderr, err)
 	}
 	var targets []hooks.InstallOptions
+	home, _ := os.UserHomeDir()
 	discovery := agents.DiscoveryOptions{}
 	if *host != "" {
 		kind := hooks.CanonicalHost(*host)
@@ -63,11 +64,17 @@ func runUninstall(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		if kind == hooks.HostTraeIDE {
 			kind = agents.HostTraeIDE
 		}
-		targets = append(targets, hooks.InstallOptions{Host: kind, ProfileDir: agents.DefaultProfileDir(kind, discovery)})
+		targets = append(targets, hooks.InstallOptions{
+			Host: kind, ProfileDir: agents.DefaultProfileDir(kind, discovery),
+			MCPConfigPath: hooks.DefaultHostMCPConfigPath(kind, home),
+		})
 	} else {
 		for _, item := range agents.DetectHosts(discovery) {
 			if hooks.CanonicalHost(item.Kind) != "" && item.ProfileFound {
-				targets = append(targets, hooks.InstallOptions{Host: item.Kind, ProfileDir: item.ProfileDir})
+				targets = append(targets, hooks.InstallOptions{
+					Host: item.Kind, ProfileDir: item.ProfileDir,
+					MCPConfigPath: hooks.DefaultHostMCPConfigPath(item.Kind, home),
+				})
 			}
 		}
 	}

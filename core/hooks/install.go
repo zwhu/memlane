@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -18,8 +19,24 @@ import (
 
 type InstallOptions struct {
 	Host, ProfileDir, BinaryPath, GatewayURL, KeyFile string
+	MCPConfigPath                                     string
 	Apply                                             bool
 	ConflictPolicy                                    *agents.ConflictPolicy
+}
+
+// DefaultHostMCPConfigPath returns an out-of-profile MCP config file path when
+// a host stores its MCP server registry outside its hooks profile directory
+// (for example TRAE CN IDE's User/mcp.json on macOS) and that directory exists.
+func DefaultHostMCPConfigPath(host, home string) string {
+	if CanonicalHost(host) != HostTraeIDE || runtime.GOOS != "darwin" || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	userDir := filepath.Join(home, "Library", "Application Support", "Trae CN", "User")
+	info, err := os.Stat(userDir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	return filepath.Join(userDir, "mcp.json")
 }
 type InstallResult struct {
 	Host      string
@@ -75,7 +92,6 @@ func editHost(opts InstallOptions, remove bool) (InstallResult, error) {
 	}
 	var previews []agents.EditPreview
 	binding := filepath.Join(opts.ProfileDir, "extensions", "memlane-cognee", "host-binding.json")
-	endpoint := strings.TrimRight(opts.GatewayURL, "/") + "/mcp"
 	add := func(p agents.EditPreview, err error) error {
 		if err == nil && p.Changed {
 			previews = append(previews, p)
@@ -114,32 +130,32 @@ func editHost(opts InstallOptions, remove bool) (InstallResult, error) {
 		if host == HostTraeX {
 			name = "traecli.toml"
 		}
-		err = add(tomlPreview(filepath.Join(opts.ProfileDir, name), host, endpoint, opts.KeyFile, remove))
+		err = add(tomlPreview(filepath.Join(opts.ProfileDir, name), host, opts, remove))
 	case HostAntigravity:
 		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "mcp_config.json"), remove, func(doc object) error {
-			servers, err := configGroup(doc, "mcpServers", !remove)
-			if err != nil || servers == nil {
-				return err
-			}
-			for _, key := range legacyNames {
-				delete(servers, key)
-			}
-			if old, ok := servers["memlane"]; ok {
-				if !managedServer(old) {
-					if remove {
-						return nil
-					}
-					return errors.New("MCP server named memlane already exists")
-				}
-				delete(servers, "memlane")
-			}
-			if !remove {
-				servers["memlane"] = object{"serverUrl": endpoint, "_memlane_managed": marker}
-			}
-			return nil
+			return editMCPServersJSON(doc, opts, remove)
 		}))
 		if err == nil && !remove {
 			err = add(antigravityLegacyPluginPreview(opts.ProfileDir))
+		}
+	case HostTraeIDE:
+		if mcpPath := strings.TrimSpace(opts.MCPConfigPath); mcpPath != "" {
+			if !filepath.IsAbs(mcpPath) {
+				return result, errors.New("absolute MCP config path required")
+			}
+			if !remove {
+				if conflict, scanErr := scanExtraMCPConflict(mcpPath, kind, policy); scanErr != nil {
+					return result, scanErr
+				} else if conflict != nil {
+					result.Conflicts.ThirdPartyConflicts = append(result.Conflicts.ThirdPartyConflicts, *conflict)
+					result.Conflicts.Blocked = true
+					result.Blocked = true
+					return result, ErrConflictBlocked
+				}
+			}
+			err = add(jsonPreview(mcpPath, remove, func(doc object) error {
+				return editMCPServersJSON(doc, opts, remove)
+			}))
 		}
 	}
 	if err != nil {
@@ -525,13 +541,115 @@ func newPreview(path string, data []byte) agents.EditPreview {
 	return agents.EditPreview{Path: path, After: data, BeforeSHA256: fmt.Sprintf("%x", sha256.Sum256(nil)), AfterSHA256: fmt.Sprintf("%x", sha256.Sum256(data)), Changed: true, Summary: "add managed Memlane integration"}
 }
 
-func tomlPreview(path, host, endpoint, keyFile string, remove bool) (agents.EditPreview, error) {
+func mcpStdioArgs(opts InstallOptions) []any {
+	return []any{
+		"mcp",
+		"--gateway-url", strings.TrimRight(opts.GatewayURL, "/"),
+		"--key-file", opts.KeyFile,
+	}
+}
+
+func editMCPServersJSON(doc object, opts InstallOptions, remove bool) error {
+	servers, err := configGroup(doc, "mcpServers", !remove)
+	if err != nil || servers == nil {
+		return err
+	}
+	for _, key := range legacyNames {
+		delete(servers, key)
+	}
+	if old, ok := servers["memlane"]; ok {
+		if !managedServer(old) {
+			if remove {
+				return nil
+			}
+			return errors.New("MCP server named memlane already exists")
+		}
+		delete(servers, "memlane")
+	}
+	if !remove {
+		servers["memlane"] = object{
+			"command":          opts.BinaryPath,
+			"args":             mcpStdioArgs(opts),
+			"_memlane_managed": marker,
+		}
+	}
+	return nil
+}
+
+func scanExtraMCPConflict(path, hostKind string, policy agents.ConflictPolicy) (*agents.ConflictFinding, error) {
+	raw, err := agents.SafeReadFile(path, 1<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	doc, err := agents.ParseJSONC(raw)
+	if err != nil {
+		return nil, err
+	}
+	servers, ok := doc["mcpServers"].(object)
+	if !ok {
+		return nil, nil
+	}
+	names := make([]string, 0, len(servers))
+	for name := range servers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		entry := servers[name]
+		if managedServer(entry) {
+			continue
+		}
+		if entryObj, ok := entry.(object); ok {
+			if disabled, ok := entryObj["disabled"].(bool); ok && disabled {
+				continue
+			}
+			if enabled, ok := entryObj["enabled"].(bool); ok && !enabled {
+				continue
+			}
+		}
+		blob, _ := json.Marshal(entry)
+		text := strings.ToLower(name + " " + string(blob))
+		isManaged := false
+		for _, m := range policy.ManagedMarkers {
+			if m != "" && strings.Contains(text, strings.ToLower(m)) {
+				isManaged = true
+				break
+			}
+		}
+		if isManaged {
+			continue
+		}
+		for _, kw := range policy.ConflictKeywords {
+			if kw != "" && strings.Contains(text, strings.ToLower(kw)) {
+				return &agents.ConflictFinding{
+					Tier:       agents.TierThirdPartyConflict,
+					Action:     agents.ActionBlock,
+					HostKind:   hostKind,
+					Surface:    "mcp_server",
+					EntryName:  name,
+					ConfigPath: path,
+					Blocked:    true,
+				}, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func tomlPreview(path, host string, opts InstallOptions, remove bool) (agents.EditPreview, error) {
 	raw, err := agents.SafeReadFile(path, 1<<20)
 	missing := errors.Is(err, os.ErrNotExist)
 	if err != nil && !missing {
 		return agents.EditPreview{}, err
 	}
 	table := []string{"mcp_servers", "memlane"}
+	args := mcpStdioArgs(opts)
 	if missing {
 		if remove {
 			return agents.EditPreview{}, nil
@@ -540,7 +658,15 @@ func tomlPreview(path, host, endpoint, keyFile string, remove bool) (agents.Edit
 		if host == HostCodex {
 			prefix = "[features]\nhooks = true\n\n"
 		}
-		data := []byte(fmt.Sprintf("%s[mcp_servers.memlane]\nurl = %q\nbearer_token_file = %q\n_memlane_managed = %q\n", prefix, endpoint, keyFile, marker))
+		quoted := make([]string, len(args))
+		for i, item := range args {
+			rawItem, err := json.Marshal(item)
+			if err != nil {
+				return agents.EditPreview{}, err
+			}
+			quoted[i] = string(rawItem)
+		}
+		data := []byte(fmt.Sprintf("%s[mcp_servers.memlane]\ncommand = %q\nargs = [%s]\n_memlane_managed = %q\n", prefix, opts.BinaryPath, strings.Join(quoted, ", "), marker))
 		if _, err := agents.ParseTOML(data); err != nil {
 			return agents.EditPreview{}, err
 		}
@@ -586,7 +712,13 @@ func tomlPreview(path, host, endpoint, keyFile string, remove bool) (agents.Edit
 		if host == HostCodex {
 			edits = append(edits, agents.SetKey([]string{"features"}, "hooks", true))
 		}
-		edits = append(edits, agents.SetKey(table, "url", endpoint), agents.SetKey(table, "bearer_token_file", keyFile), agents.SetKey(table, "_memlane_managed", marker))
+		edits = append(edits,
+			agents.DeleteKey(table, "url"),
+			agents.DeleteKey(table, "bearer_token_file"),
+			agents.SetKey(table, "command", opts.BinaryPath),
+			agents.SetKey(table, "args", args),
+			agents.SetKey(table, "_memlane_managed", marker),
+		)
 	}
 	if len(edits) == 0 {
 		return agents.EditPreview{}, nil

@@ -769,6 +769,7 @@ func (s *session) hostHookOptions(host agents.DetectedHost) (hooks.InstallOption
 	return hooks.InstallOptions{
 		Host: host.Kind, ProfileDir: host.ProfileDir, BinaryPath: s.Executable,
 		GatewayURL: s.config.Control.URL, KeyFile: filepath.Join(root, "agent-keys", keyName+".token"),
+		MCPConfigPath:  hooks.DefaultHostMCPConfigPath(host.Kind, s.HomeDir),
 		ConflictPolicy: &hookConflictPolicy,
 	}, true
 }

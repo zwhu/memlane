@@ -170,18 +170,44 @@ func TestInstallConflictTiers(t *testing.T) {
 		t.Fatal(err)
 	}
 	installed := readConfig(t, toml)
-	if !strings.Contains(installed, userConfig) || strings.Contains(installed, "legacy helper") || !strings.Contains(installed, "/mcp") {
+	installedDoc, err := agents.ParseTOML([]byte(installed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installedMemlane := installedDoc["mcp_servers"].(object)["memlane"].(object)
+	if !strings.Contains(installed, userConfig) || strings.Contains(installed, "legacy helper") ||
+		installedMemlane["command"] != "/bin/memlane" || installedMemlane["url"] != nil || installedMemlane["bearer_token_file"] != nil {
 		t.Fatal(installed)
 	}
 	if got := readConfig(t, hooksPath); !strings.Contains(got, "echo keep") || strings.Contains(got, "legacy-hook") {
 		t.Fatal(got)
 	}
 
-	writeConfig(t, toml, installed+foreignConfig)
+	// Legacy HTTP [mcp_servers.memlane] (url + bearer_token_file) upgrades cleanly to stdio.
+	legacyHTTP := userConfig + "[mcp_servers.memlane]\nurl = \"http://127.0.0.1:9123/mcp\"\nbearer_token_file = \"/agent.key\"\n_memlane_managed = \"memlane-hook\"\n"
+	writeConfig(t, toml, legacyHTTP)
+	if _, err := InstallHostConfig(opts); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := readConfig(t, toml)
+	upgradedDoc, err := agents.ParseTOML([]byte(upgraded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgradedMemlane := upgradedDoc["mcp_servers"].(object)["memlane"].(object)
+	if strings.Contains(upgraded, "bearer_token_file") || strings.Contains(upgraded, "http://127.0.0.1:9123/mcp") ||
+		upgradedMemlane["command"] != "/bin/memlane" || !strings.Contains(upgraded, `"mcp"`) {
+		t.Fatalf("legacy HTTP MCP entry did not upgrade cleanly to stdio:\n%s", upgraded)
+	}
+	if repeat, err := InstallHostConfig(opts); err != nil || len(repeat.Previews) != 0 {
+		t.Fatalf("repeat after stdio upgrade not idempotent: %+v %v", repeat, err)
+	}
+
+	writeConfig(t, toml, upgraded+foreignConfig)
 	if _, err := UninstallHostConfig(opts); err != nil {
 		t.Fatal(err)
 	}
-	if got := readConfig(t, toml); !strings.Contains(got, userConfig) || !strings.Contains(got, foreignConfig) || strings.Contains(got, marker) || strings.Contains(got, "bearer_token_file") {
+	if got := readConfig(t, toml); !strings.Contains(got, userConfig) || !strings.Contains(got, foreignConfig) || strings.Contains(got, marker) || strings.Contains(got, "bearer_token_file") || strings.Contains(got, "/bin/memlane") {
 		t.Fatal(got)
 	}
 	if got := readConfig(t, hooksPath); !strings.Contains(got, "echo keep") || strings.Contains(got, marker) {
@@ -241,8 +267,9 @@ func TestInstallAntigravityMigration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if mcpDoc["mcpServers"].(object)["memlane"] == nil {
-			t.Fatalf("mcp_config not populated: %+v", mcpDoc)
+		memlaneMCP, ok := mcpDoc["mcpServers"].(object)["memlane"].(object)
+		if !ok || memlaneMCP["command"] != opts.BinaryPath || memlaneMCP["serverUrl"] != nil {
+			t.Fatalf("mcp_config not populated with stdio bridge: %+v", mcpDoc)
 		}
 		hooksDoc, err := agents.ParseJSONC([]byte(readConfig(t, hooksPath)))
 		if err != nil {
@@ -402,5 +429,74 @@ func TestInstallPreCompactPreservesUserHook(t *testing.T) {
 				t.Fatalf("unexpected PreCompact hooks after uninstall: %s", uninstalled)
 			}
 		})
+	}
+}
+
+func TestInstallTraeIDEMCPConfig(t *testing.T) {
+	profileDir := t.TempDir()
+	userDir := t.TempDir()
+	mcpPath := filepath.Join(userDir, "mcp.json")
+	const origMCP = "{\n  \"mcpServers\": {\n    \"LarkDocs\": {\n      \"command\": \"npx\",\n      \"args\": [\"-y\", \"lark-docs\"]\n    }\n  }\n}\n"
+	writeConfig(t, mcpPath, origMCP)
+
+	opts := InstallOptions{
+		Host:          HostTraeIDE,
+		ProfileDir:    profileDir,
+		BinaryPath:    "/Applications/Memlane.app/Contents/MacOS/Memlane",
+		GatewayURL:    "http://127.0.0.1:18777",
+		KeyFile:       "/tmp/trae_ide.token",
+		MCPConfigPath: mcpPath,
+	}
+	preview, err := InstallHostConfig(opts)
+	if err != nil || preview.Blocked || preview.Applied || len(preview.Previews) != 2 {
+		t.Fatalf("preview failed: %+v %v", preview, err)
+	}
+	if readConfig(t, mcpPath) != origMCP {
+		t.Fatal("preview mutated mcp.json")
+	}
+
+	opts.Apply = true
+	res, err := InstallHostConfig(opts)
+	if err != nil || !res.Applied || len(res.Previews) != 2 {
+		t.Fatalf("apply failed: %+v %v", res, err)
+	}
+	if repeat, err := InstallHostConfig(opts); err != nil || len(repeat.Previews) != 0 {
+		t.Fatalf("repeat not idempotent: %+v %v", repeat, err)
+	}
+	doc, err := agents.ParseJSONC([]byte(readConfig(t, mcpPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers := doc["mcpServers"].(object)
+	if servers["LarkDocs"] == nil {
+		t.Fatalf("unrelated LarkDocs server lost: %+v", servers)
+	}
+	memlane := servers["memlane"].(object)
+	if memlane["command"] != opts.BinaryPath || memlane["_memlane_managed"] != marker {
+		t.Fatalf("unexpected trae_ide mcp entry: %+v", memlane)
+	}
+
+	// Third-party cognee MCP entry in TRAE CN User/mcp.json blocks without mutating files.
+	const conflictMCP = `{"mcpServers":{"cognee":{"command":"external-cognee"}}}`
+	writeConfig(t, mcpPath, conflictMCP)
+	blocked, err := InstallHostConfig(opts)
+	if !errors.Is(err, ErrConflictBlocked) || !blocked.Blocked || blocked.Applied {
+		t.Fatalf("expected ErrConflictBlocked, got %+v %v", blocked, err)
+	}
+	if readConfig(t, mcpPath) != conflictMCP {
+		t.Fatal("blocked install mutated mcp.json")
+	}
+
+	// Uninstall removes only managed memlane entry while keeping LarkDocs.
+	writeConfig(t, mcpPath, origMCP)
+	if _, err := InstallHostConfig(opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UninstallHostConfig(opts); err != nil {
+		t.Fatal(err)
+	}
+	afterUninstall := readConfig(t, mcpPath)
+	if !strings.Contains(afterUninstall, "LarkDocs") || strings.Contains(afterUninstall, marker) || strings.Contains(afterUninstall, `"memlane"`) {
+		t.Fatalf("unexpected mcp.json after uninstall: %s", afterUninstall)
 	}
 }

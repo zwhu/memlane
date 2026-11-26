@@ -206,6 +206,14 @@ func (s *session) inspectHostConflicts(hosts []agents.DetectedHost) {
 		opts, ok := s.hostHookOptions(host)
 		if ok {
 			result, err := s.InstallHostConfigFn(opts)
+			if result.Blocked || errors.Is(err, hooks.ErrConflictBlocked) {
+				if result.Conflicts != nil {
+					s.showHookConflict(host, *result.Conflicts)
+				} else {
+					s.block(ExitPreflightBlocked, "third_party_cognee_conflict")
+				}
+				continue
+			}
 			if err == nil && len(result.Previews) == 0 {
 				continue
 			}

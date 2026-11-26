@@ -389,6 +389,7 @@ func resolveSyncHooksBinary(storeRoot, explicit string, apply bool) (string, err
 }
 
 func resolveSyncHookTargets(cfg runtimeConfig, selectedHost, binaryPath string) ([]hooks.InstallOptions, error) {
+	home, _ := os.UserHomeDir()
 	discovery := agents.DiscoveryOptions{}
 	detected := agents.DetectHosts(discovery)
 	if selectedHost != "" {
@@ -412,11 +413,12 @@ func resolveSyncHookTargets(cfg runtimeConfig, selectedHost, binaryPath string) 
 			return nil, fmt.Errorf("host %s is not connected in store (missing agent key file)", canonical)
 		}
 		return []hooks.InstallOptions{{
-			Host:       canonical,
-			ProfileDir: profileDir,
-			BinaryPath: binaryPath,
-			GatewayURL: cfg.GatewayURL,
-			KeyFile:    keyFile,
+			Host:          canonical,
+			ProfileDir:    profileDir,
+			BinaryPath:    binaryPath,
+			GatewayURL:    cfg.GatewayURL,
+			KeyFile:       keyFile,
+			MCPConfigPath: hooks.DefaultHostMCPConfigPath(canonical, home),
 		}}, nil
 	}
 	targets := make([]hooks.InstallOptions, 0, len(detected))
@@ -430,11 +432,12 @@ func resolveSyncHookTargets(cfg runtimeConfig, selectedHost, binaryPath string) 
 			continue
 		}
 		targets = append(targets, hooks.InstallOptions{
-			Host:       canonical,
-			ProfileDir: item.ProfileDir,
-			BinaryPath: binaryPath,
-			GatewayURL: cfg.GatewayURL,
-			KeyFile:    keyFile,
+			Host:          canonical,
+			ProfileDir:    item.ProfileDir,
+			BinaryPath:    binaryPath,
+			GatewayURL:    cfg.GatewayURL,
+			KeyFile:       keyFile,
+			MCPConfigPath: hooks.DefaultHostMCPConfigPath(canonical, home),
 		})
 	}
 	return targets, nil

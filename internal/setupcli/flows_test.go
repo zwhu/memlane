@@ -2438,7 +2438,8 @@ func TestOptionCHostConfiguration(t *testing.T) {
 			switch kind {
 			case agents.HostCodex:
 				hooks, err := os.ReadFile(filepath.Join(profile, "hooks.json"))
-				if err != nil || !strings.Contains(string(hooks), " hook codex ") || !bytes.Contains(raw, []byte("/mcp")) ||
+				if err != nil || !strings.Contains(string(hooks), " hook codex ") || !bytes.Contains(raw, []byte(`"mcp"`)) ||
+					!bytes.Contains(raw, []byte(`"--key-file"`)) || bytes.Contains(raw, []byte("bearer_token_file")) ||
 					!bytes.Contains(raw, []byte("mcp_servers.user")) || bytes.Contains(raw, []byte("memlane-cognee")) {
 					t.Fatal("Codex hook/MCP migration was not applied")
 				}
@@ -2463,7 +2464,9 @@ func TestOptionCHostConfiguration(t *testing.T) {
 				if !strings.Contains(string(hooksRaw), "hook antigravity PreInvocation") ||
 					!strings.Contains(string(hooksRaw), `"matcher"`) ||
 					strings.Contains(string(hooksRaw), `"UserPromptSubmit"`) ||
-					!strings.Contains(string(mcpRaw), "/mcp") ||
+					!strings.Contains(string(mcpRaw), `"command"`) ||
+					!strings.Contains(string(mcpRaw), `"--key-file"`) ||
+					strings.Contains(string(mcpRaw), `"serverUrl"`) ||
 					!bytes.Contains(raw, []byte(`"swarm"`)) {
 					t.Fatalf("Antigravity migration incomplete:\nhooks=%s\nmcp=%s\ncfg=%s", hooksRaw, mcpRaw, raw)
 				}
