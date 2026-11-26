@@ -120,3 +120,58 @@ func TestHookDispatchForwarding(t *testing.T) {
 		t.Fatalf("%d %q %q", code, out, notes)
 	}
 }
+
+func TestHookSessionStartRuntimeFallback(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	t.Setenv("MEMLANE_GATEWAY_URL", "")
+	t.Setenv("MEMLANE_AGENT_KEY_FILE", "")
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	require(t, err)
+	requests := make(chan map[string]any, 4)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/recall" || r.Header.Get("X-Api-Key") != "runtime-codex-key" {
+			t.Errorf("unexpected request %s key=%q", r.URL.Path, r.Header.Get("X-Api-Key"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		if _, err := io.WriteString(w, `{"context":"restored via runtime fallback"}`); err != nil {
+			t.Error(err)
+		}
+	})
+	gateway := &httptest.Server{Listener: listener, Config: &http.Server{Handler: handler}}
+	gateway.Start()
+	defer gateway.Close()
+
+	dir := t.TempDir()
+	key := filepath.Join(dir, "codex.key")
+	require(t, os.WriteFile(key, []byte("runtime-codex-key\n"), 0o600))
+	cfgPath := filepath.Join(dir, "runtime.json")
+	cfgBytes, err := json.Marshal(map[string]any{
+		"gateway_url":     gateway.URL,
+		"agent_key_files": map[string]string{"codex": key},
+	})
+	require(t, err)
+	require(t, os.WriteFile(cfgPath, cfgBytes, 0o600))
+	t.Setenv("MEMLANE_DEV_RUNTIME_CONFIG", cfgPath)
+
+	code, out, notes := invoke(t, `{"source":"startup","cwd":"/tmp","session_id":"s1"}`, "hook", "codex", "SessionStart")
+	if code != 0 || out != "{}\n" || notes != "" || len(requests) != 0 {
+		t.Fatalf("startup must remain a zero-network no-op: code=%d out=%q notes=%q reqs=%d", code, out, notes, len(requests))
+	}
+
+	code, out, notes = invoke(t, `{"source":"compact","cwd":"/tmp","session_id":"s1"}`, "hook", "codex", "SessionStart")
+	if code != 0 || notes != "" || !strings.Contains(out, "restored via runtime fallback") {
+		t.Fatalf("compact restore failed: code=%d out=%q notes=%q", code, out, notes)
+	}
+	select {
+	case got := <-requests:
+		if got["purpose"] != "compact_restore" || got["mode"] != "hybrid" {
+			t.Fatalf("unexpected recall body: %+v", got)
+		}
+	default:
+		t.Fatal("expected /recall request on SessionStart compact")
+	}
+}

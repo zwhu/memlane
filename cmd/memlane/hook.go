@@ -35,7 +35,7 @@ func runHook(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 2
 	}
 	event := args[1]
-	if event != hooks.SessionStart && (cfg.GatewayURL == "" || cfg.KeyFile == "") {
+	if cfg.GatewayURL == "" || cfg.KeyFile == "" {
 		if runtime, err := readRuntime(""); err == nil {
 			cfg.GatewayURL = firstNonempty(cfg.GatewayURL, runtime.GatewayURL)
 			cfg.KeyFile = firstNonempty(cfg.KeyFile, runtime.agentKeyFile(hooks.CanonicalHost(args[0])))
