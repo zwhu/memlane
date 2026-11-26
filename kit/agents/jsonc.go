@@ -176,6 +176,9 @@ func (p *jsoncParser) value(depth int) (jsonNode, error) {
 }
 
 func parseJSONC(data []byte) (map[string]any, jsonNode, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return map[string]any{}, jsonNode{open: -1}, nil
+	}
 	parser := jsoncParser{data: data, clean: slices.Clone(data)}
 	node, err := parser.value(0)
 	if err != nil {
@@ -262,6 +265,9 @@ func PreviewJSONEdit(path string, mutator func(map[string]any) error, summary st
 	if err != nil {
 		return EditPreview{}, err
 	}
+	if raw == nil {
+		raw = []byte{}
+	}
 	after, node, err := parseJSONC(raw)
 	if err != nil {
 		return EditPreview{}, err
@@ -273,12 +279,25 @@ func PreviewJSONEdit(path string, mutator func(map[string]any) error, summary st
 	if err := mutator(after); err != nil {
 		return EditPreview{}, err
 	}
-	spans, err := jsonSpans(node, before, after)
-	if err != nil {
-		return EditPreview{}, err
+	var result []byte
+	if node.open < 0 {
+		if len(after) == 0 {
+			result = raw
+		} else {
+			formatted, err := json.MarshalIndent(after, "", "  ")
+			if err != nil {
+				return EditPreview{}, err
+			}
+			result = append(formatted, '\n')
+		}
+	} else {
+		spans, err := jsonSpans(node, before, after)
+		if err != nil {
+			return EditPreview{}, err
+		}
+		slices.SortStableFunc(spans, func(a, b spanEdit) int { return a.start - b.start })
+		result = []byte(applySpans(string(raw), spans))
 	}
-	slices.SortStableFunc(spans, func(a, b spanEdit) int { return a.start - b.start })
-	result := []byte(applySpans(string(raw), spans))
 	actual, err := ParseJSONC(result)
 	if err != nil {
 		return EditPreview{}, err

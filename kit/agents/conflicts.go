@@ -51,6 +51,7 @@ type ConflictReport struct {
 	ManagedLegacy, ThirdPartyConflicts []ConflictFinding
 	UnrelatedCount                     int
 	host                               DetectedHost
+	disabledPlugins                    map[string]bool
 }
 type BackupRecord struct{ OriginalPath, BackupPath, EntryName, Surface string }
 
@@ -117,6 +118,10 @@ func isDisabledEntry(hostKind, configPath, surface string, fromMap bool, value a
 }
 
 func (r *ConflictReport) add(f ConflictFinding, fromMap bool, value any, policy ConflictPolicy) {
+	r.addWithDisabled(f, fromMap, false, value, policy)
+}
+
+func (r *ConflictReport) addWithDisabled(f ConflictFinding, fromMap, entryDisabled bool, value any, policy ConflictPolicy) {
 	encoded, err := json.Marshal(value)
 	candidate := f.EntryName
 	if err == nil {
@@ -127,7 +132,7 @@ func (r *ConflictReport) add(f ConflictFinding, fromMap bool, value any, policy 
 		f.Tier, f.Action = TierManagedLegacy, ActionMigrate
 		r.ManagedLegacy = append(r.ManagedLegacy, f)
 	case matchesMarkers(candidate, policy.ConflictKeywords) &&
-		(f.directoryEntry || !isDisabledEntry(f.HostKind, f.ConfigPath, f.Surface, fromMap, value)):
+		!entryDisabled && (f.directoryEntry || !isDisabledEntry(f.HostKind, f.ConfigPath, f.Surface, fromMap, value)):
 		f.Tier, f.Action, f.Blocked = TierThirdPartyConflict, ActionBlock, true
 		r.Blocked = true
 		r.ThirdPartyConflicts = append(r.ThirdPartyConflicts, f)
@@ -198,8 +203,35 @@ func (r *ConflictReport) scanConfig(path string, policy ConflictPolicy) error {
 			}
 		}
 	}
-	if filepath.Base(path) == "hooks.json" && doc["hooks"] == nil {
-		r.scanHooks(path, nil, doc, policy)
+	if r.HostKind == HostAntigravity && filepath.Base(path) == "config.json" {
+		if plugins, ok := doc["plugins"].(map[string]any); ok {
+			for name, val := range plugins {
+				if isDisabledEntry(r.HostKind, path, "plugin", true, val) {
+					if r.disabledPlugins == nil {
+						r.disabledPlugins = map[string]bool{}
+					}
+					r.disabledPlugins[name] = true
+				}
+			}
+		}
+	}
+	if filepath.Base(path) == "hooks.json" {
+		if doc["hooks"] == nil {
+			r.scanHooks(path, nil, doc, policy)
+		} else if r.HostKind == HostAntigravity {
+			extra := map[string]any{}
+			for key, val := range doc {
+				if surfaceNames[key] != "" {
+					continue
+				}
+				if spec, ok := val.(map[string]any); ok && isNamedHookSpec(spec) {
+					extra[key] = spec
+				}
+			}
+			if len(extra) > 0 {
+				r.scanHooks(path, nil, extra, policy)
+			}
+		}
 	}
 	if profiles, ok := doc["profiles"].(map[string]any); ok {
 		for _, name := range sortedKeys(profiles) {
@@ -221,11 +253,46 @@ func (r *ConflictReport) scanConfig(path string, policy ConflictPolicy) error {
 	return nil
 }
 
+func isNamedHookSpec(v map[string]any) bool {
+	for k, child := range v {
+		if k == "enabled" || k == "disabled" {
+			continue
+		}
+		if _, ok := child.([]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *ConflictReport) scanHooks(path string, keys []string, value any, policy ConflictPolicy) {
 	if groups, ok := value.(map[string]any); ok {
 		for _, name := range sortedKeys(groups) {
+			if len(keys) > 0 && (name == "enabled" || name == "disabled") {
+				if _, isBool := groups[name].(bool); isBool {
+					continue
+				}
+			}
 			rows, ok := groups[name].([]any)
 			if !ok {
+				if spec, isMap := groups[name].(map[string]any); isMap && len(keys) == 0 && isNamedHookSpec(spec) {
+					if matchesMarkers(name, policy.ManagedMarkers) {
+						r.add(ConflictFinding{HostKind: r.HostKind, Surface: "hook", EntryName: name, ConfigPath: path,
+							Detail: "configured hook", path: append(slices.Clone(keys), name)}, true, spec, policy)
+						continue
+					}
+					if isDisabledEntry(r.HostKind, path, "hook", true, spec) {
+						r.UnrelatedCount++
+						continue
+					}
+					if matchesMarkers(name, policy.ConflictKeywords) {
+						r.add(ConflictFinding{HostKind: r.HostKind, Surface: "hook", EntryName: name, ConfigPath: path,
+							Detail: "configured hook", path: append(slices.Clone(keys), name)}, true, spec, policy)
+						continue
+					}
+					r.scanHooks(path, append(slices.Clone(keys), name), spec, policy)
+					continue
+				}
 				r.add(ConflictFinding{HostKind: r.HostKind, Surface: "hook", EntryName: name, ConfigPath: path,
 					Detail: "configured hook", path: append(slices.Clone(keys), name)}, true, groups[name], policy)
 				continue
@@ -305,8 +372,9 @@ func (r *ConflictReport) scanDirectory(path, surface string, policy ConflictPoli
 			if err := unix.Fstatat(int(dir.Fd()), entry.Name(), &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 				return err
 			}
-			r.add(ConflictFinding{HostKind: r.HostKind, Surface: surface, EntryName: entry.Name(),
-				ConfigPath: filepath.Join(path, entry.Name()), Detail: "installed " + surface, directoryEntry: true, entryDevice: uint64(st.Dev), entryInode: uint64(st.Ino)}, false, nil, policy)
+			disabled := r.HostKind == HostAntigravity && surface == "plugin" && r.disabledPlugins[entry.Name()]
+			r.addWithDisabled(ConflictFinding{HostKind: r.HostKind, Surface: surface, EntryName: entry.Name(),
+				ConfigPath: filepath.Join(path, entry.Name()), Detail: "installed " + surface, directoryEntry: true, entryDevice: uint64(st.Dev), entryInode: uint64(st.Ino)}, false, disabled, nil, policy)
 		}
 	}
 	return nil

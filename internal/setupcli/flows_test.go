@@ -2351,7 +2351,7 @@ func TestCorruptUpgradeReceiptOnlyBlocksZeroDownloadVerification(t *testing.T) {
 }
 
 func TestOptionCHostConfiguration(t *testing.T) {
-	for _, kind := range []string{agents.HostCodex, agents.HostPi, agents.HostTraeIDE} {
+	for _, kind := range []string{agents.HostCodex, agents.HostPi, agents.HostTraeIDE, agents.HostAntigravity} {
 		t.Run(kind, func(t *testing.T) {
 			f := newFixture(t)
 			f.doc.Control.PluginDir = ""
@@ -2395,6 +2395,21 @@ func TestOptionCHostConfiguration(t *testing.T) {
 				writeFile(t, config, []byte(`{"version":1,"hooks":{"SessionStart":[{"hooks":[{"command":"/tmp/memlane-cognee/old"}]},{"hooks":[{"command":"keep-user-command"}]}]}}`))
 			case agents.HostPi:
 				config = filepath.Join(profile, "extensions", "memlane-cognee", "host-binding.json")
+			case agents.HostAntigravity:
+				config = filepath.Join(profile, "config.json")
+				writeFile(t, filepath.Join(profile, "mcp_config.json"), nil)
+				writeFile(t, filepath.Join(profile, "plugins", "memlane-cognee", "plugin.json"), []byte(`{"name":"memlane-cognee"}`))
+				writeFile(t, config, []byte(`{"plugins":{"memlane-cognee":{"enabled":true},"swarm":{"enabled":true}}}`))
+				thirdPartyDir := filepath.Join(profile, "plugins", "third-party-cognee")
+				writeFile(t, filepath.Join(thirdPartyDir, "plugin.json"), []byte(`{"name":"third-party-cognee"}`))
+				f.command(ExitPreflightBlocked, append(slices.Clone(args), "--dry-run")...)
+				if err := os.RemoveAll(thirdPartyDir); err != nil {
+					t.Fatal(err)
+				}
+				if e := f.command(ExitActionRequired, "doctor"); !hasBlocker(e, "hook_repair_required") || hasBlocker(e, "connection_config_unreadable") ||
+					!slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
+					t.Fatalf("antigravity legacy plugin did not trigger hook_repair_required: %+v", e)
+				}
 			}
 			preview := f.command(ExitActionRequired, append(slices.Clone(args), "--dry-run")...)
 			if len(preview.Artifacts.ReviewedSHA) != 64 || f.writes != 0 {
@@ -2436,9 +2451,70 @@ func TestOptionCHostConfiguration(t *testing.T) {
 				if !bytes.Contains(raw, []byte("managed_by")) || !bytes.Contains(raw, []byte("token_file")) {
 					t.Fatal("Pi binding was not applied")
 				}
+			case agents.HostAntigravity:
+				hooksRaw, err := os.ReadFile(filepath.Join(profile, "hooks.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				mcpRaw, err := os.ReadFile(filepath.Join(profile, "mcp_config.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(hooksRaw), "hook antigravity PreInvocation") ||
+					!strings.Contains(string(hooksRaw), `"matcher"`) ||
+					strings.Contains(string(hooksRaw), `"UserPromptSubmit"`) ||
+					!strings.Contains(string(mcpRaw), "/mcp") ||
+					!bytes.Contains(raw, []byte(`"swarm"`)) {
+					t.Fatalf("Antigravity migration incomplete:\nhooks=%s\nmcp=%s\ncfg=%s", hooksRaw, mcpRaw, raw)
+				}
+				cfgDoc, err := agents.ParseJSONC(raw)
+				if err != nil || cfgDoc["plugins"].(map[string]any)["memlane-cognee"].(map[string]any)["enabled"] != false {
+					t.Fatalf("Antigravity legacy plugin not disabled: %s %v", raw, err)
+				}
+				if e := f.command(ExitOK, "doctor"); hasBlocker(e, "hook_repair_required") ||
+					slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
+					t.Fatalf("antigravity still needs hook repair after migration: %+v", e)
+				}
 			}
 			f.command(ExitOK, append(slices.Clone(args), "--dry-run")...)
 			f.command(ExitOK, "verify", "--stage", "connection", "--agent", kind)
 		})
+	}
+}
+
+func TestEnsureAgentKeyPreservesVerifiedLegacyOfficialToken(t *testing.T) {
+	base := t.TempDir()
+	keyPath := filepath.Join(base, "official-store", "agent-keys", "antigravity-0123456789abcdef01234567.token")
+	legacyPath := filepath.Join(base, "agent-credentials", "antigravity-0123456789abcdef01234567.official")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const wantToken = "legacy-verified-official-token-value"
+	if err := os.WriteFile(legacyPath, []byte(wantToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAgentKey(keyPath, legacyPath); err != nil {
+		t.Fatalf("ensureAgentKey with legacy token: %v", err)
+	}
+	got, err := os.ReadFile(keyPath)
+	if err != nil || string(got) != wantToken {
+		t.Fatalf("expected legacy token preserved, got %q err %v", string(got), err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("expected 0600 key mode, got %v %v", info, err)
+	}
+
+	// Unsafe permissions on a legacy credential must be rejected rather than silently rotated.
+	badKeyPath := filepath.Join(base, "official-store", "agent-keys", "codex-0123456789abcdef01234567.token")
+	badLegacy := filepath.Join(base, "agent-credentials", "codex-0123456789abcdef01234567.official")
+	if err := os.WriteFile(badLegacy, []byte(wantToken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureAgentKey(badKeyPath, badLegacy); err == nil {
+		t.Fatal("expected unsafe 0644 legacy credential to be rejected")
+	}
+	if _, err := os.Stat(badKeyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected legacy credential created target key: %v", err)
 	}
 }

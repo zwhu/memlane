@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/zwhu/memlane/kit/agents"
 )
@@ -95,6 +96,10 @@ func editHost(opts InstallOptions, remove bool) (InstallResult, error) {
 			}
 			return nil
 		}))
+	} else if host == HostAntigravity {
+		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "hooks.json"), remove, func(doc object) error {
+			return editAntigravityHooks(doc, opts, remove)
+		}))
 	} else {
 		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "hooks.json"), remove, func(doc object) error {
 			return editHookGroups(doc, host, opts, remove)
@@ -133,6 +138,9 @@ func editHost(opts InstallOptions, remove bool) (InstallResult, error) {
 			}
 			return nil
 		}))
+		if err == nil && !remove {
+			err = add(antigravityLegacyPluginPreview(opts.ProfileDir))
+		}
 	}
 	if err != nil {
 		return result, err
@@ -199,6 +207,204 @@ func configGroup(doc object, key string, create bool) (object, error) {
 	group := object{}
 	doc[key] = group
 	return group, nil
+}
+
+func editAntigravityHooks(doc object, opts InstallOptions, remove bool) error {
+	if rawHooks, hasLegacyWrapper := doc["hooks"]; hasLegacyWrapper {
+		if wrapper, ok := rawHooks.(object); ok {
+			changed, err := stripManagedHookGroups(wrapper)
+			if err != nil {
+				return err
+			}
+			if changed && len(wrapper) == 0 {
+				delete(doc, "hooks")
+			}
+		}
+	}
+	for _, name := range legacyNames {
+		delete(doc, name)
+	}
+	if old, exists := doc["memlane"]; exists {
+		if !managedAntigravityHookGroup(old) {
+			if remove {
+				return nil
+			}
+			return errors.New("hook named memlane already exists")
+		}
+		delete(doc, "memlane")
+	}
+	if remove {
+		return nil
+	}
+	commandFor := func(event string) string {
+		return shellWord(opts.BinaryPath) + " hook " + HostAntigravity + " " + event + " --gateway-url " + shellWord(opts.GatewayURL) + " --key-file " + shellWord(opts.KeyFile)
+	}
+	doc["memlane"] = object{
+		SessionStart: []any{
+			object{"type": "command", "command": commandFor(SessionStart)},
+		},
+		"PreInvocation": []any{
+			object{"type": "command", "command": commandFor("PreInvocation")},
+		},
+		PostToolUse: []any{
+			object{
+				"matcher": "*",
+				"hooks": []any{
+					object{"type": "command", "command": commandFor(PostToolUse)},
+				},
+			},
+		},
+		Stop: []any{
+			object{"type": "command", "command": commandFor(Stop)},
+		},
+	}
+	return nil
+}
+
+func stripManagedHookGroups(groups object) (bool, error) {
+	changed := false
+	for _, event := range []string{SessionStart, UserPromptSubmit, "PreInvocation", PostToolUse, PostToolUseFailure, Stop, SessionEnd} {
+		raw, exists := groups[event]
+		if !exists {
+			continue
+		}
+		rows, ok := raw.([]any)
+		if !ok {
+			return false, fmt.Errorf("invalid %s hook list", event)
+		}
+		kept := make([]any, 0, len(rows))
+		eventChanged := false
+		for _, row := range rows {
+			group, _ := row.(object)
+			if group["_memlane_managed"] == marker {
+				eventChanged = true
+				continue
+			}
+			if nested, ok := group["hooks"].([]any); ok {
+				children := make([]any, 0, len(nested))
+				for _, child := range nested {
+					if !managedAntigravityHookHandler(child) {
+						children = append(children, child)
+					}
+				}
+				if len(children) != len(nested) {
+					eventChanged = true
+					if len(children) == 0 {
+						continue
+					}
+					group["hooks"] = children
+				}
+			} else if managedAntigravityHookHandler(row) {
+				eventChanged = true
+				continue
+			}
+			kept = append(kept, row)
+		}
+		if eventChanged {
+			changed = true
+			if len(kept) == 0 {
+				delete(groups, event)
+			} else {
+				groups[event] = kept
+			}
+		}
+	}
+	return changed, nil
+}
+
+func managedAntigravityHookGroup(entry any) bool {
+	group, ok := entry.(object)
+	if !ok {
+		return false
+	}
+	if group["_memlane_managed"] == marker {
+		return true
+	}
+	foundHandler := false
+	for key, raw := range group {
+		if key == "enabled" {
+			if _, ok := raw.(bool); ok {
+				continue
+			}
+			return false
+		}
+		rows, ok := raw.([]any)
+		if !ok {
+			return false
+		}
+		for _, row := range rows {
+			item, ok := row.(object)
+			if !ok {
+				return false
+			}
+			if nested, hasNested := item["hooks"].([]any); hasNested {
+				if len(nested) == 0 {
+					return false
+				}
+				for _, child := range nested {
+					if !managedAntigravityHookHandler(child) {
+						return false
+					}
+					foundHandler = true
+				}
+			} else {
+				if !managedAntigravityHookHandler(item) {
+					return false
+				}
+				foundHandler = true
+			}
+		}
+	}
+	return foundHandler
+}
+
+func managedAntigravityHookHandler(entry any) bool {
+	if managedHook(entry) {
+		return true
+	}
+	row, _ := entry.(object)
+	command := stringField(row, "command")
+	return strings.Contains(command, " hook "+HostAntigravity+" ") &&
+		strings.Contains(command, "--gateway-url ") &&
+		strings.Contains(command, "--key-file ")
+}
+
+func antigravityLegacyPluginPreview(profileDir string) (agents.EditPreview, error) {
+	installedDirs := map[string]bool{}
+	for _, name := range legacyNames {
+		_, err := os.Lstat(filepath.Join(profileDir, "plugins", name))
+		if err == nil {
+			installedDirs[name] = true
+		} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+			return agents.EditPreview{}, err
+		}
+	}
+	configPath := filepath.Join(profileDir, "config.json")
+	if _, err := agents.SafeReadFile(configPath, 1<<20); errors.Is(err, os.ErrNotExist) {
+		if len(installedDirs) == 0 {
+			return agents.EditPreview{}, nil
+		}
+	} else if err != nil {
+		return agents.EditPreview{}, err
+	}
+	return jsonPreview(configPath, false, func(doc object) error {
+		plugins, err := configGroup(doc, "plugins", len(installedDirs) > 0)
+		if err != nil || plugins == nil {
+			return err
+		}
+		for _, name := range legacyNames {
+			if installedDirs[name] {
+				if entry, ok := plugins[name].(object); ok {
+					entry["enabled"] = false
+				} else {
+					plugins[name] = object{"enabled": false}
+				}
+			} else {
+				delete(plugins, name)
+			}
+		}
+		return nil
+	})
 }
 
 func editHookGroups(doc object, host string, opts InstallOptions, remove bool) error {

@@ -212,3 +212,113 @@ func TestConflictArraysPreserveNeighbors(t *testing.T) {
 		})
 	}
 }
+
+func TestAntigravityEmptyConfigsNamedHooksAndDisabledPlugins(t *testing.T) {
+	t.Run("empty json tolerated and malformed rejected", func(t *testing.T) {
+		home := t.TempDir()
+		putFile(t, filepath.Join(home, "mcp_config.json"), "", 0o600)
+		putFile(t, filepath.Join(home, "settings.json"), "  \n\t ", 0o600)
+		host := DetectedHost{Kind: HostAntigravity, ProfileDir: home}
+		policy := ConflictPolicy{ManagedMarkers: []string{"memlane"}, ConflictKeywords: []string{"cognee"}}
+
+		report, err := ScanHostConflicts(host, policy)
+		if err != nil || report.Blocked || len(report.ManagedLegacy) != 0 || len(report.ThirdPartyConflicts) != 0 {
+			t.Fatalf("empty configs: %+v, %v", report, err)
+		}
+
+		putFile(t, filepath.Join(home, "mcp_config.json"), "{malformed", 0o600)
+		if _, err := ScanHostConflicts(host, policy); err == nil {
+			t.Fatal("malformed mcp_config.json unexpectedly succeeded")
+		}
+	})
+
+	t.Run("named hooks scan and surgical disable", func(t *testing.T) {
+		home := t.TempDir()
+		hooksPath := filepath.Join(home, "hooks.json")
+		putFile(t, hooksPath, `{
+  "memlane": {
+    "SessionStart": [{"type": "command", "command": "'/bin/memlane' hook antigravity SessionStart --gateway-url 'http://127.0.0.1:18777' --key-file '/tmp/k'"}],
+    "PreInvocation": [{"type": "command", "command": "'/bin/memlane' hook antigravity PreInvocation --gateway-url 'http://127.0.0.1:18777' --key-file '/tmp/k'"}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "'/bin/memlane' hook antigravity PostToolUse --gateway-url 'http://127.0.0.1:18777' --key-file '/tmp/k'"}]}],
+    "Stop": [{"type": "command", "command": "'/bin/memlane' hook antigravity Stop --gateway-url 'http://127.0.0.1:18777' --key-file '/tmp/k'"}]
+  },
+  "lint-checker": {
+    "PostToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": "./scripts/lint.sh"}]}]
+  },
+  "disabled-cognee": {
+    "enabled": false,
+    "PreInvocation": [{"type": "command", "command": "cognee-hook"}]
+  },
+  "third-party-cognee": {
+    "PreInvocation": [{"type": "command", "command": "./run.sh"}]
+  },
+  "mixed-tools": {
+    "Stop": [{"type": "command", "command": "echo keep"}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "cognee-audit"}]}]
+  }
+}`, 0o600)
+		host := DetectedHost{Kind: HostAntigravity, ProfileDir: home}
+		policy := ConflictPolicy{
+			ManagedMarkers:   []string{"memlane-cognee", "memlane hook", "memlane"},
+			ConflictKeywords: []string{"cognee"},
+			BackupDir:        t.TempDir(),
+		}
+		report, err := ScanHostConflicts(host, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Blocked || len(report.ManagedLegacy) != 1 || report.ManagedLegacy[0].EntryName != "memlane" || len(report.ThirdPartyConflicts) != 2 {
+			t.Fatalf("unexpected report: %+v", report)
+		}
+		records, err := DisableThirdPartyConflicts(report, policy, true)
+		if err != nil || len(records) != 2 {
+			t.Fatalf("disable: %+v %v", records, err)
+		}
+		edited, err := os.ReadFile(hooksPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(edited)
+		for _, want := range []string{`"memlane"`, `"lint-checker"`, `./scripts/lint.sh`, `"disabled-cognee"`, `echo keep`} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %s in:\n%s", want, got)
+			}
+		}
+		for _, gone := range []string{`"third-party-cognee"`, `cognee-audit`} {
+			if strings.Contains(got, gone) {
+				t.Errorf("conflict %s remained in:\n%s", gone, got)
+			}
+		}
+		after, err := ScanHostConflicts(host, policy)
+		if err != nil || after.Blocked || len(after.ThirdPartyConflicts) != 0 || len(after.ManagedLegacy) != 1 {
+			t.Fatalf("after disable: %+v %v", after, err)
+		}
+	})
+
+	t.Run("disabled plugin directory does not block", func(t *testing.T) {
+		home := t.TempDir()
+		putFile(t, filepath.Join(home, "plugins", "cognee", "plugin.json"), `{"name":"cognee"}`, 0o600)
+		putFile(t, filepath.Join(home, "plugins", "memlane-cognee", "plugin.json"), `{"name":"memlane-cognee"}`, 0o600)
+		host := DetectedHost{Kind: HostAntigravity, ProfileDir: home}
+		policy := ConflictPolicy{ManagedMarkers: []string{"memlane-cognee", "memlane"}, ConflictKeywords: []string{"cognee"}}
+
+		// Active third-party plugins/cognee blocks by default (auto-discovered).
+		report, err := ScanHostConflicts(host, policy)
+		if err != nil || !report.Blocked || len(report.ThirdPartyConflicts) != 1 {
+			t.Fatalf("active third-party dir: %+v %v", report, err)
+		}
+
+		// Disabling both in config.json prevents third-party blocking even when directories remain on disk.
+		putFile(t, filepath.Join(home, "config.json"), `{"plugins":{"cognee":{"enabled":false},"memlane-cognee":{"enabled":false},"swarm":{"enabled":true}}}`, 0o600)
+		report, err = ScanHostConflicts(host, policy)
+		if err != nil || report.Blocked || len(report.ThirdPartyConflicts) != 0 {
+			t.Fatalf("disabled dirs with managed policy: %+v %v", report, err)
+		}
+		// Even without ManagedMarkers, disabled memlane-cognee must not be a third-party conflict.
+		noManaged := ConflictPolicy{ConflictKeywords: []string{"cognee"}}
+		report, err = ScanHostConflicts(host, noManaged)
+		if err != nil || report.Blocked || len(report.ThirdPartyConflicts) != 0 {
+			t.Fatalf("disabled dirs without managed policy: %+v %v", report, err)
+		}
+	})
+}

@@ -880,7 +880,7 @@ func (s *session) configureHostHooks(kind string, repair bool) {
 		}
 		return
 	}
-	if err := ensureAgentKey(opts.KeyFile); err != nil {
+	if err := ensureAgentKey(opts.KeyFile, s.legacyAgentKeyPaths(opts.KeyFile)...); err != nil {
 		s.block(ExitFatal, "agent_key_unavailable")
 		return
 	}
@@ -937,7 +937,25 @@ func (s *session) registerHookAgent(host agents.DetectedHost, keyFile string) bo
 	return false
 }
 
-func ensureAgentKey(path string) error {
+func (s *session) legacyAgentKeyPaths(keyFile string) []string {
+	id := strings.TrimSuffix(filepath.Base(keyFile), ".token")
+	if id == "" || id == filepath.Base(keyFile) {
+		return nil
+	}
+	var paths []string
+	for _, base := range []string{filepath.Dir(s.configPath), filepath.Dir(s.config.Root)} {
+		if base == "" || !filepath.IsAbs(base) {
+			continue
+		}
+		candidate := filepath.Join(base, "agent-credentials", id+".official")
+		if !slices.Contains(paths, candidate) {
+			paths = append(paths, candidate)
+		}
+	}
+	return paths
+}
+
+func ensureAgentKey(path string, legacyPaths ...string) error {
 	if err := checkPath(path); err != nil {
 		return err
 	}
@@ -945,12 +963,30 @@ func ensureAgentKey(path string) error {
 		_, readErr := hooks.ReadPrivateKey(path)
 		return readErr
 	}
+	var token string
+	for _, legacy := range legacyPaths {
+		if _, err := os.Lstat(legacy); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err := checkPath(legacy); err != nil {
+			return err
+		}
+		existing, err := hooks.ReadPrivateKey(legacy)
+		if err != nil {
+			return err
+		}
+		token = existing
+		break
+	}
+	if token == "" {
+		var secret [48]byte
+		if _, err := rand.Read(secret[:]); err != nil {
+			return err
+		}
+		token = base64.RawURLEncoding.EncodeToString(secret[:])
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
-	var secret [48]byte
-	if _, err := rand.Read(secret[:]); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(dir, ".agent-key-")
@@ -959,7 +995,7 @@ func ensureAgentKey(path string) error {
 	}
 	defer os.Remove(file.Name())
 	defer file.Close()
-	if _, err := file.WriteString(base64.RawURLEncoding.EncodeToString(secret[:])); err != nil {
+	if _, err := file.WriteString(token); err != nil {
 		return err
 	}
 	if err := file.Sync(); err != nil {

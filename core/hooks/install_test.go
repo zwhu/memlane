@@ -69,14 +69,50 @@ func TestInstallAllHosts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if hooks := data["hooks"].(object); len(hooks) < 4 || !strings.Contains(raw, "hook "+host+" Stop") {
+			if host == HostAntigravity {
+				if _, hasLegacy := data["hooks"]; hasLegacy {
+					t.Fatalf("antigravity hooks.json must use top-level named hooks, got: %s", raw)
+				}
+				memlane, ok := data["memlane"].(object)
+				if !ok || len(memlane) != 4 {
+					t.Fatalf("expected 4 events in antigravity memlane hook, got: %s", raw)
+				}
+				for _, flat := range []string{SessionStart, "PreInvocation", Stop} {
+					rows, ok := memlane[flat].([]any)
+					if !ok || len(rows) != 1 {
+						t.Fatalf("expected flat array for %s, got: %s", flat, raw)
+					}
+					handler, ok := rows[0].(object)
+					if !ok || handler["type"] != "command" || !strings.Contains(stringField(handler, "command"), "hook antigravity "+flat) {
+						t.Fatalf("unexpected %s handler: %+v", flat, rows[0])
+					}
+				}
+				postRows, ok := memlane[PostToolUse].([]any)
+				if !ok || len(postRows) != 1 {
+					t.Fatalf("expected grouped array for PostToolUse, got: %s", raw)
+				}
+				postGroup, ok := postRows[0].(object)
+				if !ok || postGroup["matcher"] != "*" {
+					t.Fatalf("expected matcher '*' for PostToolUse, got: %+v", postRows[0])
+				}
+				nested, ok := postGroup["hooks"].([]any)
+				if !ok || len(nested) != 1 || !strings.Contains(stringField(nested[0].(object), "command"), "hook antigravity PostToolUse") {
+					t.Fatalf("unexpected PostToolUse nested hooks: %+v", postGroup["hooks"])
+				}
+				for _, forbidden := range []string{UserPromptSubmit, PostToolUseFailure, SessionEnd} {
+					if _, exists := memlane[forbidden]; exists {
+						t.Fatalf("unexpected non-antigravity event %s in: %s", forbidden, raw)
+					}
+				}
+			} else if hooks := data["hooks"].(object); len(hooks) < 4 || !strings.Contains(raw, "hook "+host+" Stop") {
 				t.Fatal(raw)
 			}
 			if _, err := UninstallHostConfig(opts); err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(readConfig(t, filepath.Join(opts.ProfileDir, "hooks.json")), marker) {
-				t.Fatal("hook remains after uninstall")
+			afterUninstall := readConfig(t, filepath.Join(opts.ProfileDir, "hooks.json"))
+			if strings.Contains(afterUninstall, marker) || strings.Contains(afterUninstall, "hook "+host+" ") {
+				t.Fatalf("hook remains after uninstall: %s", afterUninstall)
 			}
 		})
 	}
@@ -132,4 +168,191 @@ func TestInstallConflictTiers(t *testing.T) {
 	if got := readConfig(t, hooksPath); !strings.Contains(got, "echo keep") || strings.Contains(got, marker) {
 		t.Fatal(got)
 	}
+}
+
+func TestInstallAntigravityMigration(t *testing.T) {
+	t.Run("zero-byte mcp and legacy plugin dir disabled in config.json", func(t *testing.T) {
+		dir := t.TempDir()
+		mcpPath := filepath.Join(dir, "mcp_config.json")
+		cfgPath := filepath.Join(dir, "config.json")
+		hooksPath := filepath.Join(dir, "hooks.json")
+		pluginDir := filepath.Join(dir, "plugins", "memlane-cognee")
+		if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeConfig(t, filepath.Join(pluginDir, "plugin.json"), `{"name":"memlane-cognee"}`)
+		writeConfig(t, mcpPath, "")
+		const origCfg = "{\n  \"theme\": \"dark\",\n  \"plugins\": {\n    \"memlane-cognee\": {\"enabled\": true},\n    \"swarm\": {\"enabled\": true}\n  }\n}\n"
+		writeConfig(t, cfgPath, origCfg)
+
+		opts := InstallOptions{
+			Host: HostAntigravity, ProfileDir: dir,
+			BinaryPath: "/Applications/Memlane.app/Contents/MacOS/Memlane",
+			GatewayURL: "http://127.0.0.1:18777", KeyFile: "/tmp/antigravity.token",
+		}
+		preview, err := InstallHostConfig(opts)
+		if err != nil || preview.Blocked || preview.Applied || len(preview.Previews) != 3 {
+			t.Fatalf("preview: %+v %v", preview, err)
+		}
+		if readConfig(t, mcpPath) != "" || readConfig(t, cfgPath) != origCfg {
+			t.Fatal("preview mutated files")
+		}
+
+		opts.Apply = true
+		res, err := InstallHostConfig(opts)
+		if err != nil || !res.Applied || len(res.Previews) != 3 {
+			t.Fatalf("apply: %+v %v", res, err)
+		}
+		// Idempotent reinstall produces zero previews.
+		if repeat, err := InstallHostConfig(opts); err != nil || len(repeat.Previews) != 0 {
+			t.Fatalf("repeat: %+v %v", repeat, err)
+		}
+		cfgDoc, err := agents.ParseJSONC([]byte(readConfig(t, cfgPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plugins := cfgDoc["plugins"].(object)
+		if plugins["memlane-cognee"].(object)["enabled"] != false {
+			t.Fatalf("legacy plugin not disabled: %+v", plugins)
+		}
+		if plugins["swarm"].(object)["enabled"] != true || cfgDoc["theme"] != "dark" {
+			t.Fatalf("unrelated config altered: %+v", cfgDoc)
+		}
+		mcpDoc, err := agents.ParseJSONC([]byte(readConfig(t, mcpPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mcpDoc["mcpServers"].(object)["memlane"] == nil {
+			t.Fatalf("mcp_config not populated: %+v", mcpDoc)
+		}
+		hooksDoc, err := agents.ParseJSONC([]byte(readConfig(t, hooksPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hooksDoc["memlane"] == nil || hooksDoc["hooks"] != nil {
+			t.Fatalf("unexpected hooks.json: %+v", hooksDoc)
+		}
+
+		// Uninstall removes hooks & mcp entry but does NOT re-enable the legacy plugin.
+		if _, err := UninstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		afterCfg, err := agents.ParseJSONC([]byte(readConfig(t, cfgPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if afterCfg["plugins"].(object)["memlane-cognee"].(object)["enabled"] != false {
+			t.Fatalf("uninstall re-enabled legacy plugin: %+v", afterCfg)
+		}
+	})
+
+	t.Run("legacy plugin dir without config.json creates disabled entry", func(t *testing.T) {
+		dir := t.TempDir()
+		pluginDir := filepath.Join(dir, "plugins", "memlane-cognee")
+		if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeConfig(t, filepath.Join(pluginDir, "plugin.json"), `{"name":"memlane-cognee"}`)
+		opts := InstallOptions{
+			Host: HostAntigravity, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18777", KeyFile: "/tmp/k", Apply: true,
+		}
+		if _, err := InstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		cfgDoc, err := agents.ParseJSONC([]byte(readConfig(t, filepath.Join(dir, "config.json"))))
+		if err != nil || cfgDoc["plugins"].(object)["memlane-cognee"].(object)["enabled"] != false {
+			t.Fatalf("expected disabled entry in created config.json: %+v %v", cfgDoc, err)
+		}
+		if repeat, err := InstallHostConfig(opts); err != nil || len(repeat.Previews) != 0 {
+			t.Fatalf("repeat: %+v %v", repeat, err)
+		}
+	})
+
+	t.Run("stale config.json entry without plugin dir is deleted", func(t *testing.T) {
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "config.json")
+		writeConfig(t, cfgPath, `{"plugins":{"memlane-cognee":{"enabled":true},"swarm":{"enabled":true}}}`)
+		opts := InstallOptions{
+			Host: HostAntigravity, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18777", KeyFile: "/tmp/k", Apply: true,
+		}
+		if _, err := InstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		cfgDoc, err := agents.ParseJSONC([]byte(readConfig(t, cfgPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plugins := cfgDoc["plugins"].(object)
+		if _, exists := plugins["memlane-cognee"]; exists {
+			t.Fatalf("stale memlane-cognee remained: %+v", plugins)
+		}
+		if plugins["swarm"].(object)["enabled"] != true {
+			t.Fatalf("swarm plugin lost: %+v", plugins)
+		}
+	})
+
+	t.Run("migrates stale wrapper hooks and preserves user named hooks", func(t *testing.T) {
+		dir := t.TempDir()
+		hooksPath := filepath.Join(dir, "hooks.json")
+		writeConfig(t, hooksPath, `{
+  "hooks": {
+    "UserPromptSubmit": [{"_memlane_managed": "memlane-hook", "hooks": [{"type": "command", "command": "'/old/memlane' hook antigravity UserPromptSubmit", "_memlane_managed": "memlane-hook"}]}]
+  },
+  "memlane-cognee": {
+    "PreInvocation": [{"type": "command", "command": "./scripts/run-agy-hook"}]
+  },
+  "lint-checker": {
+    "PostToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": "./scripts/lint.sh"}]}]
+  }
+}`)
+		opts := InstallOptions{
+			Host: HostAntigravity, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18777", KeyFile: "/tmp/k", Apply: true,
+		}
+		if _, err := InstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		doc, err := agents.ParseJSONC([]byte(readConfig(t, hooksPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc["hooks"] != nil || doc["memlane-cognee"] != nil || doc["memlane"] == nil || doc["lint-checker"] == nil {
+			t.Fatalf("unexpected migrated hooks.json: %+v", doc)
+		}
+		if _, err := UninstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		afterDoc, err := agents.ParseJSONC([]byte(readConfig(t, hooksPath)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if afterDoc["memlane"] != nil || afterDoc["lint-checker"] == nil {
+			t.Fatalf("unexpected hooks.json after uninstall: %+v", afterDoc)
+		}
+	})
+
+	t.Run("refuses to overwrite unmanaged memlane hook", func(t *testing.T) {
+		dir := t.TempDir()
+		hooksPath := filepath.Join(dir, "hooks.json")
+		const orig = `{"memlane":{"Stop":[{"type":"command","command":"echo user-owned"}]}}`
+		writeConfig(t, hooksPath, orig)
+		opts := InstallOptions{
+			Host: HostAntigravity, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18777", KeyFile: "/tmp/k", Apply: true,
+		}
+		if _, err := InstallHostConfig(opts); err == nil {
+			t.Fatal("expected error when unmanaged memlane hook exists")
+		}
+		if readConfig(t, hooksPath) != orig {
+			t.Fatal("unmanaged memlane hook was modified")
+		}
+		if _, err := UninstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		if readConfig(t, hooksPath) != orig {
+			t.Fatal("uninstall modified unmanaged memlane hook")
+		}
+	})
 }

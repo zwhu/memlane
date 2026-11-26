@@ -101,6 +101,63 @@ func TestJSONCEdit(t *testing.T) {
 	}
 }
 
+func TestJSONCEmptyAndWhitespaceTolerance(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"empty", ""},
+		{"whitespace", "  \n\t\r\n  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, err := ParseJSONC([]byte(tc.raw))
+			if err != nil || len(doc) != 0 {
+				t.Fatalf("ParseJSONC(%q) = %+v, %v", tc.raw, doc, err)
+			}
+			path := filepath.Join(t.TempDir(), "mcp_config.json")
+			putFile(t, path, tc.raw, 0o600)
+
+			noop, err := PreviewJSONEdit(path, func(map[string]any) error { return nil }, "noop")
+			if err != nil || noop.Changed || noop.Before == nil {
+				t.Fatalf("noop preview: %+v, %v", noop, err)
+			}
+
+			preview, err := PreviewJSONEdit(path, func(d map[string]any) error {
+				d["mcpServers"] = map[string]any{"memlane": map[string]any{"serverUrl": "http://127.0.0.1:18777/mcp"}}
+				return nil
+			}, "add server")
+			if err != nil || !preview.Changed || preview.Before == nil {
+				t.Fatalf("mutating preview: %+v, %v", preview, err)
+			}
+			if err := ApplyEditPreview(preview, 0o600); err != nil {
+				t.Fatalf("ApplyEditPreview: %v", err)
+			}
+			written, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := ParseJSONC(written)
+			if err != nil || parsed["mcpServers"] == nil {
+				t.Fatalf("written JSON invalid: %q %v", written, err)
+			}
+			if err := ApplyEditPreview(preview, 0o600); err == nil {
+				t.Fatal("stale preview accepted after apply")
+			}
+		})
+	}
+
+	for _, malformed := range []string{"{", "}", "[]", "null", "123", `"str"`, "not json", "/* unterminated", `{"a":}`} {
+		if _, err := ParseJSONC([]byte(malformed)); err == nil {
+			t.Errorf("ParseJSONC(%q) unexpectedly succeeded", malformed)
+		}
+		path := filepath.Join(t.TempDir(), "broken.json")
+		putFile(t, path, malformed, 0o600)
+		if _, err := PreviewJSONEdit(path, func(map[string]any) error { return nil }, "noop"); err == nil {
+			t.Errorf("PreviewJSONEdit(%q) unexpectedly succeeded", malformed)
+		}
+	}
+}
+
 func TestSafeConfigPaths(t *testing.T) {
 	root := t.TempDir()
 	real := filepath.Join(root, "real", "config.toml")
