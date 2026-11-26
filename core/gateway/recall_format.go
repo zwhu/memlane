@@ -42,16 +42,9 @@ func authorizedGraphContext(gc *engine.GraphSearchContext, scopes []engine.Scope
 		}
 	}
 
-	allowedEntityConflicts := make(map[string]bool)
-	droppedEntityConflicts := make(map[string]bool)
 	entities := make([]engine.GraphSearchEntity, 0, len(gc.Entities))
 	for _, entity := range gc.Entities {
 		if !datasets[entity.DatasetID] {
-			for _, conflict := range entity.Conflicts {
-				if trimmed := strings.TrimSpace(conflict); trimmed != "" {
-					droppedEntityConflicts[trimmed] = true
-				}
-			}
 			continue
 		}
 		cleaned := entity
@@ -60,9 +53,6 @@ func authorizedGraphContext(gc *engine.GraphSearchContext, scopes []engine.Scope
 		}
 		if len(entity.Conflicts) > 0 {
 			cleaned.Conflicts = dedupeTrimmedStrings(entity.Conflicts)
-			for _, conflict := range cleaned.Conflicts {
-				allowedEntityConflicts[conflict] = true
-			}
 		}
 		entities = append(entities, cleaned)
 	}
@@ -86,18 +76,22 @@ func authorizedGraphContext(gc *engine.GraphSearchContext, scopes []engine.Scope
 		codeFacts = append(codeFacts, cloned)
 	}
 
-	conflicts := make([]string, 0, len(gc.Conflicts))
-	seenConflicts := make(map[string]bool, len(gc.Conflicts))
+	conflicts := make([]engine.GraphSearchConflict, 0, len(gc.Conflicts))
+	seenConflicts := make(map[[2]string]bool, len(gc.Conflicts))
 	for _, raw := range gc.Conflicts {
-		text := strings.TrimSpace(raw)
-		if text == "" || seenConflicts[text] {
+		text := strings.TrimSpace(raw.Text)
+		if !datasets[raw.DatasetID] || text == "" {
 			continue
 		}
-		if droppedEntityConflicts[text] && !allowedEntityConflicts[text] {
+		key := [2]string{raw.DatasetID, text}
+		if seenConflicts[key] {
 			continue
 		}
-		seenConflicts[text] = true
-		conflicts = append(conflicts, text)
+		seenConflicts[key] = true
+		conflicts = append(conflicts, engine.GraphSearchConflict{
+			DatasetID: raw.DatasetID,
+			Text:      text,
+		})
 	}
 
 	guidance := strings.TrimSpace(gc.SessionGuidance)
@@ -380,11 +374,13 @@ func formatRecallContext(hits []engine.SearchHit, gc *engine.GraphSearchContext,
 	filteredHits := filterCurrentSessionHits(hits, opts.SessionID, opts.Purpose)
 	doc := newBudgetedMarkdown(maxChars)
 
-	// 1. Conflicts / Updates (highest priority, deduplicated).
+	// 1. Conflicts / Updates (highest priority, deduplicated, project dataset ahead of common).
 	if gc != nil {
 		var rawConflicts []string
-		rawConflicts = append(rawConflicts, gc.Conflicts...)
-		for _, entity := range gc.Entities {
+		for _, conflict := range orderConflictsProjectFirst(gc.Conflicts, opts.CommonDatasetID) {
+			rawConflicts = append(rawConflicts, conflict.Text)
+		}
+		for _, entity := range orderEntitiesProjectFirst(gc.Entities, opts.CommonDatasetID) {
 			rawConflicts = append(rawConflicts, entity.Conflicts...)
 		}
 		conflicts := dedupeTrimmedStrings(rawConflicts)
@@ -455,7 +451,7 @@ func formatRecallContext(hits []engine.SearchHit, gc *engine.GraphSearchContext,
 
 	// 3. Active session guidance.
 	if gc != nil {
-		if guidance := strings.TrimSpace(gc.SessionGuidance); guidance != "" {
+		if guidance := stripLeadingHeading(gc.SessionGuidance, "## Active Session Guidance"); guidance != "" {
 			doc.addSection("## Active Session Guidance", []string{truncateWithEllipsis(guidance, maxPassage)}, true)
 		}
 	}
@@ -497,6 +493,37 @@ func formatRecallContext(hits []engine.SearchHit, gc *engine.GraphSearchContext,
 	}
 
 	return strings.TrimSpace(doc.buf.String())
+}
+
+func stripLeadingHeading(text, heading string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	firstLine, rest, hasRest := strings.Cut(trimmed, "\n")
+	if strings.EqualFold(strings.TrimSpace(firstLine), heading) {
+		if !hasRest {
+			return ""
+		}
+		return strings.TrimSpace(rest)
+	}
+	return trimmed
+}
+
+func orderConflictsProjectFirst(conflicts []engine.GraphSearchConflict, commonDatasetID string) []engine.GraphSearchConflict {
+	if commonDatasetID == "" || len(conflicts) <= 1 {
+		return conflicts
+	}
+	project := make([]engine.GraphSearchConflict, 0, len(conflicts))
+	common := make([]engine.GraphSearchConflict, 0)
+	for _, conflict := range conflicts {
+		if conflict.DatasetID == commonDatasetID {
+			common = append(common, conflict)
+		} else {
+			project = append(project, conflict)
+		}
+	}
+	return append(project, common...)
 }
 
 func orderEntitiesProjectFirst(entities []engine.GraphSearchEntity, commonDatasetID string) []engine.GraphSearchEntity {

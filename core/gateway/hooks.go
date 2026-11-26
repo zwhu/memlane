@@ -3,12 +3,12 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +29,15 @@ type pendingPrompt struct {
 	Prompt     string
 	TurnID     string
 	PromptTime string
+	DatasetIDs []string
 	RecordedAt time.Time
+}
+
+func (p pendingPrompt) matchesDataset(datasetID string) bool {
+	if datasetID == "" {
+		return true
+	}
+	return slices.Contains(p.DatasetIDs, datasetID)
 }
 
 type sessionPromptKey struct {
@@ -108,6 +116,7 @@ func (p *pendingPromptStore) record(agentID, sessionID string, item pendingPromp
 	item.Prompt = strings.TrimSpace(item.Prompt)
 	item.TurnID = strings.TrimSpace(item.TurnID)
 	item.PromptTime = strings.TrimSpace(item.PromptTime)
+	item.DatasetIDs = dedupeTrimmedStrings(item.DatasetIDs)
 	if agentID == "" || sessionID == "" || item.Prompt == "" {
 		return
 	}
@@ -137,6 +146,7 @@ func (p *pendingPromptStore) record(agentID, sessionID string, item pendingPromp
 		p.entries[key] = state
 	}
 	lastCopy := item
+	lastCopy.DatasetIDs = slices.Clone(item.DatasetIDs)
 	state.lastPrompt = &lastCopy
 	state.updatedAt = now
 
@@ -154,9 +164,10 @@ func (p *pendingPromptStore) record(agentID, sessionID string, item pendingPromp
 	p.touchLocked(key)
 }
 
-func (p *pendingPromptStore) popPending(agentID, sessionID, turnID, messageID string) (pendingPrompt, bool) {
+func (p *pendingPromptStore) popPending(agentID, sessionID, datasetID, turnID, messageID string) (pendingPrompt, bool) {
 	agentID = strings.TrimSpace(agentID)
 	sessionID = strings.TrimSpace(sessionID)
+	datasetID = strings.TrimSpace(datasetID)
 	turnID = strings.TrimSpace(turnID)
 	messageID = strings.TrimSpace(messageID)
 	if agentID == "" || sessionID == "" {
@@ -175,6 +186,7 @@ func (p *pendingPromptStore) popPending(agentID, sessionID, turnID, messageID st
 
 	popAt := func(idx int) pendingPrompt {
 		chosen := state.pending[idx]
+		chosen.DatasetIDs = slices.Clone(chosen.DatasetIDs)
 		state.pending = append(state.pending[:idx], state.pending[idx+1:]...)
 		state.updatedAt = now
 		p.touchLocked(key)
@@ -183,27 +195,32 @@ func (p *pendingPromptStore) popPending(agentID, sessionID, turnID, messageID st
 
 	if turnID != "" {
 		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == turnID {
+			if state.pending[i].TurnID == turnID && state.pending[i].matchesDataset(datasetID) {
 				return popAt(i), true
 			}
 		}
 	}
 	if messageID != "" && messageID != turnID {
 		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == messageID {
+			if state.pending[i].TurnID == messageID && state.pending[i].matchesDataset(datasetID) {
 				return popAt(i), true
 			}
 		}
 	}
 	if turnID != "" {
 		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == "" {
+			if state.pending[i].TurnID == "" && state.pending[i].matchesDataset(datasetID) {
 				return popAt(i), true
 			}
 		}
 		return pendingPrompt{}, false
 	}
-	return popAt(len(state.pending) - 1), true
+	for i := len(state.pending) - 1; i >= 0; i-- {
+		if state.pending[i].matchesDataset(datasetID) {
+			return popAt(i), true
+		}
+	}
+	return pendingPrompt{}, false
 }
 
 func (p *pendingPromptStore) last(agentID, sessionID string) (pendingPrompt, bool) {
@@ -223,7 +240,9 @@ func (p *pendingPromptStore) last(agentID, sessionID string) (pendingPrompt, boo
 		return pendingPrompt{}, false
 	}
 	p.touchLocked(key)
-	return *state.lastPrompt, true
+	out := *state.lastPrompt
+	out.DatasetIDs = slices.Clone(out.DatasetIDs)
+	return out, true
 }
 
 func (p *pendingPromptStore) clear(agentID, sessionID string) {
@@ -382,7 +401,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 						explicitTurnID = strings.TrimSpace(rawTurnID)
 					}
 				}
-				pending, found := s.prompts.popPending(agent.ID, req.SessionID, explicitTurnID, req.MessageID)
+				pending, found := s.prompts.popPending(agent.ID, req.SessionID, project.DatasetID, explicitTurnID, req.MessageID)
 				if !found {
 					writeJSON(w, http.StatusOK, map[string]any{
 						"ok": true, "accepted": false, "status": "skipped_missing_question",
@@ -688,24 +707,142 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 	return scopes, include, common.DatasetID, nil
 }
 
-func (s *Server) resolveCompactQuery(ctx context.Context, agent domain.Agent, sessionID string, scopes []engine.Scope) string {
+func projectScopeDatasets(scopes []engine.Scope, commonDatasetID string) []string {
+	datasets := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope.DatasetID != "" && scope.DatasetID != commonDatasetID {
+			datasets = append(datasets, scope.DatasetID)
+		}
+	}
+	if len(datasets) > 0 {
+		return dedupeTrimmedStrings(datasets)
+	}
+	for _, scope := range scopes {
+		if scope.DatasetID != "" {
+			datasets = append(datasets, scope.DatasetID)
+		}
+	}
+	return dedupeTrimmedStrings(datasets)
+}
+
+func promptMatchesScopes(promptDatasets []string, scopes []engine.Scope, commonDatasetID string) bool {
+	if len(promptDatasets) == 0 {
+		return false
+	}
+	allowed := make(map[string]bool, len(scopes))
+	for _, ds := range projectScopeDatasets(scopes, commonDatasetID) {
+		allowed[ds] = true
+	}
+	for _, ds := range promptDatasets {
+		if allowed[ds] {
+			return true
+		}
+	}
+	return false
+}
+
+type sessionOwnership uint8
+
+const (
+	sessionOwnershipUnknown sessionOwnership = iota
+	sessionOwnershipAuthorized
+	sessionOwnershipConflict
+)
+
+// verifyAuthorizedSession checks whether sessionID belongs to an authorized project dataset in scopes
+// and has no conflicting ownership in an unauthorized dataset before allowing session-scoped reads.
+func (s *Server) verifyAuthorizedSession(ctx context.Context, agent domain.Agent, sessionID string, scopes []engine.Scope, commonDatasetID string) (sessionOwnership, string) {
 	sid := strings.TrimSpace(sessionID)
-	if sid == "" {
+	if sid == "" || len(scopes) == 0 {
+		return sessionOwnershipUnknown, ""
+	}
+	allowed := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		if scope.DatasetID != "" && scope.DatasetID != commonDatasetID {
+			allowed[scope.DatasetID] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return sessionOwnershipUnknown, ""
+	}
+
+	type sessionOwner struct {
+		datasetID string
+		userID    string
+	}
+	owners, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT dataset_id, user_id FROM catalog_sessions WHERE session_id=? ORDER BY sort_ts_desc_key ASC, dataset_id, user_id`,
+		[]any{sid}, func(row rowScanner) (sessionOwner, error) {
+			var owner sessionOwner
+			err := row.Scan(&owner.datasetID, &owner.userID)
+			return owner, err
+		})
+	if err != nil {
+		log.Printf("gateway recall session ownership lookup: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
+	}
+	catalogAuthorized := false
+	catalogUserID := ""
+	for _, owner := range owners {
+		if !allowed[owner.datasetID] {
+			return sessionOwnershipConflict, ""
+		}
+		catalogAuthorized = true
+		if catalogUserID == "" && strings.TrimSpace(owner.userID) != "" {
+			catalogUserID = strings.TrimSpace(owner.userID)
+		}
+	}
+
+	bindingAuthorized := false
+	binding, err := s.cfg.Store.GetSessionBinding(ctx, sessionBindingKey(agent.ID, sid))
+	if errors.Is(err, domain.ErrNotFound) {
+		binding, err = s.cfg.Store.GetSessionBinding(ctx, sid)
+	}
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		log.Printf("gateway recall session binding lookup: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
+	}
+	if err == nil {
+		project, pErr := s.cfg.Store.GetProject(ctx, binding.ProjectID)
+		if pErr != nil {
+			if !errors.Is(pErr, domain.ErrNotFound) {
+				log.Printf("gateway recall session binding project: %s", sanitizeError(pErr))
+			}
+			return sessionOwnershipConflict, ""
+		}
+		if !allowed[project.DatasetID] {
+			return sessionOwnershipConflict, ""
+		}
+		bindingAuthorized = true
+	}
+
+	if catalogAuthorized {
+		return sessionOwnershipAuthorized, catalogUserID
+	}
+	if bindingAuthorized {
+		return sessionOwnershipAuthorized, ""
+	}
+	return sessionOwnershipUnknown, ""
+}
+
+func (s *Server) resolveCompactQuery(ctx context.Context, agent domain.Agent, sessionID string, scopes []engine.Scope, commonDatasetID string, ownership sessionOwnership, sessionUserID string) string {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" || ownership == sessionOwnershipConflict {
 		return ""
 	}
-	if last, ok := s.prompts.last(agent.ID, sid); ok && strings.TrimSpace(last.Prompt) != "" {
+	if last, ok := s.prompts.last(agent.ID, sid); ok && strings.TrimSpace(last.Prompt) != "" &&
+		promptMatchesScopes(last.DatasetIDs, scopes, commonDatasetID) {
 		return strings.TrimSpace(last.Prompt)
+	}
+	if ownership != sessionOwnershipAuthorized || sessionUserID == "" {
+		return ""
 	}
 	reader := s.sessionHistoryReader()
 	if reader == nil {
 		return ""
 	}
-	userID := s.resolveAuthorizedSessionUser(ctx, scopes, sid, agent.PrincipalID)
-	if userID == "" {
-		return ""
-	}
 	history, err := reader.ReadSessionHistory(ctx, engine.SessionHistoryRequest{
-		UserID:    userID,
+		UserID:    sessionUserID,
 		SessionID: sid,
 		QAOffset:  0,
 		Limit:     20,
@@ -722,25 +859,6 @@ func (s *Server) resolveCompactQuery(ctx context.Context, agent domain.Agent, se
 		}
 	}
 	return truncateRunes(strings.TrimSpace(history.Label), 1000)
-}
-
-func (s *Server) resolveAuthorizedSessionUser(ctx context.Context, scopes []engine.Scope, sessionID, principalID string) string {
-	for _, scope := range scopes {
-		if scope.DatasetID == "" {
-			continue
-		}
-		var userID string
-		err := s.cfg.Store.DB().QueryRowContext(ctx,
-			`SELECT user_id FROM catalog_sessions WHERE dataset_id=? AND session_id=? ORDER BY sort_ts_desc_key ASC, user_id LIMIT 1`,
-			scope.DatasetID, sessionID).Scan(&userID)
-		if err == nil && strings.TrimSpace(userID) != "" {
-			return strings.TrimSpace(userID)
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("gateway recall session lookup: %s", sanitizeError(err))
-		}
-	}
-	return strings.TrimSpace(principalID)
 }
 
 func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Agent) {
@@ -786,8 +904,9 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		writeDomainError(w, err)
 		return
 	}
+	ownership, sessionUserID := s.verifyAuthorizedSession(ctx, agent, req.SessionID, scopes, commonDatasetID)
 	if query == "" {
-		query = s.resolveCompactQuery(ctx, agent, req.SessionID, scopes)
+		query = s.resolveCompactQuery(ctx, agent, req.SessionID, scopes, commonDatasetID, ownership, sessionUserID)
 		if query == "" {
 			writeJSON(w, 200, map[string]any{
 				"ok":              true,
@@ -801,11 +920,12 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 			})
 			return
 		}
-	} else if req.Purpose == "" && strings.TrimSpace(req.SessionID) != "" {
+	} else if req.Purpose == "" && strings.TrimSpace(req.SessionID) != "" && ownership != sessionOwnershipConflict {
 		s.prompts.record(agent.ID, req.SessionID, pendingPrompt{
 			Prompt:     query,
 			TurnID:     req.TurnID,
 			PromptTime: req.PromptTime,
+			DatasetIDs: projectScopeDatasets(scopes, commonDatasetID),
 		})
 	}
 	limit := req.Limit
@@ -820,6 +940,12 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		kind = "code"
 	}
 	nodeSets := dedupeTrimmedStrings(req.NodeSets)
+	searchSessionID := ""
+	includeSessionCtx := false
+	if ownership == sessionOwnershipAuthorized {
+		searchSessionID = strings.TrimSpace(req.SessionID)
+		includeSessionCtx = req.IncludeSessionContext && searchSessionID != ""
+	}
 	result, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{
 		Scopes: scopes,
 		Query:  query,
@@ -829,8 +955,8 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 			Kind:                  kind,
 			Limit:                 limit,
 			NodeSets:              nodeSets,
-			SessionID:             req.SessionID,
-			IncludeSessionContext: req.IncludeSessionContext && strings.TrimSpace(req.SessionID) != "",
+			SessionID:             searchSessionID,
+			IncludeSessionContext: includeSessionCtx,
 		},
 	})
 	if err == nil {

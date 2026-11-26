@@ -394,7 +394,7 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 		t.Fatal("invalid mode reached engine")
 	}
 
-	// 4. GraphContext strictly filters unauthorized datasets and strips leaked entity conflicts.
+	// 4. GraphContext strictly filters unauthorized datasets including chunk/graph conflicts.
 	nextGC = &engine.GraphSearchContext{
 		Entities: []engine.GraphSearchEntity{
 			{DatasetID: "hidden-dataset", Name: "HiddenEntity", Conflicts: []string{"hidden-only-conflict"}},
@@ -405,7 +405,13 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 			{DatasetID: "hidden-dataset", Text: "hidden fact"},
 			{DatasetID: "write-dataset", Text: "allowed fact"},
 		},
-		Conflicts: []string{"hidden-only-conflict", "allowed-conflict"},
+		Conflicts: []engine.GraphSearchConflict{
+			{DatasetID: "hidden-dataset", Text: "hidden-only-conflict"},
+			{DatasetID: "hidden-dataset", Text: "hidden-chunk-conflict"},
+			{DatasetID: "", Text: "unscoped-conflict"},
+			{DatasetID: "write-dataset", Text: "allowed-conflict"},
+			{DatasetID: "write-dataset", Text: "allowed-conflict"},
+		},
 		CodeFacts: []engine.CodeSearchFact{
 			{DatasetID: "hidden-code", Name: "hiddenFn"},
 			{DatasetID: "write-dataset", Name: "allowedFn"},
@@ -417,7 +423,7 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 		t.Fatalf("recall with graph_context failed: %s", msg)
 	}
 	raw := string(data)
-	for _, forbidden := range []string{"hidden-dataset", "HiddenEntity", "private-profiles", "ProfileEntity", "hidden fact", "hidden-only-conflict", "hidden-code", "hiddenFn"} {
+	for _, forbidden := range []string{"hidden-dataset", "HiddenEntity", "private-profiles", "ProfileEntity", "hidden fact", "hidden-only-conflict", "hidden-chunk-conflict", "unscoped-conflict", "hidden-code", "hiddenFn"} {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("MCP recall leaked unauthorized %q: %s", forbidden, raw)
 		}
@@ -432,17 +438,19 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 	if out.Channel != "mcp" || out.Mode != engine.SearchModeHybrid || !out.DegradedToChunks || out.GraphContext == nil {
 		t.Fatalf("unexpected MCP recall envelope: %+v", out)
 	}
+	wantConflicts := []engine.GraphSearchConflict{{DatasetID: "write-dataset", Text: "allowed-conflict"}}
 	if len(out.GraphContext.Entities) != 1 || out.GraphContext.Entities[0].Name != "AllowedEntity" ||
 		len(out.GraphContext.Facts) != 1 || out.GraphContext.Facts[0].Text != "allowed fact" ||
-		!slices.Equal(out.GraphContext.Conflicts, []string{"allowed-conflict"}) ||
+		!slices.Equal(out.GraphContext.Conflicts, wantConflicts) ||
 		len(out.GraphContext.CodeFacts) != 1 || out.GraphContext.CodeFacts[0].Name != "allowedFn" {
 		t.Fatalf("unexpected filtered graph_context: %+v", out.GraphContext)
 	}
 
-	// 5. When all graph_context entries are unauthorized, graph_context is omitted while degraded_to_chunks stays true.
+	// 5. When all graph_context entries (including conflicts) are unauthorized, graph_context is omitted while degraded_to_chunks stays true.
 	nextGC = &engine.GraphSearchContext{
 		Entities:         []engine.GraphSearchEntity{{DatasetID: "hidden-dataset", Name: "OnlyHidden"}},
 		Facts:            []engine.GraphSearchFact{{DatasetID: "hidden-dataset", Text: "OnlyHiddenFact"}},
+		Conflicts:        []engine.GraphSearchConflict{{DatasetID: "hidden-dataset", Text: "OnlyHiddenConflict"}},
 		DegradedToChunks: true,
 	}
 	data, msg = callTool(t, h, "recall", `{"project_id":"write","query":"auth"}`)

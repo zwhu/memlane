@@ -731,6 +731,9 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 	})
 	ctx := context.Background()
 	must(t, store.UpsertProject(ctx, domain.Project{ID: "secret", Name: "Secret", DatasetID: "secret-ds"}))
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "sess-1", UserID: "u-1", SortTSDescKey: -10, IsTopLevel: true,
+	}))
 	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"read"}`, 200)
 	manage(t, s, "PUT", "/api/common/acl/agent", `{"access":"read"}`, 200)
 
@@ -788,12 +791,14 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 			{DatasetID: "ds", Text: "Gateway enforces project ACL before search."},
 			{DatasetID: "ds", Text: "Daemon holds flock on .service-owner."},
 		},
-		Conflicts: []string{
-			"Secret conflict must not leak",
-			"Ingest switched from sync to async inbox.",
-			"Ingest switched from sync to async inbox.",
+		Conflicts: []engine.GraphSearchConflict{
+			{DatasetID: "secret-ds", Text: "Secret conflict must not leak"},
+			{DatasetID: "secret-ds", Text: "Chunk secret conflict must not leak"},
+			{DatasetID: "", Text: "Unscoped conflict must not leak"},
+			{DatasetID: "ds", Text: "Ingest switched from sync to async inbox."},
+			{DatasetID: "ds", Text: "Ingest switched from sync to async inbox."},
 		},
-		SessionGuidance: "Keep focus on recall ACL filtering.",
+		SessionGuidance: "## Active session guidance\nKeep focus on recall ACL filtering.",
 		CodeFacts: []engine.CodeSearchFact{
 			{DatasetID: "secret-ds", Name: "secretFunc", Kind: "func", File: "secret.go", Line: 10},
 			{DatasetID: "ds", Name: "recallScopes", Kind: "func", File: "core/gateway/hooks.go", Line: 304,
@@ -837,7 +842,7 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 	rawGC, err := json.Marshal(out["graph_context"])
 	must(t, err)
 	gcJSON := string(rawGC)
-	for _, forbidden := range []string{"secret-ds", "SecretEntity", "Secret fact", "Secret conflict", "secretFunc"} {
+	for _, forbidden := range []string{"secret-ds", "SecretEntity", "Secret fact", "Secret conflict", "Chunk secret conflict", "Unscoped conflict", "secretFunc"} {
 		if strings.Contains(gcJSON, forbidden) {
 			t.Fatalf("graph_context leaked unauthorized %q: %s", forbidden, gcJSON)
 		}
@@ -846,13 +851,16 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 	// Verify rendered Markdown context denoising, self-filtering, dedupe, and section ordering.
 	contextText := out["context"].(string)
 	for _, absent := range []string{
-		"SecretEntity", "Secret fact", "Secret conflict", "secretFunc", "classified",
+		"SecretEntity", "Secret fact", "Secret conflict", "Chunk secret conflict", "Unscoped conflict", "secretFunc", "classified",
 		"OnlyNoiseEntity", "is a web service", "belongs to set core", "Gateway is an application",
 		"current question", "Echoed learning",
 	} {
 		if strings.Contains(contextText, absent) {
 			t.Fatalf("context should not contain %q:\n%s", absent, contextText)
 		}
+	}
+	if strings.Count(strings.ToLower(contextText), "## active session guidance") != 1 {
+		t.Fatalf("active session guidance heading duplicated:\n%s", contextText)
 	}
 	if strings.Count(contextText, "Ingest switched from sync to async inbox.") != 1 {
 		t.Fatalf("conflict was not deduplicated:\n%s", contextText)
@@ -928,7 +936,7 @@ func TestRecallContextBudgetAndPrecompactKeepsCurrentSession(t *testing.T) {
 		{DatasetID: "common", DocumentID: "c1", Title: "Common 1", Snippet: strings.Repeat("z", 1500)},
 	}
 	gc := &engine.GraphSearchContext{
-		Conflicts:       []string{"Critical migration conflict must survive tight budget."},
+		Conflicts:       []engine.GraphSearchConflict{{DatasetID: "ds", Text: "Critical migration conflict must survive tight budget."}},
 		SessionGuidance: "Active guidance priority 3.",
 	}
 
@@ -1111,7 +1119,7 @@ func TestIngestPendingPromptPairingAndCaptureFilter(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	ps := &pendingPromptStore{now: func() time.Time { return now }}
 	for i := range 270 {
-		ps.record("agent", fmt.Sprintf("sess-%03d", i), pendingPrompt{Prompt: fmt.Sprintf("p-%03d", i)})
+		ps.record("agent", fmt.Sprintf("sess-%03d", i), pendingPrompt{Prompt: fmt.Sprintf("p-%03d", i), DatasetIDs: []string{"ds"}})
 	}
 	if len(ps.entries) != maxPendingPromptSessions {
 		t.Fatalf("pendingPromptStore size = %d, want %d", len(ps.entries), maxPendingPromptSessions)
@@ -1126,9 +1134,113 @@ func TestIngestPendingPromptPairingAndCaptureFilter(t *testing.T) {
 	if _, ok := ps.last("agent", "sess-269"); ok {
 		t.Fatal("expired prompt survived TTL")
 	}
-	if _, ok := ps.popPending("agent", "sess-269", "", ""); ok {
+	if _, ok := ps.popPending("agent", "sess-269", "ds", "", ""); ok {
 		t.Fatal("expired pending prompt survived TTL")
 	}
+}
+
+func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
+	var eng *hybridRecallTestEngine
+	var historyCalls int
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &hybridRecallTestEngine{
+			fakeEngine: cfg.Engine.(*fakeEngine),
+			history: engine.SessionHistoryResult{
+				Label: "secret history",
+				QAs:   []engine.SessionQA{{ID: "q1", Question: "secret project B prompt", Answer: "secret answer"}},
+			},
+		}
+		cfg.Engine = &countingSessionHistoryEngine{
+			hybridRecallTestEngine: eng,
+			onRead:                 func() { historyCalls++ },
+		}
+	})
+	ctx := context.Background()
+
+	// Give agent a PrincipalID to prove unchecked principalID fallback is removed.
+	agent, err := store.GetAgent(ctx, "agent")
+	must(t, err)
+	agent.PrincipalID = "11111111-1111-4111-8111-111111111111"
+	must(t, store.UpsertAgent(ctx, agent))
+
+	// Project B is unauthorized for agent; project C is authorized.
+	must(t, store.UpsertProject(ctx, domain.Project{ID: "proj-b", Name: "ProjB", DatasetID: "ds-b"}))
+	must(t, store.UpsertProject(ctx, domain.Project{ID: "proj-c", Name: "ProjC", DatasetID: "ds-c", AutoCapture: true}))
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+	manage(t, s, "PUT", "/api/projects/proj-c/acl/agent", `{"access":"maintain"}`, 200)
+	manage(t, s, "PUT", "/api/common/acl/agent", `{"access":"read"}`, 200)
+
+	// Seed catalog_sessions for unauthorized project B and authorized project p.
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds-b", SessionID: "sess-b", UserID: "u-owner", SortTSDescKey: -20, IsTopLevel: true,
+	}))
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "sess-p-cat", UserID: "u-owner", SortTSDescKey: -10, IsTopLevel: true,
+	}))
+	// Seed session_binding for authorized project p (no catalog_sessions row yet).
+	must(t, store.UpsertSessionBinding(ctx, sessionBindingKey("agent", "sess-p-bound"), "p", 100))
+
+	// 1. Forged session_id belonging to unauthorized project B must NOT enable IncludeSessionContext, store prompt, or call SessionHistoryReader.
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-b","query":"probe","include_session_context":true}`, 200)
+	if len(fake.search) != 1 || fake.search[0].Filters.IncludeSessionContext || fake.search[0].Filters.SessionID != "" {
+		t.Fatalf("forged project-B session leaked into search filters: %+v", fake.search[0].Filters)
+	}
+	forgedCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-b","purpose":"compact_restore","include_session_context":true}`, 200)
+	if len(fake.search) != 1 || forgedCompact["context"] != "" || len(forgedCompact["hits"].([]any)) != 0 || historyCalls != 0 {
+		t.Fatalf("forged project-B compact_restore leaked history or ran search: searches=%d out=%+v historyCalls=%d", len(fake.search), forgedCompact, historyCalls)
+	}
+
+	// 2. Unbound/unknown session_id (even with PrincipalID set) must NOT enable IncludeSessionContext or SessionHistoryReader.
+	unknownCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-unknown","purpose":"precompact","include_session_context":true}`, 200)
+	if len(fake.search) != 1 || unknownCompact["context"] != "" || historyCalls != 0 {
+		t.Fatalf("unbound session called SessionHistoryReader or search: searches=%d out=%+v historyCalls=%d", len(fake.search), unknownCompact, historyCalls)
+	}
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-unknown","query":"probe","include_session_context":true}`, 200)
+	if last := fake.search[len(fake.search)-1]; last.Filters.IncludeSessionContext || last.Filters.SessionID != "" {
+		t.Fatalf("unbound session enabled session context: %+v", last.Filters)
+	}
+
+	// 3. Authorized session via session_bindings allows IncludeSessionContext=true and passes SessionID.
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-p-bound","query":"probe","include_session_context":true}`, 200)
+	if last := fake.search[len(fake.search)-1]; !last.Filters.IncludeSessionContext || last.Filters.SessionID != "sess-p-bound" {
+		t.Fatalf("session_bindings authorized session was blocked: %+v", last.Filters)
+	}
+
+	// 4. Authorized session via catalog_sessions allows IncludeSessionContext=true AND SessionHistoryReader.
+	beforeCat := len(fake.search)
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-p-cat","purpose":"compact_restore","include_session_context":true}`, 200)
+	if historyCalls != 1 || len(fake.search) != beforeCat+1 ||
+		!fake.search[beforeCat].Filters.IncludeSessionContext ||
+		fake.search[beforeCat].Filters.SessionID != "sess-p-cat" ||
+		fake.search[beforeCat].Query != "secret project B prompt" {
+		t.Fatalf("catalog_sessions authorized compact_restore failed: historyCalls=%d search=%+v", historyCalls, fake.search[beforeCat:])
+	}
+
+	// 5. Prompt recorded under project p must NOT leak into compact_restore or /ingest scoped to project proj-c.
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-cross","turn_id":"t-cross","query":"project p only prompt"}`, 200)
+	crossCompact := agentRequest(t, s, "/recall", `{"project_id":"proj-c","session_id":"sess-cross","purpose":"compact_restore"}`, 200)
+	if crossCompact["context"] != "" || len(crossCompact["hits"].([]any)) != 0 {
+		t.Fatalf("project p prompt leaked into proj-c compact_restore: %+v", crossCompact)
+	}
+	crossIngest := agentRequest(t, s, "/ingest", `{
+		"project_id":"proj-c","session_id":"sess-cross","turn_id":"t-cross","kind":"capture_qa",
+		"content":{"question":"","answer":"cross project answer"}
+	}`, 200)
+	if crossIngest["accepted"] != false || crossIngest["status"] != "skipped_missing_question" {
+		t.Fatalf("project p prompt leaked into proj-c ingest: %+v", crossIngest)
+	}
+}
+
+type countingSessionHistoryEngine struct {
+	*hybridRecallTestEngine
+	onRead func()
+}
+
+func (c *countingSessionHistoryEngine) ReadSessionHistory(ctx context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	if c.onRead != nil {
+		c.onRead()
+	}
+	return c.hybridRecallTestEngine.ReadSessionHistory(ctx, req)
 }
 
 func TestSessionEndACLFlushDeduplicationAndStopSafety(t *testing.T) {

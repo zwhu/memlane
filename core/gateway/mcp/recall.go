@@ -199,16 +199,9 @@ func filterAuthorizedGraphContext(gc *engine.GraphSearchContext, authorized map[
 		return nil, false
 	}
 	degraded := gc.DegradedToChunks
-	allowedEntityConflicts := make(map[string]bool)
-	droppedEntityConflicts := make(map[string]bool)
 	entities := make([]engine.GraphSearchEntity, 0, len(gc.Entities))
 	for _, entity := range gc.Entities {
 		if _, ok := authorized[entity.DatasetID]; !ok {
-			for _, conflict := range entity.Conflicts {
-				if trimmed := strings.TrimSpace(conflict); trimmed != "" {
-					droppedEntityConflicts[trimmed] = true
-				}
-			}
 			continue
 		}
 		cloned := entity
@@ -221,7 +214,6 @@ func filterAuthorizedGraphContext(gc *engine.GraphSearchContext, authorized map[
 			for _, conflict := range entity.Conflicts {
 				if trimmed := strings.TrimSpace(conflict); trimmed != "" && !seen[trimmed] {
 					seen[trimmed] = true
-					allowedEntityConflicts[trimmed] = true
 					cleaned = append(cleaned, trimmed)
 				}
 			}
@@ -246,18 +238,22 @@ func filterAuthorizedGraphContext(gc *engine.GraphSearchContext, authorized map[
 		}
 		codeFacts = append(codeFacts, cloned)
 	}
-	conflicts := make([]string, 0, len(gc.Conflicts))
-	seenConflicts := make(map[string]bool, len(gc.Conflicts))
+	conflicts := make([]engine.GraphSearchConflict, 0, len(gc.Conflicts))
+	seenConflicts := make(map[[2]string]bool, len(gc.Conflicts))
 	for _, raw := range gc.Conflicts {
-		text := strings.TrimSpace(raw)
-		if text == "" || seenConflicts[text] {
+		text := strings.TrimSpace(raw.Text)
+		if _, ok := authorized[raw.DatasetID]; !ok || text == "" {
 			continue
 		}
-		if droppedEntityConflicts[text] && !allowedEntityConflicts[text] {
+		key := [2]string{raw.DatasetID, text}
+		if seenConflicts[key] {
 			continue
 		}
-		seenConflicts[text] = true
-		conflicts = append(conflicts, text)
+		seenConflicts[key] = true
+		conflicts = append(conflicts, engine.GraphSearchConflict{
+			DatasetID: raw.DatasetID,
+			Text:      text,
+		})
 	}
 	guidance := strings.TrimSpace(gc.SessionGuidance)
 	if len(entities) == 0 && len(facts) == 0 && len(conflicts) == 0 && guidance == "" && len(codeFacts) == 0 {
