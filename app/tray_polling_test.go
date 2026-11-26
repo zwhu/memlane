@@ -36,6 +36,8 @@ func TestTrayClickRefreshesMonitorAndRecoversDirectoryDuringHiddenColdStart(t *t
 			fmt.Fprint(w, `{"ok":true}`)
 		case "/v1/runtime/monitor":
 			fmt.Fprint(w, `{"state":"ready"}`)
+		case "/v1/completion/health":
+			fmt.Fprint(w, `{"status":"ready"}`)
 		case "/v1/projects":
 			json.NewEncoder(w).Encode(AccessDirectory{})
 		default:

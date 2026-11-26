@@ -78,6 +78,31 @@ func TestHealthMonitorAndDelegates(t *testing.T) {
 	}
 }
 
+func TestCompletionHealthRoute(t *testing.T) {
+	unconfigured, _, _ := testServer(t, nil)
+	for _, prefix := range []string{"/api", "/v1"} {
+		requireCode(t, request(t, unconfigured, "GET", prefix+"/completion/health", "", nil, http.StatusUnauthorized), "unauthorized")
+		requireCode(t, manage(t, unconfigured, "GET", prefix+"/completion/health", "", http.StatusNotFound), "not_configured")
+	}
+
+	var seenMethod, seenPath string
+	delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMethod, seenPath = r.Method, r.URL.Path
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "path": r.URL.Path})
+	})
+	configured, _, _ := testServer(t, func(c *Config) {
+		c.CompletionHandler = delegate
+	})
+	for _, prefix := range []string{"/api", "/v1"} {
+		requireCode(t, request(t, configured, "GET", prefix+"/completion/health", "", nil, http.StatusUnauthorized), "unauthorized")
+		res := manage(t, configured, "GET", prefix+"/completion/health", "", http.StatusOK)
+		got := decodeResponse[map[string]string](t, res)
+		if seenMethod != http.MethodGet || seenPath != "/health" || got["path"] != "/health" || got["status"] != "ready" {
+			t.Fatalf("GET %s/completion/health delegated (%s %s) body=%+v", prefix, seenMethod, seenPath, got)
+		}
+	}
+}
+
 func TestLoopbackLifecycle(t *testing.T) {
 	s, _, _ := testServer(t, nil)
 	cancelled, cancel := context.WithCancel(context.Background())

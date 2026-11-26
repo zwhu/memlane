@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 	"github.com/zwhu/memlane/core/gateway"
+	"github.com/zwhu/memlane/core/gateway/completion"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 const contractMgmtToken = "contract-regression-management-token-2026"
@@ -593,5 +597,129 @@ func TestContractTimeoutClassificationSeparation(t *testing.T) {
 	monSummary, _ := mon["status_summary"].(string)
 	if strings.Contains(monSummary, "记忆提炼超时") || monSummary != "提炼服务连接超时" {
 		t.Fatalf("health timeout misclassified as %q, want 提炼服务连接超时", monSummary)
+	}
+}
+
+type contractGateFunc func(context.Context) (*completion.ActiveProfile, error)
+
+func (f contractGateFunc) ResolveActive(ctx context.Context) (*completion.ActiveProfile, error) {
+	return f(ctx)
+}
+
+func TestContractCompletionHealthEndpoint(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cliPath := filepath.Join(dir, "codex-cli")
+	for file, data := range map[string]string{
+		cliPath:                        "#!/bin/sh\nexit 0\n",
+		filepath.Join(dir, "auth.json"):   "{}",
+		filepath.Join(dir, "config.toml"): `model = "gpt-test"`,
+	} {
+		mode := os.FileMode(0o600)
+		if file == cliPath {
+			mode = 0o700
+		}
+		if err := os.WriteFile(file, []byte(data), mode); err != nil {
+			t.Fatalf("write fixture %s: %v", file, err)
+		}
+	}
+
+	readyProfile := &completion.ActiveProfile{
+		Mode:       "agent_bridge",
+		BridgeKind: "codex",
+		Model:      "gpt-test",
+		Executable: cliPath,
+		AuthHome:   dir,
+		Defaults:   &agents.ModelDefaults{Model: "gpt-test", Provider: "openai", Source: "agent_config"},
+	}
+
+	var active atomic.Pointer[completion.ActiveProfile]
+	active.Store(readyProfile)
+
+	compSrv, err := completion.NewServer(completion.Config{
+		Token: "contract-completion-bearer-token-2026",
+		Gate:  contractGateFunc(func(context.Context) (*completion.ActiveProfile, error) { return active.Load(), nil }),
+	})
+	if err != nil {
+		t.Fatalf("completion.NewServer: %v", err)
+	}
+
+	eng := newContractMockEngine()
+	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	const agentToken = "tok-contract-comp-health-agent"
+	if err := store.UpsertAgent(ctx, domain.Agent{
+		ID: "agent-ch", Kind: "codex", Name: "Codex", PrincipalID: "u-ch", DefaultAccess: domain.AccessMaintain,
+	}); err != nil {
+		t.Fatalf("UpsertAgent: %v", err)
+	}
+
+	srv, err := gateway.NewServer(gateway.Config{
+		Store:             store,
+		Engine:            eng,
+		Projector:         eng,
+		CompletionHandler: compSrv.Handler(),
+		ManagementToken:   contractMgmtToken,
+		AgentTokens:       map[string]string{"agent-ch": agentToken},
+	})
+	if err != nil {
+		t.Fatalf("gateway.NewServer: %v", err)
+	}
+
+	// 1. Auth enforcement: anonymous -> 401, agent credential -> 403.
+	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
+		if code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", nil); code != http.StatusUnauthorized || body["error"] != "unauthorized" {
+			t.Fatalf("anonymous GET %s = %d %+v, want 401 unauthorized", route, code, body)
+		}
+		if code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", agentHeaders(agentToken)); code != http.StatusForbidden || body["error"] != "management_required" {
+			t.Fatalf("agent GET %s = %d %+v, want 403 management_required", route, code, body)
+		}
+	}
+
+	// 2. Active agent_bridge -> 200 ready.
+	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
+		code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
+		if code != http.StatusOK || body["status"] != "ready" || body["provider"] != "codex" || body["model"] != "gpt-test" {
+			t.Fatalf("ready GET %s = %d %+v, want 200 ready", route, code, body)
+		}
+	}
+
+	// 3. Direct provider (bridge_inactive) -> 503 bridge_inactive.
+	providerProfile := *readyProfile
+	providerProfile.Mode = "provider"
+	active.Store(&providerProfile)
+	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
+		code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
+		errObj, _ := body["error"].(map[string]any)
+		if code != http.StatusServiceUnavailable || errObj["code"] != "bridge_inactive" {
+			t.Fatalf("inactive GET %s = %d %+v, want 503 bridge_inactive", route, code, body)
+		}
+	}
+
+	// 4. Model mismatch -> 409 bridge_profile_mismatch.
+	mismatchProfile := *readyProfile
+	mismatchProfile.Model = "different-model"
+	active.Store(&mismatchProfile)
+	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
+		code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
+		errObj, _ := body["error"].(map[string]any)
+		if code != http.StatusConflict || errObj["code"] != "bridge_profile_mismatch" {
+			t.Fatalf("mismatch GET %s = %d %+v, want 409 bridge_profile_mismatch", route, code, body)
+		}
+	}
+
+	// 5. Fingerprint drift -> 409 generation_bridge_changed_revalidate.
+	driftedProfile := *readyProfile
+	driftedProfile.ExpectedFingerprint = strings.Repeat("0", 64)
+	active.Store(&driftedProfile)
+	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
+		code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
+		errObj, _ := body["error"].(map[string]any)
+		if code != http.StatusConflict || errObj["code"] != "generation_bridge_changed_revalidate" {
+			t.Fatalf("drifted GET %s = %d %+v, want 409 generation_bridge_changed_revalidate", route, code, body)
+		}
 	}
 }

@@ -25,14 +25,28 @@ var controlErrorIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,79}$`)
 
 func parseControlError(body []byte, token string) (code, phase string) {
 	var payload struct {
-		Error string `json:"error"`
-		Code  string `json:"code"`
-		Phase string `json:"phase"`
+		Error json.RawMessage `json:"error"`
+		Code  string          `json:"code"`
+		Phase string          `json:"phase"`
 	}
 	if json.Unmarshal(body, &payload) != nil {
 		return "", ""
 	}
-	for _, candidate := range []string{payload.Code, payload.Error} {
+	candidates := []string{payload.Code}
+	if len(payload.Error) > 0 {
+		var errStr string
+		if json.Unmarshal(payload.Error, &errStr) == nil {
+			candidates = append(candidates, errStr)
+		} else {
+			var nested struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(payload.Error, &nested) == nil {
+				candidates = append(candidates, nested.Code)
+			}
+		}
+	}
+	for _, candidate := range candidates {
 		if controlErrorIdentifier.MatchString(candidate) && (token == "" || !strings.Contains(candidate, token)) {
 			code = candidate
 			break
@@ -107,6 +121,11 @@ func IsControlErrorCode(err error, status int, code string) bool {
 	}
 	var shared *controlplane.ControlError
 	return errors.As(err, &shared) && shared.Status == status && shared.Code == code
+}
+
+func isControlStatus(err error, status int) bool {
+	var ce *ControlResponseError
+	return errors.As(err, &ce) && ce.Status == status
 }
 
 func ControlUserError(err error) string {

@@ -731,7 +731,7 @@ func writeFirstRuntimeConfig(configPath string, store StoreResult) error {
 		}
 	}
 
-	var origins [3]string
+	var origins [2]string
 	for i := range origins {
 		listener, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -740,13 +740,13 @@ func writeFirstRuntimeConfig(configPath string, store StoreResult) error {
 		defer listener.Close()
 		origins[i] = "http://" + listener.Addr().String()
 	}
-	service, gateway, completion := origins[0], origins[1], origins[2]
+	service, gateway := origins[0], origins[1]
 	return writeFirstRuntimeJSON(configPath, map[string]any{
 		"first_install": FirstInstallation{Schema: 1, StoreID: input.StoreID, Setup: true},
 		"store_root":    root, "official_data": root, "official_source": input.Source, "official_archive": input.Archive,
 		"engine_work_dir": store.Resources, "python": store.Python, "service_commit": input.SourceCommit,
 		"token_file": store.TokenFile, "service_environment_file": environment, "service_url": service, "engine_url": service,
-		"completion_url": completion, "completion_token_file": completionToken, "management_token_file": managementToken, "gateway_url": gateway,
+		"completion_url": gateway, "completion_token_file": completionToken, "management_token_file": managementToken, "gateway_url": gateway,
 		"generation_file": filepath.Join(root, "generation.json"), "generation_mode": "unconfigured", "model": "",
 		"client_state_file": filepath.Join(root, "client-state.json"), "graph_assets": filepath.Join(store.Resources, "web/official-graph/dist"),
 		"projects": []any{}, "common_datasets": []any{},

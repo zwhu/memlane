@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -85,6 +86,7 @@ type ServiceMonitorSnapshot struct {
 
 type ServiceMonitorState struct {
 	EngineStatus, CompletionStatus string
+	CompletionEndpoint             string
 	State                          string
 	ConsecutiveFailures            int
 	LastLatencyMs                  float64
@@ -109,7 +111,21 @@ type ServiceMonitorState struct {
 	Request                        uint64
 }
 
-const SetupOnlyCompletion = "待配置记忆提炼"
+const (
+	SetupOnlyCompletion      = "待配置记忆提炼"
+	CompletionInactiveStatus = "未启用（当前使用直连模型）"
+)
+
+func (m ServiceMonitorState) EffectiveCompletionURL(configured string) string {
+	if u := strings.TrimSpace(m.CompletionEndpoint); u != "" {
+		return u
+	}
+	return strings.TrimSpace(configured)
+}
+
+func (a *Controller) EffectiveCompletionURL() string {
+	return a.monitor.EffectiveCompletionURL(a.config.CompletionURL)
+}
 
 func (a *Controller) refreshServiceMonitor() {
 	a.PollServiceMonitor(true)
@@ -137,22 +153,47 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 		latencyMs := float64(time.Since(started).Microseconds()) / 1000.0
 
 		completion := "未配置"
+		completionEndpoint := ""
 		var completionLatencyMs float64
 		var hasCompletionLatency bool
-		if setupOnly {
-			completion = SetupOnlyCompletion
-		} else if completionURL != "" {
-			cc := Client{Config: Config{ServiceURL: completionURL}}
+		probeStandaloneCompletion := func() {
+			if completionURL == "" {
+				return
+			}
+			cc := Client{Config: Config{ServiceURL: completionURL}, HTTP: client.HTTP}
 			compStarted := time.Now()
 			_, e := cc.request(ctx, "GET", "/health", nil)
 			if e == nil {
 				completionLatencyMs = float64(time.Since(compStarted).Microseconds()) / 1000.0
 				hasCompletionLatency = true
-			}
-			completion = "端点已连接（登录状态以实际请求为准）"
-			if e != nil {
+				completion = "端点已连接（登录状态以实际请求为准）"
+			} else {
 				completion = e.Error()
 			}
+			completionEndpoint = completionURL
+		}
+		if setupOnly {
+			completion = SetupOnlyCompletion
+		} else if hasControl {
+			compStarted := time.Now()
+			err := controlClient.request(ctx, "GET", "/v1/completion/health", nil, nil)
+			switch {
+			case err == nil:
+				completionLatencyMs = float64(time.Since(compStarted).Microseconds()) / 1000.0
+				hasCompletionLatency = true
+				completion = "端点已连接（登录状态以实际请求为准）"
+				completionEndpoint = controlClient.Config.URL
+			case IsControlErrorCode(err, http.StatusServiceUnavailable, "bridge_inactive"):
+				completion = CompletionInactiveStatus
+				completionEndpoint = controlClient.Config.URL
+			case isControlStatus(err, http.StatusNotFound):
+				probeStandaloneCompletion()
+			default:
+				completion = controlplane.RedactSecretText(err.Error())
+				completionEndpoint = controlClient.Config.URL
+			}
+		} else if completionURL != "" {
+			probeStandaloneCompletion()
 		}
 
 		var snap *ServiceMonitorSnapshot
@@ -178,6 +219,7 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			if request != a.monitor.Request {
 				return
 			}
+			a.monitor.CompletionEndpoint = completionEndpoint
 			a.ApplyServiceMonitorResult(time.Now(), healthErr, latencyMs, completion, completionLatencyMs, hasCompletionLatency, hasControl, snap, controlErr, controlLatencyMs, hasControlLatency)
 		})
 	}()

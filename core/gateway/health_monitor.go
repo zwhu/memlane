@@ -48,6 +48,17 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": health.OK, "status": status, "uptime_seconds": s.uptime(), "engine_ok": health.OK, "inbox": inbox})
 }
 
+func (s *Server) completionHealth(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CompletionHandler == nil {
+		writeError(w, http.StatusNotFound, "not_configured", "completion handler is not configured")
+		return
+	}
+	req := r.Clone(r.Context())
+	req.URL.Path = "/health"
+	req.URL.RawPath = ""
+	s.cfg.CompletionHandler.ServeHTTP(w, req)
+}
+
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	health := s.engineHealth(r.Context())
 	writeJSON(w, 200, map[string]any{"api_versions": []string{"v2", "v1"}, "reading_contract": "catalog-cursor-v1",

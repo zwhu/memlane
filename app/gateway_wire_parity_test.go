@@ -25,7 +25,9 @@ import (
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 	"github.com/zwhu/memlane/core/gateway"
+	"github.com/zwhu/memlane/core/gateway/completion"
 	"github.com/zwhu/memlane/core/profiles"
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 type wireEngine struct {
@@ -947,5 +949,162 @@ func TestGatewayWireParityInboxTimeoutAndRetryRecovery(t *testing.T) {
 	}
 	if got := eng.extractCalls.Load(); got != 2 {
 		t.Fatalf("extractCalls = %d, want 2", got)
+	}
+}
+
+type wireGateFunc func(context.Context) (*completion.ActiveProfile, error)
+
+func (f wireGateFunc) ResolveActive(ctx context.Context) (*completion.ActiveProfile, error) {
+	return f(ctx)
+}
+
+func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const (
+		token       = "wire-parity-completion-health-mgmt-token"
+		officialURL = "http://127.0.0.1:61258"
+		gatewayURL  = "http://127.0.0.1:61259"
+		staleURL    = "http://127.0.0.1:18173"
+	)
+	tokenFile := filepath.Join(dir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(token), 0o600))
+
+	authHome := filepath.Join(dir, "codex-home")
+	check(os.MkdirAll(authHome, 0o700))
+	cliPath := filepath.Join(authHome, "codex-cli")
+	check(os.WriteFile(cliPath, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	check(os.WriteFile(filepath.Join(authHome, "auth.json"), []byte("{}"), 0o600))
+	check(os.WriteFile(filepath.Join(authHome, "config.toml"), []byte(`model = "gpt-wire"`), 0o600))
+
+	readyProfile := &completion.ActiveProfile{
+		Mode:       "agent_bridge",
+		BridgeKind: "codex",
+		Model:      "gpt-wire",
+		Executable: cliPath,
+		AuthHome:   authHome,
+		Defaults:   &agents.ModelDefaults{Model: "gpt-wire", Provider: "openai", Source: "agent_config"},
+	}
+	var active atomic.Pointer[completion.ActiveProfile]
+	active.Store(readyProfile)
+
+	compSrv, err := completion.NewServer(completion.Config{
+		Token: "wire-parity-completion-bearer-token-2026",
+		Gate:  wireGateFunc(func(context.Context) (*completion.ActiveProfile, error) { return active.Load(), nil }),
+	})
+	check(err)
+
+	gwSrv, err := gateway.NewServer(gateway.Config{
+		Store:             store,
+		Engine:            wireEngine{},
+		CompletionHandler: compSrv.Handler(),
+		ManagementToken:   token,
+	})
+	check(err)
+
+	var deadPortHits atomic.Int32
+	httpClient := &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Host {
+		case "127.0.0.1:61258":
+			if r.URL.Path == "/health" {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"ok":true}`))
+				return
+			}
+			http.NotFound(w, r)
+		case "127.0.0.1:61259":
+			gwSrv.Handler().ServeHTTP(w, r)
+		case "127.0.0.1:18173":
+			deadPortHits.Add(1)
+			http.Error(w, "connection refused", http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+
+	a := New(Config{
+		ServiceURL:     officialURL,
+		CompletionURL:  staleURL,
+		ProjectControl: &ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+	}, nil)
+	a.Client.HTTP = httpClient
+	a.syncSettingsTransport()
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(func() { a.cancelAndResetPanes() })
+
+	poll := func() {
+		t.Helper()
+		a.pollServiceMonitor(true)
+		drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	}
+	renderOverview := func() *ui.Tester {
+		return ui.NewTester(func(c *ui.Context) {
+			ui.Column(c).FillWidth().Padding(24).Children(func() { a.settingsController.ViewServiceOverview(c) })
+		}, 1000, 700)
+	}
+
+	// 1. Active agent_bridge -> ok / 已连接, displays gatewayURL (never stale :18173).
+	poll()
+	if deadPortHits.Load() != 0 {
+		t.Fatalf("probed stale port :18173 (%d times) instead of gateway /v1/completion/health", deadPortHits.Load())
+	}
+	if dot, metric, col := a.trayChannelStatus(); dot != "ok" || !strings.HasPrefix(metric, "已连接") || col != tok.Text2 {
+		t.Fatalf("active agent_bridge trayChannelStatus = (%q, %q, %v), want ok/已连接", dot, metric, col)
+	}
+	ttReady := renderOverview()
+	if !ttReady.HasText("Agent 模型代理") || !ttReady.HasText("已连接") || !ttReady.HasText(gatewayURL) {
+		t.Fatalf("active agent_bridge overview missing expected gateway endpoint/status: %v", ttReady.Texts())
+	}
+	if ttReady.HasText("18173") || ttReady.HasText("待检查") {
+		t.Fatalf("active agent_bridge overview leaked stale :18173 or 待检查: %v", ttReady.Texts())
+	}
+	a.servicePopover.PopoverOpen = true
+	ttPop := ui.NewTester(a.View, 1200, 820)
+	if !ttPop.HasText(gatewayURL) || ttPop.HasText("18173") {
+		t.Fatalf("service popover should show %s instead of :18173: %v", gatewayURL, ttPop.Texts())
+	}
+	a.servicePopover.PopoverOpen = false
+
+	// 2. Direct provider (503 bridge_inactive) -> neutral / 未启用 (NOT warn / 待检查).
+	inactiveProfile := *readyProfile
+	inactiveProfile.Mode = "provider"
+	active.Store(&inactiveProfile)
+	poll()
+	if a.monitor.CompletionStatus != settings.CompletionInactiveStatus {
+		t.Fatalf("direct provider CompletionStatus = %q, want %q", a.monitor.CompletionStatus, settings.CompletionInactiveStatus)
+	}
+	if dot, metric, col := a.trayChannelStatus(); dot != "neutral" || metric != "未启用" || col != tok.Text3 {
+		t.Fatalf("direct provider trayChannelStatus = (%q, %q, %v), want neutral/未启用/Text3", dot, metric, col)
+	}
+	ttInactive := renderOverview()
+	if !ttInactive.HasText("未启用") || !ttInactive.HasText(gatewayURL) || ttInactive.HasText("18173") || ttInactive.HasText("待检查") {
+		t.Fatalf("direct provider overview unexpected texts: %v", ttInactive.Texts())
+	}
+
+	// 3. Profile mismatch (409 bridge_profile_mismatch) -> warn / 待检查.
+	mismatchProfile := *readyProfile
+	mismatchProfile.Model = "wrong-model"
+	active.Store(&mismatchProfile)
+	poll()
+	if dot, metric, col := a.trayChannelStatus(); dot != "warn" || metric != "待检查" || col != tok.Warning {
+		t.Fatalf("mismatch trayChannelStatus = (%q, %q, %v), want warn/待检查/Warning", dot, metric, col)
+	}
+	ttMismatch := renderOverview()
+	if !ttMismatch.HasText("待检查") || !ttMismatch.HasText(gatewayURL) || ttMismatch.HasText("18173") {
+		t.Fatalf("mismatch overview unexpected texts: %v", ttMismatch.Texts())
+	}
+	if deadPortHits.Load() != 0 {
+		t.Fatalf("expected zero hits to stale :18173, got %d", deadPortHits.Load())
 	}
 }

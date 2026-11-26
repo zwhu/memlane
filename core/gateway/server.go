@@ -139,6 +139,7 @@ func (s *Server) routes() http.Handler {
 		}
 	}
 	both("GET", "/health", s.health)
+	both("GET", "/completion/health", s.completionHealth)
 	both("GET", "/capabilities", s.capabilities)
 	both("GET", "/runtime/monitor", s.monitor)
 	both("GET", "/overview/bootstrap", s.overview)

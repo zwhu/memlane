@@ -374,7 +374,8 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 					cogneeMetrics = summary
 				}
 				hasDisk := m.Snapshot != nil && m.Snapshot.Disk != nil
-				hasChannel := a.Config.CompletionURL != ""
+				completionURL := a.monitor.EffectiveCompletionURL(a.Config.CompletionURL)
+				hasChannel := completionURL != ""
 				popRow(cogneeDot, "记忆引擎（Cognee）", cogneeStatus, cogneeMetrics, cogneeCol, !m.ControlChecked && !hasChannel && !hasDisk)
 
 				if m.ControlChecked {
@@ -394,7 +395,7 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 
 				if hasChannel {
 					chDot, chText, chCol := a.trayChannelStatus()
-					popRow(chDot, "Agent 模型代理", chText, settings.SanitizedMonitorURL(a.Config.CompletionURL), chCol, !hasDisk)
+					popRow(chDot, "Agent 模型代理", chText, settings.SanitizedMonitorURL(completionURL), chCol, !hasDisk)
 				}
 
 				if hasDisk {

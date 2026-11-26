@@ -43,7 +43,8 @@ func (a *Controller) ViewServiceOverview(c *ui.Context) {
 		}
 
 		setupOnly := a.isSetupOnlyRuntime() || a.monitor.CompletionStatus == SetupOnlyCompletion
-		hasChannelRow := setupOnly || a.config.CompletionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0)
+		completionURL := a.EffectiveCompletionURL()
+		hasChannelRow := setupOnly || completionURL != "" || (m.Snapshot != nil && m.Snapshot.Processes["completion"].PID > 0)
 
 		// 1) 记忆引擎（Cognee）服务行
 		cogneeState, cogneeStatus, cogneeColor := a.ServiceCogneeStatus()
@@ -127,13 +128,15 @@ func (a *Controller) ViewServiceOverview(c *ui.Context) {
 			compDot, compVal, compCol := "neutral", "待检查", tok.Text3
 			if setupOnly {
 				compVal = "待配置提炼"
+			} else if a.monitor.CompletionStatus == CompletionInactiveStatus {
+				compVal = "未启用"
 			} else if strings.HasPrefix(a.monitor.CompletionStatus, "端点已连接") {
 				compDot, compVal, compCol = "ok", "已连接", tok.OK
-			} else if a.monitor.CompletionStatus != "" && a.monitor.CompletionStatus != "未配置" {
+			} else if a.monitor.CompletionStatus != "" && a.monitor.CompletionStatus != "未配置" && a.monitor.CompletionStatus != "尚未检查" {
 				compDot, compVal, compCol = "warn", "待检查", tok.Warning
 			}
 			var compParts []string
-			if u := SanitizedMonitorURL(a.config.CompletionURL); u != "" && u != "未配置" {
+			if u := SanitizedMonitorURL(completionURL); u != "" && u != "未配置" {
 				compParts = append(compParts, u)
 			}
 			if strings.HasPrefix(a.monitor.CompletionStatus, "端点已连接") && m.HasCompletionLatency {
