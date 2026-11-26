@@ -14,6 +14,7 @@ func (a *Controller) ServiceDiagnosticText() string {
 	}
 	fmt.Fprintf(&b, "记忆引擎（Cognee）状态: %s\n", state)
 	fmt.Fprintf(&b, "服务地址: %s\n", SanitizedMonitorURL(a.config.ServiceURL))
+	fmt.Fprintf(&b, "最近检查时间：%s\n最近正常时间：%s\n", m.checkedTime(), m.lastOKTime())
 	if m.HasLatency {
 		fmt.Fprintf(&b, "健康检查延迟: %.1f ms\n", m.LastLatencyMs)
 	}
@@ -61,6 +62,12 @@ func (a *Controller) ServiceDiagnosticText() string {
 		if m.Snapshot.Summary != nil {
 			s := m.Snapshot.Summary
 			fmt.Fprintf(&b, "项目数: %d | Hook 未记录数: %d\n", s.ProjectsCount, s.HookErrorsCount)
+			if s.FilteredCount > 0 || len(s.RecentFiltered) > 0 {
+				fmt.Fprintf(&b, "因采集规则未采集：%d 条\n", max(s.FilteredCount, len(s.RecentFiltered)))
+				for _, event := range s.RecentFiltered {
+					fmt.Fprintf(&b, "  %s · %s\n", event.Rule, formatFilteredCaptureLine(event))
+				}
+			}
 			for _, he := range s.HookErrors {
 				b.WriteString("  " + formatMonitorHookErrorLine(he) + "\n")
 			}

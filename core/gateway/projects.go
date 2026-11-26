@@ -31,6 +31,12 @@ type projectSummary struct {
 	InboxPending       int    `json:"inbox_pending"`
 	InboxFailed        int    `json:"inbox_failed"`
 	LastError          string `json:"last_error"`
+
+	AutoCaptureUpdatedAt string `json:"auto_capture_updated_at"`
+	AutoCaptureReason    string `json:"auto_capture_reason"`
+	AutoCaptureActor     string `json:"auto_capture_actor"`
+	LastErrorAt          string `json:"last_error_at"`
+	FilteredCount        int    `json:"filtered_count"`
 }
 
 type aclBody struct {
@@ -42,18 +48,19 @@ type aclBody struct {
 
 type projectView struct {
 	projectSummary
-	ID                   string                    `json:"id"`
-	DatasetName          string                    `json:"dataset_name"`
-	CodeDatasetID        string                    `json:"code_dataset_id"`
-	CodeEnabled          bool                      `json:"code_enabled"`
-	Status               string                    `json:"status"`
-	Aliases              []string                  `json:"aliases"`
-	Overrides            map[string]aclBody        `json:"overrides"`
-	DesiredRevision      int64                     `json:"desired_revision"`
-	Applied              map[string]projectApplied `json:"applied"`
-	AutoCaptureUpdatedAt string                    `json:"auto_capture_updated_at"`
-	CodeConfigured       bool                      `json:"code_configured"`
-	Inbox                InboxSummary              `json:"inbox"`
+	ID              string                    `json:"id"`
+	DatasetName     string                    `json:"dataset_name"`
+	CodeDatasetID   string                    `json:"code_dataset_id"`
+	CodeEnabled     bool                      `json:"code_enabled"`
+	Status          string                    `json:"status"`
+	Aliases         []string                  `json:"aliases"`
+	Overrides       map[string]aclBody        `json:"overrides"`
+	DesiredRevision int64                     `json:"desired_revision"`
+	Applied         map[string]projectApplied `json:"applied"`
+	CodeConfigured  bool                      `json:"code_configured"`
+	Inbox           InboxSummary              `json:"inbox"`
+
+	RecentFiltered []CaptureFilterEventView `json:"recent_filtered,omitempty"`
 }
 
 type projectApplied struct {
@@ -102,9 +109,10 @@ func (s *Server) populateProjectAccess(ctx context.Context, view *projectView, k
 func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView, error) {
 	view := projectView{projectSummary: projectSummary{ProjectID: p.ID, Name: p.Name, DatasetID: p.DatasetID,
 		Protected:   domain.IsProtectedProject(p.Name, p.DatasetName) || domain.IsProtectedProject(p.ID, p.DatasetID),
-		AutoCapture: p.AutoCapture, AutoCaptureVersion: p.AutoCaptureVersion}, ID: p.ID, DatasetName: p.DatasetName,
+		AutoCapture: p.AutoCapture, AutoCaptureVersion: p.AutoCaptureVersion, AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt,
+		AutoCaptureReason: p.AutoCaptureReason, AutoCaptureActor: p.AutoCaptureActor}, ID: p.ID, DatasetName: p.DatasetName,
 		CodeDatasetID: p.CodeDatasetID, CodeEnabled: p.CodeEnabled, Status: p.Status, Aliases: append([]string{}, p.Aliases...),
-		DesiredRevision: int64(p.DesiredRevision), AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt, CodeConfigured: p.CodeConfigured}
+		DesiredRevision: int64(p.DesiredRevision), CodeConfigured: p.CodeConfigured}
 	err := catalogCounts(ctx, s.cfg.Store.DB(), p.DatasetID, &view.projectSummary)
 	if err != nil {
 		return view, err
@@ -114,8 +122,10 @@ func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView
 		return view, err
 	}
 	view.InboxPending, view.InboxFailed = view.Inbox.Pending, view.Inbox.Failed
+	view.FilteredCount, view.RecentFiltered = view.Inbox.FilteredCount, view.Inbox.RecentFiltered
 	if len(view.Inbox.RecentFailures) > 0 {
 		view.LastError = view.Inbox.RecentFailures[0].LastError
+		view.LastErrorAt = view.Inbox.RecentFailures[0].LastErrorAt
 	}
 	err = s.populateProjectAccess(ctx, &view, "project", p.AppliedJSON)
 	return view, err
@@ -253,6 +263,10 @@ func (in projectInput) apply(p *domain.Project) {
 		p.AutoCapture = *in.AutoCapture
 		p.AutoCaptureVersion++
 		p.AutoCaptureUpdatedAt = domain.NowUTCMicro()
+		p.AutoCaptureActor, p.AutoCaptureReason = "user", "user_disabled"
+		if p.AutoCapture {
+			p.AutoCaptureReason = "user_enabled"
+		}
 	}
 	if in.Aliases != nil {
 		p.Aliases = *in.Aliases
@@ -396,8 +410,10 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) toggleCapture(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		AutoCapture *bool `json:"auto_capture"`
-		Enabled     *bool `json:"enabled"`
+		AutoCapture *bool  `json:"auto_capture"`
+		Enabled     *bool  `json:"enabled"`
+		Reason      string `json:"reason"`
+		Actor       string `json:"actor"`
 	}
 	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
 		return
@@ -409,7 +425,8 @@ func (s *Server) toggleCapture(w http.ResponseWriter, r *http.Request) {
 	}
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
-	p, err := s.cfg.Store.SetProjectAutoCapture(r.Context(), r.PathValue("id"), *enabled)
+	p, err := s.cfg.Store.SetProjectAutoCaptureWithMeta(r.Context(), r.PathValue("id"), *enabled,
+		sanitizeError(errors.New(in.Actor)), sanitizeError(errors.New(in.Reason)))
 	if err != nil {
 		writeDomainError(w, err)
 		return

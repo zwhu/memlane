@@ -39,6 +39,8 @@ type Project struct {
 	ImportACL                                       bool
 	ToolGraphJSON, AppliedJSON, ExtraJSON           string
 	Aliases                                         []string
+
+	AutoCaptureReason, AutoCaptureActor string
 }
 
 type Agent struct {
@@ -87,6 +89,8 @@ type EffectiveACL struct {
 	AutoCaptureVersion   int
 	AutoCaptureUpdatedAt string
 	CanAutoProcess       bool
+
+	AutoCaptureReason, AutoCaptureActor string
 }
 
 func (s *Store) UpsertProject(ctx context.Context, p Project) error {
@@ -99,10 +103,10 @@ func (s *Store) UpsertProject(ctx context.Context, p Project) error {
 			return err
 		}
 		if err := execSQL(ctx, tx, `UPDATE projects SET name=?,dataset_id=?,dataset_name=?,code_dataset_id=?,code_enabled=?,
-			code_configured=?,auto_capture=?,auto_capture_version=?,auto_capture_updated_at=?,source=?,status=?,desired_revision=?,
+			code_configured=?,auto_capture=?,auto_capture_version=?,auto_capture_updated_at=?,auto_capture_reason=?,auto_capture_actor=?,source=?,status=?,desired_revision=?,
 			operation_id=?,import_acl=?,tool_graph_json=?,applied_json=?,extra_json=? WHERE id=?`, p.Name, p.DatasetID, p.DatasetName, p.CodeDatasetID,
 			boolToInt(p.CodeEnabled), boolToInt(p.CodeConfigured), boolToInt(p.AutoCapture), max(1, p.AutoCaptureVersion), p.AutoCaptureUpdatedAt,
-			p.Source, p.Status, p.DesiredRevision, p.OperationID, boolToInt(p.ImportACL), defaultText(p.ToolGraphJSON, "{}"),
+			p.AutoCaptureReason, p.AutoCaptureActor, p.Source, p.Status, p.DesiredRevision, p.OperationID, boolToInt(p.ImportACL), defaultText(p.ToolGraphJSON, "{}"),
 			defaultText(p.AppliedJSON, "{}"), defaultText(p.ExtraJSON, "{}"), p.ID); err != nil {
 			return err
 		}
@@ -220,10 +224,22 @@ func (s *Store) MatchProjectByPath(ctx context.Context, rawPath string) (Project
 }
 
 func (s *Store) SetProjectAutoCapture(ctx context.Context, projectID string, enabled bool) (Project, error) {
+	return s.SetProjectAutoCaptureWithMeta(ctx, projectID, enabled, "user", "")
+}
+
+func (s *Store) SetProjectAutoCaptureWithMeta(ctx context.Context, projectID string, enabled bool, actor, reason string) (Project, error) {
+	actor = defaultText(actor, "user")
+	if reason == "" {
+		reason = "user_disabled"
+		if enabled {
+			reason = "user_enabled"
+		}
+	}
 	var p Project
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		if err := execSQL(ctx, tx, `UPDATE projects SET auto_capture=?,auto_capture_version=auto_capture_version+1,
-			auto_capture_updated_at=? WHERE id=? AND auto_capture<>?`, boolToInt(enabled), NowUTCMicro(), projectID, boolToInt(enabled)); err != nil {
+			auto_capture_updated_at=?,auto_capture_reason=?,auto_capture_actor=? WHERE id=? AND auto_capture<>?`,
+			boolToInt(enabled), NowUTCMicro(), reason, actor, projectID, boolToInt(enabled)); err != nil {
 			return err
 		}
 		var err error
@@ -440,7 +456,7 @@ func evaluateACL(ctx context.Context, tx *sql.Tx, kind, id, agentID string, p Pr
 	}
 	return EffectiveACL{Access: d.Access, Capture: d.Capture, AutoProcess: d.AutoProcess, Permissions: permissions,
 		CanCapture: p.AutoCapture && d.Capture && d.Access == AccessMaintain, CaptureScope: scope, ProjectAutoCapture: p.AutoCapture,
-		AutoCaptureVersion: p.AutoCaptureVersion, AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt, CanAutoProcess: d.AutoProcess && d.Access == AccessMaintain}, nil
+		AutoCaptureVersion: p.AutoCaptureVersion, AutoCaptureUpdatedAt: p.AutoCaptureUpdatedAt, AutoCaptureReason: p.AutoCaptureReason, AutoCaptureActor: p.AutoCaptureActor, CanAutoProcess: d.AutoProcess && d.Access == AccessMaintain}, nil
 }
 
 func scanSessionBinding(row scanner) (SessionBinding, error) {
@@ -463,13 +479,13 @@ func (s *Store) ListProjectSessions(ctx context.Context, projectID string) ([]Se
 }
 
 const projectColumns = `id, name, dataset_id, dataset_name, code_dataset_id, code_enabled, code_configured,
-		auto_capture, auto_capture_version, auto_capture_updated_at, source, status, desired_revision, operation_id,
+		auto_capture, auto_capture_version, auto_capture_updated_at, auto_capture_reason, auto_capture_actor, source, status, desired_revision, operation_id,
 		import_acl, tool_graph_json, applied_json, extra_json`
 
 func scanProject(row scanner) (Project, error) {
 	var p Project
 	err := row.Scan(&p.ID, &p.Name, &p.DatasetID, &p.DatasetName, &p.CodeDatasetID, &p.CodeEnabled, &p.CodeConfigured,
-		&p.AutoCapture, &p.AutoCaptureVersion, &p.AutoCaptureUpdatedAt, &p.Source, &p.Status, &p.DesiredRevision, &p.OperationID,
+		&p.AutoCapture, &p.AutoCaptureVersion, &p.AutoCaptureUpdatedAt, &p.AutoCaptureReason, &p.AutoCaptureActor, &p.Source, &p.Status, &p.DesiredRevision, &p.OperationID,
 		&p.ImportACL, &p.ToolGraphJSON, &p.AppliedJSON, &p.ExtraJSON)
 	return p, rowError(err)
 }

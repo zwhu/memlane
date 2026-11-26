@@ -96,13 +96,20 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 	return rec
 }
 
+func (q *ProjectQueueState) clearInboxStatus() {
+	q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
+	q.LastErrorAt, q.RecentFailures = "", nil
+	q.FilteredCount, q.RecentFiltered, q.inboxLoaded = 0, nil, false
+	q.ShowFailureTech, q.ShowFilteredDetails = false, false
+}
+
 func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProject, meta projectQueueApplyMeta, snap projectQueueSnapshot, rec projectQueueReconciled) {
 	if meta.request != q.Request {
 		return
 	}
 	q.Loading = false
 	if rec.AuthDenied {
-		q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
+		q.clearInboxStatus()
 		q.DocumentError = rec.AuthDeniedError
 		q.Activity = nil
 		a.invalidateReading(p.Dataset)
@@ -113,19 +120,30 @@ func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProje
 	}
 	_, current, _ := readingIdentityPair(Client{Config: a.client.Config})
 	if meta.baseIdentity != current {
-		q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
+		q.clearInboxStatus()
 		q.Documents = nil
 		q.Loaded = false
 		return
 	}
 	if snap.inbox != nil && snap.inbox.AutoCaptureVersion > 0 {
 		autoCapture := snap.inbox.AutoCapture
-		q.applyAutoCapture(&autoCapture, int64(snap.inbox.AutoCaptureVersion))
+		q.applyAutoCaptureMeta(&autoCapture, int64(snap.inbox.AutoCaptureVersion), snap.inbox.AutoCaptureUpdatedAt,
+			snap.inbox.AutoCaptureActor, snap.inbox.AutoCaptureReason)
 	}
 	if snap.inbox != nil && meta.inboxRevision == q.inboxRevision {
 		q.InboxPending, q.InboxFailed, q.LastError = snap.inbox.InboxPending, snap.inbox.InboxFailed, snap.inbox.LastError
+		q.LastErrorAt, q.RecentFailures = snap.inbox.LastErrorAt, snap.inbox.Inbox.RecentFailures
+		q.FilteredCount, q.RecentFiltered, q.inboxLoaded = snap.inbox.FilteredCount, snap.inbox.RecentFiltered, true
+		if len(q.RecentFiltered) == 0 {
+			q.RecentFiltered = snap.inbox.Inbox.RecentFiltered
+		}
+		q.FilteredCount = max(q.FilteredCount, snap.inbox.Inbox.FilteredCount)
+		if len(q.RecentFiltered) <= 1 {
+			q.ShowFilteredDetails = false
+		}
 		if q.InboxFailed == 0 && q.LastError == "" {
 			q.InboxRetryError = ""
+			q.ShowFailureTech = false
 		}
 	}
 	if a.isSetupOnlyRuntime() {

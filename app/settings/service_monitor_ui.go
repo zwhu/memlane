@@ -10,36 +10,34 @@ import (
 func (a *Controller) serviceMonitorAlerts(c *ui.Context) {
 	tok := a.tokens()
 	m := &a.monitor
-	if m.State == "exited" || m.State == "degraded" {
-		banner := "服务连续健康检查失败，不会自动重启，请核对原因后手动重启服务。"
-		if m.State == "exited" {
-			banner = "Cognee 进程已退出，服务未自动重启，请核对原因后手动重启服务。"
+	if m.State == "exited" || m.State == "degraded" || m.State == "warning" {
+		banner := m.alertText()
+		color := tok.Danger
+		if m.State == "warning" {
+			color = tok.Warning
 		}
 		ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-			kitui.Text(c, tok, banner, kitui.RoleMeta).TextColor(tok.Danger).LineHeight(1.5)
-		})
-	} else if m.State == "warning" {
-		ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-			kitui.Text(c, tok, fmt.Sprintf("检测到短暂健康波动（连续失败 %d/3 次），正在继续观测。", m.ConsecutiveFailures), kitui.RoleMeta).TextColor(tok.Warning)
+			kitui.Text(c, tok, banner, kitui.RoleMeta).TextColor(color).LineHeight(1.5)
 		})
 	}
 	if m.Snapshot != nil && m.Snapshot.Summary != nil {
-		if len(m.Snapshot.Summary.HookErrors) > 0 {
-			for _, he := range m.Snapshot.Summary.HookErrors {
+		summary := m.Snapshot.Summary
+		if len(summary.HookErrors) > 0 {
+			for _, he := range summary.HookErrors {
 				ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 					kitui.Text(c, tok, formatMonitorHookErrorLine(he), kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
 				})
 			}
-		} else if m.Snapshot.Summary.HookErrorsCount > 0 {
+		} else if summary.HookErrorsCount > 0 {
 			ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-				kitui.Text(c, tok, fmt.Sprintf("Hook 未记录（%d 项）：请展开「Agent 与模型」核对对应 Agent 状态。", m.Snapshot.Summary.HookErrorsCount), kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
+				kitui.Text(c, tok, fmt.Sprintf("Hook 未记录（%d 项）：请展开「Agent 与模型」核对对应 Agent 状态。", summary.HookErrorsCount), kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
 			})
 		}
-	}
-	if m.LastError != "" && m.State != "ready" {
-		ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-			kitui.Text(c, tok, "最近错误："+m.LastError, kitui.RoleMeta).TextColor(tok.Danger).LineHeight(1.5)
-		})
+		if summary.FilteredCount > 0 || len(summary.RecentFiltered) > 0 {
+			kitui.Row(c, tok, kitui.RowOptions{Key: "svc-filtered", Title: "因采集规则未采集",
+				Desc:    filteredCaptureDescription(summary.RecentFiltered),
+				Leading: func() { kitui.StatusDot(c, tok, "warn") }})
+		}
 	}
 }
 
@@ -89,6 +87,9 @@ func (a *Controller) serviceMonitorDetails(c *ui.Context) {
 			return
 		}
 		ui.Column(c.Key("svc-diag-panel")).FillWidth().Padding(sp3, sp1, sp4, sp1).Gap(sp2).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+			if m.LastError != "" && m.State != "ready" {
+				kitui.Text(c, tok, "最近技术错误："+m.LastError, kitui.RoleMeta).LineHeight(1.5)
+			}
 			if m.Snapshot == nil || len(m.Snapshot.LogTail) == 0 {
 				kitui.Text(c, tok, "暂无服务日志记录。", kitui.RoleMeta)
 				return

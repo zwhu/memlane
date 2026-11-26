@@ -10,6 +10,21 @@ const (
 	AccessMaintain AccessLevel = "maintain"
 )
 
+type CaptureFilterEvent struct {
+	ID         string `json:"id"`
+	ProjectID  string `json:"project_id"`
+	AgentID    string `json:"agent_id"`
+	HostKind   string `json:"host_kind"`
+	SessionID  string `json:"session_id"`
+	ToolName   string `json:"tool_name"`
+	Rule       string `json:"rule"`
+	Category   string `json:"category"`
+	Source     string `json:"source"`
+	Reason     string `json:"reason"`
+	NextAction string `json:"next_action"`
+	OccurredAt string `json:"occurred_at"`
+}
+
 type InboxSummary struct {
 	Running        bool           `json:"running"`
 	Pending        int            `json:"pending"`
@@ -17,6 +32,9 @@ type InboxSummary struct {
 	Succeeded      int            `json:"succeeded"`
 	Failed         int            `json:"failed"`
 	RecentFailures []InboxFailure `json:"recent_failures"`
+
+	FilteredCount  int                  `json:"filtered_count,omitempty"`
+	RecentFiltered []CaptureFilterEvent `json:"recent_filtered,omitempty"`
 }
 
 type InboxFailure struct {
@@ -25,6 +43,11 @@ type InboxFailure struct {
 	LastError string `json:"last_error"`
 	Attempts  int    `json:"attempts"`
 	UpdatedAt string `json:"updated_at"`
+
+	LastErrorAt string `json:"last_error_at,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	NextAction  string `json:"next_action,omitempty"`
 }
 
 type EngineCapabilities struct {
@@ -63,6 +86,16 @@ type RuntimeMonitorResponse struct {
 	Daemon map[string]json.RawMessage `json:"daemon"`
 	Engine EngineHealth               `json:"engine"`
 	Inbox  InboxSummary               `json:"inbox"`
+
+	CheckedAtISO  string `json:"checked_at_iso"`
+	LastOKAtISO   string `json:"last_ok_at_iso"`
+	LastErrorAt   string `json:"last_error_at"`
+	StatusSummary string `json:"status_summary"`
+	NextAction    string `json:"next_action"`
+	Summary       struct {
+		FilteredCount  int                  `json:"filtered_count,omitempty"`
+		RecentFiltered []CaptureFilterEvent `json:"recent_filtered,omitempty"`
+	} `json:"summary"`
 }
 
 type ProjectSummary struct {
@@ -80,6 +113,12 @@ type ProjectSummary struct {
 	InboxPending       int    `json:"inbox_pending"`
 	InboxFailed        int    `json:"inbox_failed"`
 	LastError          string `json:"last_error"`
+
+	AutoCaptureUpdatedAt string `json:"auto_capture_updated_at"`
+	AutoCaptureReason    string `json:"auto_capture_reason"`
+	AutoCaptureActor     string `json:"auto_capture_actor"`
+	LastErrorAt          string `json:"last_error_at"`
+	FilteredCount        int    `json:"filtered_count"`
 }
 
 type ACLOverride struct {
@@ -101,6 +140,8 @@ type ProjectView struct {
 	Inbox           InboxSummary           `json:"inbox"`
 	DesiredRevision int64                  `json:"desired_revision"`
 	Applied         map[string]AppliedACL  `json:"applied"`
+
+	RecentFiltered []CaptureFilterEvent `json:"recent_filtered,omitempty"`
 }
 
 type CreateProjectRequest struct {

@@ -105,7 +105,7 @@ func TestHookEvents(t *testing.T) {
 					if host == HostPi && (tc.event == "capture" || tc.event == Stop || tc.event == SessionEnd) {
 						want = `{"status":"complete"}`
 					}
-					if string(out) != want || got.body["kind"] != tc.kind {
+					if string(out) != want || got.body["kind"] != tc.kind || got.body["host"] != CanonicalHost(host) {
 						t.Fatalf("%+v %s", got, out)
 					}
 					content := got.body["content"].(object)

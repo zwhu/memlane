@@ -3,6 +3,8 @@ package settings
 import (
 	"net/http"
 
+	"github.com/zwhu/memlane/app/api"
+
 	"github.com/zwhu/memlane/internal/controlplane"
 )
 
@@ -44,6 +46,11 @@ type AccessApplied struct {
 }
 
 type AccessProject struct {
+	AutoCaptureReason    string                     `json:"auto_capture_reason,omitempty"`
+	AutoCaptureActor     string                     `json:"auto_capture_actor,omitempty"`
+	LastErrorAt          string                     `json:"last_error_at,omitempty"`
+	FilteredCount        int                        `json:"filtered_count,omitempty"`
+	RecentFiltered       []api.CaptureFilterEvent   `json:"recent_filtered,omitempty"`
 	AutoCapture          *bool                      `json:"auto_capture,omitempty"`
 	AutoCaptureVersion   int64                      `json:"auto_capture_version,omitempty"`
 	AutoCaptureUpdatedAt string                     `json:"auto_capture_updated_at,omitempty"`

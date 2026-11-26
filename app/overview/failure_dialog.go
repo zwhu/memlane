@@ -92,9 +92,11 @@ func (a *ControllerOf[T]) RenderFailureDialog(c *ui.Context) {
 					}
 					kitui.Row(c, tok, kitui.RowOptions{Key: "fail-stage", Title: "失败环节", Desc: stageDesc, DescMono: stageDesc != "", Value: detail.StageLabel})
 				}
-				if detail.LocalTime != "" {
-					kitui.Row(c, tok, kitui.RowOptions{Key: "fail-time", Title: "发生时间", Value: detail.LocalTime, ValueMono: true})
+				localTime := detail.LocalTime
+				if localTime == "" {
+					localTime = "时间未知"
 				}
+				kitui.Row(c, tok, kitui.RowOptions{Key: "fail-time", Title: "发生时间", Value: localTime, ValueMono: true})
 				if detail.Duration != "" {
 					kitui.Row(c, tok, kitui.RowOptions{Key: "fail-dur", Title: "持续耗时", Value: detail.Duration})
 				}

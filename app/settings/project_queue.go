@@ -12,12 +12,19 @@ type UnreadState = api.UnreadScopeStateOf[Item]
 
 type ProjectQueueState struct {
 	UnreadState
-	InboxPending    int
-	InboxFailed     int
-	LastError       string
-	InboxRetryBusy  bool
-	InboxRetryError string
-	inboxRevision   uint64
+	InboxPending        int
+	InboxFailed         int
+	LastError           string
+	LastErrorAt         string
+	RecentFailures      []api.InboxFailure
+	FilteredCount       int
+	RecentFiltered      []api.CaptureFilterEvent
+	ShowFailureTech     bool
+	ShowFilteredDetails bool
+	inboxLoaded         bool
+	InboxRetryBusy      bool
+	InboxRetryError     string
+	inboxRevision       uint64
 
 	KnowledgeCatalogVersion string
 
@@ -42,6 +49,8 @@ type ProjectQueueState struct {
 	BacklogLoaded                  bool
 	BacklogNext                    time.Time
 	BacklogError, BacklogOperation string
+
+	AutoCaptureUpdatedAt, AutoCaptureReason, AutoCaptureActor string
 }
 
 func (q *ProjectQueueState) projectAutoCapture(p AccessProject) bool {
@@ -53,9 +62,29 @@ func (q *ProjectQueueState) projectAutoCapture(p AccessProject) bool {
 
 func (q *ProjectQueueState) applyAutoCapture(enabled *bool, version int64) {
 	if enabled != nil && version >= q.AutoCaptureVersion {
+		if version > q.AutoCaptureVersion {
+			q.AutoCaptureUpdatedAt, q.AutoCaptureActor, q.AutoCaptureReason = "", "", ""
+		}
 		q.AutoCapture = enabled
 		q.AutoCaptureVersion = version
 	}
+}
+
+func (q *ProjectQueueState) applyAutoCaptureMeta(enabled *bool, version int64, updatedAt, actor, reason string) {
+	if enabled == nil || version < q.AutoCaptureVersion {
+		return
+	}
+	q.applyAutoCapture(enabled, version)
+	q.AutoCaptureUpdatedAt, q.AutoCaptureActor, q.AutoCaptureReason = updatedAt, actor, reason
+}
+
+func (q *ProjectQueueState) autoCaptureStatus(p AccessProject) (string, string, string) {
+	updatedAt, actor, reason := p.AutoCaptureUpdatedAt, p.AutoCaptureActor, p.AutoCaptureReason
+	if q.AutoCapture != nil && (p.AutoCapture == nil || q.AutoCaptureVersion > p.AutoCaptureVersion ||
+		q.AutoCaptureVersion == p.AutoCaptureVersion && q.AutoCaptureUpdatedAt != "") {
+		updatedAt, actor, reason = q.AutoCaptureUpdatedAt, q.AutoCaptureActor, q.AutoCaptureReason
+	}
+	return formatAutoCaptureStatus(q.projectAutoCapture(p), updatedAt, actor, reason)
 }
 
 func (a *Controller) ExistingProjectQueue(p AccessProject) *ProjectQueueState {

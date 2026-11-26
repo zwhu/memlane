@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/zwhu/memlane/core/engine"
@@ -54,6 +56,37 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 			"completion": s.cfg.CompletionHandler != nil, "mcp": s.cfg.MCPHandler != nil, "profiles": s.cfg.ProfilesHandler != nil}})
 }
 
+type runtimeMonitorHistory struct {
+	mu                sync.Mutex
+	lastOK, lastError time.Time
+}
+
+func (h *runtimeMonitorHistory) record(checked, failure time.Time) (lastOK, lastError time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if failure.IsZero() && checked.After(h.lastOK) {
+		h.lastOK = checked
+	}
+	if failure.After(h.lastError) {
+		h.lastError = failure
+	}
+	return h.lastOK, h.lastError
+}
+
+func monitorUnix(t time.Time) float64 {
+	if t.IsZero() {
+		return 0
+	}
+	return float64(t.UnixMilli()) / 1000
+}
+
+func monitorISO(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
 func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	inbox, err := s.inbox.Summary(ctx, "")
@@ -70,25 +103,50 @@ func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	health := s.engineHealth(ctx)
 	latency := float64(time.Since(started).Microseconds()) / 1000
-	state := "degraded"
-	var lastOK float64
-	checked := float64(time.Now().UnixMilli()) / 1000
-	if health.OK {
-		state, lastOK = "ready", checked
+	checked := time.Now()
+	state, statusSummary := "ready", "提炼服务运行正常"
+	var failure time.Time
+	var nextAction string
+	lastErrorText := health.Error
+	if !health.OK {
+		state, failure = "degraded", checked
+		if lastErrorText == "" {
+			lastErrorText = "engine_unavailable"
+		}
+		_, statusSummary, nextAction = describeInboxFailure(lastErrorText)
 	}
 	processes := map[string]any{"control": map[string]any{"pid": os.Getpid(), "alive": true}}
+	var logTail []string
 	if services, ok := daemon["services"].([]daemonkit.ServiceStatus); ok {
+		safeServices := make([]daemonkit.ServiceStatus, 0, len(services))
 		for _, service := range services {
+			service.LastError = sanitizeError(errors.New(service.LastError))
+			var safeTail []string
+			for _, line := range service.TailLines {
+				safeTail = append(safeTail, daemonkit.RedactLogLine(line))
+			}
+			service.TailLines = safeTail
+			safeServices = append(safeServices, service)
 			if service.Role != "cognee-engine" {
 				continue
 			}
 			alive := service.ExitedAt == nil
 			processes["official"] = map[string]any{"pid": service.PID, "alive": alive}
+			if r.URL.Query().Get("include_logs") == "1" {
+				logTail = append(logTail, service.TailLines...)
+			}
 			if !alive {
-				state = "exited"
+				state, failure = "exited", *service.ExitedAt
+				statusSummary = "Cognee 进程已退出，服务未自动重启"
+				nextAction = "请在服务日志中核对退出原因，再手动重启服务。"
+				if service.LastError != "" {
+					lastErrorText = service.LastError
+				}
 			}
 		}
+		daemon["services"] = safeServices
 	}
+	lastOK, lastError := s.monitorHistory.record(checked, failure)
 	owner := daemon["owner_pid"]
 	if owner == nil {
 		owner = os.Getpid()
@@ -100,6 +158,8 @@ func (s *Server) monitor(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"daemon": daemon, "engine": health, "inbox": inbox,
 		"state": state, "owner_pid": owner, "owner_phase": daemon["phase"], "processes": processes,
-		"checked_at": checked, "last_ok_at": lastOK, "latency_ms": latency, "last_error": health.Error,
-		"summary": map[string]any{"projects_count": projects}})
+		"checked_at": monitorUnix(checked), "last_ok_at": monitorUnix(lastOK), "latency_ms": latency, "last_error": lastErrorText,
+		"checked_at_iso": monitorISO(checked), "last_ok_at_iso": monitorISO(lastOK), "last_error_at": monitorISO(lastError),
+		"status_summary": statusSummary, "next_action": nextAction, "log_tail": logTail,
+		"summary": map[string]any{"projects_count": projects, "filtered_count": inbox.FilteredCount, "recent_filtered": inbox.RecentFiltered}})
 }

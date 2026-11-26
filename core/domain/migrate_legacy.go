@@ -54,7 +54,7 @@ var legacyCountQueries = strings.Fields(`
 	tool_graph_jobs tool_graph_watermarks
 `)
 
-// ImportLegacyDailyStore snapshots the legacy files, builds a v2 database and publishes it.
+// ImportLegacyDailyStore snapshots the legacy files and publishes a database at the current schema version.
 func ImportLegacyDailyStore(legacyDir, targetDBPath string) (report *MigrationReport, err error) {
 	if err := requireIDs(legacyDir, targetDBPath); err != nil {
 		return nil, err
@@ -195,7 +195,8 @@ func checkMigratedTarget(path string, info os.FileInfo) error {
 	defer db.Close()
 	var version int
 	err = db.QueryRow("SELECT schema_version FROM schema_meta WHERE singleton=1").Scan(&version)
-	if err != nil || version != SchemaVersion {
+	// Legacy imports first published v2. OpenStore upgrades an existing target.
+	if err != nil || version < 2 || version > SchemaVersion {
 		return fmt.Errorf("existing migration target schema version %d: %w", version, errors.Join(ErrConflict, err))
 	}
 	return nil

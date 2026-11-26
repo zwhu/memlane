@@ -19,7 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_capture_receipts_status_updated ON capture_receip
 CREATE TABLE IF NOT EXISTS capture_inbox (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, dataset_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT NOT NULL,
  message_id TEXT NOT NULL, capture_key TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, payload_json TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed')), last_error TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed')), last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
  attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_capture_inbox_status_updated ON capture_inbox(status,updated_at);
@@ -35,13 +35,13 @@ type CaptureReceipt struct {
 
 type CaptureInboxItem struct {
 	ID, ProjectID, DatasetID, AgentID, SessionID, MessageID, CaptureKey, Kind, PayloadJSON string
-	Status, LastError                                                                      string
+	Status, LastError, LastErrorAt                                                         string
 	Attempts                                                                               int
 	CreatedAt, UpdatedAt                                                                   string
 }
 
 const receiptColumns = "capture_key,user_id,dataset_id,session_id,message_id,payload_sha256,entry_type,entry_id,baseline_count,status,updated_at"
-const inboxColumns = "id,project_id,dataset_id,agent_id,session_id,message_id,capture_key,kind,payload_json,status,last_error,attempts,created_at,updated_at"
+const inboxColumns = "id,project_id,dataset_id,agent_id,session_id,message_id,capture_key,kind,payload_json,status,last_error,last_error_at,attempts,created_at,updated_at"
 
 func getCaptureReceipt(ctx context.Context, db sqlReader, key string) (CaptureReceipt, error) {
 	var r CaptureReceipt
@@ -116,7 +116,7 @@ func (s *Store) AbortPendingCaptureReceipt(ctx context.Context, captureKey strin
 func scanInboxItem(row scanner) (CaptureInboxItem, error) {
 	var item CaptureInboxItem
 	err := row.Scan(&item.ID, &item.ProjectID, &item.DatasetID, &item.AgentID, &item.SessionID, &item.MessageID, &item.CaptureKey,
-		&item.Kind, &item.PayloadJSON, &item.Status, &item.LastError, &item.Attempts, &item.CreatedAt, &item.UpdatedAt)
+		&item.Kind, &item.PayloadJSON, &item.Status, &item.LastError, &item.LastErrorAt, &item.Attempts, &item.CreatedAt, &item.UpdatedAt)
 	return item, rowError(err)
 }
 
@@ -141,7 +141,7 @@ func (s *Store) EnqueueInboxItem(ctx context.Context, item CaptureInboxItem) (Ca
 	var queued CaptureInboxItem
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		now := NowUTCMicro()
-		if err := execSQL(ctx, tx, `INSERT INTO capture_inbox (`+inboxColumns+`) VALUES(?,?,?,?,?,?,?,?,?,'pending','',0,?,?)
+		if err := execSQL(ctx, tx, `INSERT INTO capture_inbox (`+inboxColumns+`) VALUES(?,?,?,?,?,?,?,?,?,'pending','','',0,?,?)
 			ON CONFLICT(id) DO NOTHING`, item.ID, item.ProjectID, item.DatasetID, item.AgentID, item.SessionID,
 			item.MessageID, item.CaptureKey, item.Kind, item.PayloadJSON, defaultText(item.CreatedAt, now), now); err != nil {
 			return err
@@ -173,9 +173,15 @@ func (s *Store) ClaimNextInboxItem(ctx context.Context) (CaptureInboxItem, error
 func (s *Store) transitionInboxItem(ctx context.Context, id, from, to, lastError string) (CaptureInboxItem, error) {
 	var item CaptureInboxItem
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		now, lastErrorAt := NowUTCMicro(), ""
+		if to == "failed" {
+			lastErrorAt = now
+		} else {
+			lastError = ""
+		}
 		var err error
-		item, err = scanInboxItem(tx.QueryRowContext(ctx, `UPDATE capture_inbox SET status=?,last_error=?,updated_at=?
-			WHERE id=? AND status=? RETURNING `+inboxColumns, to, lastError, NowUTCMicro(), id, from))
+		item, err = scanInboxItem(tx.QueryRowContext(ctx, `UPDATE capture_inbox SET status=?,last_error=?,last_error_at=?,updated_at=?
+			WHERE id=? AND status=? RETURNING `+inboxColumns, to, lastError, lastErrorAt, now, id, from))
 		if !errors.Is(err, ErrNotFound) {
 			return err
 		}

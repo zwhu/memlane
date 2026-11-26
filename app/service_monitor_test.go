@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,18 +21,19 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 	if err := os.WriteFile(token, []byte(strings.Repeat("m", 40)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	official := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const officialURL = "http://127.0.0.1:61255"
+	const controlURL = "http://127.0.0.1:61256"
+	official := func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			w.WriteHeader(200)
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
 		w.WriteHeader(404)
-	}))
-	defer official.Close()
+	}
 
 	var monitorMode atomic.Int32
-	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	control := func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/runtime/monitor" {
 			state := "ready"
 			var logTail []string
@@ -48,7 +48,7 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 			alive := state != "exited"
 			json.NewEncoder(w).Encode(ServiceMonitorSnapshot{
 				State:      state,
-				ServiceURL: official.URL,
+				ServiceURL: officialURL,
 				Processes: map[string]MonitoredProcess{
 					"official":        {PID: 5001, Alive: &alive, RSSBytes: &rss},
 					"project_control": {PID: 5002, RSSBytes: &ctrlRSS},
@@ -70,13 +70,22 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 			return
 		}
 		w.WriteHeader(404)
-	}))
-	defer control.Close()
+	}
 
 	a := New(Config{
-		ServiceURL:     official.URL,
-		ProjectControl: &ProjectControlConfig{URL: control.URL, ManagementTokenFile: token},
+		ServiceURL:     officialURL,
+		ProjectControl: &ProjectControlConfig{URL: controlURL, ManagementTokenFile: token},
 	}, nil)
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Host {
+		case "127.0.0.1:61255":
+			official(w, r)
+		case "127.0.0.1:61256":
+			control(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
 	updates := make(chan func(), 16)
 	a.Update = func(fn func()) { updates <- fn }
 

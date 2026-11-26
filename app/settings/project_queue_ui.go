@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -45,11 +46,11 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 	failed := q.InboxFailed > 0 || q.LastError != ""
 	healthy := !setupOnly && q.Loaded && !failed && q.InboxPending == 0 && max(q.PendingDocumentsCount, len(q.Documents)) == 0 &&
 		q.DocumentError == "" && q.AutoCaptureError == "" && !p.PolicySyncUnconfirmed()
-	var actions func()
-	if !setupOnly && !healthy {
-		actions = controls
+	filteredCount, filtered := q.FilteredCount, q.RecentFiltered
+	if !q.inboxLoaded && filteredCount == 0 && len(filtered) == 0 && q.DocumentError == "" {
+		filteredCount, filtered = p.FilteredCount, p.RecentFiltered
 	}
-	section := kitui.Group(c.Key("project-queue-section-"+p.ID), tok, "消息与采集状态", "", actions, func() {
+	section := kitui.Group(c.Key("project-queue-section-"+p.ID), tok, "消息与采集状态", "", nil, func() {
 		if setupOnly {
 			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-queue-setup-" + p.ID, Title: "待配置记忆提炼",
 				Desc:    "完成记忆提炼配置后，将自动整理该项目的会话记忆。",
@@ -57,12 +58,31 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 			})
 			return
 		}
-		if healthy {
-			title, tone := "自动采集已关闭", "neutral"
-			if enabled {
-				title, tone = "自动采集已开启 · 正常", "ok"
+		title, desc, tone := q.autoCaptureStatus(p)
+		kitui.Row(c, tok, kitui.RowOptions{Key: "proj-capture-status-" + p.ID, Title: title, Desc: desc,
+			Leading: func() { kitui.StatusDot(c, tok, tone) }, Control: controls})
+		if filteredCount > 0 || len(filtered) > 0 {
+			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-filtered-" + p.ID, Title: "因采集规则未采集", Desc: filteredCaptureDescription(filtered),
+				Leading: func() { kitui.StatusDot(c, tok, "warn") },
+				Control: func() {
+					if len(filtered) > 1 {
+						label := "查看近期记录"
+						if q.ShowFilteredDetails {
+							label = "收起近期记录"
+						}
+						kitui.SmallButton(c, tok, label, nil, func() { q.ShowFilteredDetails = !q.ShowFilteredDetails })
+					}
+				},
+			})
+			if q.ShowFilteredDetails {
+				for _, event := range filtered {
+					kitui.Row(c, tok, kitui.RowOptions{Key: "proj-filter-event-" + event.ID,
+						Title: formatEventTimeLocal(event.OccurredAt), Desc: event.Reason,
+						Control: func() { kitui.Badge(c, tok, event.Rule, "warn") }})
+				}
 			}
-			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-msg-healthy-" + p.ID, Title: title, Leading: func() { kitui.StatusDot(c, tok, tone) }, Control: controls})
+		}
+		if healthy {
 			return
 		}
 		if p.PolicySyncUnconfirmed() {
@@ -74,20 +94,34 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 			})
 		}
 		if failed {
-			title, reason := "最近采集失败", q.LastError
+			title := "最近采集失败"
 			if q.InboxFailed > 0 {
 				title = fmt.Sprintf("采集队列有 %d 项失败", q.InboxFailed)
 			}
-			if reason == "" {
-				reason = "最近一次采集未能完成，可重试失败记录。"
-			}
-			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-failure-" + p.ID, Title: title, Desc: reason, Error: q.InboxRetryError,
+			headline, detail, tech := formatInboxFailureUI(q.LastError, q.LastErrorAt, q.RecentFailures)
+			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-failure-" + p.ID, Title: title, Desc: headline + " · " + detail, Error: q.InboxRetryError,
 				Leading: func() { kitui.StatusDot(c, tok, "fail") },
 				Control: func() {
+					if tech != "" {
+						label := "查看技术详情"
+						if q.ShowFailureTech {
+							label = "收起技术详情"
+						}
+						kitui.SmallButton(c, tok, label, nil, func() { q.ShowFailureTech = !q.ShowFailureTech })
+					}
 					kitui.SmallPrimaryButton(c, tok, "一键重试", func() { a.RetryProjectInbox(q, p) }).
 						Disabled(q.InboxRetryBusy || a.access.Busy || a.config.ProjectControl == nil || !a.canDispatch())
 				},
 			})
+			if q.ShowFailureTech && tech != "" {
+				ui.Column(c.Key("proj-inbox-tech-" + p.ID)).FillWidth().Padding(sp2).Gap(sp1).Children(func() {
+					for _, line := range strings.Split(tech, "\n") {
+						if line != "" {
+							kitui.Text(c, tok, line, kitui.RoleMeta)
+						}
+					}
+				})
+			}
 		}
 		if q.InboxPending > 0 {
 			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-pending-" + p.ID, Title: fmt.Sprintf("有 %d 条原始记录等待提炼", q.InboxPending),

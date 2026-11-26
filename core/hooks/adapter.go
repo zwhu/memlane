@@ -129,6 +129,7 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 		kind, id, content := capture(in, event)
 		if content != nil {
 			scope["kind"], scope["message_id"], scope["content"] = kind, id, content
+			scope["host"] = host
 			if err := forward(ctx, cfg, "/ingest", scope, nil); err != nil {
 				return nil, err
 			}

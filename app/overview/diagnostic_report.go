@@ -122,12 +122,14 @@ func reportForDetail(event Event, detail FailureDetail) string {
 	} else {
 		fmt.Fprintf(&out, "主要原因：%s\n", detail.ReasonLabel)
 	}
-	if detail.LocalTime != "" && detail.LocalTime != "时间未知" {
-		if detail.Duration != "" {
-			fmt.Fprintf(&out, "发生时间：%s（耗时 %s）\n", detail.LocalTime, detail.Duration)
-		} else {
-			fmt.Fprintf(&out, "发生时间：%s\n", detail.LocalTime)
-		}
+	localTime := detail.LocalTime
+	if localTime == "" {
+		localTime = "时间未知"
+	}
+	if detail.Duration != "" {
+		fmt.Fprintf(&out, "发生时间：%s（耗时 %s）\n", localTime, detail.Duration)
+	} else {
+		fmt.Fprintf(&out, "发生时间：%s\n", localTime)
 	}
 	if detail.EventUTC != "" {
 		fmt.Fprintf(&out, "时间（UTC）：%s\n", detail.EventUTC)

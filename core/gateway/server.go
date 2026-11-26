@@ -59,6 +59,8 @@ type Server struct {
 	registryMu   sync.Mutex
 	generationMu sync.Mutex
 	commonMu     sync.Mutex
+
+	monitorHistory runtimeMonitorHistory
 }
 
 type loopback struct {
@@ -144,6 +146,7 @@ func (s *Server) routes() http.Handler {
 	both("PUT", "/defaults", s.updateDefaults)
 	both("POST", "/projects", s.createProject)
 	both("GET", "/projects/{id}", s.getProject)
+	both("GET", "/projects/{id}/filtered-captures", s.listFilteredCaptures)
 	both("PATCH", "/projects/{id}", s.updateProject)
 	both("PUT", "/projects/{id}/name", s.updateProject)
 	both("PUT", "/projects/{id}/auto-capture", s.toggleCapture)

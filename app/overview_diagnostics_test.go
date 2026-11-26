@@ -46,7 +46,7 @@ BrokenPipeError: private-error-payload
 func TestOverviewFailureReportDoesNotInventMissingDetails(t *testing.T) {
 	event := overviewEvent{Key: "x", State: "失败"}
 	report := failureReport(event, Config{})
-	if !strings.Contains(report, "官方未返回失败详情") || strings.Contains(report, "BrokenPipeError") {
+	if !strings.Contains(report, "官方未返回失败详情") || !strings.Contains(report, "发生时间：时间未知") || strings.Contains(report, "BrokenPipeError") {
 		t.Fatal("invented failure context")
 	}
 }
@@ -197,16 +197,21 @@ func TestOverviewFailureDurationLocalWindowAndExplanations(t *testing.T) {
 		t.Fatalf("unknown=%q", unk)
 	}
 	for class, want := range map[string]string{
-		"ConnectTimeout":        "连接超时",
-		"ReadTimeout":           "等待响应超时",
-		"TimeoutError":          "操作超时",
-		"ConnectError":          "网络连接失败",
-		"BadGatewayError":       "Agent 模型代理异常",
-		"BrokenPipeError":       "连接管道已断开",
-		"PermissionDeniedError": "访问被拒绝",
-		"RateLimitError":        "请求频率受限",
-		"":                      "官方未提供详细原因",
-		"CustomError":           "CustomError",
+		"ConnectTimeout":            "连接超时",
+		"ReadTimeout":               "等待响应超时",
+		"TimeoutError":              "操作超时",
+		"ConnectError":              "网络连接失败",
+		"BadGatewayError":           "Agent 模型代理异常",
+		"BrokenPipeError":           "连接管道已断开",
+		"PermissionDeniedError":     "访问被拒绝",
+		"RateLimitError":            "请求频率受限",
+		"":                          "官方未提供详细原因",
+		"CustomError":               "CustomError",
+		"engine_unavailable":        "提炼服务暂时无法连接",
+		"engine_timeout":            "提炼服务响应超时",
+		"context_deadline_exceeded": "提炼服务响应超时",
+		"capture_paused":            "自动采集已暂停",
+		"capture_filtered":          "因采集规则未采集",
 	} {
 		exp := describeFailureClass(class)
 		if exp.Label != want || exp.Summary == "" || exp.Hint == "" {

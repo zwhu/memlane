@@ -17,6 +17,14 @@ type FailureExplanation struct {
 func DescribeFailureClass(class string) FailureExplanation {
 	class = safeErrorClass(class)
 	switch class {
+	case "engine_unavailable":
+		return FailureExplanation{"提炼服务暂时无法连接", "采集记录暂未完成处理，提炼服务无法连接。", "请在服务监控中检查运行状态，服务恢复后重试。"}
+	case "engine_timeout", "context_deadline_exceeded":
+		return FailureExplanation{"提炼服务响应超时", "服务未在等待时间内完成请求。", "请确认本地服务和模型端点可以连接，然后重试。"}
+	case "capture_paused":
+		return FailureExplanation{"自动采集已暂停", "当前项目没有接收自动采集的新会话。", "如需恢复，请在项目设置中打开自动采集。"}
+	case "capture_filtered":
+		return FailureExplanation{"因采集规则未采集", "记录命中采集规则，原文保留在本机。", "请在项目采集状态中查看规则和原因，无需重试。"}
 	case "ConnectTimeout":
 		return FailureExplanation{
 			Label:   "连接超时",

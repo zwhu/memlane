@@ -1,8 +1,6 @@
 package settings
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 	kitui "github.com/zwhu/memlane/kit/ui"
 )
@@ -94,7 +92,7 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 		kitui.Text(c, tok, "暂时无法读取采集结果，请重新检测。", kitui.RoleMeta).Margin(0, 0, 0, 42)
 	}
 	if row.LastHookError != nil && (row.Capture == nil || row.Capture.State != "healthy") {
-		kitui.Text(c, tok, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError), kitui.RoleMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+		kitui.Text(c, tok, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError)+" · "+formatUnixTimeLocal(row.LastHookError.At), kitui.RoleMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
 	}
 	if !shouldExpandChecklist(row) || s.CaptureHelpCollapsed[row.ID] {
 		return
@@ -152,6 +150,12 @@ func hookErrorSummary(e *AgentHookError) string {
 	if e == nil {
 		return ""
 	}
+	switch {
+	case e.Reason == "apply_patch_key_rule" || e.ErrorType == "apply_patch_key_rule":
+		return "补丁路径命中 `*.key` 规则，记录保留在本机（规则命中本身不足以确认补丁包含密钥）"
+	case e.Reason == "capture_rule_filtered" || e.ErrorType == "capture_rule_filtered":
+		return "记录因采集规则保留在本机，可在项目的采集状态中查看原因"
+	}
 	switch e.Reason {
 	case "installation_not_activated":
 		return "插件尚未完成激活（" + e.Reason + "）"
@@ -172,8 +176,8 @@ func hookErrorSummary(e *AgentHookError) string {
 }
 
 func captureSavedTip(row AgentConnection) string {
-	if row.Capture != nil && row.Capture.LastSavedAt > 0 {
-		return "最近采集：" + time.Unix(int64(row.Capture.LastSavedAt), 0).Local().Format("2006-01-02 15:04")
+	if row.Capture != nil && (row.Capture.LastSavedAt > 0 || row.Capture.State == "healthy") {
+		return "最近采集：" + formatUnixTimeLocal(row.Capture.LastSavedAt)
 	}
 	return ""
 }

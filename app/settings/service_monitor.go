@@ -3,11 +3,15 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/app/api"
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 type MonitoredProcess struct {
@@ -45,6 +49,8 @@ type MonitorRecallQueryStats struct {
 }
 
 type MonitorBusinessSummary struct {
+	FilteredCount             int                      `json:"filtered_count,omitempty"`
+	RecentFiltered            []api.CaptureFilterEvent `json:"recent_filtered,omitempty"`
 	ProjectsCount             int                      `json:"projects_count"`
 	GenerationMode            string                   `json:"generation_mode"`
 	GenerationReceiptVerified *bool                    `json:"generation_receipt_verified"`
@@ -57,6 +63,11 @@ type MonitorBusinessSummary struct {
 }
 
 type ServiceMonitorSnapshot struct {
+	CheckedAtISO        string                      `json:"checked_at_iso,omitempty"`
+	LastOKAtISO         string                      `json:"last_ok_at_iso,omitempty"`
+	LastErrorAt         string                      `json:"last_error_at,omitempty"`
+	StatusSummary       string                      `json:"status_summary,omitempty"`
+	NextAction          string                      `json:"next_action,omitempty"`
 	State               string                      `json:"state"`
 	CheckedAt           float64                     `json:"checked_at"`
 	LastOKAt            float64                     `json:"last_ok_at"`
@@ -193,7 +204,7 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 		a.monitor.HasCompletionLatency = false
 	}
 	if hasControl && controlErr != nil {
-		a.monitor.ControlError = controlErr.Error()
+		a.monitor.ControlError = controlplane.RedactSecretText(controlErr.Error())
 	} else {
 		a.monitor.ControlError = ""
 	}
@@ -205,9 +216,16 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 		a.monitor.State = "exited"
 		a.monitor.ConsecutiveFailures++
 		a.monitor.HasLatency = false
-		a.monitor.LastError = "Cognee 进程已退出"
+		a.monitor.LastError = controlplane.RedactSecretText(snap.LastError)
 		a.monitor.EngineStatus = "服务已退出"
 		return
+	}
+	if snap != nil && snap.State == "degraded" {
+		reason := snap.LastError
+		if reason == "" {
+			reason = "engine_unavailable"
+		}
+		healthErr = errors.New(reason)
 	}
 	if healthErr == nil {
 		a.monitor.State = "ready"
@@ -220,7 +238,7 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 		return
 	}
 	a.monitor.ConsecutiveFailures++
-	a.monitor.LastError = healthErr.Error()
+	a.monitor.LastError = controlplane.RedactSecretText(healthErr.Error())
 	a.monitor.HasLatency = false
 	if !a.monitor.LastOKAt.IsZero() && a.monitor.ConsecutiveFailures < 3 {
 		a.monitor.State = "warning"
@@ -228,7 +246,7 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 		return
 	}
 	a.monitor.State = "degraded"
-	a.monitor.EngineStatus = healthErr.Error()
+	a.monitor.EngineStatus = a.monitor.LastError
 }
 
 func (a *Controller) RefreshServiceMonitorIfDue(now time.Time) {
@@ -301,17 +319,10 @@ func stripANSIEscapes(s string) string {
 }
 
 func formatServiceLogTimestamp(raw string) string {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t.Local().Format("15:04:05")
-		}
+	if t, ok := parseEventTime(raw); ok {
+		return t.Local().Format("2006/01/02 15:04:05")
 	}
-	for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04:05"} {
-		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
-			return t.Local().Format("15:04:05")
-		}
-	}
-	return raw
+	return unknownEventTime
 }
 
 func humanCogneeTask(name string) string {
@@ -361,7 +372,7 @@ func translateCogneeInfoMessage(msg string) string {
 	return msg
 }
 
-func formatRequestFinishedLog(cleaned string) (string, string, bool) {
+func formatStructuredServiceLog(cleaned string) (string, string, bool) {
 	if !strings.HasPrefix(cleaned, "{") {
 		return "", "", false
 	}
@@ -372,7 +383,16 @@ func formatRequestFinishedLog(cleaned string) (string, string, bool) {
 		BackendKind string   `json:"backend_kind"`
 		Component   string   `json:"component"`
 	}
-	if err := json.Unmarshal([]byte(cleaned), &entry); err != nil || entry.Event != "request_finished" {
+	if err := json.Unmarshal([]byte(cleaned), &entry); err != nil || entry.Event == "" {
+		return "", "", false
+	}
+	switch entry.Event {
+	case "capture_filtered":
+		return formatServiceLogTimestamp(entry.At) + " · 警告 · 因采集规则未采集，请查看规则命中原因。", "warning", true
+	case "inbox_failed", "capture_failed":
+		return formatServiceLogTimestamp(entry.At) + " · 错误 · 采集记录处理失败，请查看队列详情。", "error", true
+	case "request_finished":
+	default:
 		return "", "", false
 	}
 	var parts []string
@@ -392,10 +412,7 @@ func formatRequestFinishedLog(cleaned string) (string, string, bool) {
 	if len(parts) > 0 {
 		detail += "（" + strings.Join(parts, "，") + "）"
 	}
-	prefix := ""
-	if entry.At != "" {
-		prefix = formatServiceLogTimestamp(entry.At) + " · "
-	}
+	prefix := formatServiceLogTimestamp(entry.At) + " · "
 	return prefix + "正常 · " + detail, "info", true
 }
 
@@ -404,7 +421,7 @@ func formatServiceLogLine(raw string) (string, string) {
 	if cleaned == "" {
 		return "", ""
 	}
-	if display, level, ok := formatRequestFinishedLog(cleaned); ok {
+	if display, level, ok := formatStructuredServiceLog(cleaned); ok {
 		return display, level
 	}
 	if m := structlogLineRe.FindStringSubmatch(cleaned); m != nil {
@@ -435,7 +452,30 @@ func formatServiceLogLine(raw string) (string, string) {
 	case strings.Contains(lower, "warn"):
 		level = "warning"
 	}
-	return cleaned, level
+	ts, message := plainServiceLogParts(cleaned)
+	switch {
+	case strings.HasPrefix(message, "gateway inbox:"):
+		return ts + " · 错误 · 采集队列处理遇到异常，请查看原始日志。", "error"
+	case strings.HasPrefix(message, "gateway store:"):
+		return ts + " · 错误 · 网关无法访问本地数据，请查看原始日志。", "error"
+	case strings.HasPrefix(message, "capture_filtered"):
+		return ts + " · 警告 · 因采集规则未采集，请查看规则命中原因。", "warning"
+	}
+	return ts + " · " + message, level
+}
+
+func plainServiceLogParts(cleaned string) (string, string) {
+	const layout = "2006/01/02 15:04:05"
+	if len(cleaned) > len(layout) && cleaned[len(layout)] == ' ' {
+		if t, err := time.ParseInLocation(layout, cleaned[:len(layout)], time.Local); err == nil {
+			return t.Format(layout), strings.TrimSpace(cleaned[len(layout):])
+		}
+	}
+	prefix, message, _ := strings.Cut(cleaned, " ")
+	if t, ok := parseEventTime(prefix); ok && strings.Contains(prefix, "T") {
+		return t.Local().Format(layout), message
+	}
+	return unknownEventTime, cleaned
 }
 
 func formatMonitorHookErrorLine(e MonitorHookError) string {
@@ -443,10 +483,7 @@ func formatMonitorHookErrorLine(e MonitorHookError) string {
 	if e.Kind != "" {
 		agentLabel = connectionName(e.Kind)
 	}
-	timePart := ""
-	if e.At > 0 {
-		timePart = " · " + time.Unix(int64(e.At), 0).Local().Format("15:04")
-	}
+	timePart := " · " + formatUnixTimeLocal(e.At)
 	reason := hookErrorSummary(&AgentHookError{ErrorType: e.ErrorType, Reason: e.Reason})
 	if reason == "" {
 		reason = "未记录原因"

@@ -65,7 +65,7 @@ func TestStoreSchema(t *testing.T) {
 	checkFileMode(t, path, 0o600)
 	version, err := store.SchemaVersion()
 	must(t, err)
-	if version != 2 {
+	if version != 3 {
 		t.Fatalf("schema version = %d", version)
 	}
 	ctx := context.Background()
@@ -75,14 +75,14 @@ func TestStoreSchema(t *testing.T) {
 	must(t, err)
 	_, err = store.GetProject(ctx, "project")
 	must(t, err)
-	_, err = store.DB().Exec("UPDATE schema_meta SET schema_version=3")
+	_, err = store.DB().Exec("UPDATE schema_meta SET schema_version=4")
 	must(t, err)
 	must(t, store.Close())
 	_, err = OpenStore(path)
 	wantError(t, err, ErrConflict)
 	var future int
 	must(t, openReadOnlyTestDB(t, path).QueryRow("SELECT schema_version FROM schema_meta").Scan(&future))
-	if future != 3 {
+	if future != 4 {
 		t.Fatalf("future database changed to version %d", future)
 	}
 }
@@ -165,6 +165,8 @@ func TestClearCatalogProjection(t *testing.T) {
 		INSERT INTO user_profile_attempts(operation_id) VALUES('attempt');
 		INSERT INTO tool_graph_jobs(scope,operation_id) VALUES('control','op');
 		INSERT INTO tool_graph_watermarks(user_id,session_id) VALUES('u','s');`)
+	must(t, err)
+	_, err = s.RecordCaptureFilterEvent(ctx, CaptureFilterEvent{ProjectID: "p", Rule: "*.key"})
 	must(t, err)
 	must(t, s.UpsertCatalogDoc(ctx, CatalogDoc{DatasetID: "d", DocID: "doc", Kind: "knowledge", IsKnowledge: true}))
 	must(t, s.UpsertCatalogSession(ctx, CatalogSession{DatasetID: "d", SessionID: "s"}))

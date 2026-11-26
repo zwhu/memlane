@@ -154,6 +154,11 @@ func accessPolicyChanged(before, after AccessDirectory) bool {
 			old.AutoCapture, current.AutoCapture = nil, nil
 			old.AutoCaptureVersion, current.AutoCaptureVersion = 0, 0
 			old.AutoCaptureUpdatedAt, current.AutoCaptureUpdatedAt = "", ""
+			old.AutoCaptureActor, current.AutoCaptureActor = "", ""
+			old.AutoCaptureReason, current.AutoCaptureReason = "", ""
+			old.LastErrorAt, current.LastErrorAt = "", ""
+			old.FilteredCount, current.FilteredCount = 0, 0
+			old.RecentFiltered, current.RecentFiltered = nil, nil
 			if encode(old) != encode(current) {
 				return true
 			}

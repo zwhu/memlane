@@ -450,3 +450,49 @@ func TestGenerationOptionalParametersPreserveExplicitZero(t *testing.T) {
 		}
 	}
 }
+
+type captureStatusTestTransport func(*http.Request) (*http.Response, error)
+
+func (f captureStatusTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestCaptureStatusWireFields(t *testing.T) {
+	const stamp = "2026-11-26T11:05:00.123456+00:00"
+	const event = `{"id":"filtered","project_id":"p","agent_id":"a","host_kind":"traex","session_id":"s","tool_name":"apply_patch","rule":"*.key","category":"sensitive_path","source":"apply_patch","reason":"补丁路径命中","next_action":"无需重试","occurred_at":"` + stamp + `"}`
+	client := testClient(t, Config{BaseURL: "http://127.0.0.1:61255", ManagementToken: "test-management-token",
+		HTTPClient: &http.Client{Transport: captureStatusTestTransport(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			switch r.URL.Path {
+			case "/api/runtime/monitor":
+				fmt.Fprint(w, `{"checked_at_iso":"`+stamp+`","last_ok_at_iso":"`+stamp+`","last_error_at":"`+stamp+`","status_summary":"健康检查失败","next_action":"请检查","summary":{"filtered_count":1,"recent_filtered":[`+event+`]}}`)
+			case "/api/projects/p":
+				fmt.Fprint(w, `{"auto_capture_updated_at":"`+stamp+`","auto_capture_reason":"user_disabled","auto_capture_actor":"user","last_error_at":"`+stamp+`","filtered_count":1,"recent_filtered":[`+event+`],"inbox":{"filtered_count":1,"recent_filtered":[`+event+`],"recent_failures":[{"last_error_at":"`+stamp+`","error_code":"engine_timeout","summary":"提炼服务连接超时","next_action":"重试"}]}}`)
+			default:
+				t.Errorf("unexpected endpoint %s", r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+			}
+			return w.Result(), nil
+		})}})
+	ctx := context.Background()
+	p, err := client.GetProject(ctx, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.AutoCaptureUpdatedAt != stamp || p.AutoCaptureReason != "user_disabled" || p.AutoCaptureActor != "user" ||
+		p.LastErrorAt != stamp || p.FilteredCount != 1 || len(p.RecentFiltered) != 1 || p.Inbox.FilteredCount != 1 ||
+		len(p.Inbox.RecentFiltered) != 1 || len(p.Inbox.RecentFailures) != 1 {
+		t.Fatalf("project wire fields not decoded: %+v", p)
+	}
+	if ev := p.RecentFiltered[0]; ev.OccurredAt != stamp || ev.Rule != "*.key" || ev.HostKind != "traex" || ev.NextAction == "" {
+		t.Fatal(ev)
+	}
+	if f := p.Inbox.RecentFailures[0]; f.LastErrorAt != stamp || f.ErrorCode != "engine_timeout" || f.Summary == "" || f.NextAction == "" {
+		t.Fatal(f)
+	}
+	m, err := client.RuntimeMonitor(ctx)
+	if err != nil || m.CheckedAtISO != stamp || m.LastOKAtISO != stamp || m.LastErrorAt != stamp || m.StatusSummary == "" ||
+		m.NextAction == "" || m.Summary.FilteredCount != 1 || len(m.Summary.RecentFiltered) != 1 || m.Summary.RecentFiltered[0] != p.RecentFiltered[0] {
+		t.Fatalf("monitor fields not decoded: %+v / %v", m, err)
+	}
+}

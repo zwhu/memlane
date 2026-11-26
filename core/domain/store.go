@@ -12,7 +12,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 const utcNSLayout = "2006-01-02T15:04:05.000000000Z"
 
 var (
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 `
 
 const schemaDDL = schemaMetaDDL + registryDDL + provenanceDDL + recallDDL + readingDDL +
-	captureDDL + driftDDL + generationDDL + profilesToolgraphDDL + catalogDDL
+	captureDDL + driftDDL + generationDDL + profilesToolgraphDDL + catalogDDL + captureFilterDDL
 
 func OpenStore(path string) (*Store, error) {
 	db, err := OpenPrivateSQLite(path)
@@ -59,6 +59,11 @@ func OpenStore(path string) (*Store, error) {
 		}
 		if err := execSQL(ctx, tx, schemaDDL); err != nil {
 			return err
+		}
+		if version > 0 && version < SchemaVersion {
+			if err := migrateStoreSchema(ctx, tx, version); err != nil {
+				return err
+			}
 		}
 		now := NowUTCNS()
 		if err := execSQL(ctx, tx, `INSERT INTO generation_state(singleton,updated_at) VALUES(1,?)
@@ -221,6 +226,7 @@ CREATE TABLE IF NOT EXISTS projects (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, dataset_id TEXT NOT NULL DEFAULT '', dataset_name TEXT NOT NULL DEFAULT '',
  code_dataset_id TEXT NOT NULL DEFAULT '', code_enabled INTEGER NOT NULL DEFAULT 0, code_configured INTEGER NOT NULL DEFAULT 0,
  auto_capture INTEGER NOT NULL DEFAULT 1, auto_capture_version INTEGER NOT NULL DEFAULT 1, auto_capture_updated_at TEXT NOT NULL DEFAULT '',
+ auto_capture_reason TEXT NOT NULL DEFAULT '', auto_capture_actor TEXT NOT NULL DEFAULT '',
  source TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', desired_revision INTEGER NOT NULL DEFAULT 0,
  operation_id TEXT NOT NULL DEFAULT '', import_acl INTEGER NOT NULL DEFAULT 0, tool_graph_json TEXT NOT NULL DEFAULT '{}',
  applied_json TEXT NOT NULL DEFAULT '{}', extra_json TEXT NOT NULL DEFAULT '{}'

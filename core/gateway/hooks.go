@@ -57,6 +57,7 @@ type captureRequest struct {
 	Kind       engine.IngestKind `json:"kind"`
 	Mode       string            `json:"mode"`
 	MessageID  string            `json:"message_id"`
+	Host       string            `json:"host"`
 	CaptureKey string            `json:"capture_key"`
 }
 
@@ -133,6 +134,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 	decoder.UseNumber()
 	if err := decoder.Decode(&content); err != nil || content == nil {
 		writeError(w, 400, "invalid_content", "capture content required")
+		return
+	}
+	if s.filterCapture(w, ctx, req, agent, project, content) {
 		return
 	}
 	req.Content, err = json.Marshal(content)

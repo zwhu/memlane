@@ -114,7 +114,12 @@ func (a *Controller) changeProjectAutoCapture(q *ProjectQueueState, p AccessProj
 				return
 			}
 			if err == nil {
-				q.applyAutoCapture(result.AutoCapture, result.AutoCaptureVersion)
+				q.applyAutoCaptureMeta(result.AutoCapture, result.AutoCaptureVersion, result.AutoCaptureUpdatedAt,
+					result.AutoCaptureActor, result.AutoCaptureReason)
+				q.FilteredCount, q.RecentFiltered, q.inboxLoaded = result.FilteredCount, result.RecentFiltered, true
+				if q.InboxFailed > 0 {
+					q.LastErrorAt = result.LastErrorAt
+				}
 			} else {
 				q.AutoCaptureError = "自动采集设置暂未确认，将重新读取当前设置。"
 			}

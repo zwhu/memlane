@@ -34,6 +34,9 @@ type InboxSummary struct {
 	Succeeded      int            `json:"succeeded"`
 	Failed         int            `json:"failed"`
 	RecentFailures []InboxFailure `json:"recent_failures"`
+
+	FilteredCount  int                      `json:"filtered_count,omitempty"`
+	RecentFiltered []CaptureFilterEventView `json:"recent_filtered,omitempty"`
 }
 type InboxFailure struct {
 	ID        string `json:"id"`
@@ -41,6 +44,11 @@ type InboxFailure struct {
 	LastError string `json:"last_error"`
 	Attempts  int    `json:"attempts"`
 	UpdatedAt string `json:"updated_at"`
+
+	LastErrorAt string `json:"last_error_at,omitempty"`
+	ErrorCode   string `json:"error_code,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	NextAction  string `json:"next_action,omitempty"`
 }
 
 func (w *InboxWorker) Notify() {
@@ -288,14 +296,25 @@ func (w *InboxWorker) summary(ctx context.Context, db sqlRead, projectID string)
 	if err != nil {
 		return out, err
 	}
-	out.RecentFailures, err = readRows(ctx, db, `SELECT id,project_id,last_error,attempts,updated_at FROM capture_inbox
+	out.RecentFailures, err = readRows(ctx, db, `SELECT id,project_id,last_error,attempts,updated_at,last_error_at FROM capture_inbox
 		WHERE status='failed'`+where+` ORDER BY updated_at DESC,id LIMIT 20`, args, func(row rowScanner) (InboxFailure, error) {
 		var f InboxFailure
-		err := row.Scan(&f.ID, &f.ProjectID, &f.LastError, &f.Attempts, &f.UpdatedAt)
+		err := row.Scan(&f.ID, &f.ProjectID, &f.LastError, &f.Attempts, &f.UpdatedAt, &f.LastErrorAt)
 		if f.LastError != "" {
 			f.LastError = sanitizeError(errors.New(f.LastError))
+			f.ErrorCode, f.Summary, f.NextAction = describeInboxFailure(f.LastError)
 		}
 		return f, err
 	})
+	if err != nil {
+		return out, err
+	}
+	out.FilteredCount, err = domain.ReadCaptureFilterCount(ctx, db, projectID)
+	if err != nil {
+		return out, err
+	}
+	if out.FilteredCount > 0 {
+		out.RecentFiltered, err = domain.ReadCaptureFilterEvents(ctx, db, projectID, 10)
+	}
 	return out, err
 }

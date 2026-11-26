@@ -22,7 +22,7 @@ func connectionName(kind string) string {
 		return "pi"
 	case "traex":
 		return "TRAE CLI"
-	case "trae_ide":
+	case "trae_ide", "trae-ide":
 		return "TRAE CN"
 	case "claude_code":
 		return "Claude Code"

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +60,12 @@ func TestGatewayWireParity(t *testing.T) {
 	check(os.WriteFile(tokenFile, []byte(token), 0o600))
 	check(os.WriteFile(bridgeFile, []byte(bridge), 0o600))
 	check(store.UpsertProject(ctx, domain.Project{ID: "project", Name: "Project", DatasetID: "project-ds", Aliases: []string{dir}, DesiredRevision: 3}))
+	_, err = store.SetProjectAutoCaptureWithMeta(ctx, "project", true, "system", "policy_resume")
+	check(err)
+	filter, err := store.RecordCaptureFilterEvent(ctx, domain.CaptureFilterEvent{
+		ProjectID: "project", AgentID: "agent", HostKind: "traex", Rule: "*.key", Category: "sensitive_path", Reason: "TRAE CLI 补丁路径命中",
+	})
+	check(err)
 	check(store.UpsertProject(ctx, domain.Project{ID: "second", Name: "Other", DatasetID: "other-ds"}))
 	check(store.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "common", Name: "Common", DatasetID: "common-ds"}))
 	check(store.UpsertAgent(ctx, domain.Agent{ID: "agent", Kind: "codex", Name: "Codex"}))
@@ -94,11 +99,11 @@ func TestGatewayWireParity(t *testing.T) {
 	server, err := gateway.NewServer(gateway.Config{Store: store, ManagementToken: token, BridgeTokenFile: bridgeFile,
 		Engine: model, ProfilesHandler: profileService.Handler()})
 	check(err)
-	httpServer := httptest.NewServer(server.Handler())
-	t.Cleanup(httpServer.Close)
-	control := settings.ProjectControlClient{Config: settings.ProjectControlConfig{URL: httpServer.URL, ManagementTokenFile: tokenFile}}
+	const gatewayURL = "http://127.0.0.1:61255"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	control := settings.ProjectControlClient{Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile}, HTTP: httpClient}
 	desktop := ProjectControlClient(control)
-	apiClient, err := api.NewClient(api.Config{BaseURL: httpServer.URL, ManagementToken: token, ReadingIdentity: identity})
+	apiClient, err := api.NewClient(api.Config{BaseURL: gatewayURL, ManagementToken: token, ReadingIdentity: identity, HTTPClient: httpClient})
 	check(err)
 	directory, err := desktop.directory(ctx)
 	check(err)
@@ -120,6 +125,15 @@ func TestGatewayWireParity(t *testing.T) {
 	check(err)
 	if len(projects.Projects) != 2 || projects.Common.DatasetID != "common-ds" || projects.Projects[0].Applied["agent"].Revision != 3 {
 		t.Fatalf("API directory: %+v", projects)
+	}
+	typedProject := projects.Projects[0]
+	desktopProject := directory.Projects[0]
+	if typedProject.AutoCaptureUpdatedAt == "" || typedProject.AutoCaptureUpdatedAt != desktopProject.AutoCaptureUpdatedAt ||
+		typedProject.AutoCaptureActor != "system" || desktopProject.AutoCaptureReason != "policy_resume" ||
+		typedProject.FilteredCount != 1 || desktopProject.FilteredCount != 1 ||
+		len(typedProject.RecentFiltered) != 1 || len(desktopProject.RecentFiltered) != 1 ||
+		typedProject.RecentFiltered[0].OccurredAt != filter.OccurredAt || desktopProject.RecentFiltered[0].ID != filter.ID {
+		t.Fatalf("capture metadata differs: %+v / %+v", typedProject, desktopProject)
 	}
 	var connections settings.ConnectionsDirectory
 	check(control.RequestWithHeaders(ctx, "GET", "/v1/connections", nil, nil, &connections, 0))
@@ -167,10 +181,10 @@ func TestGatewayWireParity(t *testing.T) {
 		t.Fatal("API generation receipt differs")
 	}
 	for _, path := range []string{"/api/generation", "/v1/generation"} {
-		req, err := http.NewRequestWithContext(ctx, "GET", httpServer.URL+path, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", gatewayURL+path, nil)
 		check(err)
 		req.Header.Set("Authorization", "Bearer "+token)
-		res, err := httpServer.Client().Do(req)
+		res, err := httpClient.Do(req)
 		check(err)
 		raw, err := io.ReadAll(res.Body)
 		check(err)
@@ -264,7 +278,14 @@ func TestGatewayWireParity(t *testing.T) {
 	check(control.RequestWithHeaders(ctx, "GET", "/v1/runtime/monitor", nil, nil, &monitor, 0))
 	typedMonitor, err := apiClient.RuntimeMonitor(ctx)
 	check(err)
-	if monitor.State != "ready" || monitor.OwnerPID <= 0 || monitor.Summary.ProjectsCount != 2 || !typedMonitor.Engine.OK {
+	if typedMonitor.CheckedAtISO == "" || typedMonitor.LastOKAtISO != typedMonitor.CheckedAtISO || typedMonitor.StatusSummary == "" ||
+		typedMonitor.Summary.FilteredCount != 1 || len(typedMonitor.Summary.RecentFiltered) != 1 || typedMonitor.Summary.RecentFiltered[0].ID != filter.ID {
+		t.Fatalf("monitor metadata: %+v", typedMonitor)
+	}
+	if monitor.State != "ready" || monitor.OwnerPID <= 0 || monitor.Summary == nil || monitor.Summary.ProjectsCount != 2 || !typedMonitor.Engine.OK ||
+		monitor.CheckedAtISO == "" || monitor.StatusSummary != typedMonitor.StatusSummary ||
+		monitor.Summary.FilteredCount != 1 || len(monitor.Summary.RecentFiltered) != 1 ||
+		monitor.Summary.RecentFiltered[0].ID != filter.ID {
 		t.Fatal(monitor, typedMonitor)
 	}
 }
