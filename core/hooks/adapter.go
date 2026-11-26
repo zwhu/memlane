@@ -62,6 +62,14 @@ func stringField(in object, keys ...string) string {
 func workspacePath(host string, in object) string {
 	workspace := stringField(in, "cwd", "workspace")
 	if host != HostTraeIDE {
+		if host == HostAntigravity {
+			if candidate := stringField(in, "cwd"); filepath.IsAbs(candidate) {
+				return filepath.Clean(candidate)
+			}
+			if candidate := firstStringElem(in["workspacePaths"]); filepath.IsAbs(candidate) {
+				return filepath.Clean(candidate)
+			}
+		}
 		for _, name := range []string{"cwd", "workspace", "project_path"} {
 			if candidate := stringField(in, name); filepath.IsAbs(candidate) {
 				return filepath.Clean(candidate)
@@ -111,22 +119,50 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 	if int64(len(rawInput)) > inputLimit(cfg) || json.Unmarshal(rawInput, &in) != nil || in == nil {
 		return nil, ErrInput
 	}
-	scope := object{"workspace": workspacePath(host, in), "session_id": stringField(in, "session_id")}
+	sessionID := stringField(in, "session_id")
+	if host == HostAntigravity {
+		sessionID = antigravitySessionID(in)
+	}
+	scope := object{"workspace": workspacePath(host, in), "session_id": sessionID}
 	// A rejected IDE workspace must never be replaced by a supplied project ID.
 	if host == HostTraeIDE && scope["workspace"] == "" {
 		return []byte(neutral), nil
 	}
 	switch {
-	case event == UserPromptSubmit || host == HostPi && event == "recall":
-		query := []rune(stringField(in, "prompt", "query"))
+	case event == UserPromptSubmit || host == HostAntigravity && event == PreInvocation || host == HostPi && event == "recall":
+		prompt := stringField(in, "prompt", "query")
+		if host == HostAntigravity {
+			prompt = stringField(in, "lastUserInput", "prompt", "query")
+		}
+		query := []rune(prompt)
 		if len(query) == 0 {
 			return []byte(neutral), nil
+		}
+		if host == HostAntigravity && event == PreInvocation {
+			skip, err := shouldSkipAntigravityRecall(in, prompt)
+			if err != nil {
+				return nil, err
+			}
+			if skip {
+				return []byte(neutral), nil
+			}
 		}
 		scope["project_id"], scope["query"] = stringField(in, "project_id"), string(query[:min(len(query), 16000)])
 		scope["channel"], scope["limit"] = "automatic", 10
 		return recall(ctx, host, scope, cfg)
 	case event == PostToolUse || event == PostToolUseFailure || event == Stop || event == SessionEnd || host == HostPi && event == "capture":
-		kind, id, content := capture(in, event)
+		payload := in
+		if host == HostAntigravity {
+			normalized, ok, err := normalizeAntigravityCapture(in, event)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return []byte(neutral), nil
+			}
+			payload = normalized
+		}
+		kind, id, content := capture(payload, event)
 		if content != nil {
 			scope["kind"], scope["message_id"], scope["content"] = kind, id, content
 			scope["host"] = host
@@ -240,6 +276,9 @@ func recall(ctx context.Context, host string, scope object, cfg Config) ([]byte,
 	contextText := strings.Join(lines, "\n")
 	if host == HostPi {
 		return json.Marshal(object{"status": "complete", "context": contextText})
+	}
+	if host == HostAntigravity {
+		return formatAntigravityRecall(contextText)
 	}
 	if contextText == "" {
 		return []byte(neutral), nil

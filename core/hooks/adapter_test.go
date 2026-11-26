@@ -85,7 +85,11 @@ func TestHookEvents(t *testing.T) {
 				}
 				select {
 				case got := <-requests:
-					if got.path != tc.path || got.body["workspace"] != dir || got.body["session_id"] != "session" {
+					wantSession := "session"
+					if host == HostAntigravity {
+						wantSession = "antigravity-session"
+					}
+					if got.path != tc.path || got.body["workspace"] != dir || got.body["session_id"] != wantSession {
 						t.Fatalf("%+v", got)
 					}
 					if tc.path == "/recall" {
@@ -93,8 +97,11 @@ func TestHookEvents(t *testing.T) {
 							t.Fatalf("%+v %s", got, out)
 						}
 						outputKey := "hookSpecificOutput"
-						if host == HostPi {
+						switch host {
+						case HostPi:
 							outputKey = "context"
+						case HostAntigravity:
+							outputKey = "injectSteps"
 						}
 						if !bytes.Contains(out, []byte(outputKey)) {
 							t.Fatalf("%s", out)
@@ -307,4 +314,439 @@ func localHandler(handler http.HandlerFunc) *http.Client {
 		handler.ServeHTTP(w, r)
 		return w.Result(), nil
 	})}
+}
+
+func writeTranscriptJSONL(t *testing.T, lines ...string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	content := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAntigravityPreInvocation(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 10)
+	hitsBody := `{"hits":[{"title":"Memory","snippet":"Check boundaries first"}]}`
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		if _, err := io.WriteString(w, hitsBody); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("first invocation with workspacePaths and hits", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"conversationId": "ec33ebf9-0cba-4100-8142-c61503f6c587",
+			"workspacePaths": []string{workspace},
+			"lastUserInput":  "  Fix the failing unit test  ",
+			"invocationNum":  0,
+			"hookEventName":  PreInvocation,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, payload, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := <-requests
+		if got.path != "/recall" || got.body["workspace"] != workspace ||
+			got.body["session_id"] != "antigravity-ec33ebf9-0cba-4100-8142-c61503f6c587" ||
+			got.body["query"] != "Fix the failing unit test" {
+			t.Fatalf("unexpected recall request: %+v", got)
+		}
+		var decoded struct {
+			InjectSteps []struct {
+				SystemMessage struct {
+					SystemMessage string `json:"systemMessage"`
+				} `json:"systemMessage"`
+			} `json:"injectSteps"`
+		}
+		if err := json.Unmarshal(out, &decoded); err != nil {
+			t.Fatalf("invalid output JSON %s: %v", out, err)
+		}
+		if len(decoded.InjectSteps) != 1 || decoded.InjectSteps[0].SystemMessage.SystemMessage != "- Memory: Check boundaries first" {
+			t.Fatalf("unexpected injectSteps: %s", out)
+		}
+	})
+
+	t.Run("empty hits returns neutral object", func(t *testing.T) {
+		hitsBody = `{"hits":[]}`
+		defer func() { hitsBody = `{"hits":[{"title":"Memory","snippet":"Check boundaries first"}]}` }()
+		payload := mustJSON(t, object{
+			"conversationId": "antigravity-already-prefixed",
+			"cwd":            workspace,
+			"lastUserInput":  "Explain layout",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, payload, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := <-requests
+		if got.body["session_id"] != "antigravity-already-prefixed" {
+			t.Fatalf("double-prefixed session_id: %v", got.body["session_id"])
+		}
+		if string(out) != "{}" {
+			t.Fatalf("expected {}, got %s", out)
+		}
+	})
+
+	t.Run("empty lastUserInput skips recall", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"conversationId": "conv-empty",
+			"cwd":            workspace,
+			"lastUserInput":  "   ",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected neutral skip, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("subsequent invocation skipped via invocationNum", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"conversationId": "conv-sub",
+			"cwd":            workspace,
+			"lastUserInput":  "Fix test",
+			"invocationNum":  2,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected skip on subsequent invocation, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("transcript deduplicates sub-invocation but recalls on new user turn", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Turn 1"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"id":"c1","name":"run_command"}]}`,
+		)
+		subPayload := mustJSON(t, object{
+			"conversationId": "conv-tr",
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"lastUserInput":  "Turn 1",
+			"invocationNum":  1,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, subPayload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected skip when MODEL step exists after user turn, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+
+		// New turn added to transcript with no MODEL step yet recalls even if invocationNum is 1.
+		transcript2 := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Turn 1"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Done"}`,
+			`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Turn 2"}`,
+		)
+		newTurnPayload := mustJSON(t, object{
+			"conversationId": "conv-tr",
+			"cwd":            workspace,
+			"transcriptPath": transcript2,
+			"lastUserInput":  "Turn 2",
+			"invocationNum":  1,
+		})
+		out, err = Handle(context.Background(), HostAntigravity, PreInvocation, newTurnPayload, cfg)
+		if err != nil || !bytes.Contains(out, []byte("injectSteps")) {
+			t.Fatalf("expected recall on fresh user turn, got out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got.body["query"] != "Turn 2" {
+			t.Fatalf("unexpected query: %+v", got.body)
+		}
+	})
+
+	t.Run("PreInvocation rejected for non-antigravity host", func(t *testing.T) {
+		payload := mustJSON(t, object{"session_id": "s1", "cwd": workspace, "prompt": "hi"})
+		if _, err := Handle(context.Background(), HostCodex, PreInvocation, payload, cfg); !errors.Is(err, ErrEvent) {
+			t.Fatalf("expected ErrEvent for codex PreInvocation, got %v", err)
+		}
+	})
+}
+
+func TestAntigravityPostToolUse(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	requests := make(chan object, 10)
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusAccepted)
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("success toolCall", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"conversationId": "conv-tool",
+			"workspacePaths": []string{workspace},
+			"stepIdx":        5,
+			"toolCall": object{
+				"id":   "toolu_01",
+				"name": "run_command",
+				"args": object{"CommandLine": "npm test"},
+			},
+			"error": "",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		params := content["method_params"].(object)
+		if got["kind"] != "capture_trace" || got["host"] != HostAntigravity ||
+			got["session_id"] != "antigravity-conv-tool" || got["workspace"] != workspace ||
+			got["message_id"] != "tool:toolu_01" || content["origin_function"] != "run_command" ||
+			content["status"] != "success" || params["CommandLine"] != "npm test" {
+			t.Fatalf("unexpected trace payload: %+v", got)
+		}
+	})
+
+	t.Run("error toolCall with stepIdx fallback", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"conversationId": "conv-tool",
+			"cwd":            workspace,
+			"stepIdx":        9,
+			"toolCall": object{
+				"name": "run_command",
+				"args": object{"CommandLine": "go test ./..."},
+			},
+			"error": "exit status 1",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if got["message_id"] != "tool:step:9" || content["status"] != "error" || content["method_return_value"] != "exit status 1" {
+			t.Fatalf("unexpected error trace: %+v", got)
+		}
+	})
+
+	t.Run("skips cognee and memlane tools", func(t *testing.T) {
+		for _, toolName := range []string{"cognee_recall", "memlane_remember"} {
+			payload := mustJSON(t, object{
+				"conversationId": "conv-tool",
+				"cwd":            workspace,
+				"stepIdx":        11,
+				"toolCall":       object{"id": "skip-1", "name": toolName, "args": object{}},
+			})
+			out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg)
+			if err != nil || string(out) != "{}" || len(requests) != 0 {
+				t.Fatalf("tool %s should be skipped: out=%s err=%v reqs=%d", toolName, out, err, len(requests))
+			}
+		}
+	})
+}
+
+func TestAntigravityStopTranscript(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	requests := make(chan object, 10)
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusAccepted)
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("multi-turn extracts latest completed turn deterministically", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T07:00:00Z","content":"First question"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T07:00:05Z","content":"First answer"}`,
+			`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T07:10:00Z","content":"Second question"}`,
+			`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T07:10:02Z","tool_calls":[{"id":"t1","name":"read_file"}]}`,
+			`{"step_index":4,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-26T07:10:03Z","content":"file contents"}`,
+			`{"step_index":5,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T07:10:08Z","content":"Second answer"}`,
+			`{"step_index":6,"source":"MODEL","type":"PLANNER_RESPONSE","status":"IN_PROGRESS","content":"partial"}`,
+		)
+		payload := mustJSON(t, object{
+			"conversationId":    "conv-multi",
+			"workspacePaths":    []string{workspace},
+			"transcriptPath":    transcript,
+			"lastUserInput":     "Second question",
+			"terminationReason": "NO_TOOL_CALL",
+			"executionNum":      0,
+			"fullyIdle":         true,
+		})
+		out1, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out1) != "{}" {
+			t.Fatalf("out=%s err=%v", out1, err)
+		}
+		got1 := <-requests
+		out2, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out2) != "{}" {
+			t.Fatalf("repeat out=%s err=%v", out2, err)
+		}
+		got2 := <-requests
+
+		content := got1["content"].(object)
+		if got1["kind"] != "capture_qa" || got1["host"] != HostAntigravity ||
+			got1["session_id"] != "antigravity-conv-multi" || got1["workspace"] != workspace ||
+			got1["message_id"] != "turn:conv-multi:2:5" ||
+			content["question"] != "Second question" || content["answer"] != "Second answer" ||
+			content["prompt_time"] != "2026-11-26T07:10:00Z" || content["time"] != "2026-11-26T07:10:08Z" {
+			t.Fatalf("unexpected capture_qa: %+v", got1)
+		}
+		if !reflect.DeepEqual(got1, got2) {
+			t.Fatalf("repeated Stop payloads diverged:\n1: %+v\n2: %+v", got1, got2)
+		}
+	})
+
+	t.Run("no-reply latest turn does not re-emit prior turn", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Old Q"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Old A"}`,
+			`{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"New Q"}`,
+			`{"step_index":3,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"id":"t1","name":"run_command"}]}`,
+		)
+		payload := mustJSON(t, object{
+			"conversationId": "conv-noreply",
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"lastUserInput":  "New Q",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected no capture for unanswered turn, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("user canceled turn is skipped", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Run tests"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Starting tests..."}`,
+		)
+		payload := mustJSON(t, object{
+			"conversationId":    "conv-cancel",
+			"cwd":               workspace,
+			"transcriptPath":    transcript,
+			"terminationReason": "USER_CANCELED",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected canceled turn skip, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("truncated user transcript falls back to lastUserInput", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"short...<truncated>","truncated_fields":["content"]}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Full reply"}`,
+		)
+		payload := mustJSON(t, object{
+			"conversationId": "conv-trunc",
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"lastUserInput":  "Full untruncated user prompt",
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got["content"].(object)["question"] != "Full untruncated user prompt" {
+			t.Fatalf("expected untruncated question, got %+v", got)
+		}
+	})
+
+	t.Run("oversized transcript reads bounded 1 MiB tail", func(t *testing.T) {
+		filler := `{"step_index":0,"source":"MODEL","type":"GENERIC","status":"DONE","content":"` + strings.Repeat("x", 1024*600) + `"}`
+		transcript := writeTranscriptJSONL(t,
+			filler,
+			filler,
+			`{"step_index":10,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-26T08:00:00Z","content":"Tail Q"}`,
+			`{"step_index":11,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-26T08:00:02Z","content":"Tail A"}`,
+		)
+		payload := mustJSON(t, object{
+			"conversationId": "conv-large",
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if got["message_id"] != "turn:conv-large:10:11" || content["question"] != "Tail Q" || content["answer"] != "Tail A" {
+			t.Fatalf("unexpected tail extraction: %+v", got)
+		}
+	})
+
+	t.Run("symlink transcript is rejected and Run fails open", func(t *testing.T) {
+		realFile := writeTranscriptJSONL(t,
+			`{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"Secret Q"}`,
+			`{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Secret A"}`,
+		)
+		linkPath := filepath.Join(t.TempDir(), "link.jsonl")
+		if err := os.Symlink(realFile, linkPath); err != nil {
+			t.Fatal(err)
+		}
+		payload := mustJSON(t, object{
+			"conversationId": "conv-sym",
+			"cwd":            workspace,
+			"transcriptPath": linkPath,
+		})
+		if _, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg); !errors.Is(err, ErrInput) {
+			t.Fatalf("expected ErrInput for symlink transcript, got %v", err)
+		}
+		var out bytes.Buffer
+		if err := Run(context.Background(), HostAntigravity, Stop, bytes.NewReader(payload), &out, cfg); err != nil || out.String() != "{}\n" {
+			t.Fatalf("Run did not fail open: out=%q err=%v", out.String(), err)
+		}
+		if len(requests) != 0 {
+			t.Fatalf("symlink transcript must never forward to gateway, got %d requests", len(requests))
+		}
+	})
+
+	t.Run("directory transcript is rejected and missing transcript is neutral", func(t *testing.T) {
+		dirPayload := mustJSON(t, object{
+			"conversationId": "conv-dir",
+			"cwd":            workspace,
+			"transcriptPath": t.TempDir(),
+		})
+		if _, err := Handle(context.Background(), HostAntigravity, Stop, dirPayload, cfg); !errors.Is(err, ErrInput) {
+			t.Fatalf("expected ErrInput for directory transcript, got %v", err)
+		}
+
+		missingPayload := mustJSON(t, object{
+			"conversationId": "conv-missing",
+			"cwd":            workspace,
+			"transcriptPath": filepath.Join(t.TempDir(), "does-not-exist.jsonl"),
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, missingPayload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected neutral for missing transcript, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
 }

@@ -23,6 +23,7 @@ const (
 
 	SessionStart       = "SessionStart"
 	UserPromptSubmit   = "UserPromptSubmit"
+	PreInvocation      = "PreInvocation"
 	PostToolUse        = "PostToolUse"
 	PostToolUseFailure = "PostToolUseFailure"
 	Stop               = "Stop"
