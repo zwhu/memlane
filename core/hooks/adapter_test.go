@@ -813,3 +813,447 @@ func TestDefaultHookTimeouts(t *testing.T) {
 		})
 	}
 }
+
+func TestAntigravityXMLWrapperStripping(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "USER_REQUEST with ADDITIONAL_METADATA and USER_SETTINGS_CHANGE",
+			raw:  "<USER_REQUEST>\nFix Antigravity XML tags\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26T15:30:38+08:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmode=fast\n</USER_SETTINGS_CHANGE>",
+			want: "Fix Antigravity XML tags",
+		},
+		{
+			name: "ADDITIONAL_METADATA without USER_REQUEST",
+			raw:  "Explain WAL limits\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26\n</ADDITIONAL_METADATA>",
+			want: "Explain WAL limits",
+		},
+		{
+			name: "USER_SETTINGS_CHANGE only suffix",
+			raw:  "  Check hooks  \n<USER_SETTINGS_CHANGE>\nfoo=bar\n</USER_SETTINGS_CHANGE>",
+			want: "Check hooks",
+		},
+		{
+			name: "plain text unchanged",
+			raw:  "  Plain question text  ",
+			want: "Plain question text",
+		},
+		{
+			name: "metadata only returns empty",
+			raw:  "<ADDITIONAL_METADATA>\nonly metadata\n</ADDITIONAL_METADATA>",
+			want: "",
+		},
+		{
+			name: "truncated unclosed USER_REQUEST",
+			raw:  "<USER_REQUEST>\nLong truncated prompt...",
+			want: "Long truncated prompt...",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cleanAntigravityUserText(tc.raw); got != tc.want {
+				t.Fatalf("cleanAntigravityUserText() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 10)
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		if r.URL.Path == "/recall" {
+			if _, err := io.WriteString(w, `{"hits":[{"title":"Rule","snippet":"Strip wrappers"}]}`); err != nil {
+				t.Error(err)
+			}
+		} else {
+			w.WriteHeader(http.StatusAccepted)
+		}
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	wrappedTurn1 := "<USER_REQUEST>\n为什么下午的对话没记录\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26T15:30:38+08:00.\n</ADDITIONAL_METADATA>"
+	wrappedTurn2 := "<USER_REQUEST>\n再查一下 hook 日志\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-26T15:35:00+08:00.\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nfast=1\n</USER_SETTINGS_CHANGE>"
+
+	t.Run("Stop strips XML wrappers from transcript USER_INPUT", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+				"created_at": "2026-11-26T07:30:38Z", "content": wrappedTurn1,
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+				"created_at": "2026-11-26T07:30:45Z", "content": "已定位到旧版 hook 协议不兼容。",
+			})),
+		)
+		payload := mustJSON(t, object{
+			"conversationId": "conv-xml-stop",
+			"workspacePaths": []string{workspace},
+			"transcriptPath": transcript,
+			"lastUserInput":  wrappedTurn1,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got.body["content"].(object)
+		if content["question"] != "为什么下午的对话没记录" {
+			t.Fatalf("question = %q, want stripped text", content["question"])
+		}
+		if strings.Contains(content["question"].(string), "<USER_REQUEST>") {
+			t.Fatalf("question still contains XML wrapper: %q", content["question"])
+		}
+	})
+
+	t.Run("PreInvocation strips query and matches wrapped transcript consistently", func(t *testing.T) {
+		// Transcript has wrapped USER_INPUT followed by MODEL -> plain lastUserInput must match and skip recall.
+		transcriptAnswered := writeTranscriptJSONL(t,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+				"content": wrappedTurn1,
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+				"tool_calls": []any{object{"id": "t1", "name": "run_command"}},
+			})),
+		)
+		skipPayload := mustJSON(t, object{
+			"conversationId": "conv-xml-recall",
+			"cwd":            workspace,
+			"transcriptPath": transcriptAnswered,
+			"lastUserInput":  "为什么下午的对话没记录",
+			"invocationNum":  1,
+		})
+		out, err := Handle(context.Background(), HostAntigravity, PreInvocation, skipPayload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected skip when wrapped transcript matches plain lastUserInput, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+
+		// Fresh wrapped turn with no MODEL step yet -> wrapped lastUserInput recalls with stripped query.
+		transcriptFresh := writeTranscriptJSONL(t,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+				"content": wrappedTurn1,
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+				"content": "Done",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 2, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+				"content": wrappedTurn2,
+			})),
+		)
+		recallPayload := mustJSON(t, object{
+			"conversationId": "conv-xml-recall",
+			"cwd":            workspace,
+			"transcriptPath": transcriptFresh,
+			"lastUserInput":  wrappedTurn2,
+			"invocationNum":  2,
+		})
+		out, err = Handle(context.Background(), HostAntigravity, PreInvocation, recallPayload, cfg)
+		if err != nil || !bytes.Contains(out, []byte("injectSteps")) {
+			t.Fatalf("expected recall on fresh wrapped turn, got out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got.path != "/recall" || got.body["query"] != "再查一下 hook 日志" {
+			t.Fatalf("unexpected recall query: %+v", got)
+		}
+	})
+}
+
+func writeBrainTranscript(t *testing.T, brainRoot, convID string, lines ...string) string {
+	t.Helper()
+	dir := filepath.Join(brainRoot, convID, ".system_generated", "logs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestAntigravityParentLinkage(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	requests := make(chan object, 20)
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusAccepted)
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	const parentUUID = "557aa2c8-1b54-4330-9577-e535cf0cfd97"
+	const workerUUID = "18b4bf18-cc50-42c7-901d-7d837e901309"
+	const memberOnlyUUID = "64805579-8d2f-4fb8-88a2-08400e59f5dd"
+	const subagentUUID = "8637694b-fd95-4830-ac3a-08f2e66b9050"
+
+	t.Run("swarm worker detected from sender and for @role in PostToolUse and Stop", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		transcript := writeBrainTranscript(t, brainRoot, workerUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "The following is a <SYSTEM_MESSAGE>.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:40:13Z sender=system priority=MESSAGE_PRIORITY_HIGH content=[swarm] new board message #3\n</SYSTEM_MESSAGE>",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "The following is a <SYSTEM_MESSAGE>.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:40:13Z sender=" + parentUUID + " priority=MESSAGE_PRIORITY_HIGH content=You have just started. Your assignment (recorded on the board as #3 for @verifier):\n\nInspect runtime layout.\n</SYSTEM_MESSAGE>",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+				"content": "Starting reconnaissance.",
+			})),
+		)
+
+		toolPayload := mustJSON(t, object{
+			"conversationId": workerUUID,
+			"workspacePaths": []string{workspace},
+			"transcriptPath": transcript,
+			"stepIdx":        3,
+			"toolCall":       object{"id": "toolu_w1", "name": "run_command", "args": object{"CommandLine": "git status"}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, toolPayload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("PostToolUse failed: out=%s err=%v", out, err)
+		}
+		gotTool := <-requests
+		if gotTool["parent_session_id"] != "antigravity-"+parentUUID || gotTool["subagent_role"] != "verifier" {
+			t.Fatalf("unexpected tool parent linkage: %+v", gotTool)
+		}
+
+		stopPayload := mustJSON(t, object{
+			"conversationId": workerUUID,
+			"workspacePaths": []string{workspace},
+			"transcriptPath": transcript,
+			"question":       "Verify hooks",
+			"answer":         "All checks passed",
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, Stop, stopPayload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("Stop failed: out=%s err=%v", out, err)
+		}
+		gotStop := <-requests
+		if gotStop["parent_session_id"] != "antigravity-"+parentUUID || gotStop["subagent_role"] != "verifier" {
+			t.Fatalf("unexpected stop parent linkage: %+v", gotStop)
+		}
+	})
+
+	t.Run("swarm member role falls back to parent members.json lookup", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		swarmDir := filepath.Join(brainRoot, parentUUID, ".system_generated", "swarm")
+		if err := os.MkdirAll(swarmDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		membersJSON := `{"title":"Swarm","members":{"coordinator":{"conversation_id":"` + parentUUID + `","role":"coordinator"},"hook-adapter":{"conversation_id":"` + memberOnlyUUID + `","role":"worker"}}}`
+		if err := os.WriteFile(filepath.Join(swarmDir, "members.json"), []byte(membersJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		transcript := writeBrainTranscript(t, brainRoot, memberOnlyUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:40:13Z sender=" + parentUUID + " priority=MESSAGE_PRIORITY_HIGH content=Implement Antigravity hooks.\n</SYSTEM_MESSAGE>",
+			})),
+		)
+		payload := mustJSON(t, object{
+			"conversationId": memberOnlyUUID,
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"toolCall":       object{"id": "toolu_m1", "name": "edit_file", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got["parent_session_id"] != "antigravity-"+parentUUID || got["subagent_role"] != "hook-adapter" {
+			t.Fatalf("expected members.json role hook-adapter, got %+v", got)
+		}
+	})
+
+	t.Run("regular invoke_subagent falls back to subagent role", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		transcript := writeBrainTranscript(t, brainRoot, subagentUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "The following is a <SYSTEM_MESSAGE>.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-25T14:20:13Z sender=" + parentUUID + " priority=MESSAGE_PRIORITY_HIGH content=Perform read-only code review.\n</SYSTEM_MESSAGE>",
+			})),
+		)
+		payload := mustJSON(t, object{
+			"conversationId": subagentUUID,
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"toolCall":       object{"id": "toolu_s1", "name": "read_file", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got["parent_session_id"] != "antigravity-"+parentUUID || got["subagent_role"] != "subagent" {
+			t.Fatalf("expected subagent linkage, got %+v", got)
+		}
+	})
+
+	t.Run("explicit payload fields take precedence and reject self-parenting", func(t *testing.T) {
+		explicitPayload := mustJSON(t, object{
+			"conversationId":       workerUUID,
+			"parentConversationId": parentUUID,
+			"subagentRole":         "custom-reviewer",
+			"cwd":                  workspace,
+			"toolCall":             object{"id": "toolu_e1", "name": "read_file", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, explicitPayload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got["parent_session_id"] != "antigravity-"+parentUUID || got["subagent_role"] != "custom-reviewer" {
+			t.Fatalf("unexpected explicit parent linkage: %+v", got)
+		}
+
+		selfPayload := mustJSON(t, object{
+			"conversationId":       workerUUID,
+			"parentConversationId": "antigravity-" + workerUUID,
+			"subagent_role":        "verifier",
+			"cwd":                  workspace,
+			"toolCall":             object{"id": "toolu_e2", "name": "read_file", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, selfPayload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		gotSelf := <-requests
+		if _, hasParent := gotSelf["parent_session_id"]; hasParent {
+			t.Fatalf("self-parent must be rejected, got %+v", gotSelf)
+		}
+		if _, hasRole := gotSelf["subagent_role"]; hasRole {
+			t.Fatalf("self-parent must not attach subagent_role, got %+v", gotSelf)
+		}
+	})
+
+	t.Run("transcript self-parent and task sender are ignored", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		transcript := writeBrainTranscript(t, brainRoot, workerUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:40:13Z sender=" + workerUUID + " priority=MESSAGE_PRIORITY_HIGH content=self message\n</SYSTEM_MESSAGE>",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:43:12Z sender=" + parentUUID + "/task-6 priority=MESSAGE_PRIORITY_HIGH content=[monitor] tick\n</SYSTEM_MESSAGE>",
+			})),
+		)
+		payload := mustJSON(t, object{
+			"conversationId": workerUUID,
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"toolCall":       object{"id": "toolu_self", "name": "read_file", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if _, hasParent := got["parent_session_id"]; hasParent {
+			t.Fatalf("self/task sender must not produce parent_session_id: %+v", got)
+		}
+	})
+
+	t.Run("non-subagent parent session with later subagent reply emits no parent_session_id", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		transcript := writeBrainTranscript(t, brainRoot, parentUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+				"content": "<USER_REQUEST>\nRun parallel checks\n</USER_REQUEST>",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "status": "DONE",
+				"content": "Spawning subagent.",
+			})),
+			string(mustJSON(t, object{
+				"step_index": 2, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-26T07:45:00Z sender=" + subagentUUID + " priority=MESSAGE_PRIORITY_HIGH content=Subagent finished\n</SYSTEM_MESSAGE>",
+			})),
+		)
+		payload := mustJSON(t, object{
+			"conversationId": parentUUID,
+			"cwd":            workspace,
+			"transcriptPath": transcript,
+			"toolCall":       object{"id": "toolu_top", "name": "run_command", "args": object{}},
+		})
+		if out, err := Handle(context.Background(), HostAntigravity, PostToolUse, payload, cfg); err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if _, hasParent := got["parent_session_id"]; hasParent {
+			t.Fatalf("top-level session must not emit parent_session_id: %+v", got)
+		}
+		if _, hasRole := got["subagent_role"]; hasRole {
+			t.Fatalf("top-level session must not emit subagent_role: %+v", got)
+		}
+	})
+
+	t.Run("symlink transcript and symlink members.json are rejected", func(t *testing.T) {
+		brainRoot := t.TempDir()
+		realTranscript := writeBrainTranscript(t, brainRoot, workerUUID,
+			string(mustJSON(t, object{
+				"step_index": 0, "source": "SYSTEM", "type": "SYSTEM_MESSAGE", "status": "DONE",
+				"content": "<SYSTEM_MESSAGE>\n[Message] sender=" + parentUUID + " content=task\n</SYSTEM_MESSAGE>",
+			})),
+		)
+		linkTranscript := filepath.Join(t.TempDir(), "transcript-link.jsonl")
+		if err := os.Symlink(realTranscript, linkTranscript); err != nil {
+			t.Fatal(err)
+		}
+		symPayload := mustJSON(t, object{
+			"conversationId": workerUUID,
+			"cwd":            workspace,
+			"transcriptPath": linkTranscript,
+			"toolCall":       object{"id": "toolu_sym1", "name": "run_command", "args": object{}},
+		})
+		if _, err := Handle(context.Background(), HostAntigravity, PostToolUse, symPayload, cfg); !errors.Is(err, ErrInput) {
+			t.Fatalf("expected ErrInput for symlink transcript in PostToolUse, got %v", err)
+		}
+
+		// Symlink members.json
+		swarmDir := filepath.Join(brainRoot, parentUUID, ".system_generated", "swarm")
+		if err := os.MkdirAll(swarmDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(t.TempDir(), "outside.json")
+		if err := os.WriteFile(outside, []byte(`{"members":{"leaked":{"conversation_id":"`+workerUUID+`"}}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(swarmDir, "members.json")); err != nil {
+			t.Fatal(err)
+		}
+		symMembersPayload := mustJSON(t, object{
+			"conversationId": workerUUID,
+			"cwd":            workspace,
+			"transcriptPath": realTranscript,
+			"toolCall":       object{"id": "toolu_sym2", "name": "run_command", "args": object{}},
+		})
+		if _, err := Handle(context.Background(), HostAntigravity, PostToolUse, symMembersPayload, cfg); !errors.Is(err, ErrInput) {
+			t.Fatalf("expected ErrInput for symlink members.json, got %v", err)
+		}
+		if len(requests) != 0 {
+			t.Fatalf("symlink inputs must never forward to gateway, got %d requests", len(requests))
+		}
+	})
+}

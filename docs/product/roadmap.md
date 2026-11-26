@@ -46,6 +46,14 @@
 - [ ] 排查并优化冷启动首次进入尚未加载的项目「记忆」页（`!s.Loaded`）时 `Page Rise`、骨架占位、首批预热渲染与 `Stagger Cascade` 入场、以及右侧阅读区空态/首条选中过渡之间的衔接，在浅色与深色两套外观下实窗验收。
 - **参考位置**：[app/app.go](../../app/app.go)、[app/reading/](../../app/reading/)、[motion_tokens.go](../../kit/ui/motion_tokens.go)、[MyGo 动效契约](../design/motion-implementation.md)。
 
+### 向量 + 图谱 + 关系库混合检索升级（2026-11-26）
+
+- [ ] `engines/cognee/engine_api.py` 当前写死 `SearchType.CHUNKS`（仅向量分块）；后续在引擎无关接口增加检索模式（`hybrid` / `graph` / `chunks` / `code`），对接 Cognee `1.6.7` 原生 `cognee.recall()`（`HYBRID_COMPLETION` / `GRAPH_COMPLETION` + `only_context=True`），联合向量、Ladybug 图谱与 SQLite 元数据召回。
+
+### Antigravity `/mcp` 鉴权打通与主动记忆工具增强（2026-11-26）
+
+- [ ] 当前 `~/.gemini/config/mcp_config.json` 仅写入 `serverUrl` 未携带鉴权凭据导致 `/mcp` 返回 401；后续通过不落盘明文令牌的安全方案（如 `memlane mcp` stdio 代理读取 `0600` 密钥文件转发，或宿主受控鉴权机制）打通 Antigravity `/mcp`，并为 `recall` 暴露检索模式参数与必要使用指引。
+
 ### 遗留未覆盖验收边界（收口备忘）
 
 - 2026-11-19 日常链路五项（自动采集、项目目录统一、异常恢复、提炼切换交接、图谱契约）与通用记忆独立数据集均已完成主链路实施与 dev 核验，仅保留以下未覆盖验收样本待后续补齐：实际空图样本与无官方文档身份节点的正向出处跳转、启动器崩溃后控制服务残留实机复验，以及 [Beta 安装问题清单](../engineering/beta-install-issues.md) 登记的旧库完整升级（I-05）、UTM 客体默认 DNS 长期修复（I-06）与纯问答提炼门控保真（I-15）。

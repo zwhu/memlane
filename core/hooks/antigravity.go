@@ -11,13 +11,19 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-const maxTranscriptTailBytes = 1 << 20
+const (
+	maxTranscriptTailBytes = 1 << 20
+	maxTranscriptHeadBytes = 64 << 10
+	maxSwarmMembersBytes   = 128 << 10
+	maxHeadSystemScan      = 8
+)
 
 type antigravityTranscriptRecord struct {
 	StepIndex       *int     `json:"step_index"`
@@ -29,8 +35,8 @@ type antigravityTranscriptRecord struct {
 	TruncatedFields []string `json:"truncated_fields"`
 }
 
-func antigravitySessionID(in object) string {
-	id := stringField(in, "conversationId", "session_id")
+func normalizeAntigravitySessionID(id string) string {
+	id = strings.TrimSpace(id)
 	if id == "" {
 		return ""
 	}
@@ -40,6 +46,48 @@ func antigravitySessionID(in object) string {
 		return id
 	}
 	return "antigravity-" + id
+}
+
+func antigravitySessionID(in object) string {
+	return normalizeAntigravitySessionID(stringField(in, "conversationId", "session_id"))
+}
+
+func stripXMLTagBlock(s, tag string) string {
+	openTag := "<" + tag + ">"
+	closeTag := "</" + tag + ">"
+	for {
+		start := strings.Index(s, openTag)
+		if start < 0 {
+			return s
+		}
+		after := s[start+len(openTag):]
+		end := strings.Index(after, closeTag)
+		if end < 0 {
+			return s[:start]
+		}
+		s = s[:start] + after[end+len(closeTag):]
+	}
+}
+
+func cleanAntigravityUserText(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	const openReq = "<USER_REQUEST>"
+	const closeReq = "</USER_REQUEST>"
+	if start := strings.Index(trimmed, openReq); start >= 0 {
+		rest := trimmed[start+len(openReq):]
+		if end := strings.LastIndex(rest, closeReq); end >= 0 {
+			return strings.TrimSpace(rest[:end])
+		}
+		rest = stripXMLTagBlock(rest, "ADDITIONAL_METADATA")
+		rest = stripXMLTagBlock(rest, "USER_SETTINGS_CHANGE")
+		return strings.TrimSpace(rest)
+	}
+	cleaned := stripXMLTagBlock(trimmed, "ADDITIONAL_METADATA")
+	cleaned = stripXMLTagBlock(cleaned, "USER_SETTINGS_CHANGE")
+	return strings.TrimSpace(cleaned)
 }
 
 func firstStringElem(raw any) string {
@@ -165,12 +213,328 @@ func latestAntigravityUser(records []antigravityTranscriptRecord) (int, antigrav
 	return -1, antigravityTranscriptRecord{}, false
 }
 
+func readRegularFileHead(path string, maxBytes int64) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if !filepath.IsAbs(path) {
+		return nil, ErrInput
+	}
+	initial, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil || !initial.Mode().IsRegular() {
+		return nil, ErrInput
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ErrInput
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(initial, info) {
+		return nil, ErrInput
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, maxBytes))
+	if err != nil {
+		return nil, ErrInput
+	}
+	return raw, nil
+}
+
+func readAntigravityTranscriptHead(path string) ([]antigravityTranscriptRecord, error) {
+	raw, err := readRegularFileHead(path, maxTranscriptHeadBytes)
+	if err != nil || len(raw) == 0 {
+		return nil, err
+	}
+	var records []antigravityTranscriptRecord
+	for _, line := range bytes.Split(raw, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var rec antigravityTranscriptRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			// Skip incomplete or malformed JSONL lines in the bounded head.
+			continue
+		}
+		records = append(records, rec)
+		if len(records) >= maxHeadSystemScan {
+			break
+		}
+	}
+	return records, nil
+}
+
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidRoleName(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if i == 0 {
+			if !isAlphaNum {
+				return false
+			}
+			continue
+		}
+		if !isAlphaNum && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func extractAntigravityMessageSender(content string) string {
+	header := content
+	if idx := strings.Index(header, "content="); idx >= 0 {
+		header = header[:idx]
+	}
+	const prefix = "sender="
+	for pos := 0; pos < len(header); {
+		idx := strings.Index(header[pos:], prefix)
+		if idx < 0 {
+			return ""
+		}
+		abs := pos + idx
+		if abs == 0 || header[abs-1] == ' ' || header[abs-1] == '\t' || header[abs-1] == '\n' || header[abs-1] == '\r' {
+			rest := header[abs+len(prefix):]
+			end := strings.IndexAny(rest, " \t\r\n")
+			token := rest
+			if end >= 0 {
+				token = rest[:end]
+			}
+			if isUUID(token) {
+				return token
+			}
+		}
+		pos = abs + len(prefix)
+	}
+	return ""
+}
+
+func antigravityMessageOpening(content string) string {
+	body := content
+	if idx := strings.Index(body, "content="); idx >= 0 {
+		body = body[idx+len("content="):]
+	}
+	if sep := strings.Index(body, "\n\n"); sep >= 0 {
+		body = body[:sep]
+	}
+	return body
+}
+
+func extractAntigravitySwarmRoleFromContent(content string) string {
+	opening := antigravityMessageOpening(content)
+	const marker = "for @"
+	for pos := 0; pos < len(opening); {
+		idx := strings.Index(opening[pos:], marker)
+		if idx < 0 {
+			return ""
+		}
+		start := pos + idx + len(marker)
+		end := start
+		for end < len(opening) {
+			c := opening[end]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
+				end++
+				continue
+			}
+			break
+		}
+		name := opening[start:end]
+		tail := strings.TrimLeft(opening[end:], " \t")
+		if isValidRoleName(name) && (strings.HasPrefix(tail, ":") || strings.HasPrefix(tail, "):")) {
+			return name
+		}
+		pos = start
+	}
+	return ""
+}
+
+func extractAntigravitySubagentRoleLine(content string) string {
+	opening := antigravityMessageOpening(content)
+	for _, line := range strings.Split(opening, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		for _, prefix := range []string{"subagent_role:", "subagent_role=", "subagent role:"} {
+			if strings.HasPrefix(lower, prefix) {
+				candidate := strings.TrimSpace(trimmed[len(prefix):])
+				if sep := strings.IndexAny(candidate, " \t,;.)"); sep >= 0 {
+					candidate = candidate[:sep]
+				}
+				if isValidRoleName(candidate) {
+					return candidate
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func antigravityBrainRootAndConvID(transcriptPath string) (string, string, bool) {
+	if !filepath.IsAbs(transcriptPath) {
+		return "", "", false
+	}
+	clean := filepath.Clean(transcriptPath)
+	logsDir := filepath.Dir(clean)
+	sysDir := filepath.Dir(logsDir)
+	convDir := filepath.Dir(sysDir)
+	brainRoot := filepath.Dir(convDir)
+	if filepath.Base(logsDir) != "logs" || filepath.Base(sysDir) != ".system_generated" {
+		return "", "", false
+	}
+	convID := filepath.Base(convDir)
+	if convID == "" || convID == "." || convID == string(filepath.Separator) || brainRoot == convDir {
+		return "", "", false
+	}
+	return brainRoot, convID, true
+}
+
+func lookupAntigravitySwarmMemberRole(transcriptPath, parentUUID, currentSessionID string) (string, error) {
+	brainRoot, pathConvID, ok := antigravityBrainRootAndConvID(transcriptPath)
+	if !ok || !isUUID(parentUUID) {
+		return "", nil
+	}
+	if currentSessionID == "" {
+		currentSessionID = normalizeAntigravitySessionID(pathConvID)
+	}
+	if currentSessionID == "" {
+		return "", nil
+	}
+	membersPath := filepath.Join(brainRoot, parentUUID, ".system_generated", "swarm", "members.json")
+	raw, err := readRegularFileHead(membersPath, maxSwarmMembersBytes)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var doc struct {
+		Members map[string]struct {
+			ConversationID string `json:"conversation_id"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		// Malformed members.json should not block capture; allow role lookup to continue.
+		return "", nil
+	}
+	for _, key := range slices.Sorted(maps.Keys(doc.Members)) {
+		member := doc.Members[key]
+		if member.ConversationID == "" {
+			continue
+		}
+		if strings.EqualFold(normalizeAntigravitySessionID(member.ConversationID), currentSessionID) {
+			return strings.TrimSpace(key), nil
+		}
+	}
+	return "", nil
+}
+
+func resolveAntigravityParent(in object) (string, string, error) {
+	transcriptPath := stringField(in, "transcriptPath", "transcript_path")
+	currentSessionID := antigravitySessionID(in)
+	if currentSessionID == "" && transcriptPath != "" {
+		if _, pathConvID, ok := antigravityBrainRootAndConvID(transcriptPath); ok {
+			currentSessionID = normalizeAntigravitySessionID(pathConvID)
+		}
+	}
+	explicitRole := stringField(in, "subagent_role", "subagentRole")
+	if explicitParent := stringField(in, "parentConversationId", "parent_session_id"); explicitParent != "" {
+		parentSessionID := normalizeAntigravitySessionID(explicitParent)
+		if currentSessionID != "" && strings.EqualFold(parentSessionID, currentSessionID) {
+			return "", "", nil
+		}
+		role := explicitRole
+		if role == "" {
+			role = "subagent"
+		}
+		return parentSessionID, role, nil
+	}
+	if transcriptPath == "" {
+		return "", "", nil
+	}
+	records, err := readAntigravityTranscriptHead(transcriptPath)
+	if err != nil {
+		return "", "", err
+	}
+	var parentUUID, matchedContent string
+	for _, rec := range records {
+		if rec.Source == "USER_EXPLICIT" || rec.Type == "USER_INPUT" || rec.Source == "MODEL" {
+			break
+		}
+		if rec.Type != "SYSTEM_MESSAGE" {
+			continue
+		}
+		sender := extractAntigravityMessageSender(rec.Content)
+		if sender == "" {
+			continue
+		}
+		if currentSessionID != "" && strings.EqualFold(normalizeAntigravitySessionID(sender), currentSessionID) {
+			continue
+		}
+		parentUUID = sender
+		matchedContent = rec.Content
+		break
+	}
+	if parentUUID == "" {
+		return "", "", nil
+	}
+	parentSessionID := normalizeAntigravitySessionID(parentUUID)
+	role := explicitRole
+	if role == "" {
+		role = extractAntigravitySwarmRoleFromContent(matchedContent)
+	}
+	if role == "" {
+		role, err = lookupAntigravitySwarmMemberRole(transcriptPath, parentUUID, currentSessionID)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if role == "" {
+		role = extractAntigravitySubagentRoleLine(matchedContent)
+	}
+	if role == "" {
+		role = "subagent"
+	}
+	return parentSessionID, role, nil
+}
+
 func antigravityUserMatchesQuery(user antigravityTranscriptRecord, query string) bool {
-	content := strings.TrimSpace(user.Content)
-	if content == query {
+	content := cleanAntigravityUserText(user.Content)
+	cleanQuery := cleanAntigravityUserText(query)
+	if content == "" || cleanQuery == "" {
+		return false
+	}
+	if content == cleanQuery {
 		return true
 	}
-	if len(user.TruncatedFields) > 0 && len(content) >= 64 && strings.HasPrefix(query, content[:64]) {
+	if len(user.TruncatedFields) > 0 && len(content) >= 64 && strings.HasPrefix(cleanQuery, content[:64]) {
 		return true
 	}
 	return false
@@ -245,14 +609,17 @@ func normalizeAntigravityStopCapture(in object) (object, bool, error) {
 	}
 	if stringField(in, "answer", "last_assistant_message") != "" {
 		out := maps.Clone(in)
-		if stringField(out, "question", "prompt") == "" {
-			if q := stringField(in, "lastUserInput"); q != "" {
-				out["question"] = q
-			}
+		q := cleanAntigravityUserText(stringField(out, "question", "prompt"))
+		if q == "" {
+			q = cleanAntigravityUserText(stringField(in, "lastUserInput"))
 		}
+		if q == "" {
+			return nil, false, nil
+		}
+		out["question"] = q
 		if stringField(out, "turn_id", "event_id", "message_id") == "" {
 			convID := stringField(in, "conversationId", "session_id")
-			out["message_id"] = antigravityTurnMessageID(convID, nil, nil, stringField(out, "question", "prompt"), stringField(out, "answer", "last_assistant_message"))
+			out["message_id"] = antigravityTurnMessageID(convID, nil, nil, q, stringField(out, "answer", "last_assistant_message"))
 		}
 		return out, true, nil
 	}
@@ -280,8 +647,8 @@ func normalizeAntigravityStopCapture(in object) (object, bool, error) {
 	if !foundAssistant {
 		return nil, false, nil
 	}
-	question := strings.TrimSpace(user.Content)
-	if lastInput := stringField(in, "lastUserInput", "question", "prompt"); lastInput != "" && (question == "" || len(user.TruncatedFields) > 0) {
+	question := cleanAntigravityUserText(user.Content)
+	if lastInput := cleanAntigravityUserText(stringField(in, "lastUserInput", "question", "prompt")); lastInput != "" && (question == "" || len(user.TruncatedFields) > 0) {
 		question = lastInput
 	}
 	answer := strings.TrimSpace(assistant.Content)

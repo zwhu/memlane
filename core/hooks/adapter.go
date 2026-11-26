@@ -132,7 +132,7 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 	case event == UserPromptSubmit || host == HostAntigravity && event == PreInvocation || host == HostPi && event == "recall":
 		prompt := stringField(in, "prompt", "query")
 		if host == HostAntigravity {
-			prompt = stringField(in, "lastUserInput", "prompt", "query")
+			prompt = cleanAntigravityUserText(stringField(in, "lastUserInput", "prompt", "query"))
 		}
 		query := []rune(prompt)
 		if len(query) == 0 {
@@ -166,6 +166,18 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 		if content != nil {
 			scope["kind"], scope["message_id"], scope["content"] = kind, id, content
 			scope["host"] = host
+			if host == HostAntigravity {
+				parentSessionID, subagentRole, err := resolveAntigravityParent(in)
+				if err != nil {
+					return nil, err
+				}
+				if parentSessionID != "" {
+					scope["parent_session_id"] = parentSessionID
+					if subagentRole != "" {
+						scope["subagent_role"] = subagentRole
+					}
+				}
+			}
 			if err := forward(ctx, cfg, "/ingest", scope, nil); err != nil {
 				return nil, err
 			}
