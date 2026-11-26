@@ -121,10 +121,13 @@ func TestAdapterRunnerWire(t *testing.T) {
 	for _, tc := range []wireCall{
 		{
 			method: "GET", path: "/health",
-			response: `{"ok":true,"engine":"cognee","mode":"ready","capabilities":{"tool_graph":true}}`,
+			response: `{"ok":true,"engine":"cognee","mode":"ready","capabilities":{"tool_graph":true,"hybrid_recall":true,"session_context":true,"code_search":true,"search_modes":["hybrid","graph","chunks","code"]}}`,
 			call:     func(a *Adapter) (any, error) { return a.Health(ctx) },
 			want: engine.HealthStatus{OK: true, Engine: "cognee", Mode: engine.HealthModeReady,
-				Capabilities: engine.Capabilities{ToolGraph: true}},
+				Capabilities: engine.Capabilities{
+					ToolGraph: true, HybridRecall: true, SessionContext: true, CodeSearch: true,
+					SearchModes: []string{"hybrid", "graph", "chunks", "code"},
+				}},
 		},
 		{
 			method: "POST", path: "/ingest",
@@ -157,6 +160,51 @@ func TestAdapterRunnerWire(t *testing.T) {
 					Filters: engine.SearchFilters{Kind: "lesson"}, Limit: 5})
 			},
 			want: engine.SearchResult{OK: true, Hits: []engine.SearchHit{{DatasetID: scope.DatasetID, DocumentID: "doc", Score: 0.5}}},
+		},
+		{
+			method: "POST", path: "/search",
+			body:     `{"scopes":[{"dataset_id":"ds & space","user_id":"user + symbol"}],"query":"auth flow","mode":"hybrid","filters":{"kind":"document","node_sets":["auth"],"session_id":"sess-1","include_session_context":true},"limit":6}`,
+			response: `{"ok":true,"hits":[{"dataset_id":"ds & space","document_id":"doc","title":"auth.md","snippet":"jwt check","score":0.15}],"graph_context":{"entities":[{"dataset_id":"ds & space","name":"AuthService","type":"Service","edges":[{"text":"AuthService validates JWT","source":"AuthService","target":"JWT","relationship":"validates","superseded":true,"authoritative":true}],"conflicts":["TTL conflict"]}],"facts":[{"dataset_id":"ds & space","text":"Refresh tokens rotate"}],"conflicts":["TTL conflict"],"session_guidance":"## Active session guidance","code_facts":[{"dataset_id":"ds & space","name":"VerifyToken","kind":"symbol","file":"auth.go","line":18,"relations":[{"type":"calls","target":"ParseJWT"}]}],"degraded_to_chunks":true}}`,
+			call: func(a *Adapter) (any, error) {
+				return a.Search(ctx, engine.SearchRequest{
+					Scopes: []engine.Scope{scope},
+					Query:  "auth flow",
+					Mode:   engine.SearchModeHybrid,
+					Filters: engine.SearchFilters{
+						Kind:                  "document",
+						NodeSets:              []string{"auth"},
+						SessionID:             "sess-1",
+						IncludeSessionContext: true,
+					},
+					Limit: 6,
+				})
+			},
+			want: engine.SearchResult{
+				OK: true,
+				Hits: []engine.SearchHit{{
+					DatasetID: scope.DatasetID, DocumentID: "doc", Title: "auth.md", Snippet: "jwt check", Score: 0.15,
+				}},
+				GraphContext: &engine.GraphSearchContext{
+					Entities: []engine.GraphSearchEntity{{
+						DatasetID: scope.DatasetID,
+						Name:      "AuthService",
+						Type:      "Service",
+						Edges: []engine.GraphSearchEdge{{
+							Text: "AuthService validates JWT", Source: "AuthService", Target: "JWT",
+							Relationship: "validates", Superseded: true, Authoritative: true,
+						}},
+						Conflicts: []string{"TTL conflict"},
+					}},
+					Facts:           []engine.GraphSearchFact{{DatasetID: scope.DatasetID, Text: "Refresh tokens rotate"}},
+					Conflicts:       []string{"TTL conflict"},
+					SessionGuidance: "## Active session guidance",
+					CodeFacts: []engine.CodeSearchFact{{
+						DatasetID: scope.DatasetID, Name: "VerifyToken", Kind: "symbol", File: "auth.go", Line: 18,
+						Relations: []engine.CodeSearchRelation{{Type: "calls", Target: "ParseJWT"}},
+					}},
+					DegradedToChunks: true,
+				},
+			},
 		},
 		{
 			method: "GET", path: "/items",

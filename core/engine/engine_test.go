@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -95,5 +97,99 @@ func TestEngineErrorUnwrap(t *testing.T) {
 	}
 	if actual := engineErr.Error(); actual != "HTTP 409: model_digest_mismatch: digest changed" {
 		t.Fatalf("Error() = %q", actual)
+	}
+}
+
+func TestSearchContractJSONRoundTrip(t *testing.T) {
+	req := SearchRequest{
+		Scopes: []Scope{{DatasetID: "ds-1", UserID: "u-1"}},
+		Query:  "auth token refresh",
+		Mode:   SearchModeHybrid,
+		Filters: SearchFilters{
+			Kind:                  "document",
+			Limit:                 8,
+			NodeSets:              []string{"arch", "auth"},
+			SessionID:             "sess-42",
+			IncludeSessionContext: true,
+		},
+		Limit: 8,
+	}
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal SearchRequest: %v", err)
+	}
+	var gotReq SearchRequest
+	if err := json.Unmarshal(reqBytes, &gotReq); err != nil {
+		t.Fatalf("unmarshal SearchRequest: %v", err)
+	}
+	if !reflect.DeepEqual(gotReq, req) {
+		t.Fatalf("SearchRequest round-trip = %#v, want %#v", gotReq, req)
+	}
+
+	res := SearchResult{
+		OK: true,
+		Hits: []SearchHit{{
+			DatasetID: "ds-1", DocumentID: "doc-1", Title: "auth.md", Snippet: "rotate tokens", Score: 0.12,
+		}},
+		GraphContext: &GraphSearchContext{
+			Entities: []GraphSearchEntity{{
+				DatasetID: "ds-1",
+				Name:      "AuthService",
+				Type:      "Service",
+				Edges: []GraphSearchEdge{{
+					Text:          "AuthService validates JWT",
+					Source:        "AuthService",
+					Target:        "JWT",
+					Relationship:  "validates",
+					Superseded:    true,
+					Authoritative: true,
+				}},
+				Conflicts: []string{"Token TTL changed from 15m to 30m"},
+			}},
+			Facts:           []GraphSearchFact{{DatasetID: "ds-1", Text: "Refresh tokens rotate on use"}},
+			Conflicts:       []string{"Token TTL changed from 15m to 30m"},
+			SessionGuidance: "## Active session guidance\n### Rules\n- Keep token TTL short",
+			CodeFacts: []CodeSearchFact{{
+				DatasetID: "ds-1",
+				Name:      "AuthService.Verify",
+				Kind:      "symbol",
+				File:      "auth/service.go",
+				Line:      42,
+				Relations: []CodeSearchRelation{{Type: "calls", Target: "jwt.Parse"}},
+			}},
+			DegradedToChunks: true,
+		},
+	}
+	resBytes, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal SearchResult: %v", err)
+	}
+	var gotRes SearchResult
+	if err := json.Unmarshal(resBytes, &gotRes); err != nil {
+		t.Fatalf("unmarshal SearchResult: %v", err)
+	}
+	if !reflect.DeepEqual(gotRes, res) {
+		t.Fatalf("SearchResult round-trip = %#v, want %#v", gotRes, res)
+	}
+
+	caps := Capabilities{
+		ToolGraph:      true,
+		LanguageEgress: true,
+		ModelHandoff:   true,
+		HybridRecall:   true,
+		SessionContext: true,
+		CodeSearch:     true,
+		SearchModes:    []string{string(SearchModeHybrid), string(SearchModeGraph), string(SearchModeChunks), string(SearchModeCode)},
+	}
+	capsBytes, err := json.Marshal(caps)
+	if err != nil {
+		t.Fatalf("marshal Capabilities: %v", err)
+	}
+	var gotCaps Capabilities
+	if err := json.Unmarshal(capsBytes, &gotCaps); err != nil {
+		t.Fatalf("unmarshal Capabilities: %v", err)
+	}
+	if !reflect.DeepEqual(gotCaps, caps) {
+		t.Fatalf("Capabilities round-trip = %#v, want %#v", gotCaps, caps)
 	}
 }

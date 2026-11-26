@@ -34,9 +34,18 @@ class Backend:
                 'pipeline_run_id': f'{payload.mode}-{current_output_language()}'}
 
     async def search(self, payload, limit):
-        return [{'dataset_id': scope.dataset_id, 'document_id': 'one', 'title': 'title',
+        hits = [{'dataset_id': scope.dataset_id, 'document_id': 'one', 'title': 'title',
                  'snippet': payload.query, 'score': .1, 'metadata': {'limit': limit, 'kind': payload.filters.kind}}
                 for scope in payload.scopes]
+        if payload.mode == 'hybrid':
+            return {
+                'hits': hits,
+                'graph_context': {
+                    'facts': [{'dataset_id': payload.scopes[0].dataset_id, 'text': 'fact-1'}],
+                    'session_guidance': f'session:{payload.filters.session_id}' if payload.filters.include_session_context else '',
+                },
+            }
+        return hits
 
     async def list_items(self, scope, limit, offset):
         return self.items[offset:offset + limit]
@@ -196,7 +205,7 @@ class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
             {'id': 'plain-dict'},
         ]
         with patch('cognee.search', return_value=results) as search:
-            hits = await self.backend.search(Search(scopes=[self.scope], query='match'), limit=20)
+            reply = await self.backend.search(Search(scopes=[self.scope], query='match'), limit=20)
         search.assert_awaited_once_with(query_text='match', query_type=SearchType.CHUNKS,
                                         user=self.user, dataset_ids=[self.dataset], top_k=20)
         expected = [
@@ -205,7 +214,8 @@ class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
             ('single-dict', sdk_dataset), ('single-model', self.dataset),
             ('wrapped-dict', sdk_dataset), ('plain-dict', self.dataset),
         ]
-        self.assertEqual([(hit['document_id'], hit['dataset_id']) for hit in hits],
+        self.assertIsNone(reply['graph_context'])
+        self.assertEqual([(hit['document_id'], hit['dataset_id']) for hit in reply['hits']],
                          [(doc, str(dataset)) for doc, dataset in expected])
 
     async def test_search_filters_sdk_chunks_by_kind(self):
@@ -217,10 +227,438 @@ class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
             {'data_id': 'trace', 'kind': 'capture_trace', 'metadata': {'kind': 'capture_qa'}},
         ])
         with patch('cognee.search', return_value=[result]):
-            hits = await self.backend.search(
+            reply = await self.backend.search(
                 Search(scopes=[self.scope], query='match', filters=SearchFilters(kind='capture_qa')), limit=10)
-        self.assertEqual(hits, [{'dataset_id': str(self.dataset), 'document_id': 'source', 'title': '',
-                                 'snippet': 'snippet', 'score': 0.3, 'metadata': {'kind': 'capture_qa'}}])
+        self.assertIsNone(reply['graph_context'])
+        self.assertEqual(reply['hits'], [{'dataset_id': str(self.dataset), 'document_id': 'source', 'title': '',
+                                          'snippet': 'snippet', 'score': 0.3, 'metadata': {'kind': 'capture_qa'}}])
+
+    async def test_search_chunks_passes_node_sets_and_collects_conflicts(self):
+        from cognee import SearchType
+
+        results = [{
+            'dataset_id': self.dataset,
+            'search_result': [
+                {'data_id': 'doc-1', 'text': 'passage', 'score': 0.2,
+                 'conflicts': ['Port changed from 8080 to 9090', 'Port changed from 8080 to 9090']},
+            ],
+        }]
+        with patch('cognee.search', return_value=results) as search:
+            reply = await self.backend.search(
+                Search(scopes=[self.scope], query='port', mode='chunks',
+                       filters=SearchFilters(node_sets=['infra', '  '])),
+                limit=5,
+            )
+        search.assert_awaited_once_with(
+            query_text='port', query_type=SearchType.CHUNKS,
+            user=self.user, dataset_ids=[self.dataset], top_k=5, node_name=['infra'],
+        )
+        self.assertEqual(len(reply['hits']), 1)
+        self.assertEqual(reply['graph_context'], {'conflicts': ['Port changed from 8080 to 9090']})
+
+    async def test_search_hybrid_parses_scored_results_entities_facts_conflicts_and_zero_llm(self):
+        from cognee import SearchType
+        from cognee.infrastructure.databases.vector.models.ScoredResult import ScoredResult
+
+        chunk_id = uuid4()
+        verbose_results = [{
+            'dataset_id': self.dataset,
+            'objects_result': {
+                'chunks': [
+                    ScoredResult(
+                        id=chunk_id,
+                        score=0.11,
+                        payload={
+                            'id': str(chunk_id),
+                            'document_id': 'doc-auth',
+                            'document_name': 'auth.md',
+                            'text': 'JWT verification uses RS256',
+                            'external_metadata': '{"kind":"document","source":"docs"}',
+                            'conflicts': ['Shared conflict', 'Chunk-only conflict'],
+                        },
+                    ),
+                    {
+                        'data_id': 'doc-skipped',
+                        'text': 'filtered out',
+                        'kind': 'capture_trace',
+                        'score': 0.05,
+                        'conflicts': ['Filtered conflict'],
+                    },
+                    {
+                        'id': 'chunk-ev',
+                        'text': 'Matched via evidence doc id',
+                        'score': 0.25,
+                    },
+                ],
+                'entities': [
+                    {
+                        'id': 'ent-1',
+                        'name': 'AuthService',
+                        'type': 'Service',
+                        'edges': [
+                            {
+                                'text': 'AuthService validates JWT (authoritative source)',
+                                'source': 'AuthService',
+                                'target': 'JWT',
+                                'relationship': 'validates',
+                                'authoritative': True,
+                            },
+                            {
+                                'text': 'AuthService uses HS256 [superseded; as of 2025-01-01]',
+                                'source': 'AuthService',
+                                'target': 'HS256',
+                                'relationship': 'uses',
+                                'authoritative': False,
+                            },
+                        ],
+                        'conflicts': ['Shared conflict', 'Entity-only conflict'],
+                    }
+                ],
+                'facts': [
+                    {'id': 'f-1', 'text': 'Refresh tokens rotate on every use'},
+                ],
+            },
+            'evidence': [
+                {
+                    'kind': 'segment',
+                    'artifact_id': 'chunk-ev',
+                    'chunk_id': 'chunk-ev',
+                    'data_id': 'doc-from-evidence',
+                    'document_name': 'ev.md',
+                }
+            ],
+        }]
+        with patch('cognee.search', return_value=verbose_results) as search:
+            reply = await self.backend.search(
+                Search(
+                    scopes=[self.scope],
+                    query='jwt verification',
+                    mode='hybrid',
+                    filters=SearchFilters(kind='document', node_sets=['auth'], session_id='sess-1'),
+                ),
+                limit=8,
+            )
+        search.assert_awaited_once_with(
+            query_text='jwt verification',
+            query_type=SearchType.HYBRID_COMPLETION,
+            user=self.user,
+            dataset_ids=[self.dataset],
+            top_k=8,
+            node_name=['auth'],
+            only_context=True,
+            verbose=True,
+            include_references=True,
+        )
+        self.assertNotIn('session_id', search.call_args.kwargs)
+        self.assertEqual(reply['hits'], [
+            {
+                'dataset_id': str(self.dataset),
+                'document_id': 'doc-auth',
+                'title': 'auth.md',
+                'snippet': 'JWT verification uses RS256',
+                'score': 0.11,
+                'metadata': {'kind': 'document', 'source': 'docs'},
+            },
+            {
+                'dataset_id': str(self.dataset),
+                'document_id': 'doc-from-evidence',
+                'title': 'ev.md',
+                'snippet': 'Matched via evidence doc id',
+                'score': 0.25,
+                'metadata': {},
+            },
+        ])
+        self.assertEqual(reply['graph_context'], {
+            'entities': [{
+                'dataset_id': str(self.dataset),
+                'name': 'AuthService',
+                'type': 'Service',
+                'edges': [
+                    {
+                        'text': 'AuthService validates JWT (authoritative source)',
+                        'source': 'AuthService',
+                        'target': 'JWT',
+                        'relationship': 'validates',
+                        'superseded': False,
+                        'authoritative': True,
+                    },
+                    {
+                        'text': 'AuthService uses HS256 [superseded; as of 2025-01-01]',
+                        'source': 'AuthService',
+                        'target': 'HS256',
+                        'relationship': 'uses',
+                        'superseded': True,
+                        'authoritative': False,
+                    },
+                ],
+                'conflicts': ['Shared conflict', 'Entity-only conflict'],
+            }],
+            'facts': [{'dataset_id': str(self.dataset), 'text': 'Refresh tokens rotate on every use'}],
+            'conflicts': ['Shared conflict', 'Chunk-only conflict', 'Entity-only conflict'],
+        })
+
+    async def test_search_hybrid_degrades_to_chunks_on_no_data_error(self):
+        from cognee import SearchType
+        from cognee.modules.retrieval.exceptions.exceptions import NoDataError
+
+        with patch('cognee.search', side_effect=[
+            NoDataError('empty graph'),
+            [{'dataset_id': self.dataset, 'search_result': [{'data_id': 'doc-1', 'text': 'chunk fallback', 'score': 0.2}]}],
+        ]) as search:
+            reply = await self.backend.search(Search(scopes=[self.scope], query='fresh', mode='hybrid'), limit=5)
+        self.assertEqual(search.await_count, 2)
+        self.assertEqual(search.await_args_list[0].kwargs['query_type'], SearchType.HYBRID_COMPLETION)
+        self.assertEqual(search.await_args_list[1].kwargs['query_type'], SearchType.CHUNKS)
+        self.assertEqual(reply['hits'][0]['document_id'], 'doc-1')
+        self.assertEqual(reply['graph_context'], {'degraded_to_chunks': True})
+
+        with patch('cognee.search', side_effect=[NoDataError('empty graph'), NoDataError('empty chunks')]):
+            empty = await self.backend.search(Search(scopes=[self.scope], query='fresh', mode='hybrid'), limit=5)
+        self.assertEqual(empty, {'hits': [], 'graph_context': None})
+
+    async def test_search_runs_multiple_scopes_concurrently(self):
+        ds1, ds2 = uuid4(), uuid4()
+        scope1, scope2 = Scope(dataset_id=str(ds1)), Scope(dataset_id=str(ds2))
+        both_started = asyncio.Event()
+        in_flight = 0
+
+        async def resolve_dataset(scope, *_args, **_kwargs):
+            return self.user, ds1 if scope.dataset_id == str(ds1) else ds2
+
+        async def fake_search(*, dataset_ids, **_kwargs):
+            nonlocal in_flight
+            in_flight += 1
+            if in_flight == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=1.0)
+            ds = dataset_ids[0]
+            score = 0.3 if ds == ds1 else 0.1
+            return [{
+                'dataset_id': ds,
+                'objects_result': {
+                    'chunks': [{'data_id': f'doc-{ds}', 'text': 'hit', 'score': score}],
+                    'entities': [],
+                    'facts': [{'id': f'f-{ds}', 'text': f'fact-{ds}'}],
+                },
+                'evidence': [],
+            }]
+
+        with (patch.object(self.backend, '_dataset', side_effect=resolve_dataset),
+              patch('cognee.search', side_effect=fake_search)):
+            reply = await self.backend.search(
+                Search(scopes=[scope1, scope2], query='concurrent', mode='hybrid'), limit=5)
+        self.assertEqual([hit['dataset_id'] for hit in reply['hits']], [str(ds2), str(ds1)])
+        self.assertEqual(reply['graph_context']['facts'], [
+            {'dataset_id': str(ds1), 'text': f'fact-{ds1}'},
+            {'dataset_id': str(ds2), 'text': f'fact-{ds2}'},
+        ])
+
+    async def test_search_graph_mode_extracts_triplets_evidence_and_degrades(self):
+        from cognee import SearchType
+        from cognee.modules.graph.cognee_graph.CogneeGraphElements import Edge, Node
+        from cognee.modules.retrieval.exceptions.exceptions import NoDataError
+
+        chunk_node = Node('chunk-1', {'type': 'DocumentChunk', 'text': 'Gateway uses SQLite WAL.'})
+        svc_node = Node('n-svc', {'name': 'Gateway', 'type': 'Service'})
+        db_node = Node('n-db', {'name': 'SQLite', 'type': 'Database'})
+        edge_entity = Edge(svc_node, db_node, {
+            'relationship_name': 'uses',
+            'edge_text': 'Gateway uses SQLite',
+            'authoritative': True,
+            'conflict_marks': [{'status': 'superseded'}],
+        })
+        edge_chunk = Edge(chunk_node, svc_node, {'relationship_name': 'contains'})
+        verbose_results = [{
+            'dataset_id': self.dataset,
+            'objects_result': [edge_entity, edge_chunk],
+            'context_result': 'Connections:\n...\n\n## Fact conflicts\n- Older graph claimed Postgres\n',
+            'evidence': [
+                {'kind': 'graph_edge', 'artifact_id': 'e1'},
+                {
+                    'kind': 'segment',
+                    'artifact_id': 'chunk-1',
+                    'chunk_id': 'chunk-1',
+                    'data_id': 'doc-gw',
+                    'document_name': 'gateway.md',
+                    'role': 'supports_assertion',
+                },
+            ],
+        }]
+        with patch('cognee.search', return_value=verbose_results) as search:
+            reply = await self.backend.search(
+                Search(scopes=[self.scope], query='storage', mode='graph',
+                       filters=SearchFilters(session_id='sess-ignored')),
+                limit=5,
+            )
+        search.assert_awaited_once_with(
+            query_text='storage',
+            query_type=SearchType.GRAPH_COMPLETION,
+            user=self.user,
+            dataset_ids=[self.dataset],
+            top_k=5,
+            node_name=None,
+            only_context=True,
+            verbose=True,
+            include_references=True,
+        )
+        self.assertNotIn('session_id', search.call_args.kwargs)
+        self.assertEqual(reply['hits'], [{
+            'dataset_id': str(self.dataset),
+            'document_id': 'doc-gw',
+            'title': 'gateway.md',
+            'snippet': 'Gateway uses SQLite WAL.',
+            'score': None,
+            'metadata': {'chunk_id': 'chunk-1', 'role': 'supports_assertion'},
+        }])
+        self.assertEqual(reply['graph_context']['entities'], [{
+            'dataset_id': str(self.dataset),
+            'name': 'Gateway',
+            'type': 'Service',
+            'edges': [{
+                'text': 'Gateway uses SQLite',
+                'source': 'Gateway',
+                'target': 'SQLite',
+                'relationship': 'uses',
+                'superseded': True,
+                'authoritative': True,
+            }],
+        }])
+        self.assertIn({'dataset_id': str(self.dataset), 'text': 'Gateway uses SQLite'}, reply['graph_context']['facts'])
+        self.assertEqual(reply['graph_context']['conflicts'], ['Older graph claimed Postgres'])
+
+        with patch('cognee.search', side_effect=[
+            NoDataError('empty graph'),
+            [{'dataset_id': self.dataset, 'search_result': [{'data_id': 'fallback-doc', 'text': 'chunk', 'score': 0.4}]}],
+        ]):
+            degraded = await self.backend.search(Search(scopes=[self.scope], query='storage', mode='graph'), limit=5)
+        self.assertEqual(degraded['hits'][0]['document_id'], 'fallback-doc')
+        self.assertEqual(degraded['graph_context'], {'degraded_to_chunks': True})
+
+    async def test_search_code_mode_parses_facts_and_handles_missing_seed(self):
+        from cognee import SearchType
+        from cognee.modules.retrieval.code_retriever import CodeSeedNotFoundError
+        from cognee.modules.retrieval.exceptions.exceptions import NoDataError
+
+        code_results = [{
+            'dataset_id': self.dataset,
+            'search_result': {
+                'operation': 'explore',
+                'focus': {
+                    'id': 'sym-1',
+                    'name': 'AuthService.Verify',
+                    'kind': 'symbol',
+                    'file': 'auth/service.go',
+                    'line': 42,
+                    'relations': [{'type': 'calls', 'target': 'jwt.Parse'}],
+                },
+                'nodes': [
+                    {'id': 'sym-1', 'name': 'AuthService.Verify', 'kind': 'symbol', 'file': 'auth/service.go', 'line': 42},
+                    {'id': 'sym-2', 'name': 'jwt.Parse', 'kind': 'symbol', 'file': 'jwt/parse.go', 'line': 10},
+                ],
+                'edges': [{'source_id': 'sym-2', 'source': 'jwt.Parse', 'target': 'crypto.Verify', 'type': 'calls'}],
+            },
+        }]
+        with patch('cognee.search', return_value=code_results) as search:
+            reply = await self.backend.search(Search(scopes=[self.scope], query='AuthService.Verify', mode='code'), limit=5)
+        search.assert_awaited_once_with(
+            query_text='AuthService.Verify',
+            query_type=SearchType.CODE,
+            user=self.user,
+            dataset_ids=[self.dataset],
+            top_k=5,
+        )
+        self.assertEqual(reply['hits'], [])
+        self.assertEqual(reply['graph_context'], {
+            'code_facts': [
+                {
+                    'dataset_id': str(self.dataset),
+                    'name': 'AuthService.Verify',
+                    'kind': 'symbol',
+                    'file': 'auth/service.go',
+                    'line': 42,
+                    'relations': [{'type': 'calls', 'target': 'jwt.Parse'}],
+                },
+                {
+                    'dataset_id': str(self.dataset),
+                    'name': 'jwt.Parse',
+                    'kind': 'symbol',
+                    'file': 'jwt/parse.go',
+                    'line': 10,
+                    'relations': [{'type': 'calls', 'target': 'crypto.Verify'}],
+                },
+            ],
+        })
+
+        for err_or_result in (
+            CodeSeedNotFoundError('not found'),
+            NoDataError('no code graph'),
+        ):
+            with patch('cognee.search', side_effect=err_or_result):
+                empty = await self.backend.search(Search(scopes=[self.scope], query='missing', mode='code'), limit=5)
+            self.assertEqual(empty, {'hits': [], 'graph_context': None})
+
+    async def test_search_session_context_read_only_and_fail_open(self):
+        user_with_id = SimpleNamespace(id=uuid4())
+        sm_available = SimpleNamespace(is_available=True)
+        with (patch.object(self.backend, '_dataset', return_value=(user_with_id, self.dataset)),
+              patch('cognee.search', return_value=[]) as search,
+              patch('cognee.infrastructure.session.get_session_manager.get_session_manager', return_value=sm_available),
+              patch('cognee.infrastructure.session.session_context_builder.build_active_context_block',
+                    new_callable=AsyncMock, return_value=('## Active session guidance\n- Rule 1', ['e1'])) as build_block):
+            reply = await self.backend.search(
+                Search(
+                    scopes=[self.scope],
+                    query='rules',
+                    mode='hybrid',
+                    filters=SearchFilters(session_id='sess-9', include_session_context=True),
+                ),
+                limit=5,
+            )
+        self.assertNotIn('session_id', search.call_args.kwargs)
+        build_block.assert_awaited_once_with(
+            session_manager=sm_available,
+            user_id=str(user_with_id.id),
+            session_id='sess-9',
+            query='rules',
+            stamp_served=False,
+        )
+        self.assertEqual(reply['graph_context'], {'session_guidance': '## Active session guidance\n- Rule 1'})
+
+        sm_unavailable = SimpleNamespace(is_available=False)
+        with (patch.object(self.backend, '_dataset', return_value=(user_with_id, self.dataset)),
+              patch('cognee.search', return_value=[]),
+              patch('cognee.infrastructure.session.get_session_manager.get_session_manager', return_value=sm_unavailable),
+              patch('cognee.infrastructure.session.session_context_builder.build_active_context_block',
+                    new_callable=AsyncMock) as build_block):
+            reply_unavail = await self.backend.search(
+                Search(
+                    scopes=[self.scope],
+                    query='rules',
+                    mode='hybrid',
+                    filters=SearchFilters(session_id='sess-9', include_session_context=True),
+                ),
+                limit=5,
+            )
+        build_block.assert_not_awaited()
+        self.assertIsNone(reply_unavail['graph_context'])
+
+        with (patch.object(self.backend, '_dataset', return_value=(user_with_id, self.dataset)),
+              patch('cognee.search', return_value=[]),
+              patch('cognee.infrastructure.session.get_session_manager.get_session_manager', return_value=sm_available),
+              patch('cognee.infrastructure.session.session_context_builder.build_active_context_block',
+                    new_callable=AsyncMock, side_effect=RuntimeError('cache down')),
+              self.assertLogs('engines.cognee.engine_api', level='WARNING') as logs):
+            reply_err = await self.backend.search(
+                Search(
+                    scopes=[self.scope],
+                    query='rules',
+                    mode='hybrid',
+                    filters=SearchFilters(session_id='sess-9', include_session_context=True),
+                ),
+                limit=5,
+            )
+        self.assertIsNone(reply_err['graph_context'])
+        self.assertTrue(any('cache down' in line for line in logs.output))
 
     async def test_extract_includes_unique_improve_stage_data_ids(self):
         doc, lesson, session = (str(uuid4()) for _ in range(3))
@@ -271,7 +709,11 @@ class EngineAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json(), {
             'ok': True, 'engine': 'cognee', 'version': '1.6.7', 'mode': 'setup_ready',
             'model_digest': '', 'store_path': '/isolated/store',
-            'capabilities': {'tool_graph': True, 'language_egress': True, 'model_handoff': True}})
+            'capabilities': {
+                'tool_graph': True, 'language_egress': True, 'model_handoff': True,
+                'hybrid_recall': True, 'session_context': True, 'code_search': True,
+                'search_modes': ['hybrid', 'graph', 'chunks', 'code'],
+            }})
         self.assertEqual((await self.client.get('items', params=self.scope)).status_code, 503)
         self.assertEqual((await self.client.get('model/status')).json()['mode'], 'setup_ready')
         applied = await self.apply()
@@ -351,3 +793,27 @@ class EngineAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get('items/one', params=self.scope)).status_code, 404)
         self.assertEqual((await self.client.get('graph', params={'dataset_id': 'dataset', 'filter': 'n'})).json(),
                          {'ok': True, 'nodes': [{'id': 'dataset', 'label': 'n'}], 'edges': []})
+
+    async def test_search_route_hybrid_graph_context_and_mode_validation(self):
+        await self.apply()
+        hybrid_resp = await self.client.post('search', json={
+            'query': 'auth',
+            'mode': 'hybrid',
+            'scopes': [self.scope],
+            'filters': {'kind': 'document', 'node_sets': ['auth'], 'session_id': 'sess-7', 'include_session_context': True},
+            'limit': 4,
+        })
+        self.assertEqual(hybrid_resp.status_code, 200)
+        self.assertEqual(hybrid_resp.json(), {
+            'ok': True,
+            'hits': [{
+                'dataset_id': 'dataset', 'document_id': 'one', 'title': 'title', 'snippet': 'auth',
+                'score': .1, 'metadata': {'limit': 4, 'kind': 'document'},
+            }],
+            'graph_context': {
+                'facts': [{'dataset_id': 'dataset', 'text': 'fact-1'}],
+                'session_guidance': 'session:sess-7',
+            },
+        })
+        invalid_mode = await self.client.post('search', json={'query': 'auth', 'mode': 'bogus', 'scopes': [self.scope]})
+        self.assertEqual(invalid_mode.status_code, 422)

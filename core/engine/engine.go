@@ -25,9 +25,13 @@ const (
 )
 
 type Capabilities struct {
-	ToolGraph      bool `json:"tool_graph"`
-	LanguageEgress bool `json:"language_egress"`
-	ModelHandoff   bool `json:"model_handoff"`
+	ToolGraph      bool     `json:"tool_graph"`
+	LanguageEgress bool     `json:"language_egress"`
+	ModelHandoff   bool     `json:"model_handoff"`
+	HybridRecall   bool     `json:"hybrid_recall,omitempty"`
+	SessionContext bool     `json:"session_context,omitempty"`
+	CodeSearch     bool     `json:"code_search,omitempty"`
+	SearchModes    []string `json:"search_modes,omitempty"`
 }
 
 type HealthStatus struct {
@@ -93,14 +97,27 @@ type ExtractResult struct {
 	PipelineRunID string   `json:"pipeline_run_id"`
 }
 
+type SearchMode string
+
+const (
+	SearchModeChunks SearchMode = "chunks"
+	SearchModeHybrid SearchMode = "hybrid"
+	SearchModeGraph  SearchMode = "graph"
+	SearchModeCode   SearchMode = "code"
+)
+
 type SearchFilters struct {
-	Kind  string `json:"kind,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	Kind                  string   `json:"kind,omitempty"`
+	Limit                 int      `json:"limit,omitempty"`
+	NodeSets              []string `json:"node_sets,omitempty"`
+	SessionID             string   `json:"session_id,omitempty"`
+	IncludeSessionContext bool     `json:"include_session_context,omitempty"`
 }
 
 type SearchRequest struct {
 	Scopes  []Scope       `json:"scopes"`
 	Query   string        `json:"query"`
+	Mode    SearchMode    `json:"mode,omitempty"`
 	Filters SearchFilters `json:"filters,omitempty"`
 	Limit   int           `json:"limit"`
 }
@@ -114,9 +131,55 @@ type SearchHit struct {
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
+type GraphSearchEdge struct {
+	Text          string `json:"text"`
+	Source        string `json:"source,omitempty"`
+	Target        string `json:"target,omitempty"`
+	Relationship  string `json:"relationship,omitempty"`
+	Superseded    bool   `json:"superseded,omitempty"`
+	Authoritative bool   `json:"authoritative,omitempty"`
+}
+
+type GraphSearchEntity struct {
+	DatasetID string            `json:"dataset_id,omitempty"`
+	Name      string            `json:"name"`
+	Type      string            `json:"type,omitempty"`
+	Edges     []GraphSearchEdge `json:"edges,omitempty"`
+	Conflicts []string          `json:"conflicts,omitempty"`
+}
+
+type GraphSearchFact struct {
+	DatasetID string `json:"dataset_id,omitempty"`
+	Text      string `json:"text"`
+}
+
+type CodeSearchRelation struct {
+	Type   string `json:"type"`
+	Target string `json:"target"`
+}
+
+type CodeSearchFact struct {
+	DatasetID string               `json:"dataset_id,omitempty"`
+	Name      string               `json:"name"`
+	Kind      string               `json:"kind,omitempty"`
+	File      string               `json:"file,omitempty"`
+	Line      int                  `json:"line,omitempty"`
+	Relations []CodeSearchRelation `json:"relations,omitempty"`
+}
+
+type GraphSearchContext struct {
+	Entities         []GraphSearchEntity `json:"entities,omitempty"`
+	Facts            []GraphSearchFact   `json:"facts,omitempty"`
+	Conflicts        []string            `json:"conflicts,omitempty"`
+	SessionGuidance  string              `json:"session_guidance,omitempty"`
+	CodeFacts        []CodeSearchFact    `json:"code_facts,omitempty"`
+	DegradedToChunks bool                `json:"degraded_to_chunks,omitempty"`
+}
+
 type SearchResult struct {
-	OK   bool        `json:"ok"`
-	Hits []SearchHit `json:"hits"`
+	OK           bool                `json:"ok"`
+	Hits         []SearchHit         `json:"hits"`
+	GraphContext *GraphSearchContext `json:"graph_context,omitempty"`
 }
 
 type ListRequest struct {
