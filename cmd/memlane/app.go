@@ -79,6 +79,7 @@ func runApp(args []string, stderr io.Writer) int {
 			desktop.KeepAliveOnQuit,
 			func(ctx context.Context) error {
 				desktop.StopTrayBackgroundPolling()
+				desktop.StopForegroundPolling()
 				if flushErr := desktop.FlushPendingState(2 * time.Second); flushErr != nil {
 					log.Printf("退出前保存客户端状态未完成：%v", flushErr)
 				}
@@ -116,6 +117,7 @@ func runApp(args []string, stderr io.Writer) int {
 		}
 		mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 			desktop.StopTrayBackgroundPolling()
+			desktop.StopForegroundPolling()
 			if flushErr := desktop.FlushPendingState(2 * time.Second); flushErr != nil {
 				log.Printf("退出前保存客户端状态未完成：%v", flushErr)
 			}
@@ -315,6 +317,7 @@ func runApp(args []string, stderr io.Writer) int {
 			win.Show()
 		}
 		desktop.Start()
+		desktop.StartForegroundPolling()
 		if tray != nil {
 			desktop.StartTrayBackgroundPolling()
 		}

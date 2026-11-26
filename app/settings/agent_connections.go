@@ -221,9 +221,18 @@ func (a *Controller) RefreshConnections() {
 			if s.HostVersions == nil {
 				s.HostVersions = map[string]string{}
 			}
+			activeKinds := make(map[string]bool, len(connections.Connections))
 			for _, row := range connections.Connections {
 				if row.HostVersion != "" {
 					s.HostVersions[row.Kind] = row.HostVersion
+					activeKinds[row.Kind] = true
+				} else if row.Detected {
+					activeKinds[row.Kind] = true
+				}
+			}
+			for _, row := range connections.Connections {
+				if !row.Detected && row.HostVersion == "" && !activeKinds[row.Kind] {
+					delete(s.HostVersions, row.Kind)
 				}
 			}
 			if s.Selected == nil {

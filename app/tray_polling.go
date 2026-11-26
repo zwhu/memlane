@@ -106,9 +106,9 @@ func (a *App) StartTrayBackgroundPolling() {
 
 // StopTrayBackgroundPolling can run on the UI thread or in the shutdown worker.
 func (a *App) StopTrayBackgroundPolling() {
-	a.StopForegroundPolling()
 	trayPollMu.Lock()
 	defer trayPollMu.Unlock()
+	a.StopForegroundPolling()
 	if poll := a.trayPoll; poll != nil && poll.stop != nil {
 		close(poll.stop)
 		poll.stop = nil
@@ -122,6 +122,7 @@ func (a *App) StartForegroundPolling() {
 	if update == nil {
 		return
 	}
+	a.foregroundSilent.Store(a.windowHidden || a.windowInactive)
 	foregroundPollMu.Lock()
 	defer foregroundPollMu.Unlock()
 	if a.foregroundPoll == nil {

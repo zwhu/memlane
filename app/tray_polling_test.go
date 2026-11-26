@@ -255,11 +255,13 @@ func TestForegroundPollingRefreshesActiveInboxAndStopsCleanly(t *testing.T) {
 	// Hidden window: completely silent, zero UI wakeups and zero queue requests.
 	a.SetWindowHidden(true)
 	q.Next = time.Now().Add(-time.Second)
-	beforeHidden := projectCalls.Load()
-	// Drain any already-enqueued tick before measuring silence.
+	// Wait past one tick boundary and drain any in-flight callback that checked
+	// foregroundSilent before Store(true), eliminating TOCTOU timing flakes.
+	time.Sleep(25 * time.Millisecond)
 	for len(updates) > 0 {
 		(<-updates)()
 	}
+	beforeHidden := projectCalls.Load()
 	select {
 	case fn := <-updates:
 		fn()
@@ -273,9 +275,11 @@ func TestForegroundPollingRefreshesActiveInboxAndStopsCleanly(t *testing.T) {
 	// Visible but inactive (blurred): also completely silent.
 	a.SetWindowHidden(false)
 	a.SetWindowActive(false)
-	// Let the unhide directory revalidation finish before asserting silence.
+	// Let the unhide directory revalidation finish and cross one tick boundary
+	// before draining any in-flight callback and asserting silence.
 	drainReading(t, updates, func() bool { return !a.access.Loading })
 	q.Next = time.Now().Add(-time.Second)
+	time.Sleep(25 * time.Millisecond)
 	for len(updates) > 0 {
 		(<-updates)()
 	}
@@ -297,5 +301,45 @@ func TestForegroundPollingRefreshesActiveInboxAndStopsCleanly(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("foreground poller goroutine did not exit after StopForegroundPolling")
+	}
+}
+
+func TestTrayAndForegroundPollingConcurrentStartStopNoLeak(t *testing.T) {
+	setTrayBackgroundPollInterval(10 * time.Millisecond)
+	setForegroundPollInterval(10 * time.Millisecond)
+	t.Cleanup(func() {
+		setTrayBackgroundPollInterval(0)
+		setForegroundPollInterval(0)
+	})
+
+	a := New(Config{}, nil)
+	a.windowHidden = true
+	a.Update = func(fn func()) {
+		if fn != nil {
+			fn()
+		}
+	}
+	for i := 0; i < 8; i++ {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			a.StopTrayBackgroundPolling()
+		}()
+		a.StartTrayBackgroundPolling()
+		<-done
+		a.StopTrayBackgroundPolling()
+		foregroundPollMu.Lock()
+		var fgDone chan struct{}
+		if a.foregroundPoll != nil {
+			fgDone = a.foregroundPoll.done
+		}
+		foregroundPollMu.Unlock()
+		if fgDone != nil {
+			select {
+			case <-fgDone:
+			case <-time.After(time.Second):
+				t.Fatalf("iteration %d: foreground poller leaked after concurrent stop", i)
+			}
+		}
 	}
 }
