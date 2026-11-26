@@ -263,7 +263,7 @@ func editAntigravityHooks(doc object, opts InstallOptions, remove bool) error {
 
 func stripManagedHookGroups(groups object) (bool, error) {
 	changed := false
-	for _, event := range []string{SessionStart, UserPromptSubmit, PreInvocation, PostToolUse, PostToolUseFailure, Stop, SessionEnd} {
+	for _, event := range []string{SessionStart, UserPromptSubmit, PreInvocation, PostToolUse, PostToolUseFailure, Stop, PreCompact, SessionEnd} {
 		raw, exists := groups[event]
 		if !exists {
 			continue
@@ -428,9 +428,9 @@ func editHookGroups(doc object, host string, opts InstallOptions, remove bool) e
 	}
 	events := []string{SessionStart, UserPromptSubmit, PostToolUse, Stop}
 	if host != HostTraeIDE {
-		events = append(events, PostToolUseFailure, SessionEnd)
+		events = append(events, PostToolUseFailure, PreCompact, SessionEnd)
 	}
-	for _, event := range []string{SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, Stop, SessionEnd} {
+	for _, event := range []string{SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, Stop, PreCompact, SessionEnd} {
 		if raw, exists := groups[event]; exists {
 			rows, ok := raw.([]any)
 			if !ok {

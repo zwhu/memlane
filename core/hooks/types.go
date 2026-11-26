@@ -27,6 +27,7 @@ const (
 	PostToolUse        = "PostToolUse"
 	PostToolUseFailure = "PostToolUseFailure"
 	Stop               = "Stop"
+	PreCompact         = "PreCompact"
 	SessionEnd         = "SessionEnd"
 )
 

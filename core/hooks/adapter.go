@@ -21,7 +21,7 @@ const neutral = "{}"
 
 func Run(ctx context.Context, host, event string, stdin io.Reader, stdout io.Writer, cfg Config) error {
 	result := []byte(neutral)
-	if os.Getenv("MEMLANE_PROCESSING_SESSION") != "1" && event != SessionStart {
+	if os.Getenv("MEMLANE_PROCESSING_SESSION") != "1" {
 		raw, err := io.ReadAll(io.LimitReader(stdin, inputLimit(cfg)+1))
 		if err != nil {
 			err = ErrInput
@@ -112,23 +112,64 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 	if host == "" {
 		return nil, ErrEvent
 	}
-	if event == SessionStart || host == HostPi && (event == "resolve" || event == "flush") {
+	if host == HostPi && (event == "resolve" || event == "flush") {
+		return []byte(neutral), nil
+	}
+	if int64(len(rawInput)) > inputLimit(cfg) {
+		return nil, ErrInput
+	}
+	if event == SessionStart && len(bytes.TrimSpace(rawInput)) == 0 {
 		return []byte(neutral), nil
 	}
 	var in object
-	if int64(len(rawInput)) > inputLimit(cfg) || json.Unmarshal(rawInput, &in) != nil || in == nil {
+	if json.Unmarshal(rawInput, &in) != nil || in == nil {
 		return nil, ErrInput
+	}
+	if event == SessionStart && stringField(in, "source") != "compact" {
+		return []byte(neutral), nil
 	}
 	sessionID := stringField(in, "session_id")
 	if host == HostAntigravity {
 		sessionID = antigravitySessionID(in)
 	}
-	scope := object{"workspace": workspacePath(host, in), "session_id": sessionID}
+	workspace := workspacePath(host, in)
+	projectID := stringField(in, "project_id")
+	scope := object{"workspace": workspace, "session_id": sessionID}
 	// A rejected IDE workspace must never be replaced by a supplied project ID.
-	if host == HostTraeIDE && scope["workspace"] == "" {
+	if host == HostTraeIDE && workspace == "" {
 		return []byte(neutral), nil
 	}
 	switch {
+	case event == SessionStart:
+		query := []rune(stringField(in, "prompt", "query"))
+		scope["project_id"], scope["query"] = projectID, string(query[:min(len(query), 16000)])
+		scope["channel"], scope["limit"] = "automatic", 8
+		scope["mode"], scope["purpose"] = "hybrid", "compact_restore"
+		if sessionID != "" {
+			scope["include_session_context"] = true
+		}
+		if turnID := stringField(in, "turn_id", "turnId"); turnID != "" {
+			scope["turn_id"] = turnID
+		}
+		if promptTime := stringField(in, "prompt_time"); validRFC3339(promptTime) {
+			scope["prompt_time"] = promptTime
+		}
+		return recall(ctx, host, SessionStart, scope, cfg)
+	case event == PreCompact:
+		query := []rune(stringField(in, "prompt", "query"))
+		scope["project_id"], scope["query"] = projectID, string(query[:min(len(query), 16000)])
+		scope["channel"], scope["limit"] = "automatic", 5
+		scope["mode"], scope["purpose"] = "hybrid", "precompact"
+		if sessionID != "" {
+			scope["include_session_context"] = true
+		}
+		if turnID := stringField(in, "turn_id", "turnId"); turnID != "" {
+			scope["turn_id"] = turnID
+		}
+		if promptTime := stringField(in, "prompt_time"); validRFC3339(promptTime) {
+			scope["prompt_time"] = promptTime
+		}
+		return recall(ctx, host, PreCompact, scope, cfg)
 	case event == UserPromptSubmit || host == HostAntigravity && event == PreInvocation || host == HostPi && event == "recall":
 		prompt := stringField(in, "prompt", "query")
 		if host == HostAntigravity {
@@ -147,38 +188,79 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 				return []byte(neutral), nil
 			}
 		}
-		scope["project_id"], scope["query"] = stringField(in, "project_id"), string(query[:min(len(query), 16000)])
+		scope["project_id"], scope["query"] = projectID, string(query[:min(len(query), 16000)])
 		scope["channel"], scope["limit"] = "automatic", 10
-		return recall(ctx, host, scope, cfg)
+		scope["mode"] = "hybrid"
+		if sessionID != "" {
+			scope["include_session_context"] = true
+		}
+		if turnID := stringField(in, "turn_id", "turnId"); turnID != "" {
+			scope["turn_id"] = turnID
+		}
+		promptTime := stringField(in, "prompt_time")
+		if !validRFC3339(promptTime) {
+			promptTime = time.Now().UTC().Format(time.RFC3339)
+		}
+		scope["prompt_time"] = promptTime
+		return recall(ctx, host, UserPromptSubmit, scope, cfg)
 	case event == PostToolUse || event == PostToolUseFailure || event == Stop || event == SessionEnd || host == HostPi && event == "capture":
 		payload := in
+		allowEmptyQuestion := false
 		if host == HostAntigravity {
 			normalized, ok, err := normalizeAntigravityCapture(in, event)
 			if err != nil {
 				return nil, err
 			}
 			if !ok {
-				return []byte(neutral), nil
+				payload = nil
+			} else {
+				payload = normalized
+			}
+		} else if event == Stop {
+			normalized, err := normalizeStopCapture(in, sessionID)
+			if err != nil {
+				return nil, err
 			}
 			payload = normalized
+			allowEmptyQuestion = sessionID != ""
 		}
-		kind, id, content := capture(payload, event)
-		if content != nil {
-			scope["kind"], scope["message_id"], scope["content"] = kind, id, content
-			scope["host"] = host
-			if host == HostAntigravity {
-				parentSessionID, subagentRole, err := resolveAntigravityParent(in)
-				if err != nil {
-					return nil, err
+		if payload != nil {
+			kind, id, content := captureWithOptions(payload, event, allowEmptyQuestion)
+			if content != nil {
+				ingestScope := object{"workspace": workspace, "session_id": sessionID}
+				if projectID != "" {
+					ingestScope["project_id"] = projectID
 				}
-				if parentSessionID != "" {
-					scope["parent_session_id"] = parentSessionID
-					if subagentRole != "" {
-						scope["subagent_role"] = subagentRole
+				ingestScope["kind"], ingestScope["message_id"], ingestScope["content"] = kind, id, content
+				ingestScope["host"] = host
+				if turnID := stringField(payload, "turn_id", "turnId"); turnID != "" {
+					ingestScope["turn_id"] = turnID
+				}
+				if host == HostAntigravity {
+					parentSessionID, subagentRole, err := resolveAntigravityParent(in)
+					if err != nil {
+						return nil, err
+					}
+					if parentSessionID != "" {
+						ingestScope["parent_session_id"] = parentSessionID
+						if subagentRole != "" {
+							ingestScope["subagent_role"] = subagentRole
+						}
 					}
 				}
+				if err := forward(ctx, cfg, "/ingest", ingestScope, nil); err != nil {
+					return nil, err
+				}
 			}
-			if err := forward(ctx, cfg, "/ingest", scope, nil); err != nil {
+		}
+		if event == SessionEnd && sessionID != "" && (workspace != "" || projectID != "") {
+			endPayload := object{
+				"workspace":  workspace,
+				"project_id": projectID,
+				"session_id": sessionID,
+				"host":       host,
+			}
+			if err := forward(ctx, cfg, "/session-end", endPayload, nil); err != nil {
 				return nil, err
 			}
 		}
@@ -191,6 +273,10 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 }
 
 func capture(in object, event string) (kind, id string, content object) {
+	return captureWithOptions(in, event, false)
+}
+
+func captureWithOptions(in object, event string, allowEmptyQuestion bool) (kind, id string, content object) {
 	fields := in
 	if entry, ok := in["entry"].(object); ok {
 		fields = maps.Clone(in)
@@ -198,7 +284,7 @@ func capture(in object, event string) (kind, id string, content object) {
 	}
 	now := time.Now()
 	timestamp := now.UTC().Format(time.RFC3339)
-	id = stringField(fields, "turn_id", "event_id", "message_id")
+	id = stringField(fields, "turn_id", "turnId", "event_id", "message_id")
 	if event == PostToolUse || event == PostToolUseFailure || event == "capture" && stringField(fields, "type") == "trace" {
 		name := stringField(fields, "tool_name", "origin_function")
 		if name == "" || strings.HasPrefix(name, "cognee_") || strings.HasPrefix(name, "memlane_") {
@@ -235,7 +321,7 @@ func capture(in object, event string) (kind, id string, content object) {
 		return "capture_trace", id, object{"origin_function": name, "method_params": params, "method_return_value": response, "status": status, "time": timestamp}
 	}
 	question, answer := stringField(fields, "question", "prompt"), stringField(fields, "answer", "last_assistant_message")
-	if question == "" || answer == "" {
+	if answer == "" || (!allowEmptyQuestion && question == "") {
 		return "", "", nil
 	}
 	var ctxMap object
@@ -269,23 +355,33 @@ func capture(in object, event string) (kind, id string, content object) {
 	return "capture_qa", id, content
 }
 
-func recall(ctx context.Context, host string, scope object, cfg Config) ([]byte, error) {
+func recall(ctx context.Context, host, hookEventName string, scope object, cfg Config) ([]byte, error) {
 	var out struct {
-		Hits []struct{ Title, Snippet string }
+		Context string `json:"context"`
+		Hits    []struct {
+			Title   string `json:"title"`
+			Snippet string `json:"snippet"`
+		} `json:"hits"`
 	}
 	if err := forward(ctx, cfg, "/recall", scope, &out); err != nil {
 		return nil, err
 	}
-	var lines []string
-	for _, hit := range out.Hits {
-		title, snippet := strings.TrimSpace(hit.Title), strings.TrimSpace(hit.Snippet)
-		if title != "" && snippet != "" {
-			lines = append(lines, "- "+title+": "+snippet)
-		} else if title+snippet != "" {
-			lines = append(lines, "- "+title+snippet)
+	contextText := strings.TrimSpace(out.Context)
+	if contextText == "" {
+		var lines []string
+		for _, hit := range out.Hits {
+			title, snippet := strings.TrimSpace(hit.Title), strings.TrimSpace(hit.Snippet)
+			if title != "" && snippet != "" {
+				lines = append(lines, "- "+title+": "+snippet)
+			} else if title+snippet != "" {
+				lines = append(lines, "- "+title+snippet)
+			}
 		}
+		contextText = strings.Join(lines, "\n")
 	}
-	contextText := strings.Join(lines, "\n")
+	if hookEventName == PreCompact && contextText != "" && !strings.HasPrefix(contextText, "## Memlane Memory Anchor") {
+		contextText = "## Memlane Memory Anchor\n" + contextText
+	}
 	if host == HostPi {
 		return json.Marshal(object{"status": "complete", "context": contextText})
 	}
@@ -295,7 +391,7 @@ func recall(ctx context.Context, host string, scope object, cfg Config) ([]byte,
 	if contextText == "" {
 		return []byte(neutral), nil
 	}
-	return json.Marshal(object{"hookSpecificOutput": object{"hookEventName": UserPromptSubmit, "additionalContext": contextText}})
+	return json.Marshal(object{"hookSpecificOutput": object{"hookEventName": hookEventName, "additionalContext": contextText}})
 }
 
 var localTransport = &http.Transport{DialContext: (&net.Dialer{}).DialContext}

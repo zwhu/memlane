@@ -93,8 +93,13 @@ func TestHookEvents(t *testing.T) {
 						t.Fatalf("%+v", got)
 					}
 					if tc.path == "/recall" {
-						if got.body["query"] != "question" || got.body["channel"] != "automatic" || !bytes.Contains(out, []byte("Lesson: Use the contract")) {
+						if got.body["query"] != "question" || got.body["channel"] != "automatic" ||
+							got.body["mode"] != "hybrid" || got.body["include_session_context"] != true ||
+							!bytes.Contains(out, []byte("Lesson: Use the contract")) {
 							t.Fatalf("%+v %s", got, out)
+						}
+						if _, err := time.Parse(time.RFC3339, stringField(got.body, "prompt_time")); err != nil {
+							t.Fatalf("missing or invalid prompt_time: %+v (%v)", got.body, err)
 						}
 						outputKey := "hookSpecificOutput"
 						switch host {
@@ -129,8 +134,18 @@ func TestHookEvents(t *testing.T) {
 							t.Fatal(got)
 						}
 					case Stop:
-						if content["answer"] != "a" || got.body["message_id"] != "turn" || content["context"].(object)["date"] == "" {
+						if content["answer"] != "a" || got.body["message_id"] != "turn" || got.body["turn_id"] != "turn" || content["context"].(object)["date"] == "" {
 							t.Fatal(got)
+						}
+					case SessionEnd:
+						select {
+						case endReq := <-requests:
+							if endReq.path != "/session-end" || endReq.body["workspace"] != dir ||
+								endReq.body["session_id"] != wantSession || endReq.body["host"] != CanonicalHost(host) {
+								t.Fatalf("unexpected /session-end request: %+v", endReq)
+							}
+						default:
+							t.Fatal("expected /session-end request after SessionEnd /ingest")
 						}
 					}
 				default:
@@ -1255,5 +1270,679 @@ func TestAntigravityParentLinkage(t *testing.T) {
 		if len(requests) != 0 {
 			t.Fatalf("symlink inputs must never forward to gateway, got %d requests", len(requests))
 		}
+	})
+}
+
+func TestHybridRecallContextAndHitsFallback(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 20)
+	responseBody := `{"context":"## Project Memory\n- Prefer hybrid context","hits":[{"title":"Legacy","snippet":"Should not override"}]}`
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		if _, err := io.WriteString(w, responseBody); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	for _, tc := range []struct {
+		name  string
+		host  string
+		event string
+		input object
+		check func(t *testing.T, out []byte, want string)
+	}{
+		{
+			name:  "codex",
+			host:  HostCodex,
+			event: UserPromptSubmit,
+			input: object{"cwd": workspace, "session_id": "s-codex", "prompt": "check architecture", "turn_id": "turn-42"},
+			check: func(t *testing.T, out []byte, want string) {
+				var doc struct {
+					HookSpecificOutput struct {
+						HookEventName     string `json:"hookEventName"`
+						AdditionalContext string `json:"additionalContext"`
+					} `json:"hookSpecificOutput"`
+				}
+				if err := json.Unmarshal(out, &doc); err != nil {
+					t.Fatalf("invalid json %s: %v", out, err)
+				}
+				if doc.HookSpecificOutput.HookEventName != UserPromptSubmit || doc.HookSpecificOutput.AdditionalContext != want {
+					t.Fatalf("got %+v, want %q", doc.HookSpecificOutput, want)
+				}
+			},
+		},
+		{
+			name:  "antigravity",
+			host:  HostAntigravity,
+			event: PreInvocation,
+			input: object{"cwd": workspace, "conversationId": "conv-1", "lastUserInput": "check architecture", "turn_id": "turn-42"},
+			check: func(t *testing.T, out []byte, want string) {
+				var doc struct {
+					InjectSteps []struct {
+						SystemMessage struct {
+							SystemMessage string `json:"systemMessage"`
+						} `json:"systemMessage"`
+					} `json:"injectSteps"`
+				}
+				if err := json.Unmarshal(out, &doc); err != nil {
+					t.Fatalf("invalid json %s: %v", out, err)
+				}
+				if len(doc.InjectSteps) != 1 || doc.InjectSteps[0].SystemMessage.SystemMessage != want {
+					t.Fatalf("got %+v, want %q", doc.InjectSteps, want)
+				}
+			},
+		},
+		{
+			name:  "pi",
+			host:  HostPi,
+			event: "recall",
+			input: object{"cwd": workspace, "session_id": "s-pi", "query": "check architecture", "turn_id": "turn-42"},
+			check: func(t *testing.T, out []byte, want string) {
+				var doc struct {
+					Status  string `json:"status"`
+					Context string `json:"context"`
+				}
+				if err := json.Unmarshal(out, &doc); err != nil {
+					t.Fatalf("invalid json %s: %v", out, err)
+				}
+				if doc.Status != "complete" || doc.Context != want {
+					t.Fatalf("got %+v, want %q", doc, want)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name+"/prefers context", func(t *testing.T) {
+			responseBody = `{"context":"## Project Memory\n- Prefer hybrid context","hits":[{"title":"Legacy","snippet":"Should not override"}]}`
+			out, err := Handle(context.Background(), tc.host, tc.event, mustJSON(t, tc.input), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := <-requests
+			if got.path != "/recall" || got.body["mode"] != "hybrid" || got.body["include_session_context"] != true ||
+				got.body["turn_id"] != "turn-42" || got.body["channel"] != "automatic" {
+				t.Fatalf("unexpected recall payload: %+v", got)
+			}
+			if _, err := time.Parse(time.RFC3339, stringField(got.body, "prompt_time")); err != nil {
+				t.Fatalf("invalid prompt_time: %+v", got.body)
+			}
+			tc.check(t, out, "## Project Memory\n- Prefer hybrid context")
+		})
+
+		t.Run(tc.name+"/falls back to legacy hits when context empty", func(t *testing.T) {
+			responseBody = `{"context":"   ","hits":[{"title":"Rule","snippet":"Use fallback"}]}`
+			out, err := Handle(context.Background(), tc.host, tc.event, mustJSON(t, tc.input), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-requests
+			tc.check(t, out, "- Rule: Use fallback")
+		})
+	}
+
+	t.Run("omits include_session_context when session_id is empty", func(t *testing.T) {
+		responseBody = `{"context":"Shared rule"}`
+		payload := mustJSON(t, object{"cwd": workspace, "prompt": "check"})
+		if _, err := Handle(context.Background(), HostCodex, UserPromptSubmit, payload, cfg); err != nil {
+			t.Fatal(err)
+		}
+		got := <-requests
+		if _, exists := got.body["include_session_context"]; exists {
+			t.Fatalf("expected include_session_context omitted without session_id, got %+v", got.body)
+		}
+	})
+}
+
+func TestSessionStartCompactRestore(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 10)
+	statusCode := http.StatusOK
+	responseBody := `{"context":"## Restored Memory\n- Keep WAL bounded"}`
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		w.WriteHeader(statusCode)
+		if _, err := io.WriteString(w, responseBody); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{"empty stdin", ""},
+		{"whitespace stdin", "   \n"},
+		{"startup", `{"source":"startup","cwd":"` + workspace + `","session_id":"s1"}`},
+		{"resume", `{"source":"resume","cwd":"` + workspace + `","session_id":"s1"}`},
+		{"clear", `{"source":"clear","cwd":"` + workspace + `","session_id":"s1"}`},
+		{"missing source", `{"cwd":"` + workspace + `","session_id":"s1"}`},
+	} {
+		t.Run("no-op "+tc.name, func(t *testing.T) {
+			out, err := Handle(context.Background(), HostCodex, SessionStart, []byte(tc.raw), cfg)
+			if err != nil || string(out) != "{}" || len(requests) != 0 {
+				t.Fatalf("expected zero-network no-op, got out=%s err=%v reqs=%d", out, err, len(requests))
+			}
+			var runOut bytes.Buffer
+			if err := Run(context.Background(), HostCodex, SessionStart, strings.NewReader(tc.raw), &runOut, cfg); err != nil || runOut.String() != "{}\n" || len(requests) != 0 {
+				t.Fatalf("Run no-op failed: out=%q err=%v reqs=%d", runOut.String(), err, len(requests))
+			}
+		})
+	}
+
+	t.Run("compact restores context through Run and Handle", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"source":     "compact",
+			"cwd":        workspace,
+			"session_id": "s-compact",
+			"project_id": "proj-1",
+		})
+		var runOut bytes.Buffer
+		if err := Run(context.Background(), HostCodex, SessionStart, bytes.NewReader(payload), &runOut, cfg); err != nil {
+			t.Fatal(err)
+		}
+		got := <-requests
+		if got.path != "/recall" || got.body["purpose"] != "compact_restore" || got.body["mode"] != "hybrid" ||
+			got.body["include_session_context"] != true || got.body["channel"] != "automatic" ||
+			got.body["limit"] != float64(8) || got.body["query"] != "" || got.body["project_id"] != "proj-1" {
+			t.Fatalf("unexpected compact restore request: %+v", got)
+		}
+		var doc struct {
+			HookSpecificOutput struct {
+				HookEventName     string `json:"hookEventName"`
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(runOut.Bytes(), &doc); err != nil {
+			t.Fatalf("invalid Run output %q: %v", runOut.String(), err)
+		}
+		if doc.HookSpecificOutput.HookEventName != SessionStart || doc.HookSpecificOutput.AdditionalContext != "## Restored Memory\n- Keep WAL bounded" {
+			t.Fatalf("unexpected compact restore output: %+v", doc.HookSpecificOutput)
+		}
+	})
+
+	t.Run("compact empty context returns neutral object", func(t *testing.T) {
+		responseBody = `{"context":"","hits":[]}`
+		defer func() { responseBody = `{"context":"## Restored Memory\n- Keep WAL bounded"}` }()
+		payload := mustJSON(t, object{"source": "compact", "cwd": workspace, "session_id": "s-compact"})
+		out, err := Handle(context.Background(), HostTraeX, SessionStart, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("expected {}, got out=%s err=%v", out, err)
+		}
+		<-requests
+	})
+
+	t.Run("compact fails open on gateway error", func(t *testing.T) {
+		statusCode = http.StatusServiceUnavailable
+		defer func() { statusCode = http.StatusOK }()
+		payload := mustJSON(t, object{"source": "compact", "cwd": workspace, "session_id": "s-compact"})
+		var runOut bytes.Buffer
+		if err := Run(context.Background(), HostCodex, SessionStart, bytes.NewReader(payload), &runOut, cfg); err != nil || runOut.String() != "{}\n" {
+			t.Fatalf("expected fail-open {}, got out=%q err=%v", runOut.String(), err)
+		}
+		<-requests
+	})
+
+	t.Run("trae-ide rejects multi-root workspace on compact", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"source":          "compact",
+			"cwd":             workspace,
+			"workspace_roots": []string{workspace, t.TempDir()},
+			"session_id":      "s-ide",
+		})
+		out, err := Handle(context.Background(), HostTraeIDE, SessionStart, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected IDE skip, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+}
+
+func TestPreCompactAnchor(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 10)
+	statusCode := http.StatusOK
+	responseBody := `{"context":"### Session State\n- Active branch: main"}`
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		w.WriteHeader(statusCode)
+		if _, err := io.WriteString(w, responseBody); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("adds Memlane Memory Anchor header when context is non-empty", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"cwd":        workspace,
+			"session_id": "s-precompact",
+			"prompt":     "keep current refactor state",
+		})
+		out, err := Handle(context.Background(), HostCodex, PreCompact, payload, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := <-requests
+		if got.path != "/recall" || got.body["purpose"] != "precompact" || got.body["mode"] != "hybrid" ||
+			got.body["include_session_context"] != true || got.body["channel"] != "automatic" ||
+			got.body["limit"] != float64(5) || got.body["query"] != "keep current refactor state" {
+			t.Fatalf("unexpected PreCompact request: %+v", got)
+		}
+		var doc struct {
+			HookSpecificOutput struct {
+				HookEventName     string `json:"hookEventName"`
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(out, &doc); err != nil {
+			t.Fatalf("invalid PreCompact output %s: %v", out, err)
+		}
+		want := "## Memlane Memory Anchor\n### Session State\n- Active branch: main"
+		if doc.HookSpecificOutput.HookEventName != PreCompact || doc.HookSpecificOutput.AdditionalContext != want {
+			t.Fatalf("got %+v, want %q", doc.HookSpecificOutput, want)
+		}
+	})
+
+	t.Run("does not duplicate anchor header if gateway already provides it", func(t *testing.T) {
+		responseBody = `{"context":"## Memlane Memory Anchor\n- Preserved fact"}`
+		defer func() { responseBody = `{"context":"### Session State\n- Active branch: main"}` }()
+		payload := mustJSON(t, object{"cwd": workspace, "session_id": "s-precompact"})
+		out, err := Handle(context.Background(), HostTraeX, PreCompact, payload, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-requests
+		var doc struct {
+			HookSpecificOutput struct {
+				AdditionalContext string `json:"additionalContext"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal(out, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(doc.HookSpecificOutput.AdditionalContext, "## Memlane Memory Anchor") != 1 {
+			t.Fatalf("duplicated anchor header: %q", doc.HookSpecificOutput.AdditionalContext)
+		}
+	})
+
+	t.Run("empty context returns neutral object and errors fail open", func(t *testing.T) {
+		responseBody = `{"context":"","hits":[]}`
+		payload := mustJSON(t, object{"cwd": workspace, "session_id": "s-precompact"})
+		out, err := Handle(context.Background(), HostCodex, PreCompact, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("expected {}, got out=%s err=%v", out, err)
+		}
+		<-requests
+
+		statusCode = http.StatusServiceUnavailable
+		defer func() { statusCode = http.StatusOK }()
+		var runOut bytes.Buffer
+		if err := Run(context.Background(), HostCodex, PreCompact, bytes.NewReader(payload), &runOut, cfg); err != nil || runOut.String() != "{}\n" {
+			t.Fatalf("expected fail-open {}, got out=%q err=%v", runOut.String(), err)
+		}
+		<-requests
+	})
+}
+
+func TestCodexStopQARecovery(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	requests := make(chan object, 20)
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ingest" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusAccepted)
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("recovers QA from Codex event_msg rollout JSONL", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:00:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"First question"}]}}}`,
+			`{"timestamp":"2026-11-26T10:00:05Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"First answer"}}`,
+			`{"timestamp":"2026-11-26T10:05:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-2","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"Fix Stop hook pairing"}]}}}`,
+			`{"timestamp":"2026-11-26T10:05:08Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-2","item":{"type":"AgentMessage","id":"m2","content":[{"type":"Text","text":"Implemented two-tier Stop recovery."}]}}}`,
+		)
+		payload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-s1",
+			"transcript_path":        transcript,
+			"last_assistant_message": "Implemented two-tier Stop recovery.",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if got["kind"] != "capture_qa" || got["turn_id"] != "turn-2" || got["message_id"] != "turn-2" ||
+			content["question"] != "Fix Stop hook pairing" || content["answer"] != "Implemented two-tier Stop recovery." ||
+			content["prompt_time"] != "2026-11-26T10:05:00Z" || content["time"] != "2026-11-26T10:05:08Z" {
+			t.Fatalf("unexpected Codex Stop capture: %+v", got)
+		}
+	})
+
+	t.Run("pairs late async Stop with matching earlier unit and skips aborted turns", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:00:00Z","type":"session_meta","payload":{"forked_from_id":"parent-1","history_mode":"legacy","timestamp":"2026-11-26T10:00:00Z"}}`,
+			`{"timestamp":"2026-11-26T09:59:00Z","type":"event_msg","payload":{"type":"user_message","message":"Pre-fork parent question"}}`,
+			`{"timestamp":"2026-11-26T09:59:10Z","type":"event_msg","payload":{"type":"agent_message","message":"Pre-fork parent answer"}}`,
+			`{"timestamp":"2026-11-26T10:01:00Z","type":"event_msg","payload":{"type":"user_message","message":"Turn 1 question"}}`,
+			`{"timestamp":"2026-11-26T10:01:05Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Turn 1   answer"}}`,
+			`{"timestamp":"2026-11-26T10:02:00Z","type":"event_msg","payload":{"type":"user_message","message":"Turn 2 still running"}}`,
+		)
+		latePayload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-late",
+			"transcript_path":        transcript,
+			"last_assistant_message": "Turn 1 answer",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, latePayload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if content["question"] != "Turn 1 question" || content["answer"] != "Turn 1 answer" {
+			t.Fatalf("expected late Stop to match Turn 1, got %+v", got)
+		}
+
+		abortedTranscript := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:01:00Z","type":"event_msg","payload":{"type":"user_message","message":"Completed Q"}}`,
+			`{"timestamp":"2026-11-26T10:01:05Z","type":"event_msg","payload":{"type":"agent_message","message":"Completed A"}}`,
+			`{"timestamp":"2026-11-26T10:02:00Z","type":"event_msg","payload":{"type":"user_message","message":"Aborted Q"}}`,
+			`{"timestamp":"2026-11-26T10:02:02Z","type":"event_msg","payload":{"type":"turn_aborted"}}`,
+		)
+		abortedPayload := mustJSON(t, object{
+			"cwd":             workspace,
+			"session_id":      "codex-aborted",
+			"transcript_path": abortedTranscript,
+		})
+		out, err = Handle(context.Background(), HostCodex, Stop, abortedPayload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("aborted turn without stop answer must not re-emit prior turn, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("recovers QA from Codex response_item skipping injected wrappers", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\ncwd: /tmp\n</environment_context>"}]}}`,
+			`{"timestamp":"2026-11-26T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for repo"}]}}`,
+			`{"timestamp":"2026-11-26T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add PreCompact hook"}]}}`,
+		)
+		payload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "traex-s1",
+			"transcript_path":        transcript,
+			"last_assistant_message": "Added PreCompact to Codex and TraeX.",
+		})
+		out, err := Handle(context.Background(), HostTraeX, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if content["question"] != "Add PreCompact hook" || content["answer"] != "Added PreCompact to Codex and TraeX." ||
+			content["prompt_time"] != "2026-11-26T10:01:00Z" {
+			t.Fatalf("unexpected response_item capture: %+v", got)
+		}
+	})
+
+	t.Run("recovers QA from Claude-style JSONL and ignores tool_result and meta lines", func(t *testing.T) {
+		transcript := writeTranscriptJSONL(t,
+			`{"type":"user","uuid":"u-meta","timestamp":"2026-11-26T11:00:00Z","isMeta":true,"message":{"role":"user","content":"ignored meta"}}`,
+			`{"type":"user","uuid":"u-1","timestamp":"2026-11-26T11:00:01Z","message":{"role":"user","content":"Check session end wakeup"}}`,
+			`{"type":"assistant","uuid":"a-tool","timestamp":"2026-11-26T11:00:02Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"go test"}}]}}`,
+			`{"type":"user","uuid":"u-res","timestamp":"2026-11-26T11:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"PASS"}]}}`,
+			`{"type":"assistant","uuid":"a-1","timestamp":"2026-11-26T11:00:04Z","message":{"role":"assistant","content":[{"type":"text","text":"SessionEnd now calls /session-end."}]}}`,
+		)
+		payload := mustJSON(t, object{
+			"cwd":             workspace,
+			"session_id":      "claude-s1",
+			"transcript_path": transcript,
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if got["message_id"] != "turn:u-1" || content["question"] != "Check session end wakeup" ||
+			content["answer"] != "SessionEnd now calls /session-end." || content["prompt_time"] != "2026-11-26T11:00:01Z" ||
+			content["time"] != "2026-11-26T11:00:04Z" {
+			t.Fatalf("unexpected Claude-style capture: %+v", got)
+		}
+	})
+
+	t.Run("oversized rollout reads bounded 1 MiB tail", func(t *testing.T) {
+		filler := `{"timestamp":"2026-11-26T09:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"` + strings.Repeat("x", 600*1024) + `"}}`
+		transcript := writeTranscriptJSONL(t,
+			filler,
+			filler,
+			`{"timestamp":"2026-11-26T12:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"Tail user question"}}`,
+			`{"timestamp":"2026-11-26T12:00:05Z","type":"event_msg","payload":{"type":"agent_message","message":"Tail assistant answer"}}`,
+		)
+		payload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-big",
+			"transcript_path":        transcript,
+			"last_assistant_message": "Tail assistant answer",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if content["question"] != "Tail user question" || content["answer"] != "Tail assistant answer" {
+			t.Fatalf("unexpected bounded tail capture: %+v", got)
+		}
+	})
+
+	t.Run("rejects symlink, directory, and relative transcript_path and fails open", func(t *testing.T) {
+		realFile := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T12:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"Secret prompt"}}`,
+		)
+		linkPath := filepath.Join(t.TempDir(), "rollout-link.jsonl")
+		if err := os.Symlink(realFile, linkPath); err != nil {
+			t.Fatal(err)
+		}
+		for _, badPath := range []string{linkPath, t.TempDir(), "relative/rollout.jsonl"} {
+			payload := mustJSON(t, object{
+				"cwd":                    workspace,
+				"session_id":             "codex-bad",
+				"transcript_path":        badPath,
+				"last_assistant_message": "Answer",
+			})
+			if _, err := Handle(context.Background(), HostCodex, Stop, payload, cfg); !errors.Is(err, ErrInput) {
+				t.Fatalf("path %q: expected ErrInput, got %v", badPath, err)
+			}
+			var runOut bytes.Buffer
+			if err := Run(context.Background(), HostCodex, Stop, bytes.NewReader(payload), &runOut, cfg); err != nil || runOut.String() != "{}\n" {
+				t.Fatalf("path %q: Run did not fail open: out=%q err=%v", badPath, runOut.String(), err)
+			}
+		}
+		if len(requests) != 0 {
+			t.Fatalf("rejected transcript_path must never forward to gateway, got %d requests", len(requests))
+		}
+	})
+
+	t.Run("forwards empty-question capture_qa for gateway pending-prompt pairing when transcript absent", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-pending",
+			"turn_id":                "turn-99",
+			"last_assistant_message": "Final answer without transcript",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		content := got["content"].(object)
+		if got["kind"] != "capture_qa" || got["session_id"] != "codex-pending" ||
+			got["turn_id"] != "turn-99" || got["message_id"] != "turn-99" ||
+			content["question"] != "" || content["answer"] != "Final answer without transcript" {
+			t.Fatalf("unexpected Tier-2 Stop capture: %+v", got)
+		}
+
+		// Also works for TRAE IDE with valid single workspace_root and missing transcript file.
+		idePayload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"workspace_roots":        []string{workspace},
+			"session_id":             "ide-pending",
+			"transcript_path":        filepath.Join(t.TempDir(), "missing.jsonl"),
+			"last_assistant_message": "IDE answer",
+		})
+		out, err = Handle(context.Background(), HostTraeIDE, Stop, idePayload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		gotIDE := <-requests
+		ideContent := gotIDE["content"].(object)
+		if gotIDE["host"] != HostTraeIDE || ideContent["question"] != "" || ideContent["answer"] != "IDE answer" {
+			t.Fatalf("unexpected TRAE IDE Tier-2 capture: %+v", gotIDE)
+		}
+	})
+
+	t.Run("skips Stop when question and session_id are both empty", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"last_assistant_message": "Orphan answer without session",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, payload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("expected skip without session_id, got out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+}
+
+func TestSessionEndNotification(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	workspace := t.TempDir()
+	key := privateKey(t)
+
+	type reqRec struct {
+		path string
+		body object
+	}
+	requests := make(chan reqRec, 10)
+	sessionEndStatus := http.StatusAccepted
+	client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+		var body object
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests <- reqRec{r.URL.Path, body}
+		if r.URL.Path == "/session-end" {
+			w.WriteHeader(sessionEndStatus)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client}
+
+	t.Run("SessionEnd without QA sends only /session-end", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"cwd":        workspace,
+			"project_id": "proj-end",
+			"session_id": "s-end",
+		})
+		out, err := Handle(context.Background(), HostCodex, SessionEnd, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		got := <-requests
+		if got.path != "/session-end" || got.body["workspace"] != workspace ||
+			got.body["project_id"] != "proj-end" || got.body["session_id"] != "s-end" || got.body["host"] != HostCodex {
+			t.Fatalf("unexpected /session-end request: %+v", got)
+		}
+		if len(requests) != 0 {
+			t.Fatalf("unexpected extra requests: %d", len(requests))
+		}
+	})
+
+	t.Run("SessionEnd with QA sends /ingest then /session-end", func(t *testing.T) {
+		payload := mustJSON(t, object{
+			"cwd":        workspace,
+			"session_id": "s-end-qa",
+			"question":   "final question",
+			"answer":     "final answer",
+			"event_id":   "ev-end",
+		})
+		out, err := Handle(context.Background(), HostTraeX, SessionEnd, payload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		first := <-requests
+		second := <-requests
+		if first.path != "/ingest" || first.body["kind"] != "capture_qa" {
+			t.Fatalf("expected /ingest first, got %+v", first)
+		}
+		if second.path != "/session-end" || second.body["session_id"] != "s-end-qa" || second.body["host"] != HostTraeX {
+			t.Fatalf("expected /session-end second, got %+v", second)
+		}
+	})
+
+	t.Run("SessionEnd skips /session-end without session_id or resolvable scope", func(t *testing.T) {
+		for _, payload := range []object{
+			{"cwd": workspace},
+			{"session_id": "s-no-scope"},
+		} {
+			out, err := Handle(context.Background(), HostCodex, SessionEnd, mustJSON(t, payload), cfg)
+			if err != nil || string(out) != "{}" || len(requests) != 0 {
+				t.Fatalf("expected skip for %+v, got out=%s err=%v reqs=%d", payload, out, err, len(requests))
+			}
+		}
+	})
+
+	t.Run("SessionEnd fails open when /session-end returns HTTP error", func(t *testing.T) {
+		sessionEndStatus = http.StatusNotFound
+		defer func() { sessionEndStatus = http.StatusAccepted }()
+		payload := mustJSON(t, object{"cwd": workspace, "session_id": "s-404"})
+		var runOut bytes.Buffer
+		if err := Run(context.Background(), HostCodex, SessionEnd, bytes.NewReader(payload), &runOut, cfg); err != nil || runOut.String() != "{}\n" {
+			t.Fatalf("Run did not fail open on /session-end 404: out=%q err=%v", runOut.String(), err)
+		}
+		<-requests
 	})
 }

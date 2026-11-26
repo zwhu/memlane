@@ -25,7 +25,7 @@ const call: MemoryCall = async (path, payload, signal) => {
     if (!port || +port < 1 || +port > 65535 || !tokenFile) return { status: "unavailable" };
     const token = readFileSync(tokenFile, "utf8").trim();
     if (!token) return { status: "unavailable" };
-    const timeout = AbortSignal.timeout(5000);
+    const timeout = AbortSignal.timeout(path === "/recall" ? 10000 : 5000);
     const res = await fetch(`http://127.0.0.1:${port}${path}`, {
       method: "POST", redirect: "error", signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { "Content-Type": "application/json", "X-Api-Key": token }, body: JSON.stringify(payload),
@@ -43,7 +43,18 @@ export default function (pi: ExtensionAPI) {
   const inputs = new Map<string, unknown>();
   const reset = () => { prompt = ""; turn = ""; promptTime = ""; inputs.clear(); };
   pi.on("session_start", async () => reset());
-  pi.on("session_shutdown", async () => reset());
+  pi.on("session_shutdown", async (_event, ctx) => {
+    try {
+      const session = ctx?.sessionManager?.getSessionId?.();
+      if (!processing() && ctx?.cwd && session) {
+        await call("/session-end", { workspace: ctx.cwd, session_id: session, host: "pi" });
+      }
+    } catch {
+      // Fail open when notifying gateway of session shutdown.
+    } finally {
+      reset();
+    }
+  });
   pi.on("agent_end", async () => reset());
   pi.on("before_agent_start", async event => {
     if (processing()) return;
@@ -53,12 +64,18 @@ export default function (pi: ExtensionAPI) {
     const messages = event.messages.filter(m => !(m.role === "custom" && m.customType === customType));
     if (!prompt || processing()) return { messages };
     const session = ctx.sessionManager.getSessionId(), activeTurn = turn;
-    const { hits } = await call("/recall", {
-      workspace: ctx.cwd, session_id: session, query: [...prompt].slice(0, 16000).join(""), channel: "automatic", limit: 10,
+    const reply = await call("/recall", {
+      workspace: ctx.cwd, session_id: session, query: [...prompt].slice(0, 16000).join(""),
+      channel: "automatic", limit: 10, mode: "hybrid",
+      ...(session ? { include_session_context: true } : {}),
+      ...(promptTime ? { prompt_time: promptTime } : {}),
+      ...(activeTurn ? { turn_id: activeTurn } : {}),
     });
-    const content = Array.isArray(hits) && hits.map(hit => [hit?.title, hit?.snippet]
-      .filter(part => typeof part === "string" && part.trim()).map(part => part.trim()).join(": "))
-      .filter(Boolean).map(line => "- " + line).join("\n");
+    const hits = reply.hits;
+    const content = typeof reply.context === "string" && reply.context.trim() ? reply.context.trim() :
+      Array.isArray(hits) ? hits.map(hit => [hit?.title, hit?.snippet]
+        .filter(part => typeof part === "string" && part.trim()).map(part => part.trim()).join(": "))
+        .filter(Boolean).map(line => "- " + line).join("\n") : "";
     if (content && turn === activeTurn && session === ctx.sessionManager.getSessionId()) {
       messages.push({ role: "custom", customType, content, display: false, timestamp: Date.now() });
     }

@@ -99,19 +99,38 @@ func TestInstallAllHosts(t *testing.T) {
 				if !ok || len(nested) != 1 || !strings.Contains(stringField(nested[0].(object), "command"), "hook antigravity PostToolUse") {
 					t.Fatalf("unexpected PostToolUse nested hooks: %+v", postGroup["hooks"])
 				}
-				for _, forbidden := range []string{UserPromptSubmit, PostToolUseFailure, SessionEnd} {
+				for _, forbidden := range []string{UserPromptSubmit, PostToolUseFailure, PreCompact, SessionEnd} {
 					if _, exists := memlane[forbidden]; exists {
 						t.Fatalf("unexpected non-antigravity event %s in: %s", forbidden, raw)
 					}
 				}
-			} else if hooks := data["hooks"].(object); len(hooks) < 4 || !strings.Contains(raw, "hook "+host+" Stop") {
-				t.Fatal(raw)
+			} else {
+				hooks := data["hooks"].(object)
+				wantEvents := []string{SessionStart, UserPromptSubmit, PostToolUse, Stop}
+				if host != HostTraeIDE {
+					wantEvents = append(wantEvents, PostToolUseFailure, PreCompact, SessionEnd)
+				}
+				if len(hooks) != len(wantEvents) {
+					t.Fatalf("host %s: got %d events (%v), want %d (%v)\n%s", host, len(hooks), hooks, len(wantEvents), wantEvents, raw)
+				}
+				for _, ev := range wantEvents {
+					if _, exists := hooks[ev]; !exists || !strings.Contains(raw, "hook "+host+" "+ev) {
+						t.Fatalf("host %s missing event %s in: %s", host, ev, raw)
+					}
+				}
+				if host == HostTraeIDE {
+					for _, forbidden := range []string{PostToolUseFailure, PreCompact, SessionEnd} {
+						if _, exists := hooks[forbidden]; exists {
+							t.Fatalf("TRAE IDE must not install unsupported event %s: %s", forbidden, raw)
+						}
+					}
+				}
 			}
 			if _, err := UninstallHostConfig(opts); err != nil {
 				t.Fatal(err)
 			}
 			afterUninstall := readConfig(t, filepath.Join(opts.ProfileDir, "hooks.json"))
-			if strings.Contains(afterUninstall, marker) || strings.Contains(afterUninstall, "hook "+host+" ") {
+			if strings.Contains(afterUninstall, marker) || strings.Contains(afterUninstall, "hook "+host+" ") || strings.Contains(afterUninstall, PreCompact) {
 				t.Fatalf("hook remains after uninstall: %s", afterUninstall)
 			}
 		})
@@ -355,4 +374,33 @@ func TestInstallAntigravityMigration(t *testing.T) {
 			t.Fatal("uninstall modified unmanaged memlane hook")
 		}
 	})
+}
+
+func TestInstallPreCompactPreservesUserHook(t *testing.T) {
+	for _, host := range []string{HostCodex, HostTraeX} {
+		t.Run(host, func(t *testing.T) {
+			dir := t.TempDir()
+			hooksPath := filepath.Join(dir, "hooks.json")
+			writeConfig(t, hooksPath, `{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"echo user-precompact"}]}]}}`)
+			opts := InstallOptions{
+				Host: host, ProfileDir: dir,
+				BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18790", KeyFile: "/tmp/agent.key",
+				Apply: true,
+			}
+			if _, err := InstallHostConfig(opts); err != nil {
+				t.Fatal(err)
+			}
+			installed := readConfig(t, hooksPath)
+			if !strings.Contains(installed, "echo user-precompact") || !strings.Contains(installed, "hook "+host+" "+PreCompact) {
+				t.Fatalf("unexpected PreCompact hooks after install: %s", installed)
+			}
+			if _, err := UninstallHostConfig(opts); err != nil {
+				t.Fatal(err)
+			}
+			uninstalled := readConfig(t, hooksPath)
+			if !strings.Contains(uninstalled, "echo user-precompact") || strings.Contains(uninstalled, "hook "+host+" "+PreCompact) || strings.Contains(uninstalled, marker) {
+				t.Fatalf("unexpected PreCompact hooks after uninstall: %s", uninstalled)
+			}
+		})
+	}
 }
