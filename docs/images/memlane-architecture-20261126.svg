@@ -1,0 +1,715 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1680 1258" width="1680" height="1258" role="img" aria-label="Memlane 系统架构全景图（2026-11-26）">
+  <title>Memlane 系统架构全景图（2026-11-26 · Go 单一多模式二进制 + kit/* 零业务底座 + 零侵入 Cognee 薄壳）</title>
+  <defs>
+    <style>
+      .sans {
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "SF Pro Text", "Helvetica Neue", sans-serif;
+      }
+      .mono {
+        font-family: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+      }
+      .flow-dash {
+        stroke-dasharray: 9 7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+        animation: flowDash 1.25s linear infinite;
+      }
+      .flow-dash-slow {
+        stroke-dasharray: 8 7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+        animation: flowDash 1.65s linear infinite;
+      }
+      .flow-base {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0.22;
+      }
+      .dep-line {
+        fill: none;
+        stroke: #94A3B8;
+        stroke-width: 1.4;
+        stroke-dasharray: 4 4;
+      }
+      @keyframes flowDash {
+        from { stroke-dashoffset: 32; }
+        to { stroke-dashoffset: 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .flow-dash, .flow-dash-slow {
+          animation: none;
+        }
+      }
+    </style>
+
+    <!-- 背景与卡片渐变 -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F6F9FC"/>
+      <stop offset="55%" stop-color="#F1F6FB"/>
+      <stop offset="100%" stop-color="#EAF1F9"/>
+    </linearGradient>
+
+    <pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="1.05" fill="#CBD5E1" opacity="0.42"/>
+    </pattern>
+
+    <linearGradient id="gw-strip-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFFBEB"/>
+      <stop offset="100%" stop-color="#FEF3C7"/>
+    </linearGradient>
+
+    <linearGradient id="kit-band-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#F8FAFC"/>
+      <stop offset="50%" stop-color="#F1F5F9"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <linearGradient id="bus-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F8FAFC" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#EFF6FF" stop-opacity="0.88"/>
+    </linearGradient>
+
+    <linearGradient id="store-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+
+    <!-- 柔和阴影 & 流光粒子 -->
+    <filter id="card-shadow" x="-3%" y="-4%" width="106%" height="110%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.06"/>
+    </filter>
+    <filter id="chip-shadow" x="-6%" y="-10%" width="112%" height="124%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <filter id="dot-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="1.7" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 5 种语义方向箭头 + 依赖箭头 -->
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#2563EB"/>
+    </marker>
+    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#6366F1"/>
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#D97706"/>
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#0D9488"/>
+    </marker>
+    <marker id="arrow-rose" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="6.8" markerHeight="6.8" orient="auto">
+      <path d="M 1 1.5 L 8.8 5 L 1 8.5 z" fill="#E11D48"/>
+    </marker>
+    <marker id="arrow-slate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.8" markerHeight="5.8" orient="auto">
+      <path d="M 1.5 2 L 8.2 5 L 1.5 8 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <!-- 背景层 -->
+  <rect x="0" y="0" width="1680" height="1258" fill="url(#bg-grad)"/>
+  <rect x="0" y="0" width="1680" height="1258" fill="url(#dot-grid)"/>
+
+  <!-- ==================== 顶部 Header ==================== -->
+  <g id="layer-header">
+    <rect x="28" y="14" width="1624" height="68" rx="14" fill="#FFFFFF" stroke="#D5E2F2" stroke-width="1.2" filter="url(#card-shadow)"/>
+
+    <!-- 官方品牌 Mark -->
+    <g transform="translate(42, 26) scale(0.42)" fill="none" stroke="#2563EB" stroke-width="6" stroke-linecap="round">
+      <path d="M72 30 A30 30 0 1 0 79 58"/>
+      <path d="M64 36 A20 20 0 1 0 69 55"/>
+      <path d="M56 43 A10 10 0 1 0 59 53"/>
+      <circle cx="78" cy="36" r="4.5" fill="#2563EB" stroke="none"/>
+    </g>
+
+    <text x="96" y="45" class="sans" font-size="21" font-weight="700" fill="#0F172A">Memlane 系统架构全景</text>
+    <text x="96" y="67" class="sans" font-size="12" fill="#475569">2026-11-26 · Go 单一多模式二进制 · 零业务通用底座 kit/* · 隔离无状态 Cognee 引擎薄壳 (~2.6k LOC)</text>
+
+    <!-- 右侧基线徽章 -->
+    <rect x="1084" y="34" width="124" height="28" rx="14" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="1146" y="52" text-anchor="middle" class="mono" font-size="11" font-weight="600" fill="#334155">HEAD 236e209</text>
+
+    <rect x="1220" y="34" width="212" height="28" rx="14" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1326" y="52" text-anchor="middle" class="mono" font-size="11" font-weight="600" fill="#1D4ED8">Cognee 1.6.7 (ec6f408) 零侵入</text>
+
+    <rect x="1444" y="34" width="192" height="28" rx="14" fill="#F0FDFA" stroke="#99F6E4" stroke-width="1"/>
+    <text x="1540" y="52" text-anchor="middle" class="mono" font-size="11" font-weight="600" fill="#0F766E">DG006 · ML001–ML023</text>
+  </g>
+
+  <!-- ==================== Band 1：宿主 Coding Agents（方案 C · 零插件侵入） ==================== -->
+  <g id="layer-agents">
+    <rect x="28" y="96" width="1624" height="124" rx="14" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="28" y="96" width="1624" height="32" rx="14" fill="#EFF6FF"/>
+    <rect x="28" y="114" width="1624" height="14" fill="#EFF6FF"/>
+    <line x1="28" y1="128" x2="1652" y2="128" stroke="#DBEAFE" stroke-width="1"/>
+
+    <text x="46" y="117" class="sans" font-size="13.5" font-weight="700" fill="#1E3A8A">宿主 Coding Agents（方案 C · 零插件侵入 · 电脑级接入零默认项目授权）</text>
+    <rect x="1224" y="102" width="412" height="20" rx="10" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+    <text x="1430" y="116" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">kit/agents 统一执行 3 级 Cognee 冲突检测 · 8 宿主自动发现</text>
+
+    <!-- 宿主分组 1：Shell Hook 宿主 -->
+    <rect x="44" y="136" width="584" height="74" rx="10" fill="#F8FBFF" stroke="#BFDBFE" stroke-width="1.2"/>
+    <circle cx="61" cy="156" r="4" fill="#2563EB"/>
+    <text x="72" y="160" class="sans" font-size="13" font-weight="700" fill="#0F172A">Shell Hook 宿主</text>
+    <rect x="412" y="144" width="204" height="22" rx="11" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1"/>
+    <text x="514" y="159" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">memlane hook (core/hooks)</text>
+    <text x="58" y="182" class="sans" font-size="12" font-weight="600" fill="#1E40AF">Codex · TRAE CN · TraeX · Antigravity</text>
+    <text x="58" y="200" class="sans" font-size="11" fill="#475569">宿主原生 Hook 直接调用单一 Go 命令，零宿主插件、零 Python 运行时依赖</text>
+
+    <!-- 宿主分组 2：无 Hook 宿主 (pi) -->
+    <rect x="646" y="136" width="450" height="74" rx="10" fill="#F8FBFF" stroke="#BFDBFE" stroke-width="1.2"/>
+    <circle cx="663" cy="156" r="4" fill="#2563EB"/>
+    <text x="674" y="160" class="sans" font-size="13" font-weight="700" fill="#0F172A">无 Hook 宿主（pi）</text>
+    <rect x="920" y="144" width="164" height="22" rx="11" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1"/>
+    <text x="1002" y="159" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">engine/agents/pi/</text>
+    <text x="660" y="182" class="sans" font-size="12" font-weight="600" fill="#1E40AF">极薄无 Python TS 扩展（index.ts · tools.ts）</text>
+    <text x="660" y="200" class="sans" font-size="11" fill="#475569">直接 HTTP 调用 Go 网关 /ingest &amp; /mcp，无本地守护负担</text>
+
+    <!-- 宿主分组 3：通用 / 长尾宿主 -->
+    <rect x="1114" y="136" width="522" height="74" rx="10" fill="#F8FBFF" stroke="#BFDBFE" stroke-width="1.2"/>
+    <circle cx="1131" cy="156" r="4" fill="#2563EB"/>
+    <text x="1142" y="160" class="sans" font-size="13" font-weight="700" fill="#0F172A">通用 / 长尾宿主（标准 MCP）</text>
+    <rect x="1484" y="144" width="140" height="22" rx="11" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1"/>
+    <text x="1554" y="159" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">直连 Go /mcp</text>
+    <text x="1128" y="182" class="sans" font-size="12" font-weight="600" fill="#1E40AF">Claude Code · Cursor · OpenCode · 任意 MCP 客户端</text>
+    <text x="1128" y="200" class="sans" font-size="11" fill="#475569">各自持有独立 X-Api-Key 官方主体，按项目白名单受控放行</text>
+  </g>
+
+  <!-- ==================== Band 2 左列：Go 原生桌面端（app/ + kit/ui） ==================== -->
+  <g id="layer-desktop">
+    <rect x="28" y="274" width="472" height="416" rx="14" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="28" y="274" width="472" height="48" rx="14" fill="#EEF2FF"/>
+    <rect x="28" y="308" width="472" height="14" fill="#EEF2FF"/>
+    <line x1="28" y1="322" x2="500" y2="322" stroke="#E0E7FF" stroke-width="1"/>
+
+    <text x="44" y="296" class="sans" font-size="14.5" font-weight="700" fill="#312E81">Go 原生桌面端（app/ + kit/ui）</text>
+    <text x="44" y="314" class="sans" font-size="11" fill="#4338CA">1200×820 MyGo 原生自绘 · 顶层组装 app/（侧栏 · 300px 托盘）</text>
+
+    <!-- 6 个无环子包（2×3 网格） -->
+    <rect x="44" y="332" width="212" height="72" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="56" y="353" class="mono" font-size="11.5" font-weight="700" fill="#3730A3">app/overview</text>
+    <text x="56" y="374" class="sans" font-size="11" fill="#334155">首页宽幅总览 · 活动热力图</text>
+    <text x="56" y="392" class="sans" font-size="10.5" fill="#64748B">收件箱实时动态 · 快捷入口</text>
+
+    <rect x="272" y="332" width="212" height="72" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="284" y="353" class="mono" font-size="11.5" font-weight="700" fill="#3730A3">app/reading</text>
+    <text x="284" y="374" class="sans" font-size="11" fill="#334155">项目 / 原文 / 通用记忆三栏</text>
+    <text x="284" y="392" class="sans" font-size="10.5" fill="#64748B">虚拟列表阅读 · 撤权即时撤回</text>
+
+    <rect x="44" y="414" width="212" height="72" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="56" y="435" class="mono" font-size="11.5" font-weight="700" fill="#3730A3">app/search (⌘K)</text>
+    <text x="56" y="456" class="sans" font-size="11" fill="#334155">全局 ⌘K 混合检索与过滤</text>
+    <text x="56" y="474" class="sans" font-size="10.5" fill="#64748B">无全局「全部记忆」侧栏入口</text>
+
+    <rect x="272" y="414" width="212" height="72" rx="9" fill="#F5F3FF" stroke="#C4B5FD" stroke-width="1.1"/>
+    <text x="284" y="435" class="mono" font-size="11.5" font-weight="700" fill="#4C1D95">app/graph</text>
+    <text x="284" y="456" class="sans" font-size="11" fill="#334155">沙箱 mygo.WebView 画布</text>
+    <text x="284" y="474" class="mono" font-size="10" fill="#5B21B6">web/official-graph (无凭据/断网)</text>
+
+    <rect x="44" y="496" width="212" height="72" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="56" y="517" class="mono" font-size="11.5" font-weight="700" fill="#3730A3">app/settings</text>
+    <text x="56" y="538" class="sans" font-size="11" fill="#334155">6 态首装向导 · Agent 接入</text>
+    <text x="56" y="556" class="sans" font-size="10.5" fill="#64748B">模型切换 · 画像 · 服务监控</text>
+
+    <rect x="272" y="496" width="212" height="72" rx="9" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.1"/>
+    <text x="284" y="517" class="mono" font-size="11.5" font-weight="700" fill="#3730A3">app/shell</text>
+    <text x="284" y="538" class="sans" font-size="11" fill="#334155">无环壳层接口与导航契约</text>
+    <text x="284" y="556" class="sans" font-size="10.5" fill="#64748B">零反向依赖业务控制器</text>
+
+    <!-- app/api 统一传输层与性能红线 -->
+    <rect x="44" y="580" width="440" height="96" rx="10" fill="#EEF2FF" stroke="#A5B4FC" stroke-width="1.2"/>
+    <text x="58" y="601" class="mono" font-size="12" font-weight="700" fill="#312E81">app/api · 统一 HTTP 传输层（http_transport.go）</text>
+    <text x="58" y="621" class="sans" font-size="11.2" fill="#1E293B">统一走 /api/* 直连本地 Go 网关（零直连 Cognee · 零本地正文副本）</text>
+
+    <rect x="58" y="636" width="128" height="26" rx="13" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1"/>
+    <text x="122" y="653" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#3730A3">冷启动 &lt;150ms</text>
+
+    <rect x="196" y="636" width="132" height="26" rx="13" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1"/>
+    <text x="262" y="653" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#3730A3">帧耗时 &lt;12ms</text>
+
+    <rect x="338" y="636" width="134" height="26" rx="13" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1"/>
+    <text x="405" y="653" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#3730A3">切页堆 ≤25 MiB</text>
+  </g>
+
+  <!-- ==================== Band 2 右列：Go 单一多模式二进制 + core/* ==================== -->
+  <g id="layer-go-core">
+    <rect x="592" y="274" width="1060" height="416" rx="14" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1.4" filter="url(#card-shadow)"/>
+    <rect x="592" y="274" width="1060" height="48" rx="14" fill="#F0FDFA"/>
+    <rect x="592" y="308" width="1060" height="14" fill="#F0FDFA"/>
+    <line x1="592" y1="322" x2="1652" y2="322" stroke="#CCFBF1" stroke-width="1"/>
+
+    <text x="610" y="296" class="sans" font-size="14.5" font-weight="700" fill="#134E4A">Go 单一多模式二进制（cmd/memlane）+ 业务核心（core/*）</text>
+    <text x="610" y="314" class="sans" font-size="11" fill="#0F766E">单一可执行文件统一承载桌面入口、本地网关、Hook 接入、首装编排与守护生命周期</text>
+
+    <!-- 5 种运行模式胶囊 -->
+    <rect x="1166" y="284" width="332" height="26" rx="13" fill="#FFFFFF" stroke="#5EEAD4" stroke-width="1"/>
+    <text x="1332" y="301" text-anchor="middle" class="mono" font-size="11" font-weight="700" fill="#0F766E">app | daemon | hook | setup | dev</text>
+
+    <!-- 守护状态角标 -->
+    <rect x="1510" y="284" width="128" height="26" rx="13" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+    <circle cx="1524" cy="297" r="3.5" fill="#E11D48"/>
+    <text x="1534" y="301" class="sans" font-size="10.5" font-weight="600" fill="#9F1239">kit/daemon 守护</text>
+
+    <!-- 左上子卡：core/gateway（Loopback 唯一入口） -->
+    <rect x="608" y="332" width="620" height="178" rx="11" fill="#F8FBFF" stroke="#93C5FD" stroke-width="1.2"/>
+    <text x="624" y="353" class="sans" font-size="13" font-weight="700" fill="#1E3A8A">core/gateway（Loopback 唯一入口）</text>
+    <text x="866" y="353" class="sans" font-size="11" fill="#475569">独立主体 X-Api-Key · ACL 门禁 · 召回合并通用记忆</text>
+
+    <!-- 路由胶囊行 1 -->
+    <rect x="622" y="364" width="174" height="32" rx="8" fill="#FFFFFF" stroke="#C7D2FE" stroke-width="1"/>
+    <text x="634" y="379" class="mono" font-size="11" font-weight="700" fill="#3730A3">/api/*</text>
+    <text x="634" y="392" class="sans" font-size="9.8" fill="#475569">桌面全量只读/管理端点</text>
+
+    <rect x="806" y="364" width="202" height="32" rx="8" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="818" y="379" class="mono" font-size="11" font-weight="700" fill="#1D4ED8">/ingest &amp; /recall</text>
+    <text x="818" y="392" class="sans" font-size="9.8" fill="#475569">采集入队 · 召回合并与打点</text>
+
+    <rect x="1018" y="364" width="196" height="32" rx="8" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1030" y="379" class="mono" font-size="11" font-weight="700" fill="#1D4ED8">/mcp</text>
+    <text x="1072" y="379" class="mono" font-size="9.8" fill="#64748B">core/gateway/mcp</text>
+    <text x="1030" y="392" class="sans" font-size="9.8" fill="#475569">标准 MCP 协议服务端</text>
+
+    <!-- 路由胶囊行 2 -->
+    <rect x="622" y="404" width="286" height="32" rx="8" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+    <text x="634" y="419" class="mono" font-size="11" font-weight="700" fill="#0F766E">/api/profiles/*</text>
+    <text x="748" y="419" class="mono" font-size="9.8" fill="#64748B">core/profiles</text>
+    <text x="634" y="432" class="sans" font-size="9.8" fill="#475569">用户画像生成 · ML006 无固定总时长超时守卫</text>
+
+    <rect x="918" y="404" width="296" height="32" rx="8" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+    <text x="930" y="419" class="mono" font-size="11" font-weight="700" fill="#B45309">/v1/chat/completions</text>
+    <text x="930" y="432" class="mono" font-size="9.8" fill="#64748B">core/gateway/completion · 内嵌 Agent 补全代理</text>
+
+    <!-- 两层实时收件箱 -->
+    <rect x="622" y="445" width="592" height="54" rx="9" fill="url(#gw-strip-grad)" stroke="#F59E0B" stroke-width="1.1"/>
+    <text x="636" y="466" class="sans" font-size="12" font-weight="700" fill="#92400E">两层实时收件箱（InboxWorker · Capture → Memory 异步提炼队列）</text>
+    <text x="636" y="486" class="sans" font-size="11" fill="#78350F">按项目/通用隔离调度 · 实时展示最近失败原因与一键重试 · 会话漂移检测与三层监控</text>
+
+    <!-- 右上子卡：core/hooks + core/setup 与 core/domain -->
+    <rect x="1244" y="332" width="392" height="46" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.1"/>
+    <text x="1258" y="352" class="mono" font-size="11.5" font-weight="700" fill="#0F766E">core/hooks</text>
+    <text x="1340" y="352" class="sans" font-size="11" fill="#334155">Hook 归一化 · Diff/日期注入</text>
+    <text x="1258" y="369" class="mono" font-size="11.5" font-weight="700" fill="#0F766E">core/setup</text>
+    <text x="1340" y="369" class="sans" font-size="11" fill="#334155">6 态首装向导 · 环境与服务编排</text>
+
+    <rect x="1244" y="388" width="392" height="122" rx="10" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.2"/>
+    <text x="1258" y="410" class="mono" font-size="12.5" font-weight="700" fill="#134E4A">core/domain</text>
+    <rect x="1364" y="395" width="260" height="20" rx="10" fill="#FFFFFF" stroke="#99F6E4" stroke-width="1"/>
+    <text x="1494" y="409" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#0F766E">0600 WAL · memlane.sqlite3</text>
+    <text x="1258" y="432" class="sans" font-size="11.2" font-weight="600" fill="#0F172A">单写者治理与投影库（34 张表 · 含可重建 catalog_*）</text>
+    <text x="1258" y="453" class="sans" font-size="11" fill="#334155">• 项目 / ACL / 宿主连接注册表 · 采集回执与收件箱</text>
+    <text x="1258" y="473" class="sans" font-size="11" fill="#334155">• 最早日期锁 (provenance) · 召回统计 · 画像记录</text>
+    <text x="1258" y="493" class="sans" font-size="11" fill="#334155">• 可重建目录投影 (catalog_docs / sessions / sync)</text>
+
+    <!-- 下排左：core/engine（引擎无关抽象） -->
+    <rect x="608" y="522" width="466" height="154" rx="11" fill="#F8FAFC" stroke="#93C5FD" stroke-width="1.2"/>
+    <text x="624" y="544" class="mono" font-size="12.5" font-weight="700" fill="#1E3A8A">core/engine</text>
+    <text x="720" y="544" class="sans" font-size="12" font-weight="700" fill="#0F172A">（引擎无关 6 原语 MemoryEngine）</text>
+
+    <!-- 6 原语胶囊 -->
+    <rect x="622" y="556" width="66" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="655" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">Ingest</text>
+    <rect x="695" y="556" width="72" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="731" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">Extract</text>
+    <rect x="774" y="556" width="66" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="807" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">Search</text>
+    <rect x="847" y="556" width="68" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="881" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">List</text>
+    <rect x="922" y="556" width="64" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="954" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">Get</text>
+    <rect x="993" y="556" width="66" height="24" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1026" y="572" text-anchor="middle" class="mono" font-size="10.5" font-weight="600" fill="#1D4ED8">Delete</text>
+
+    <text x="624" y="601" class="sans" font-size="11" fill="#475569">附加能力：Health 健康探针 · Graph 图谱负载 · 引擎注册表</text>
+
+    <rect x="622" y="614" width="214" height="48" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="634" y="633" class="mono" font-size="11" font-weight="700" fill="#0F766E">ModelController</text>
+    <text x="634" y="651" class="sans" font-size="10.5" fill="#475569">模型验证探针 · 热切换与状态</text>
+
+    <rect x="846" y="614" width="214" height="48" rx="8" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="858" y="633" class="mono" font-size="11" font-weight="700" fill="#0F766E">CatalogProjector</text>
+    <text x="858" y="651" class="sans" font-size="10.5" fill="#475569">启动只读投影 · 最早日期锁</text>
+
+    <!-- 内部适配器连接箭头 -->
+    <path d="M 1074 599 L 1126 599" class="flow-base" stroke="#2563EB" stroke-width="2.5"/>
+    <path d="M 1074 599 L 1126 599" class="flow-dash" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+    <text x="1100" y="586" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#1D4ED8">1 号适配</text>
+
+    <!-- 下排右：core/engine/cognee（1 号适配器，留右侧 x=1584..1652 供 core/domain 直连通道） -->
+    <rect x="1132" y="522" width="446" height="154" rx="11" fill="#EFF6FF" stroke="#60A5FA" stroke-width="1.2"/>
+    <text x="1148" y="544" class="mono" font-size="12.5" font-weight="700" fill="#1E3A8A">core/engine/cognee</text>
+    <text x="1304" y="544" class="sans" font-size="12" font-weight="700" fill="#0F172A">（1 号适配器）</text>
+    <text x="1148" y="569" class="sans" font-size="11.2" fill="#1E293B">• /internal/v1/* Loopback RPC 对接 Python 引擎薄壳</text>
+    <text x="1148" y="592" class="sans" font-size="11.2" fill="#1E293B">• 只读扫描 cognee_db / cache.db 投影至 catalog_*</text>
+    <text x="1148" y="615" class="sans" font-size="11.2" fill="#1E293B">• O_NOFOLLOW 安全只读正文（零正文写回 Go 库）</text>
+    <text x="1148" y="638" class="sans" font-size="11.2" fill="#1E293B">• 受控拉起 engines/cognee 子进程与就绪探针</text>
+    <rect x="1148" y="647" width="414" height="20" rx="6" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1355" y="661" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#1D4ED8">adapter.go · client.go · projector.go · body_reader.go</text>
+  </g>
+
+  <!-- ==================== Band 3：横跨底座 · 零业务通用底座 kit/* ==================== -->
+  <g id="layer-kit">
+    <rect x="28" y="736" width="1312" height="118" rx="14" fill="url(#kit-band-grad)" stroke="#94A3B8" stroke-width="1.4" filter="url(#card-shadow)"/>
+    <rect x="28" y="736" width="1312" height="32" rx="14" fill="#E2E8F0"/>
+    <rect x="28" y="754" width="1312" height="14" fill="#E2E8F0"/>
+    <line x1="28" y1="768" x2="1340" y2="768" stroke="#CBD5E1" stroke-width="1"/>
+
+    <text x="46" y="757" class="sans" font-size="13.5" font-weight="700" fill="#0F172A">零业务通用底座 kit/*（横跨基础设施层 · 严格单向依赖 · 零引用 core/* 与 app/*）</text>
+    <rect x="1032" y="742" width="292" height="20" rx="10" fill="#FFFFFF" stroke="#64748B" stroke-width="1"/>
+    <text x="1178" y="756" text-anchor="middle" class="mono" font-size="10.5" font-weight="700" fill="#334155">DG006 + arch_guard_test.go 强制守卫</text>
+
+    <!-- kit/ui -->
+    <rect x="44" y="776" width="308" height="68" rx="9" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.1"/>
+    <text x="58" y="797" class="mono" font-size="12" font-weight="700" fill="#3730A3">kit/ui</text>
+    <text x="112" y="797" class="sans" font-size="11" font-weight="600" fill="#64748B">通用 MyGo 原生界面库</text>
+    <text x="58" y="817" class="sans" font-size="11" fill="#334155">MyGo 组件 · 设计令牌 · 动效 · 虚拟列表</text>
+    <text x="58" y="834" class="mono" font-size="9.8" fill="#64748B">theme · controls · motion_tokens · chunk_cache</text>
+
+    <!-- kit/daemon -->
+    <rect x="368" y="776" width="308" height="68" rx="9" fill="#FFFBFB" stroke="#FDA4AF" stroke-width="1.2"/>
+    <text x="382" y="797" class="mono" font-size="12" font-weight="700" fill="#9F1239">kit/daemon</text>
+    <text x="470" y="797" class="sans" font-size="11" font-weight="600" fill="#BE123C">单实例原生守护引擎</text>
+    <text x="382" y="817" class="sans" font-size="11" fill="#334155">.service-owner flock · Setsid · 20 MiB 截尾</text>
+    <text x="382" y="834" class="sans" font-size="10.5" fill="#64748B">M1 保活/退出策略 · 防抖探活 · 崩溃不静默自启</text>
+
+    <!-- kit/aiinstaller -->
+    <rect x="692" y="776" width="308" height="68" rx="9" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.1"/>
+    <text x="706" y="797" class="mono" font-size="12" font-weight="700" fill="#0F766E">kit/aiinstaller</text>
+    <text x="832" y="797" class="sans" font-size="11" font-weight="600" fill="#64748B">Agent-First 安装框架</text>
+    <text x="706" y="817" class="sans" font-size="11" fill="#334155">智能安装 · 国内镜像源 · 脱敏诊断 · cli 外壳</text>
+    <text x="706" y="834" class="mono" font-size="9.8" fill="#64748B">installer · mirrors_proxy · diagnostics · cli/</text>
+
+    <!-- kit/agents -->
+    <rect x="1016" y="776" width="308" height="68" rx="9" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.1"/>
+    <text x="1030" y="797" class="mono" font-size="12" font-weight="700" fill="#1D4ED8">kit/agents</text>
+    <text x="1116" y="797" class="sans" font-size="11" font-weight="600" fill="#64748B">宿主治理与模型代理</text>
+    <text x="1030" y="817" class="sans" font-size="11" fill="#334155">8 宿主发现 · 3 级冲突扫描 · 配置安全编辑</text>
+    <text x="1030" y="834" class="sans" font-size="10.5" fill="#B45309">bridge/：4 家 CLI 模型代理 (Codex/pi/TraeX/Agy)</text>
+  </g>
+
+  <!-- 右侧垂直数据与引擎总线通道框架（避免穿过 kit/* 卡片） -->
+  <g id="layer-bus-frame">
+    <rect x="1354" y="736" width="298" height="118" rx="14" fill="url(#bus-grad)" stroke="#CBD5E1" stroke-width="1" stroke-dasharray="5 4"/>
+  </g>
+
+  <!-- ==================== Band 4：隔离外部引擎与存储层（非 Go 最小区） ==================== -->
+  <g id="layer-bottom-isolated">
+    <!-- 左：双通道推理层 -->
+    <rect x="28" y="938" width="394" height="202" rx="14" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="28" y="938" width="394" height="34" rx="14" fill="#FFFBEB"/>
+    <rect x="28" y="958" width="394" height="14" fill="#FFFBEB"/>
+    <line x1="28" y1="972" x2="422" y2="972" stroke="#FEF3C7" stroke-width="1"/>
+
+    <text x="44" y="960" class="sans" font-size="13.5" font-weight="700" fill="#78350F">双通道推理（并存 · 唯一 active 生效）</text>
+
+    <!-- 通道 1：agent_bridge -->
+    <rect x="42" y="982" width="366" height="72" rx="9" fill="#FFFDF7" stroke="#FDE68A" stroke-width="1.1"/>
+    <text x="54" y="1001" class="sans" font-size="12" font-weight="700" fill="#92400E">通道 1：内嵌 Go agent_bridge（4 家 CLI 代理）</text>
+    <text x="54" y="1018" class="mono" font-size="9.8" fill="#B45309">via /v1/chat/completions → kit/agents/bridge</text>
+    <rect x="54" y="1026" width="76" height="20" rx="5" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+    <text x="92" y="1040" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#0F172A">Codex</text>
+    <rect x="138" y="1026" width="54" height="20" rx="5" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+    <text x="165" y="1040" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#0F172A">pi</text>
+    <rect x="200" y="1026" width="76" height="20" rx="5" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+    <text x="238" y="1040" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#0F172A">TraeX</text>
+    <rect x="284" y="1026" width="112" height="20" rx="5" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+    <text x="340" y="1040" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#0F172A">Antigravity</text>
+
+    <!-- 通道 2：直连 Provider / Ollama -->
+    <rect x="42" y="1062" width="366" height="66" rx="9" fill="#FFFDF7" stroke="#FDE68A" stroke-width="1.1"/>
+    <text x="54" y="1082" class="sans" font-size="12" font-weight="700" fill="#92400E">通道 2：直连 LLM Provider / 本地 Ollama</text>
+    <text x="54" y="1101" class="sans" font-size="11" fill="#334155">OpenAI · Claude · Gemini · DeepSeek · 本地 Ollama</text>
+    <text x="54" y="1118" class="sans" font-size="10.2" fill="#64748B">未配参数保持省略 · 显式 0 保留 · Schema 实测登记</text>
+
+    <!-- 中：engines/cognee（非 Go 最小隔离区） -->
+    <rect x="500" y="938" width="536" height="202" rx="14" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1.4" filter="url(#card-shadow)"/>
+    <rect x="500" y="938" width="536" height="34" rx="14" fill="#EFF6FF"/>
+    <rect x="500" y="958" width="536" height="14" fill="#EFF6FF"/>
+    <line x1="500" y1="972" x2="1036" y2="972" stroke="#DBEAFE" stroke-width="1"/>
+
+    <text x="516" y="960" class="sans" font-size="13.5" font-weight="700" fill="#1E3A8A">engines/cognee（~2.6k 行无状态 Python 引擎薄壳）</text>
+    <rect x="928" y="945" width="96" height="20" rx="10" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+    <text x="976" y="959" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#1D4ED8">ML023 守卫</text>
+
+    <!-- 左子块：上游官方 Cognee 零侵入校验 -->
+    <rect x="514" y="982" width="254" height="146" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="526" y="1002" class="sans" font-size="12" font-weight="700" fill="#0F172A">上游官方 Cognee 1.6.7</text>
+    <text x="526" y="1020" class="mono" font-size="10" fill="#1D4ED8">verify_source v2 · SHA-256 (ec6f408)</text>
+    <text x="526" y="1040" class="sans" font-size="11" fill="#334155">• 逐文件 O_NOFOLLOW 校验零侵入</text>
+    <text x="526" y="1059" class="sans" font-size="11" fill="#334155">• 源码目录严禁 .pyc / .pyo 污染</text>
+    <text x="526" y="1078" class="sans" font-size="11" fill="#334155">• 蒸馏 cognify · 混合检索 · 代码图谱</text>
+    <rect x="526" y="1092" width="230" height="24" rx="6" fill="#E0E7FF" stroke="#A5B4FC" stroke-width="1"/>
+    <text x="641" y="1108" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#3730A3">FastEmbed 本地离线向量化</text>
+
+    <!-- 右子块：薄壳适配与出口改写 -->
+    <rect x="778" y="982" width="244" height="146" rx="9" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+    <text x="790" y="1002" class="sans" font-size="12" font-weight="700" fill="#0F172A">无状态引擎胶水与参数边界</text>
+    <text x="790" y="1020" class="mono" font-size="10" fill="#0F766E">engine_api · runner · handoff</text>
+    <text x="790" y="1040" class="sans" font-size="11" fill="#334155">• ML001–ML003 模型参数与热切换</text>
+    <text x="790" y="1059" class="sans" font-size="11" fill="#334155">• Ladybug 图扩展 / LiteLLM 适配</text>
+    <text x="790" y="1078" class="sans" font-size="11" fill="#334155">• 零业务治理逻辑（纯执行引擎）</text>
+    <rect x="790" y="1092" width="220" height="24" rx="6" fill="#FEF3C7" stroke="#FCD34D" stroke-width="1"/>
+    <text x="900" y="1108" text-anchor="middle" class="mono" font-size="10.2" font-weight="600" fill="#92400E">language_egress 出口语言改写</text>
+
+    <!-- 右：持久化存储与真相层 -->
+    <rect x="1106" y="938" width="546" height="202" rx="14" fill="url(#store-grad)" stroke="#5EEAD4" stroke-width="1.3" filter="url(#card-shadow)"/>
+    <rect x="1106" y="938" width="546" height="34" rx="14" fill="#F0FDFA"/>
+    <rect x="1106" y="958" width="546" height="14" fill="#F0FDFA"/>
+    <line x1="1106" y1="972" x2="1652" y2="972" stroke="#CCFBF1" stroke-width="1"/>
+
+    <text x="1122" y="960" class="sans" font-size="13.5" font-weight="700" fill="#134E4A">持久化存储与唯一真相层（.local/daily/ · 隐私不入库）</text>
+
+    <!-- official-store（左上宽卡，留右侧 x=1568..1652 供 Indigo ② 垂直落地至 memlane.sqlite3） -->
+    <rect x="1120" y="982" width="436" height="74" rx="9" fill="#EFF6FF" stroke="#93C5FD" stroke-width="1.2"/>
+    <text x="1134" y="1002" class="mono" font-size="11.5" font-weight="700" fill="#1E3A8A">.local/daily/official-store</text>
+    <text x="1330" y="1002" class="sans" font-size="11" font-weight="600" fill="#1D4ED8">（唯一正文/向量/图谱真相）</text>
+
+    <rect x="1134" y="1014" width="130" height="30" rx="6" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1199" y="1033" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1E293B">正文 &amp; cognee_db</text>
+    <rect x="1272" y="1014" width="132" height="30" rx="6" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1338" y="1033" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1E293B">LanceDB 语义向量</text>
+    <rect x="1412" y="1014" width="132" height="30" rx="6" fill="#FFFFFF" stroke="#BFDBFE" stroke-width="1"/>
+    <text x="1478" y="1033" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1E293B">Ladybug 实体图谱</text>
+
+    <!-- 密钥独立隔离 -->
+    <rect x="1120" y="1066" width="240" height="62" rx="9" fill="#FFFBEB" stroke="#FCD34D" stroke-width="1.1"/>
+    <text x="1132" y="1087" class="mono" font-size="11" font-weight="700" fill="#92400E">generation-credentials/</text>
+    <text x="1132" y="1107" class="sans" font-size="10.8" fill="#78350F">0600 独立密钥隔离目录</text>
+    <text x="1132" y="1122" class="sans" font-size="9.8" fill="#92400E">不入主库 · 脱敏日志与备份边界</text>
+
+    <!-- memlane.sqlite3 -->
+    <rect x="1372" y="1066" width="266" height="62" rx="9" fill="#F0FDFA" stroke="#5EEAD4" stroke-width="1.2"/>
+    <text x="1384" y="1087" class="mono" font-size="11" font-weight="700" fill="#134E4A">.local/daily/memlane.sqlite3</text>
+    <text x="1384" y="1107" class="sans" font-size="10.8" fill="#0F766E">Go 单点独占治理/投影库 (0600 WAL)</text>
+    <text x="1384" y="1122" class="sans" font-size="9.8" fill="#475569">34 张表 · catalog_* 可重建 · 零正文副本</text>
+  </g>
+
+  <!-- ==================== 5 条流动动画数据流 + 依赖线 + 流光粒子 + 胶囊标签 ==================== -->
+  <g id="layer-flows">
+    <!-- 零业务单向依赖虚线（app/* & core/* → kit/*，DG006） -->
+    <path d="M 198 690 L 198 734" class="dep-line" marker-end="url(#arrow-slate)"/>
+    <path d="M 846 690 L 846 734" class="dep-line" marker-end="url(#arrow-slate)"/>
+    <path d="M 1170 690 L 1170 734" class="dep-line" marker-end="url(#arrow-slate)"/>
+
+    <!-- ===== ① 采集与召回流（Cobalt Blue #2563EB） ===== -->
+    <!-- Corridor A：3 路入站 + 1 路召回返回 -->
+    <path id="flow-1a-hook" d="M 606 220 L 606 272" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 606 220 L 606 272" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-1b-pi" d="M 870 220 L 870 272" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 870 220 L 870 272" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-1c-mcp" d="M 1220 220 L 1220 272" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 1220 220 L 1220 272" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <path id="flow-1d-recall" d="M 1474 274 L 1474 222" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 1474 274 L 1474 222" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <!-- Right Highway + Corridor D：core/engine/cognee → engines/cognee (/internal/v1/*) -->
+    <path id="flow-1e-rpc" d="M 1372 676 L 1372 874 L 740 874 L 740 936" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 1372 676 L 1372 874 L 740 874 L 740 936" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <!-- Band 4：engines/cognee → official-store（读写唯一真相） -->
+    <path id="flow-1f-store" d="M 1036 1019 L 1118 1019" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 1036 1019 L 1118 1019" class="flow-dash" stroke="#2563EB" stroke-width="2.3" marker-end="url(#arrow-blue)"/>
+
+    <!-- ===== ② 桌面读写与投影流（Indigo #6366F1） ===== -->
+    <!-- Corridor B：app/ ↔ core/gateway -->
+    <path id="flow-2a-req" d="M 500 402 L 590 402" class="flow-base" stroke="#6366F1" stroke-width="2.6"/>
+    <path d="M 500 402 L 590 402" class="flow-dash" stroke="#6366F1" stroke-width="2.3" marker-end="url(#arrow-indigo)"/>
+
+    <path id="flow-2b-resp" d="M 592 464 L 502 464" class="flow-base" stroke="#6366F1" stroke-width="2.6"/>
+    <path d="M 592 464 L 502 464" class="flow-dash" stroke="#6366F1" stroke-width="2.3" marker-end="url(#arrow-indigo)"/>
+
+    <!-- Far-right straight lane：core/domain ↔ memlane.sqlite3 -->
+    <path id="flow-2c-sqlite" d="M 1602 510 L 1602 1064" class="flow-base" stroke="#6366F1" stroke-width="2.6"/>
+    <path d="M 1602 510 L 1602 1064" class="flow-dash" stroke="#6366F1" stroke-width="2.3" marker-end="url(#arrow-indigo)"/>
+
+    <!-- ===== ③ 异步提炼与双通道推理流（Amber #D97706） ===== -->
+    <!-- Right Highway + Corridor D：InboxWorker / engine → engines/cognee -->
+    <path id="flow-3a-extract" d="M 1418 676 L 1418 906 L 910 906 L 910 936" class="flow-base" stroke="#D97706" stroke-width="2.6"/>
+    <path d="M 1418 676 L 1418 906 L 910 906 L 910 936" class="flow-dash" stroke="#D97706" stroke-width="2.3" marker-end="url(#arrow-amber)"/>
+
+    <!-- Band 4：engines/cognee → 双通道推理（language_egress） -->
+    <path id="flow-3b-egress" d="M 500 1046 L 424 1046" class="flow-base" stroke="#D97706" stroke-width="2.6"/>
+    <path d="M 500 1046 L 424 1046" class="flow-dash" stroke="#D97706" stroke-width="2.3" marker-end="url(#arrow-amber)"/>
+
+    <!-- ===== ④ 启动只读投影与日期锁流（Teal #0D9488） ===== -->
+    <!-- Right Highway straight UP：official-store → core/engine/cognee -->
+    <path id="flow-4a-project" d="M 1504 982 L 1504 678" class="flow-base" stroke="#0D9488" stroke-width="2.6"/>
+    <path d="M 1504 982 L 1504 678" class="flow-dash" stroke="#0D9488" stroke-width="2.3" marker-end="url(#arrow-teal)"/>
+
+    <!-- ===== ⑤ 单二进制守护控制流（Rose #E11D48） ===== -->
+    <!-- kit/daemon → UP → cmd/memlane -->
+    <path id="flow-5a-sup-go" d="M 634 736 L 634 692" class="flow-base" stroke="#E11D48" stroke-width="2.6"/>
+    <path d="M 634 736 L 634 692" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.3" marker-end="url(#arrow-rose)"/>
+
+    <!-- kit/daemon → DOWN → engines/cognee -->
+    <path id="flow-5b-sup-py" d="M 556 854 L 556 936" class="flow-base" stroke="#E11D48" stroke-width="2.6"/>
+    <path d="M 556 854 L 556 936" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.3" marker-end="url(#arrow-rose)"/>
+
+    <!-- ===== 沿轨流光粒子（SMIL animateMotion） ===== -->
+    <circle r="3.2" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0s"><mpath href="#flow-1a-hook" xlink:href="#flow-1a-hook"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.4s"><mpath href="#flow-1b-pi" xlink:href="#flow-1b-pi"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.8s"><mpath href="#flow-1c-mcp" xlink:href="#flow-1c-mcp"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.9s" repeatCount="indefinite" begin="1.1s"><mpath href="#flow-1d-recall" xlink:href="#flow-1d-recall"/></animateMotion>
+    </circle>
+    <circle r="3.4" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="2.9s" repeatCount="indefinite" begin="0.2s"><mpath href="#flow-1e-rpc" xlink:href="#flow-1e-rpc"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#2563EB" filter="url(#dot-glow)">
+      <animateMotion dur="1.7s" repeatCount="indefinite" begin="0.5s"><mpath href="#flow-1f-store" xlink:href="#flow-1f-store"/></animateMotion>
+    </circle>
+
+    <circle r="3.2" fill="#6366F1" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.1s"><mpath href="#flow-2a-req" xlink:href="#flow-2a-req"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#6366F1" filter="url(#dot-glow)">
+      <animateMotion dur="1.8s" repeatCount="indefinite" begin="0.9s"><mpath href="#flow-2b-resp" xlink:href="#flow-2b-resp"/></animateMotion>
+    </circle>
+    <circle r="3.4" fill="#6366F1" filter="url(#dot-glow)">
+      <animateMotion dur="2.8s" repeatCount="indefinite" begin="0.3s"><mpath href="#flow-2c-sqlite" xlink:href="#flow-2c-sqlite"/></animateMotion>
+    </circle>
+
+    <circle r="3.4" fill="#D97706" filter="url(#dot-glow)">
+      <animateMotion dur="2.7s" repeatCount="indefinite" begin="0.6s"><mpath href="#flow-3a-extract" xlink:href="#flow-3a-extract"/></animateMotion>
+    </circle>
+    <circle r="3.2" fill="#D97706" filter="url(#dot-glow)">
+      <animateMotion dur="1.7s" repeatCount="indefinite" begin="0.2s"><mpath href="#flow-3b-egress" xlink:href="#flow-3b-egress"/></animateMotion>
+    </circle>
+
+    <circle r="3.4" fill="#0D9488" filter="url(#dot-glow)">
+      <animateMotion dur="2.4s" repeatCount="indefinite" begin="0.4s"><mpath href="#flow-4a-project" xlink:href="#flow-4a-project"/></animateMotion>
+    </circle>
+
+    <circle r="3.0" fill="#E11D48" filter="url(#dot-glow)">
+      <animateMotion dur="2.0s" repeatCount="indefinite" begin="0s"><mpath href="#flow-5a-sup-go" xlink:href="#flow-5a-sup-go"/></animateMotion>
+    </circle>
+    <circle r="3.0" fill="#E11D48" filter="url(#dot-glow)">
+      <animateMotion dur="2.1s" repeatCount="indefinite" begin="0.7s"><mpath href="#flow-5b-sup-py" xlink:href="#flow-5b-sup-py"/></animateMotion>
+    </circle>
+
+    <!-- ===== 连线标签胶囊（置顶且避开所有箭头与节点） ===== -->
+    <g filter="url(#chip-shadow)">
+      <!-- Corridor A 胶囊 -->
+      <rect x="540" y="235" width="132" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="606" y="250" text-anchor="middle" class="mono" font-size="10.2" font-weight="600" fill="#1D4ED8">memlane hook</text>
+
+      <rect x="786" y="235" width="168" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="870" y="250" text-anchor="middle" class="mono" font-size="10.2" font-weight="600" fill="#1D4ED8">HTTP /ingest &amp; /mcp</text>
+
+      <rect x="1150" y="235" width="140" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="1220" y="250" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">标准 MCP (/mcp)</text>
+
+      <rect x="1384" y="235" width="180" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="1474" y="250" text-anchor="middle" class="sans" font-size="10.5" font-weight="600" fill="#1D4ED8">召回返回（合并通用记忆）</text>
+
+      <!-- Corridor B 胶囊 -->
+      <rect x="506" y="370" width="80" height="22" rx="11" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="1"/>
+      <text x="546" y="385" text-anchor="middle" class="mono" font-size="10" font-weight="700" fill="#4338CA">/api/* 读写</text>
+
+      <rect x="504" y="476" width="84" height="22" rx="11" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="1"/>
+      <text x="546" y="491" text-anchor="middle" class="sans" font-size="9.8" font-weight="600" fill="#4338CA">投影/正文/图谱</text>
+
+      <!-- Corridor C 胶囊 -->
+      <rect x="140" y="701" width="116" height="20" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="198" y="715" text-anchor="middle" class="sans" font-size="9.8" font-weight="600" fill="#475569">单向依赖 kit/ui</text>
+
+      <rect x="576" y="701" width="116" height="20" rx="10" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+      <text x="634" y="715" text-anchor="middle" class="sans" font-size="9.8" font-weight="600" fill="#BE123C">flock / M1 保活</text>
+
+      <rect x="780" y="701" width="132" height="20" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="846" y="715" text-anchor="middle" class="sans" font-size="9.8" font-weight="600" fill="#475569">单向依赖 kit/*</text>
+
+      <rect x="1102" y="701" width="136" height="20" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1"/>
+      <text x="1170" y="715" text-anchor="middle" class="sans" font-size="9.8" font-weight="600" fill="#475569">单向依赖 kit/agents</text>
+
+      <!-- Right Highway 胶囊（垂直错开，互不碰线） -->
+      <rect x="1454" y="758" width="100" height="36" rx="8" fill="#FFFFFF" stroke="#5EEAD4" stroke-width="1"/>
+      <text x="1504" y="773" text-anchor="middle" class="sans" font-size="10" font-weight="700" fill="#0F766E">只读投影</text>
+      <text x="1504" y="787" text-anchor="middle" class="mono" font-size="9.5" fill="#0F766E">O_NOFOLLOW</text>
+
+      <rect x="1556" y="806" width="92" height="36" rx="8" fill="#FFFFFF" stroke="#A5B4FC" stroke-width="1"/>
+      <text x="1602" y="821" text-anchor="middle" class="sans" font-size="10" font-weight="700" fill="#4338CA">单写者 WAL</text>
+      <text x="1602" y="835" text-anchor="middle" class="mono" font-size="9.5" fill="#4338CA">34 张表</text>
+
+      <!-- Corridor D 胶囊（水平与垂直错落，清晰不拥挤） -->
+      <rect x="498" y="883" width="116" height="22" rx="11" fill="#FFF1F2" stroke="#FDA4AF" stroke-width="1"/>
+      <text x="556" y="898" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#BE123C">Setsid 子进程守护</text>
+
+      <rect x="854" y="863" width="212" height="22" rx="11" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="960" y="878" text-anchor="middle" class="mono" font-size="10" font-weight="600" fill="#1D4ED8">/internal/v1/* 采集与召回</text>
+
+      <rect x="1096" y="895" width="196" height="22" rx="11" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+      <text x="1194" y="910" text-anchor="middle" class="sans" font-size="10" font-weight="600" fill="#B45309">InboxWorker 异步提炼调度</text>
+
+      <!-- Band 4 水平短胶囊 -->
+      <rect x="429" y="1014" width="64" height="22" rx="8" fill="#FFFFFF" stroke="#FCD34D" stroke-width="1"/>
+      <text x="461" y="1029" text-anchor="middle" class="sans" font-size="9.5" font-weight="700" fill="#B45309">出口改写</text>
+
+      <rect x="1042" y="987" width="58" height="22" rx="8" fill="#FFFFFF" stroke="#93C5FD" stroke-width="1"/>
+      <text x="1071" y="1002" text-anchor="middle" class="sans" font-size="9.5" font-weight="700" fill="#1D4ED8">读写真相</text>
+    </g>
+  </g>
+
+  <!-- ==================== 底部 5 条流动数据流图例 ==================== -->
+  <g id="layer-legend">
+    <rect x="28" y="1154" width="1624" height="68" rx="12" fill="#FFFFFF" stroke="#D5E2F2" stroke-width="1.2" filter="url(#card-shadow)"/>
+
+    <!-- ① 采集与召回流 -->
+    <path d="M 46 1178 L 80 1178" class="flow-base" stroke="#2563EB" stroke-width="2.6"/>
+    <path d="M 46 1178 L 80 1178" class="flow-dash" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+    <text x="90" y="1182" class="sans" font-size="12" font-weight="700" fill="#1E3A8A">① 采集与召回流</text>
+    <text x="46" y="1204" class="sans" font-size="10" fill="#475569">Host → hook / pi / /mcp → gateway → engine → cognee</text>
+
+    <line x1="348" y1="1166" x2="348" y2="1210" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- ② 桌面读写与投影流 -->
+    <path d="M 366 1178 L 400 1178" class="flow-base" stroke="#6366F1" stroke-width="2.6"/>
+    <path d="M 366 1178 L 400 1178" class="flow-dash" stroke="#6366F1" stroke-width="2.2" marker-end="url(#arrow-indigo)"/>
+    <text x="410" y="1182" class="sans" font-size="12" font-weight="700" fill="#312E81">② 桌面读写与投影流</text>
+    <text x="366" y="1204" class="sans" font-size="10" fill="#475569">app/* → app/api → gateway ↔ sqlite &amp; O_NOFOLLOW 正文/图谱</text>
+
+    <line x1="704" y1="1166" x2="704" y2="1210" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- ③ 异步提炼与双通道推理流 -->
+    <path d="M 722 1178 L 756 1178" class="flow-base" stroke="#D97706" stroke-width="2.6"/>
+    <path d="M 722 1178 L 756 1178" class="flow-dash" stroke="#D97706" stroke-width="2.2" marker-end="url(#arrow-amber)"/>
+    <text x="766" y="1182" class="sans" font-size="12" font-weight="700" fill="#92400E">③ 异步提炼与双通道推理流</text>
+    <text x="722" y="1204" class="sans" font-size="10" fill="#475569">InboxWorker → cognee → language_egress → bridge / LLM</text>
+
+    <line x1="1048" y1="1166" x2="1048" y2="1210" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- ④ 启动只读投影与日期锁流 -->
+    <path d="M 1066 1178 L 1100 1178" class="flow-base" stroke="#0D9488" stroke-width="2.6"/>
+    <path d="M 1066 1178 L 1100 1178" class="flow-dash" stroke="#0D9488" stroke-width="2.2" marker-end="url(#arrow-teal)"/>
+    <text x="1110" y="1182" class="sans" font-size="12" font-weight="700" fill="#134E4A">④ 启动只读投影与日期锁流</text>
+    <text x="1066" y="1204" class="sans" font-size="10" fill="#475569">official-store 只读投影 → catalog_* &amp; 最早日期锁</text>
+
+    <line x1="1362" y1="1166" x2="1362" y2="1210" stroke="#E2E8F0" stroke-width="1"/>
+
+    <!-- ⑤ 单二进制守护控制流 -->
+    <path d="M 1380 1178 L 1414 1178" class="flow-base" stroke="#E11D48" stroke-width="2.6"/>
+    <path d="M 1380 1178 L 1414 1178" class="flow-dash-slow" stroke="#E11D48" stroke-width="2.2" marker-end="url(#arrow-rose)"/>
+    <text x="1424" y="1182" class="sans" font-size="12" font-weight="700" fill="#9F1239">⑤ 单二进制守护控制流</text>
+    <text x="1380" y="1204" class="sans" font-size="10" fill="#475569">cmd/memlane + kit/daemon（flock / Setsid / M1 保活）</text>
+  </g>
+
+  <!-- 底部核心约束摘要 -->
+  <text x="840" y="1243" text-anchor="middle" class="sans" font-size="11.2" fill="#475569">
+    核心边界：Cognee 1.6.7 (ec6f408) 源码零侵入 · kit/* 零业务单向底座 (DG006) · engines/cognee 无状态薄壳 (ML023) · 唯一正文真相在 official-store
+  </text>
+</svg>
