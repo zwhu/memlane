@@ -183,20 +183,8 @@ func parseISO8601Time(raw string) (time.Time, bool) {
 }
 
 func codexRecordTime(rec, payload object) string {
-	if raw, ok := payload["completed_at_ms"]; ok && raw != nil {
-		var ms float64
-		var valid bool
-		switch v := raw.(type) {
-		case float64:
-			ms, valid = v, !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0
-		case int:
-			ms, valid = float64(v), v > 0
-		case int64:
-			ms, valid = float64(v), v > 0
-		}
-		if valid {
-			return time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339Nano)
-		}
+	if ms, ok := payload["completed_at_ms"].(float64); ok && !math.IsNaN(ms) && !math.IsInf(ms, 0) && ms > 0 {
+		return time.UnixMilli(int64(ms)).UTC().Format(time.RFC3339Nano)
 	}
 	return stringField(rec, "timestamp")
 }
@@ -375,20 +363,6 @@ func parseTranscriptUnits(raw []byte) []transcriptQA {
 					setUnitAnswer(codexResponseUnits, text, stamp, "", "")
 				}
 			}
-		case "UserMessage":
-			text := strings.TrimSpace(extractBlockText(rec["content"], false))
-			if text != "" && !isNonRequestText(text) {
-				appendPromptUnit(&codexEventUnits, transcriptQA{
-					Question:   text,
-					PromptTime: stringField(rec, "timestamp"),
-					MessageID:  stringField(rec, "id"),
-				})
-			}
-		case "AgentMessage":
-			text := strings.TrimSpace(extractBlockText(rec["content"], true))
-			if text != "" {
-				setUnitAnswer(codexEventUnits, text, stringField(rec, "timestamp"), "", "")
-			}
 		case "user", "assistant":
 			if rec["forkedFrom"] != nil || boolField(rec, "isSidechain") {
 				continue
@@ -444,37 +418,79 @@ func parseTranscriptUnits(raw []byte) []transcriptQA {
 	return claudeUnits
 }
 
-func selectTranscriptQA(units []transcriptQA, hintQuestion, stopAnswer string) (transcriptQA, bool) {
+type transcriptSelectStatus int
+
+const (
+	transcriptFallback transcriptSelectStatus = iota
+	transcriptMatched
+	transcriptSkip
+)
+
+func selectTranscriptQA(units []transcriptQA, hintQuestion, stopAnswer, hintTurnID string) (transcriptQA, transcriptSelectStatus) {
 	if len(units) == 0 {
-		return transcriptQA{}, false
+		return transcriptQA{}, transcriptFallback
+	}
+	if hintTurnID != "" {
+		for i := len(units) - 1; i >= 0; i-- {
+			u := units[i]
+			if u.TurnID != hintTurnID && u.MessageID != hintTurnID {
+				continue
+			}
+			if u.Interrupted || u.Question == "" {
+				return transcriptQA{}, transcriptSkip
+			}
+			if stopAnswer != "" {
+				if u.Answer == "" {
+					u.AnswerTime = ""
+				}
+				u.Answer = stopAnswer
+				return u, transcriptMatched
+			}
+			if u.Answer != "" {
+				if hintQuestion != "" {
+					u.Question = hintQuestion
+				}
+				return u, transcriptMatched
+			}
+			return transcriptQA{}, transcriptSkip
+		}
 	}
 	if stopAnswer != "" {
 		wantAns := normalizeWhitespace(stopAnswer)
 		for i := len(units) - 1; i >= 0; i-- {
 			u := units[i]
+			if hintTurnID != "" && u.TurnID != "" && u.TurnID != hintTurnID {
+				continue
+			}
 			if !u.Interrupted && u.Question != "" && u.Answer != "" && normalizeWhitespace(u.Answer) == wantAns {
 				u.Answer = stopAnswer
-				return u, true
+				return u, transcriptMatched
 			}
 		}
 		last := units[len(units)-1]
-		if !last.Interrupted && last.Question != "" {
-			if last.Answer == "" {
-				last.AnswerTime = ""
-			}
-			last.Answer = stopAnswer
-			return last, true
+		if hintTurnID != "" && last.TurnID != "" && last.TurnID != hintTurnID {
+			return transcriptQA{}, transcriptFallback
 		}
-		return transcriptQA{}, false
+		if last.Interrupted || last.Question == "" {
+			return transcriptQA{}, transcriptSkip
+		}
+		if last.Answer == "" {
+			last.AnswerTime = ""
+		}
+		last.Answer = stopAnswer
+		return last, transcriptMatched
 	}
 	last := units[len(units)-1]
+	if hintTurnID != "" && last.TurnID != "" && last.TurnID != hintTurnID {
+		return transcriptQA{}, transcriptSkip
+	}
 	if !last.Interrupted && last.Question != "" && last.Answer != "" {
 		if hintQuestion != "" {
 			last.Question = hintQuestion
 		}
-		return last, true
+		return last, transcriptMatched
 	}
-	return transcriptQA{}, false
+	return transcriptQA{}, transcriptSkip
 }
 
 func codexTurnMessageID(sessionID, promptTime, question, answer string) string {
@@ -486,7 +502,7 @@ func codexTurnMessageID(sessionID, promptTime, question, answer string) string {
 	return fmt.Sprintf("turn:%x", sum[:12])
 }
 
-func normalizeStopCapture(in object, sessionID string) (object, error) {
+func normalizeStopCapture(in object, sessionID string) (object, bool, error) {
 	fields := in
 	if entry, ok := in["entry"].(object); ok {
 		fields = maps.Clone(in)
@@ -495,22 +511,26 @@ func normalizeStopCapture(in object, sessionID string) (object, error) {
 	question := stringField(fields, "question", "prompt")
 	answer := stringField(fields, "answer", "last_assistant_message")
 	if question != "" && answer != "" {
-		return in, nil
+		return in, true, nil
 	}
 	path := stringField(fields, "transcript_path", "transcriptPath")
 	if path == "" {
-		return in, nil
+		return in, true, nil
 	}
 	raw, err := readTranscriptTailBytes(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(raw) == 0 {
-		return in, nil
+		return in, true, nil
 	}
-	qa, ok := selectTranscriptQA(parseTranscriptUnits(raw), question, answer)
-	if !ok {
-		return in, nil
+	hintTurnID := stringField(fields, "turn_id", "turnId", "event_id", "message_id")
+	qa, status := selectTranscriptQA(parseTranscriptUnits(raw), question, answer, hintTurnID)
+	switch status {
+	case transcriptSkip:
+		return nil, false, nil
+	case transcriptFallback:
+		return in, true, nil
 	}
 	out := maps.Clone(in)
 	if question == "" && qa.Question != "" {
@@ -550,5 +570,5 @@ func normalizeStopCapture(in object, sessionID string) (object, error) {
 			)
 		}
 	}
-	return out, nil
+	return out, true, nil
 }

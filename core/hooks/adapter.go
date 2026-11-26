@@ -217,12 +217,16 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 				payload = normalized
 			}
 		} else if event == Stop {
-			normalized, err := normalizeStopCapture(in, sessionID)
+			normalized, ok, err := normalizeStopCapture(in, sessionID)
 			if err != nil {
 				return nil, err
 			}
-			payload = normalized
-			allowEmptyQuestion = sessionID != ""
+			if !ok {
+				payload = nil
+			} else {
+				payload = normalized
+				allowEmptyQuestion = sessionID != ""
+			}
 		}
 		if payload != nil {
 			kind, id, content := captureWithOptions(payload, event, allowEmptyQuestion)
@@ -343,7 +347,7 @@ func captureWithOptions(in object, event string, allowEmptyQuestion bool) (kind,
 	if eventTime != "" {
 		content["time"] = eventTime
 	}
-	if stringField(ctxMap, "date") == "" && promptTime == "" && eventTime == "" {
+	if question != "" && stringField(ctxMap, "date") == "" && promptTime == "" && eventTime == "" {
 		if ctxMap == nil {
 			ctxMap = object{}
 		}

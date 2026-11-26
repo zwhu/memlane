@@ -1701,6 +1701,85 @@ func TestCodexStopQARecovery(t *testing.T) {
 		if err != nil || string(out) != "{}" || len(requests) != 0 {
 			t.Fatalf("aborted turn without stop answer must not re-emit prior turn, out=%s err=%v reqs=%d", out, err, len(requests))
 		}
+
+		// R1-B1: interrupted transcript WITH last_assistant_message must skip /ingest completely (no tier-2 leak).
+		abortedWithMsg := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-aborted",
+			"transcript_path":        abortedTranscript,
+			"last_assistant_message": "Partial progress before Esc",
+		})
+		out, err = Handle(context.Background(), HostCodex, Stop, abortedWithMsg, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("aborted turn with last_assistant_message must skip /ingest, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+
+		claudeInterrupted := writeTranscriptJSONL(t,
+			`{"type":"user","uuid":"u-int","timestamp":"2026-11-26T10:03:00Z","message":{"role":"user","content":"Run migration"}}`,
+			`{"type":"assistant","uuid":"a-int","timestamp":"2026-11-26T10:03:02Z","message":{"role":"assistant","content":[{"type":"text","text":"Starting migration..."}]}}`,
+			`{"type":"user","uuid":"u-esc","timestamp":"2026-11-26T10:03:03Z","message":{"role":"user","content":"[Request interrupted by user for tool use]"}}`,
+		)
+		claudeInterruptedPayload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "claude-aborted",
+			"transcript_path":        claudeInterrupted,
+			"last_assistant_message": "Starting migration...",
+		})
+		out, err = Handle(context.Background(), HostCodex, Stop, claudeInterruptedPayload, cfg)
+		if err != nil || string(out) != "{}" || len(requests) != 0 {
+			t.Fatalf("Claude interrupted turn must skip /ingest, out=%s err=%v reqs=%d", out, err, len(requests))
+		}
+	})
+
+	t.Run("matches late Stop by turn_id and refuses to hijack newer turn", func(t *testing.T) {
+		// Turn 1 (t1) has no flushed answer yet, Turn 2 (t2) already entered transcript.
+		// Late Stop(turn_id=t1) must pair with Q1 (not Q2).
+		bothInTranscript := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:10:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t1","item":{"type":"UserMessage","id":"u1","content":[{"type":"text","text":"Question 1"}]}}}`,
+			`{"timestamp":"2026-11-26T10:11:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t2","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"Question 2"}]}}}`,
+		)
+		lateMatchPayload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-turn-match",
+			"turn_id":                "t1",
+			"transcript_path":        bothInTranscript,
+			"last_assistant_message": "Answer 1",
+		})
+		out, err := Handle(context.Background(), HostCodex, Stop, lateMatchPayload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		gotMatched := <-requests
+		matchedContent := gotMatched["content"].(object)
+		if gotMatched["turn_id"] != "t1" || matchedContent["question"] != "Question 1" || matchedContent["answer"] != "Answer 1" {
+			t.Fatalf("expected late Stop(t1) to pair with Question 1, got %+v", gotMatched)
+		}
+
+		// Turn 1 (t1) is absent from transcript tail; only Turn 2 (t2) is present.
+		// Late Stop(turn_id=t1) must NOT hijack Question 2; instead fall back to gateway pairing by turn_id.
+		onlyNewTurn := writeTranscriptJSONL(t,
+			`{"timestamp":"2026-11-26T10:11:00Z","type":"event_msg","payload":{"type":"item_completed","turn_id":"t2","item":{"type":"UserMessage","id":"u2","content":[{"type":"text","text":"Question 2"}]}}}`,
+		)
+		lateFallbackPayload := mustJSON(t, object{
+			"cwd":                    workspace,
+			"session_id":             "codex-turn-fallback",
+			"turn_id":                "t1",
+			"transcript_path":        onlyNewTurn,
+			"last_assistant_message": "Answer 1",
+		})
+		out, err = Handle(context.Background(), HostCodex, Stop, lateFallbackPayload, cfg)
+		if err != nil || string(out) != "{}" {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		gotFallback := <-requests
+		fallbackContent := gotFallback["content"].(object)
+		if gotFallback["turn_id"] != "t1" || gotFallback["message_id"] != "t1" ||
+			fallbackContent["question"] != "" || fallbackContent["answer"] != "Answer 1" {
+			t.Fatalf("expected tier-2 fallback without hijacking Question 2, got %+v", gotFallback)
+		}
+		if _, hasCtx := fallbackContent["context"]; hasCtx {
+			t.Fatalf("empty-question tier-2 capture must not pre-fill context.date: %+v", fallbackContent)
+		}
 	})
 
 	t.Run("recovers QA from Codex response_item skipping injected wrappers", func(t *testing.T) {
@@ -1823,6 +1902,9 @@ func TestCodexStopQARecovery(t *testing.T) {
 			got["turn_id"] != "turn-99" || got["message_id"] != "turn-99" ||
 			content["question"] != "" || content["answer"] != "Final answer without transcript" {
 			t.Fatalf("unexpected Tier-2 Stop capture: %+v", got)
+		}
+		if _, hasCtx := content["context"]; hasCtx {
+			t.Fatalf("empty-question Tier-2 capture must not pre-fill context.date: %+v", content)
 		}
 
 		// Also works for TRAE IDE with valid single workspace_root and missing transcript file.
