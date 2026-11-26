@@ -29,6 +29,7 @@ import (
 	"github.com/zwhu/memlane/core/profiles"
 	"github.com/zwhu/memlane/internal/bootstrap"
 	owners "github.com/zwhu/memlane/internal/supervisor"
+	"github.com/zwhu/memlane/kit/agents"
 	"github.com/zwhu/memlane/kit/daemon"
 )
 
@@ -40,6 +41,7 @@ type StackConfig struct {
 	BridgeEndpoint, BridgeTokenFile string
 	AgentTokens                     map[string]string
 	DaemonStatus                    func(context.Context) map[string]any
+	DiscoveryOptions                agents.DiscoveryOptions
 	OutputLanguage                  string
 }
 
@@ -53,7 +55,10 @@ type engineWithoutProjector struct {
 	engine.ModelController
 }
 
-type activeProfileGate struct{ store *domain.Store }
+type activeProfileGate struct {
+	store     *domain.Store
+	discovery agents.DiscoveryOptions
+}
 
 func (g activeProfileGate) ResolveActive(ctx context.Context) (*completion.ActiveProfile, error) {
 	state, err := g.store.GetGenerationState(ctx)
@@ -70,7 +75,24 @@ func (g activeProfileGate) ResolveActive(ctx context.Context) (*completion.Activ
 	if p.Removed || p.Mode != "agent_bridge" {
 		return nil, nil
 	}
-	return &completion.ActiveProfile{Mode: p.Mode, BridgeKind: p.BridgeKind, BridgeProvider: p.BridgeProvider, Model: p.Model}, nil
+	profile := &completion.ActiveProfile{
+		Mode:           p.Mode,
+		BridgeKind:     p.BridgeKind,
+		BridgeProvider: p.BridgeProvider,
+		Model:          p.Model,
+	}
+	if p.BridgeKind != "" {
+		opts := g.discovery
+		opts.Kinds = []string{p.BridgeKind}
+		if hosts := agents.DetectHosts(opts); len(hosts) > 0 {
+			profile.Executable = hosts[0].Executable
+			profile.AuthHome = hosts[0].ProfileDir
+		}
+		if profile.AuthHome == "" {
+			profile.AuthHome = agents.DefaultProfileDir(p.BridgeKind, g.discovery)
+		}
+	}
+	return profile, nil
 }
 
 func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
@@ -89,7 +111,10 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 		}
 		cfg.CompletionToken = hex.EncodeToString(secret[:])
 	}
-	completions, err := completion.NewServer(completion.Config{Token: cfg.CompletionToken, Gate: activeProfileGate{cfg.Store}})
+	completions, err := completion.NewServer(completion.Config{
+		Token: cfg.CompletionToken,
+		Gate:  activeProfileGate{store: cfg.Store, discovery: cfg.DiscoveryOptions},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +132,7 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 	server, err := gateway.NewServer(gateway.Config{
 		Store: cfg.Store, Engine: memEngine, Models: adapter, Projector: projector,
 		ManagementToken: cfg.ManagementToken, AgentTokens: cfg.AgentTokens, DaemonStatus: cfg.DaemonStatus,
+		DiscoveryOptions: cfg.DiscoveryOptions,
 		CompletionHandler: completions.Handler(), MCPHandler: mcpServer.Handler(), ProfilesHandler: profileService.Handler(),
 		OutputLanguage: cfg.OutputLanguage, BridgeEndpoint: cfg.BridgeEndpoint, BridgeTokenFile: cfg.BridgeTokenFile,
 	})
