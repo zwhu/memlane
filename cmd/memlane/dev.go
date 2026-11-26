@@ -19,12 +19,16 @@ import (
 
 	"github.com/zwhu/memlane"
 	"github.com/zwhu/memlane/core/hooks"
+	"github.com/zwhu/memlane/kit/agents"
 	"github.com/zwhu/memlane/kit/daemon"
 )
 
 func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		return reportError(stderr, errors.New("usage: memlane dev <start|status|open|stop|recover> [flags]"))
+		return reportError(stderr, errors.New("usage: memlane dev <start|status|open|stop|recover|sync-hooks> [flags]"))
+	}
+	if args[0] == "sync-hooks" {
+		return runDevSyncHooks(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("dev "+args[0], flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -266,6 +270,190 @@ func isEphemeralExecutable(executable string) bool {
 		}
 	}
 	return false
+}
+
+func devStagedExecutablePath(storeRoot string) string {
+	baseDir := filepath.Join(storeRoot, "cache", "dev-bin")
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(baseDir, "Memlane.app", "Contents", "MacOS", "Memlane")
+	}
+	return filepath.Join(baseDir, "memlane")
+}
+
+type syncedHost struct {
+	Host    string   `json:"host"`
+	Changed bool     `json:"changed"`
+	Applied bool     `json:"applied"`
+	Files   []string `json:"files"`
+}
+
+func runDevSyncHooks(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("dev sync-hooks", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "", "runtime configuration")
+	host := flags.String("host", "", "specific connected host to sync")
+	binary := flags.String("binary", "", "absolute Memlane executable path for hook commands")
+	dryRun := flags.Bool("dry-run", false, "preview managed hook changes without writing")
+	apply := flags.Bool("apply", false, "apply managed hook changes")
+	jsonOut := flags.Bool("json", false, "print JSON")
+	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
+		return 0
+	} else if err != nil || flags.NArg() != 0 || (*apply && *dryRun) {
+		return 2
+	}
+	cfg, err := readRuntime(*path)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	if err := cfg.validateStore(); err != nil {
+		return reportError(stderr, err)
+	}
+	binaryPath, err := resolveSyncHooksBinary(cfg.StoreRoot, *binary, *apply)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	targets, err := resolveSyncHookTargets(cfg, *host, binaryPath)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	previews := make([]hooks.InstallResult, len(targets))
+	for i, opts := range targets {
+		res, err := hooks.InstallHostConfig(opts)
+		if err != nil {
+			return reportError(stderr, fmt.Errorf("%s: %w", opts.Host, err))
+		}
+		previews[i] = res
+	}
+	results := make([]syncedHost, 0, len(targets))
+	affected := 0
+	for i, opts := range targets {
+		res := previews[i]
+		changed := len(res.Previews) != 0
+		applied := false
+		if *apply && changed {
+			opts.Apply = true
+			res, err = hooks.InstallHostConfig(opts)
+			if err != nil {
+				return reportError(stderr, fmt.Errorf("%s: %w", opts.Host, err))
+			}
+			applied = res.Applied
+		}
+		files := make([]string, 0, len(res.Previews))
+		for _, p := range res.Previews {
+			files = append(files, p.Path)
+		}
+		affected += len(files)
+		results = append(results, syncedHost{
+			Host:    res.Host,
+			Changed: changed,
+			Applied: applied,
+			Files:   files,
+		})
+	}
+	return printResult(stdout, stderr, *jsonOut,
+		fmt.Sprintf("Memlane host hook files affected: %d", affected),
+		map[string]any{
+			"schema_version": 1,
+			"applied":        *apply,
+			"binary":         binaryPath,
+			"hosts":          results,
+		})
+}
+
+func resolveSyncHooksBinary(storeRoot, explicit string, apply bool) (string, error) {
+	if explicit = strings.TrimSpace(explicit); explicit != "" {
+		if !filepath.IsAbs(explicit) {
+			return "", errors.New("binary path must be absolute")
+		}
+		cleaned := filepath.Clean(explicit)
+		info, err := os.Stat(cleaned)
+		if err != nil {
+			return "", err
+		}
+		if info.IsDir() || info.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("binary path is not an executable file: %s", cleaned)
+		}
+		return cleaned, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if !isEphemeralExecutable(exe) {
+		return filepath.Clean(exe), nil
+	}
+	if !apply {
+		return devStagedExecutablePath(storeRoot), nil
+	}
+	return stageDevExecutable(storeRoot, exe)
+}
+
+func resolveSyncHookTargets(cfg runtimeConfig, selectedHost, binaryPath string) ([]hooks.InstallOptions, error) {
+	discovery := agents.DiscoveryOptions{}
+	detected := agents.DetectHosts(discovery)
+	if selectedHost != "" {
+		canonical := hooks.CanonicalHost(selectedHost)
+		if canonical == "" {
+			return nil, fmt.Errorf("unknown hook host %q", selectedHost)
+		}
+		agentKind := canonical
+		if canonical == hooks.HostTraeIDE {
+			agentKind = agents.HostTraeIDE
+		}
+		profileDir := agents.DefaultProfileDir(agentKind, discovery)
+		for _, item := range detected {
+			if hooks.CanonicalHost(item.Kind) == canonical && item.ProfileDir != "" {
+				profileDir = item.ProfileDir
+				break
+			}
+		}
+		keyFile := existingHostKeyFile(cfg, canonical, agentKind, profileDir)
+		if keyFile == "" {
+			return nil, fmt.Errorf("host %s is not connected in store (missing agent key file)", canonical)
+		}
+		return []hooks.InstallOptions{{
+			Host:       canonical,
+			ProfileDir: profileDir,
+			BinaryPath: binaryPath,
+			GatewayURL: cfg.GatewayURL,
+			KeyFile:    keyFile,
+		}}, nil
+	}
+	targets := make([]hooks.InstallOptions, 0, len(detected))
+	for _, item := range detected {
+		canonical := hooks.CanonicalHost(item.Kind)
+		if canonical == "" || !item.ProfileFound {
+			continue
+		}
+		keyFile := existingHostKeyFile(cfg, canonical, item.Kind, item.ProfileDir)
+		if keyFile == "" {
+			continue
+		}
+		targets = append(targets, hooks.InstallOptions{
+			Host:       canonical,
+			ProfileDir: item.ProfileDir,
+			BinaryPath: binaryPath,
+			GatewayURL: cfg.GatewayURL,
+			KeyFile:    keyFile,
+		})
+	}
+	return targets, nil
+}
+
+func existingHostKeyFile(cfg runtimeConfig, canonicalHost, agentKind, profileDir string) string {
+	if profileDir != "" {
+		sum := sha256.Sum256([]byte(profileDir))
+		candidate := filepath.Join(cfg.StoreRoot, "agent-keys", agentKind+"-"+hex.EncodeToString(sum[:12])+".token")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	if candidate := cfg.agentKeyFile(canonicalHost); candidate != "" {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func stageDevExecutable(storeRoot, sourcePath string) (string, error) {

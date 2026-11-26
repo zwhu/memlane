@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -173,5 +175,98 @@ func TestHookSessionStartRuntimeFallback(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected /recall request on SessionStart compact")
+	}
+}
+
+func TestDevSyncHooksDryRunApplyAndIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	storeRoot := filepath.Join(t.TempDir(), "official-store")
+	codexProfile := filepath.Join(home, ".codex")
+	require(t, os.MkdirAll(codexProfile, 0o700))
+	require(t, os.MkdirAll(filepath.Join(storeRoot, "agent-keys"), 0o700))
+
+	// Create deterministic existing key for codex (leave traex unconnected).
+	sum := sha256.Sum256([]byte(codexProfile))
+	codexKey := filepath.Join(storeRoot, "agent-keys", "codex-"+hex.EncodeToString(sum[:12])+".token")
+	require(t, os.WriteFile(codexKey, []byte("codex-secret\n"), 0o600))
+
+	fakeBin := filepath.Join(t.TempDir(), "Memlane")
+	require(t, os.WriteFile(fakeBin, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+
+	cfgPath := filepath.Join(t.TempDir(), "runtime.json")
+	cfgRaw, err := json.Marshal(map[string]string{
+		"store_root":  storeRoot,
+		"gateway_url": "http://127.0.0.1:18777",
+	})
+	require(t, err)
+	require(t, os.WriteFile(cfgPath, cfgRaw, 0o600))
+
+	// Seed an outdated codex hooks.json missing PreCompact plus an unrelated third-party hook.
+	hooksPath := filepath.Join(codexProfile, "hooks.json")
+	initial := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo third-party"}]}]}}`
+	require(t, os.WriteFile(hooksPath, []byte(initial), 0o600))
+
+	// 1. Dry-run previews changes without mutating hooks.json.
+	code, out, notes := invoke(t, "", "dev", "sync-hooks", "--config", cfgPath, "--binary", fakeBin, "--dry-run", "--json")
+	if code != 0 || notes != "" {
+		t.Fatalf("dry-run failed: code=%d out=%q stderr=%q", code, out, notes)
+	}
+	var dry struct {
+		Applied bool `json:"applied"`
+		Hosts   []struct {
+			Host    string   `json:"host"`
+			Changed bool     `json:"changed"`
+			Applied bool     `json:"applied"`
+			Files   []string `json:"files"`
+		} `json:"hosts"`
+	}
+	require(t, json.Unmarshal([]byte(out), &dry))
+	if dry.Applied || len(dry.Hosts) != 1 || dry.Hosts[0].Host != "codex" || !dry.Hosts[0].Changed || dry.Hosts[0].Applied {
+		t.Fatalf("unexpected dry-run result: %+v", dry)
+	}
+	afterDry, err := os.ReadFile(hooksPath)
+	require(t, err)
+	if string(afterDry) != initial {
+		t.Fatalf("dry-run mutated hooks.json: %s", afterDry)
+	}
+
+	// 2. Apply writes PreCompact while preserving unrelated third-party hooks and existing key.
+	code, out, notes = invoke(t, "", "dev", "sync-hooks", "--config", cfgPath, "--host", "codex", "--binary", fakeBin, "--apply", "--json")
+	if code != 0 || notes != "" {
+		t.Fatalf("apply failed: code=%d out=%q stderr=%q", code, out, notes)
+	}
+	var applied struct {
+		Applied bool `json:"applied"`
+		Hosts   []struct {
+			Host    string `json:"host"`
+			Changed bool   `json:"changed"`
+			Applied bool   `json:"applied"`
+		} `json:"hosts"`
+	}
+	require(t, json.Unmarshal([]byte(out), &applied))
+	if !applied.Applied || len(applied.Hosts) != 1 || !applied.Hosts[0].Applied {
+		t.Fatalf("unexpected apply result: %+v", applied)
+	}
+	written, err := os.ReadFile(hooksPath)
+	require(t, err)
+	if !strings.Contains(string(written), `"PreCompact"`) || !strings.Contains(string(written), "echo third-party") || !strings.Contains(string(written), fakeBin) {
+		t.Fatalf("unexpected hooks.json after apply: %s", written)
+	}
+
+	// 3. Repeat dry-run is idempotent (changed=false).
+	code, out, notes = invoke(t, "", "dev", "sync-hooks", "--config", cfgPath, "--host", "codex", "--binary", fakeBin, "--dry-run", "--json")
+	if code != 0 || notes != "" {
+		t.Fatalf("repeat dry-run failed: code=%d out=%q stderr=%q", code, out, notes)
+	}
+	require(t, json.Unmarshal([]byte(out), &dry))
+	if len(dry.Hosts) != 1 || dry.Hosts[0].Changed {
+		t.Fatalf("expected idempotent sync, got: %+v", dry)
+	}
+
+	// 4. Unconnected host explicitly requested returns non-zero without minting a key.
+	code, _, _ = invoke(t, "", "dev", "sync-hooks", "--config", cfgPath, "--host", "traex", "--binary", fakeBin, "--dry-run", "--json")
+	if code == 0 {
+		t.Fatal("expected error for unconnected host without existing key file")
 	}
 }
