@@ -133,14 +133,14 @@ func (a *Controller) ApplyAccessDirectory(directory AccessDirectory) {
 
 func accessPolicyChanged(before, after AccessDirectory) bool {
 	encode := func(value any) string { b, _ := json.Marshal(value); return string(b) }
-	agentIDs := func(agents []AccessAgent) map[string]bool {
-		ids := map[string]bool{}
+	agentDefaults := func(agents []AccessAgent) map[string]string {
+		defaults := map[string]string{}
 		for _, agent := range agents {
-			ids[agent.ID] = true
+			defaults[agent.ID] = agent.DefaultAccess
 		}
-		return ids
+		return defaults
 	}
-	if before.Defaults != after.Defaults || encode(agentIDs(before.Agents)) != encode(agentIDs(after.Agents)) {
+	if before.Defaults != after.Defaults || encode(agentDefaults(before.Agents)) != encode(agentDefaults(after.Agents)) {
 		return true
 	}
 	for _, old := range before.Projects {

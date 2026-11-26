@@ -158,3 +158,71 @@ func TestProjectSettingsKeepsMessageStatusStableAtTop(t *testing.T) {
 		t.Fatalf("alerted project should render 消息与采集状态 (y=%.1f) above 项目信息 (y=%.1f)", msgTitleRect.Y, infoRect.Y)
 	}
 }
+
+func TestProjectPermissionsUIHonorsDefaultsAgentDefaultAccessAndOverrides(t *testing.T) {
+	a := settingsFixture()
+	read, none, maintain := "read", "none", "maintain"
+	dir := AccessDirectory{
+		Revision: 10,
+		Defaults: ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: true},
+		Agents: []AccessAgent{
+			{ID: "gemini", Name: "Gemini App", Kind: "gemini", DefaultAccess: "maintain"},
+			{ID: "trae-cn", Name: "TRAE IDE", Kind: "trae_ide", DefaultAccess: "none"},
+			{ID: "codex", Name: "本机 Codex", Kind: "codex", DefaultAccess: "none"},
+			{ID: "pi", Name: "pi", Kind: "pi", DefaultAccess: "maintain"},
+			{ID: "claude", Name: "Claude Code", Kind: "claude", DefaultAccess: "none"},
+		},
+		Projects: []AccessProject{{
+			ID: "p", Name: "memlane", Aliases: []string{"/synthetic/memlane"}, Dataset: "ds",
+			Status: "verified", DesiredRevision: 10,
+			Overrides: map[string]ProjectOverride{
+				"codex":  {Access: &read},
+				"pi":     {Access: &none},
+				"claude": {Access: &maintain},
+			},
+			Applied: map[string]AccessApplied{
+				"gemini":  {Status: "verified", Revision: 10},
+				"trae-cn": {Status: "verified", Revision: 10},
+				"codex":   {Status: "verified", Revision: 10},
+				"pi":      {Status: "verified", Revision: 10},
+				"claude":  {Status: "verified", Revision: 10},
+			},
+		}},
+	}
+	a.ApplyAccessDirectory(dir)
+	a.OpenProjectManagement("p")
+
+	// Render each permission card directly so descriptions and tri-access selections can be verified per agent.
+	cases := []struct {
+		agent    AccessAgent
+		wantDesc string
+		wantVal  string
+	}{
+		// defaults=maintain, agent default_access=maintain, no override -> 读写 (maintain)
+		{dir.Agents[0], "读取、写入并维护该项目记忆（含删除）", "读写"},
+		// defaults=maintain, agent default_access=none (TRAE CN), no override -> 不可访问 (none)
+		{dir.Agents[1], "禁止访问此项目的记忆与原始记录", "不可访问"},
+		// explicit read override beats default_access=none -> 只读
+		{dir.Agents[2], "仅允许检索与读取已有记忆，不可写入", "只读"},
+		// explicit none override beats default_access=maintain and defaults=maintain -> 不可访问
+		{dir.Agents[3], "禁止访问此项目的记忆与原始记录", "不可访问"},
+		// explicit maintain override beats default_access=none -> 读写
+		{dir.Agents[4], "读取、写入并维护该项目记忆（含删除）", "读写"},
+	}
+	p := a.access.Directory.Projects[0]
+	for _, tc := range cases {
+		t.Run(tc.agent.ID, func(t *testing.T) {
+			tt := ui.NewTester(func(c *ui.Context) {
+				ui.Column(c).Fill().Padding(16).Children(func() {
+					a.projectPermissionCard(c, p, tc.agent)
+				})
+			}, 900, 180)
+			if !tt.HasText(tc.wantDesc) {
+				t.Fatalf("agent %s (default_access=%q): missing expected desc %q; texts=%v", tc.agent.ID, tc.agent.DefaultAccess, tc.wantDesc, tt.Texts())
+			}
+			if !tt.HasText(tc.wantVal) {
+				t.Fatalf("agent %s (default_access=%q): missing expected label %q; texts=%v", tc.agent.ID, tc.agent.DefaultAccess, tc.wantVal, tt.Texts())
+			}
+		})
+	}
+}

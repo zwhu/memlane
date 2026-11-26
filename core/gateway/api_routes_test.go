@@ -204,8 +204,59 @@ func TestProjectsAndZeroDefaultGrant(t *testing.T) {
 		t.Fatalf("alias mismatch: %s vs %s", api, same)
 	}
 	manage(t, s, "GET", "/api/projects", "", 200)
-	manage(t, s, "DELETE", "/v1/projects/test", "", 204)
+	manage(t, s, "DELETE", "/api/projects/test", "", 204)
 	manage(t, s, "GET", "/api/projects/test", "", 404)
+}
+
+func TestListProjectsReturnsRealDefaultsAndAgentDefaultAccess(t *testing.T) {
+	s, store, _ := testServer(t, nil)
+	ctx := context.Background()
+	must(t, store.UpsertAgent(ctx, domain.Agent{ID: "legacy-maintain", Kind: "gemini", Name: "Gemini App", DefaultAccess: domain.AccessMaintain}))
+	must(t, store.UpsertAgent(ctx, domain.Agent{ID: "trae-cn", Kind: "trae_ide", Name: "TRAE CN", DefaultAccess: domain.AccessNone}))
+	must(t, store.UpsertRegistryDefaults(ctx, domain.RegistryDefaults{
+		Access:      domain.AccessMaintain,
+		Capture:     true,
+		AutoProcess: true,
+		Revision:    5,
+	}))
+
+	type projectsPayload struct {
+		Defaults struct {
+			Access      domain.AccessLevel `json:"access"`
+			Capture     bool               `json:"capture"`
+			AutoProcess bool               `json:"auto_process"`
+		} `json:"defaults"`
+		Agents   []accessAgent `json:"agents"`
+		Revision int           `json:"revision"`
+	}
+	got := decodeResponse[projectsPayload](t, manage(t, s, "GET", "/api/projects", "", 200))
+	if got.Defaults.Access != domain.AccessMaintain || !got.Defaults.Capture || !got.Defaults.AutoProcess || got.Revision != 5 {
+		t.Fatalf("GET /api/projects returned wrong defaults: %+v", got)
+	}
+	agentDefaults := map[string]domain.AccessLevel{}
+	for _, a := range got.Agents {
+		agentDefaults[a.ID] = a.DefaultAccess
+	}
+	if agentDefaults["legacy-maintain"] != domain.AccessMaintain {
+		t.Fatalf("expected legacy-maintain default_access=maintain, got %+v", agentDefaults)
+	}
+	if agentDefaults["trae-cn"] != domain.AccessNone {
+		t.Fatalf("expected trae-cn default_access=none, got %+v", agentDefaults)
+	}
+	if agentDefaults["agent"] != domain.AccessNone {
+		t.Fatalf("expected connected agent default_access=none, got %+v", agentDefaults)
+	}
+
+	must(t, store.UpsertRegistryDefaults(ctx, domain.RegistryDefaults{
+		Access:      domain.AccessRead,
+		Capture:     false,
+		AutoProcess: true,
+		Revision:    6,
+	}))
+	gotRead := decodeResponse[projectsPayload](t, manage(t, s, "GET", "/v1/projects", "", 200))
+	if gotRead.Defaults.Access != domain.AccessRead || gotRead.Defaults.Capture || !gotRead.Defaults.AutoProcess || gotRead.Revision != 6 {
+		t.Fatalf("GET /v1/projects did not reflect updated defaults: %+v", gotRead)
+	}
 }
 
 func TestKnowledgeWaterfallAndBody(t *testing.T) {

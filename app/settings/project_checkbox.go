@@ -60,7 +60,7 @@ func (a *Controller) confirmProjectCheckboxes(directory AccessDirectory) {
 			if directory.Common == nil || directory.Common.ID != pending.Project || !directory.Common.PermissionsReady(directory.Agents...) {
 				continue
 			}
-			actual := CommonAgentAccess(*directory.Common, pending.Agent)
+			actual := CommonAgentAccessForAgent(*directory.Common, directory.Defaults, directory.AgentByID(pending.Agent))
 			delete(a.access.CheckboxPending, key)
 			if actual != pending.Value {
 				a.access.Message = "设置已由其他操作更新，已显示最新值。"
@@ -77,7 +77,7 @@ func (a *Controller) confirmProjectCheckboxes(directory AccessDirectory) {
 			if p.ID != pending.Project || !p.PermissionsReady(directory.Agents...) {
 				continue
 			}
-			value := p.Overrides[pending.Agent].Effective(directory.Defaults).Access
+			value := p.EffectivePolicy(directory.Defaults, directory.AgentByID(pending.Agent)).Access
 			delete(a.access.CheckboxPending, key)
 			if value != pending.Value {
 				a.access.Message = "设置已由其他操作更新，已显示最新值。"

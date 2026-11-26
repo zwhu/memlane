@@ -145,9 +145,10 @@ func (s *Server) agentConflicts(w http.ResponseWriter, r *http.Request) {
 }
 
 type accessAgent struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Kind string `json:"kind"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Kind          string             `json:"kind"`
+	DefaultAccess domain.AccessLevel `json:"default_access,omitempty"`
 }
 
 func (s *Server) activeAgents(ctx context.Context) ([]accessAgent, error) {
@@ -158,7 +159,7 @@ func (s *Server) activeAgents(ctx context.Context) ([]accessAgent, error) {
 	out := make([]accessAgent, 0, len(registered))
 	for _, a := range registered {
 		if strings.TrimSpace(a.RetiredAt) == "" {
-			out = append(out, accessAgent{a.ID, a.Name, a.Kind})
+			out = append(out, accessAgent{ID: a.ID, Name: a.Name, Kind: a.Kind, DefaultAccess: a.DefaultAccess})
 		}
 	}
 	return out, nil

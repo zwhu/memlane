@@ -735,3 +735,52 @@ func TestCommonKnowledgePerAgentReadAccessToggleAndUnconfirmedRollback(t *testin
 		t.Fatalf("explicit GET verification did not clear pending without extra write: pending=%v writes=%d", a.access.CheckboxPending["common-1/claude"], writes.Load())
 	}
 }
+
+func TestCommonKnowledgePermissionsHonorDefaultsAndAgentDefaultAccess(t *testing.T) {
+	readAccess := "read"
+	noneAccess := "none"
+	a := commonUIFixture()
+	a.applyAccessDirectory(AccessDirectory{
+		Revision: 3,
+		Defaults: ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: true},
+		Agents: []AccessAgent{
+			{ID: "gemini", Name: "Gemini App", DefaultAccess: "maintain"},
+			{ID: "trae-cn", Name: "TRAE IDE", DefaultAccess: "none"},
+			{ID: "codex", Name: "Codex", DefaultAccess: "none"},
+			{ID: "pi", Name: "pi", DefaultAccess: "maintain"},
+		},
+		Common: &AccessProject{
+			ID:              "common-1",
+			Name:            "通用记忆",
+			Dataset:         "common",
+			Status:          "verified",
+			DesiredRevision: 3,
+			Overrides: map[string]ProjectOverride{
+				"codex": {Access: &readAccess},
+				"pi":    {Access: &noneAccess},
+			},
+			Applied: map[string]AccessApplied{
+				"gemini":  {Status: "verified", Revision: 3},
+				"trae-cn": {Status: "verified", Revision: 3},
+				"codex":   {Status: "verified", Revision: 3},
+				"pi":      {Status: "verified", Revision: 3},
+			},
+		},
+	})
+	a.page = "通用知识"
+	a.state().Loaded = true
+	a.commonPage.MenuOpen = false
+
+	// gemini (default_access=maintain, no override) -> read
+	// trae-cn (default_access=none, no override) -> none
+	// codex (default_access=none, override=read) -> read
+	// pi (default_access=maintain, override=none) -> none
+	// => 2/4 只读
+	if got := a.settingsController.CommonAccessLabel(); got != "Agent 权限 · 2/4 只读" {
+		t.Fatalf("CommonAccessLabel() = %q, want %q", got, "Agent 权限 · 2/4 只读")
+	}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("Agent 权限 · 2/4 只读") {
+		t.Fatalf("common knowledge titlebar badge mismatch; texts=%v", tt.Texts())
+	}
+}

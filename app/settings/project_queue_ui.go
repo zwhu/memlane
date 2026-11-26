@@ -12,7 +12,7 @@ import (
 func (a *Controller) projectPermissionCard(c *ui.Context, p AccessProject, agent AccessAgent) {
 	tok := a.tokens()
 	key := p.ID + "/" + agent.ID
-	actual := p.Overrides[agent.ID].Effective(a.access.Directory.Defaults)
+	actual := p.EffectivePolicy(a.access.Directory.Defaults, agent)
 	savedRecently := a.access.CheckboxPending[key] == nil && time.Now().Before(a.access.PermissionSaved[key])
 	kitui.Row(c, tok, kitui.RowOptions{
 		Key:   "permission-row-" + key,

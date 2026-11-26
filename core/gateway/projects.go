@@ -186,7 +186,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"projects": views, "agents": agents, "common": common,
-		"defaults": map[string]any{"access": domain.AccessNone, "capture": false, "auto_process": false}, "revision": defaults.Revision})
+		"defaults": map[string]any{"access": defaults.Access, "capture": defaults.Capture, "auto_process": defaults.AutoProcess}, "revision": defaults.Revision})
 }
 
 func (s *Server) updateDefaults(w http.ResponseWriter, r *http.Request) {

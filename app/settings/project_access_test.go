@@ -223,3 +223,77 @@ func TestProjectControlConflictMessagesPreserveSafeCodesAndPhases(t *testing.T) 
 		t.Fatal("error field was not accepted as a fallback")
 	}
 }
+
+func TestEffectiveForAgentMatchesDomainACLSemantics(t *testing.T) {
+	defaultsMaintain := ProjectPolicy{Access: "maintain", Capture: true, AutoProcess: true}
+	defaultsNone := ProjectPolicy{Access: "none", Capture: false, AutoProcess: false}
+	none, read, maintain := "none", "read", "maintain"
+	captureFalse := false
+
+	// 1. defaults=maintain, agent default_access=maintain, no override -> maintain.
+	got := (ProjectOverride{}).EffectiveForAgent(defaultsMaintain, "maintain")
+	if got.Access != "maintain" || !got.Capture || !got.AutoProcess {
+		t.Fatalf("maintain agent without override should inherit maintain defaults, got %+v", got)
+	}
+
+	// 2. defaults=maintain, agent default_access=none (e.g. TRAE CN / newly connected), no override -> none.
+	got = (ProjectOverride{}).EffectiveForAgent(defaultsMaintain, "none")
+	if got.Access != "none" || !got.Capture || !got.AutoProcess {
+		t.Fatalf("none default_access agent without override must resolve to none, got %+v", got)
+	}
+
+	// 3. Explicit overrides (none / read / maintain) always win over both defaults and agent.DefaultAccess.
+	for _, tc := range []struct {
+		name         string
+		defaults     ProjectPolicy
+		agentDefault string
+		override     ProjectOverride
+		wantAccess   string
+		wantCapture  bool
+	}{
+		{"override read over none agent", defaultsMaintain, "none", ProjectOverride{Access: &read}, "read", true},
+		{"override maintain over none agent and none defaults", defaultsNone, "none", ProjectOverride{Access: &maintain}, "maintain", false},
+		{"override none over maintain agent and maintain defaults", defaultsMaintain, "maintain", ProjectOverride{Access: &none, Capture: &captureFalse}, "none", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := tc.override.EffectiveForAgent(tc.defaults, tc.agentDefault)
+			if actual.Access != tc.wantAccess || actual.Capture != tc.wantCapture {
+				t.Fatalf("got %+v, want access=%q capture=%v", actual, tc.wantAccess, tc.wantCapture)
+			}
+		})
+	}
+
+	// 4. Protected project forces defaults to none unless explicitly overridden.
+	protected := AccessProject{ID: "profiles", Name: "ml-user-profiles"}
+	if eff := protected.EffectivePolicy(defaultsMaintain, AccessAgent{ID: "gemini", DefaultAccess: "maintain"}); eff.Access != "none" || eff.Capture || eff.AutoProcess {
+		t.Fatalf("protected project leaked defaults: %+v", eff)
+	}
+	protected.Overrides = map[string]ProjectOverride{"gemini": {Access: &read}}
+	if eff := protected.EffectivePolicy(defaultsMaintain, AccessAgent{ID: "gemini", DefaultAccess: "maintain"}); eff.Access != "read" {
+		t.Fatalf("explicit override on protected project did not win: %+v", eff)
+	}
+
+	// 5. Common knowledge collapses any non-none effective access to read, honoring defaults and agent.DefaultAccess.
+	common := AccessProject{
+		ID: "common-1",
+		Overrides: map[string]ProjectOverride{
+			"override-none": {Access: &none},
+			"override-read": {Access: &read},
+		},
+	}
+	if got := CommonAgentAccessForAgent(common, defaultsMaintain, AccessAgent{ID: "gemini", DefaultAccess: "maintain"}); got != "read" {
+		t.Fatalf("common maintain default + maintain agent = %q, want read", got)
+	}
+	if got := CommonAgentAccessForAgent(common, defaultsMaintain, AccessAgent{ID: "trae-cn", DefaultAccess: "none"}); got != "none" {
+		t.Fatalf("common maintain default + none agent = %q, want none", got)
+	}
+	if got := CommonAgentAccessForAgent(common, defaultsNone, AccessAgent{ID: "gemini", DefaultAccess: "maintain"}); got != "none" {
+		t.Fatalf("common none default + maintain agent = %q, want none", got)
+	}
+	if got := CommonAgentAccessForAgent(common, defaultsMaintain, AccessAgent{ID: "override-none", DefaultAccess: "maintain"}); got != "none" {
+		t.Fatalf("common explicit none override = %q, want none", got)
+	}
+	if got := CommonAgentAccessForAgent(common, defaultsNone, AccessAgent{ID: "override-read", DefaultAccess: "none"}); got != "read" {
+		t.Fatalf("common explicit read override = %q, want read", got)
+	}
+}

@@ -108,7 +108,8 @@ func TestGatewayWireParity(t *testing.T) {
 	directory, err := desktop.directory(ctx)
 	check(err)
 	if len(directory.Projects) != 2 || len(directory.Agents) != 1 || directory.Common == nil ||
-		directory.Common.Overrides["agent"].Access == nil || directory.Defaults.Access != "none" ||
+		directory.Common.Overrides["agent"].Access == nil || directory.Defaults.Access != "maintain" ||
+		!directory.Defaults.Capture || !directory.Defaults.AutoProcess || directory.Agents[0].DefaultAccess != "none" ||
 		directory.Projects[0].Overrides["agent"].Access == nil || !directory.Projects[0].PermissionsReady(directory.Agents...) ||
 		len(directory.Projects[0].Aliases) != 1 || directory.Projects[1].Overrides == nil {
 		t.Fatalf("desktop directory: %+v", directory)

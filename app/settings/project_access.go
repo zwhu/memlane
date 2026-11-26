@@ -28,8 +28,14 @@ type ProjectOverride struct {
 }
 
 func (o ProjectOverride) Effective(defaults ProjectPolicy) ProjectPolicy {
+	return o.EffectiveForAgent(defaults, "")
+}
+
+func (o ProjectOverride) EffectiveForAgent(defaults ProjectPolicy, agentDefault string) ProjectPolicy {
 	if o.Access != nil {
 		defaults.Access = *o.Access
+	} else if agentDefault == "none" {
+		defaults.Access = "none"
 	}
 	if o.Capture != nil {
 		defaults.Capture = *o.Capture
@@ -75,6 +81,13 @@ func (p AccessProject) IsProtected() bool {
 	return p.Protected || p.Name == profiles || p.DatasetName == profiles || p.ID == profiles || p.Dataset == profiles
 }
 
+func (p AccessProject) EffectivePolicy(defaults ProjectPolicy, agent AccessAgent) ProjectPolicy {
+	if p.IsProtected() {
+		defaults = ProjectPolicy{Access: "none"}
+	}
+	return p.Overrides[agent.ID].EffectiveForAgent(defaults, agent.DefaultAccess)
+}
+
 func (p AccessProject) SyncLabel(agents ...AccessAgent) string {
 	if p.Status == "transition" {
 		return "同步中"
@@ -117,10 +130,11 @@ func (p AccessProject) AgentPolicyUnconfirmed(agentID string) bool {
 }
 
 type AccessAgent struct {
-	ID           string             `json:"id"`
-	Name         string             `json:"name"`
-	Kind         string             `json:"kind"`
-	Installation *AgentInstallation `json:"installation"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Kind          string             `json:"kind"`
+	DefaultAccess string             `json:"default_access,omitempty"`
+	Installation  *AgentInstallation `json:"installation"`
 }
 
 type AgentInstallation struct {
@@ -155,6 +169,15 @@ type AccessDirectory struct {
 	Common          *AccessProject    `json:"common"`
 	Bindings        []ProjectBinding  `json:"bindings"`
 	CodexConnection *CodexConnection  `json:"codex_connection"`
+}
+
+func (d AccessDirectory) AgentByID(agentID string) AccessAgent {
+	for _, agent := range d.Agents {
+		if agent.ID == agentID {
+			return agent
+		}
+	}
+	return AccessAgent{ID: agentID}
 }
 
 type CodexConnection struct {

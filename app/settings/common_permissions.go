@@ -11,10 +11,15 @@ import (
 )
 
 func CommonAgentAccess(common AccessProject, agentID string) string {
-	if ov, ok := common.Overrides[agentID]; ok && ov.Access != nil && *ov.Access == "none" {
-		return "none"
+	return CommonAgentAccessForAgent(common, ProjectPolicy{Access: "maintain"}, AccessAgent{ID: agentID})
+}
+
+func CommonAgentAccessForAgent(common AccessProject, defaults ProjectPolicy, agent AccessAgent) string {
+	effective := common.Overrides[agent.ID].EffectiveForAgent(defaults, agent.DefaultAccess)
+	if effective.Access == "read" || effective.Access == "maintain" {
+		return "read"
 	}
-	return "read"
+	return "none"
 }
 
 // CommonAccessLabel gives the common-memory menu its permission summary.
@@ -25,7 +30,7 @@ func (a *Controller) CommonAccessLabel() string {
 	}
 	readable := 0
 	for _, agent := range directory.Agents {
-		if CommonAgentAccess(*directory.Common, agent.ID) == "read" {
+		if CommonAgentAccessForAgent(*directory.Common, directory.Defaults, agent) == "read" {
 			readable++
 		}
 	}
@@ -119,7 +124,7 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 		renderAgentRows := func() {
 			for _, ag := range directory.Agents {
 				agent := ag
-				current := CommonAgentAccess(common, agent.ID)
+				current := CommonAgentAccessForAgent(common, directory.Defaults, agent)
 				key := common.ID + "/" + agent.ID
 				pending := a.access.CheckboxPending[key]
 				saving := pending != nil && a.access.Busy
@@ -209,7 +214,7 @@ func accessTierDesc(access string) string {
 
 func (a *Controller) agentPolicyEditor(c *ui.Context, p AccessProject, agent AccessAgent) {
 	tok := a.tokens()
-	actual := p.Overrides[agent.ID].Effective(a.access.Directory.Defaults)
+	actual := p.EffectivePolicy(a.access.Directory.Defaults, agent)
 	currentVal := actual.Access
 	if currentVal != "read" && currentVal != "maintain" {
 		currentVal = "none"
