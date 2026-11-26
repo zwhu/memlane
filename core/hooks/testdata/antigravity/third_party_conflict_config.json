@@ -1,0 +1,12 @@
+{
+  "theme": "light",
+  "plugins": {
+    "cognee": {
+      "enabled": true,
+      "source": "third-party/cognee-plugin"
+    },
+    "swarm": {
+      "enabled": true
+    }
+  }
+}

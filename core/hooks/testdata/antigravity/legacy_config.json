@@ -1,0 +1,11 @@
+{
+  "theme": "dark",
+  "plugins": {
+    "memlane-cognee": {
+      "enabled": true
+    },
+    "swarm": {
+      "enabled": true
+    }
+  }
+}

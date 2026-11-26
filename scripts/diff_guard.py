@@ -2,8 +2,8 @@
 """Diff-scoped guardrail against silent error swallowing, temporary hacks, and scope drift.
 
 Designed for Memlane's Swarm + check.py + pre-commit workflow:
-- Inspects ONLY added/changed lines in Tier-A production code (Python & Go).
-- Blocks high-confidence anti-patterns (DG001-DG006) with zero-dependency stdlib AST/tokenizer analysis.
+- Inspects ONLY added/changed lines in Tier-A production code (Python & Go) plus protected contract tests/fixtures.
+- Blocks high-confidence anti-patterns (DG001-DG007) with zero-dependency stdlib AST/tokenizer analysis.
 - Prints a compact audit summary (new try/except, fallbacks, sleep calls, allow-guard exemptions,
   and new imports) so reviewers can strip unnecessary defensive code without manual hunting.
 """
@@ -79,6 +79,23 @@ def is_tier_a_production(rel_path: str) -> bool:
         return rel not in TIER_B_SCRIPTS
     if rel.startswith(('internal/', 'cmd/', 'kit/', 'core/', 'app/')) and rel.endswith('.go'):
         return not name.endswith('_test.go')
+    return False
+
+
+def is_protected_contract_path(rel_path: str) -> bool:
+    """Return True when rel_path is a DG007-protected contract test or golden fixture."""
+    rel = normalize_rel(rel_path)
+    name = Path(rel).name
+    if rel == 'app/gateway_wire_parity_test.go':
+        return True
+    if rel.startswith('core/hooks/testdata/'):
+        return True
+    if rel.endswith('.go') and (
+        name in ('contract_test.go', 'contract_regression_test.go')
+        or name.endswith('_contract_test.go')
+        or name.endswith('_contract_regression_test.go')
+    ):
+        return True
     return False
 
 
@@ -161,11 +178,27 @@ def collect_diff_context(
             rel = normalize_rel(path)
             changed_files.add(rel)
             new_files.add(rel)
-            if is_tier_a_production(rel):
+            if is_tier_a_production(rel) or (is_protected_contract_path(rel) and rel.endswith('_test.go')):
                 source = read_target_source(root, rel, staged=False)
                 if source is not None:
                     added_lines[rel] = set(range(1, len(source.splitlines()) + 1))
     return sorted(changed_files), sorted(new_files), added_lines
+
+
+def read_base_source(root: Path, rel_path: str, *, staged: bool, base_ref: str = '') -> str | None:
+    ref = 'HEAD' if staged else (base_ref.strip() or 'HEAD')
+    proc = _run_git(['show', f'{ref}:{rel_path}'], root)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def collect_deleted_files(root: Path, *, staged: bool = False, base_ref: str = '') -> list[str]:
+    """Return paths deleted or renamed away relative to the comparison base."""
+    comparison = ['--cached'] if staged else [base_ref.strip() or 'HEAD']
+    result = _run_git(['diff', '--no-renames', '--diff-filter=D', '--name-only', '-z', *comparison], root)
+    result.check_returncode()
+    return sorted({normalize_rel(path) for path in result.stdout.split('\0') if path})
 
 
 def read_target_source(root: Path, rel_path: str, *, staged: bool) -> str | None:
@@ -524,6 +557,151 @@ def check_new_python_freeze(
     return blocks, audits
 
 
+def _extract_go_test_functions(source: str) -> dict[str, int]:
+    """Return {func_name: 1-based line} for top-level Go `func Test...(` declarations."""
+    tests: dict[str, int] = {}
+    line = 1
+    depth = 0
+    state = 0  # 0: idle, 1: saw top-level `func`, 2: saw Test* ident
+    candidate_name = ''
+    candidate_line = 0
+    for match in GO_TOKEN_RE.finditer(source):
+        token = match.group()
+        tok_line = line
+        line += token.count('\n')
+        kind = match.lastgroup
+        if kind == 'trivia':
+            continue
+        if kind == 'symbol' and token == '{':
+            depth += 1
+            state = 0
+            continue
+        if kind == 'symbol' and token == '}':
+            depth = max(0, depth - 1)
+            state = 0
+            continue
+        if depth != 0:
+            state = 0
+            continue
+        if state == 0:
+            if kind == 'word' and token == 'func':
+                state = 1
+        elif state == 1:
+            if kind == 'word' and token.startswith('Test'):
+                candidate_name = token
+                candidate_line = tok_line
+                state = 2
+            else:
+                state = 0
+        elif state == 2:
+            if kind == 'symbol' and token == '(':
+                tests.setdefault(candidate_name, candidate_line)
+            state = 0
+    return tests
+
+
+def _find_added_go_skip_calls(source: str, added_lines: set[int]) -> list[tuple[int, str]]:
+    """Return [(1-based line, call_name)] for added `<ident>.Skip|Skipf|SkipNow(` calls in Go code."""
+    hits: list[tuple[int, str]] = []
+    line = 1
+    prev_two: list[tuple[str, str, int]] = []
+    for match in GO_TOKEN_RE.finditer(source):
+        token = match.group()
+        tok_line = line
+        line += token.count('\n')
+        kind = match.lastgroup
+        if kind == 'trivia':
+            continue
+        if (
+            kind == 'symbol'
+            and token == '('
+            and len(prev_two) >= 2
+            and prev_two[-2][0] == 'symbol'
+            and prev_two[-2][1] == '.'
+            and prev_two[-1][0] == 'word'
+            and prev_two[-1][1] in ('Skip', 'Skipf', 'SkipNow')
+        ):
+            call_line = prev_two[-1][2]
+            if call_line in added_lines:
+                hits.append((call_line, prev_two[-1][1]))
+        prev_two.append((kind or '', token, tok_line))
+        if len(prev_two) > 2:
+            prev_two.pop(0)
+    return hits
+
+
+def _matches_any_pattern(rel: str, patterns: list[str]) -> bool:
+    return any(
+        rel == pat or fnmatch(rel, pat) or (pat.endswith('/') and rel.startswith(pat))
+        for pat in patterns
+    )
+
+
+def check_contract_protection(
+    root: Path,
+    changed_files: list[str],
+    deleted_files: list[str],
+    added_map: dict[str, set[int]],
+    *,
+    staged: bool = False,
+    base_ref: str = '',
+    allow_contract: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Protect contract tests and golden host fixtures against deletion, skipping, or test removal (DG007)."""
+    blocks: list[dict[str, Any]] = []
+    audits: list[dict[str, Any]] = []
+    waivers = [normalize_rel(p) for p in (allow_contract or []) if p.strip()]
+    deleted_set = set(deleted_files)
+
+    for rel in deleted_files:
+        if not is_protected_contract_path(rel):
+            continue
+        if _matches_any_pattern(rel, waivers):
+            audits.append(audit('approved_contract_change', rel, 1,
+                '已通过 --allow-contract 放行删除/移走受保护契约文件'))
+            continue
+        blocks.append(block('DG007', rel, 1,
+            '禁止删除或重命名移走受保护的契约测试/黄金夹具文件；如确属契约重构请经确认并通过 --allow-contract 放行'))
+
+    for rel in changed_files:
+        if rel in deleted_set or not is_protected_contract_path(rel) or not rel.endswith('_test.go'):
+            continue
+        target_source = read_target_source(root, rel, staged=staged)
+        if target_source is None:
+            continue
+        waived = _matches_any_pattern(rel, waivers)
+        lines = target_source.splitlines()
+        added_lines = added_map.get(rel, set())
+
+        if added_lines:
+            for call_line, call_name in _find_added_go_skip_calls(target_source, added_lines):
+                if waived:
+                    audits.append(audit('approved_contract_change', rel, call_line,
+                        f'已通过 --allow-contract 放行受保护契约测试中的 {call_name}'))
+                    continue
+                exemption = _line_or_neighbor_exemption(lines, call_line)
+                if exemption:
+                    audits.append(audit('contract_skip_exempted', rel, call_line,
+                        f'受保护契约测试 {call_name} 已豁免 ({exemption})'))
+                else:
+                    blocks.append(block('DG007', rel, call_line,
+                        f'禁止在受保护的契约测试中新增 t.{call_name}() 跳过断言；如确需豁免请通过 --allow-contract 或写明 memlane:allow-guard(理由)'))
+
+        base_source = read_base_source(root, rel, staged=staged, base_ref=base_ref)
+        if base_source is not None:
+            before_tests = _extract_go_test_functions(base_source)
+            after_tests = _extract_go_test_functions(target_source)
+            for test_name in sorted(set(before_tests) - set(after_tests)):
+                if waived:
+                    audits.append(audit('approved_contract_change', rel, before_tests[test_name],
+                        f'已通过 --allow-contract 放行移除契约测试函数 {test_name}'))
+                else:
+                    blocks.append(block('DG007', rel, before_tests[test_name],
+                        f'禁止从受保护的契约测试中删除测试函数 {test_name}；如确属契约重构请经确认并通过 --allow-contract 放行'))
+
+    return blocks, audits
+
+
 def run_diff_guard(
     root: Path = ROOT,
     *,
@@ -532,8 +710,10 @@ def run_diff_guard(
     locked_patterns: list[str] | None = None,
     allowed_patterns: list[str] | None = None,
     allow_new_py: list[str] | None = None,
+    allow_contract: list[str] | None = None,
 ) -> dict[str, Any]:
     changed_files, new_files, added_map = collect_diff_context(root, staged=staged, base_ref=base_ref)
+    deleted_files = collect_deleted_files(root, staged=staged, base_ref=base_ref)
     blocks: list[dict[str, Any]] = []
     audits: list[dict[str, Any]] = []
 
@@ -551,6 +731,18 @@ def run_diff_guard(
     )
     blocks.extend(py_blocks)
     audits.extend(py_audits)
+
+    contract_blocks, contract_audits = check_contract_protection(
+        root,
+        changed_files,
+        deleted_files,
+        added_map,
+        staged=staged,
+        base_ref=base_ref,
+        allow_contract=allow_contract,
+    )
+    blocks.extend(contract_blocks)
+    audits.extend(contract_audits)
 
     scanned_files: list[str] = []
     for rel in sorted(added_map):
@@ -612,6 +804,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--lock', action='append', default=[], metavar='PATH_OR_GLOB', help='锁定契约文件')
     parser.add_argument('--allow', action='append', default=[], metavar='PATH_OR_GLOB', help='限定改动范围')
     parser.add_argument('--allow-new-py', action='append', default=[], metavar='PATH_OR_GLOB', help='放行新增 Python 文件')
+    parser.add_argument('--allow-contract', action='append', default=[], metavar='PATH_OR_GLOB', help='放行受保护契约测试/黄金夹具的删除、跳过或删减')
     parser.add_argument('--json', action='store_true', dest='json_output', help='输出 JSON 阻断项与审计清单')
     return parser
 
@@ -628,6 +821,7 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         locked_patterns=args.lock,
         allowed_patterns=args.allow,
         allow_new_py=args.allow_new_py,
+        allow_contract=args.allow_contract,
     )
     if args.json_output:
         print(json.dumps(report, ensure_ascii=False, indent=2))

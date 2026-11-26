@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/synthetic/user-tools/check-prompt.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/synthetic/home/.trae/managed-marketplaces/trae_ide-0123456789abcdef01234567/0123456789abcdef0123/plugins/cognee/scripts/trae_ide_hook.py' UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/synthetic/user-tools/on-stop.sh"
+          },
+          {
+            "type": "command",
+            "command": "python3 '/synthetic/home/.trae/managed-marketplaces/trae_ide-0123456789abcdef01234567/0123456789abcdef0123/plugins/cognee/scripts/trae_ide_hook.py' Stop"
+          }
+        ]
+      }
+    ]
+  }
+}

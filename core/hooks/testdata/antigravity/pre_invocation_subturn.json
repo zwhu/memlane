@@ -1,0 +1,9 @@
+{
+  "conversationId": "11111111-2222-3333-4444-555555555555",
+  "invocationNum": 2,
+  "workspacePaths": [
+    "/synthetic/workspace/demo-repo"
+  ],
+  "transcriptPath": "/synthetic/brain/11111111-2222-3333-4444-555555555555/.system_generated/logs/transcript.jsonl",
+  "lastUserInput": "<USER_REQUEST>\nHow should we isolate SQLite WAL locks?\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n{\"os\":\"macos\",\"host\":\"antigravity\"}\n</ADDITIONAL_METADATA>"
+}

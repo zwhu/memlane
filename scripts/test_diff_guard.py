@@ -312,5 +312,190 @@ class ScopeLockAndGitIntegrationTests(unittest.TestCase):
             self.assertEqual(locked_report['blocks'][0]['code'], 'DG004')
 
 
+class ContractProtectionTests(unittest.TestCase):
+    def test_protected_contract_path_matching(self):
+        protected = [
+            'core/hooks/contract_test.go',
+            'core/hooks/antigravity_contract_test.go',
+            'core/gateway/contract_regression_test.go',
+            'core/gateway/acl_contract_regression_test.go',
+            'app/gateway_wire_parity_test.go',
+            'core/hooks/testdata/antigravity/empty_mcp_config.json',
+            'core/hooks/testdata/codex/legacy_config.toml',
+        ]
+        for rel in protected:
+            with self.subTest(protected=rel):
+                self.assertTrue(diff_guard.is_protected_contract_path(rel))
+
+        unprotected = [
+            'core/hooks/adapter_test.go',
+            'core/gateway/hooks_inbox_test.go',
+            'app/shell/layout_test.go',
+            'core/hooks/contract.go',
+        ]
+        for rel in unprotected:
+            with self.subTest(unprotected=rel):
+                self.assertFalse(diff_guard.is_protected_contract_path(rel))
+
+    def _init_contract_repo(self, repo: Path) -> None:
+        subprocess.run(['git', 'init'], cwd=repo, check=True, capture_output=True)
+        subprocess.run(['git', 'config', 'user.name', 'tester'], cwd=repo, check=True)
+        subprocess.run(['git', 'config', 'user.email', 'tester@example.com'], cwd=repo, check=True)
+
+        files = {
+            'core/hooks/contract_test.go': (
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n'
+                'func TestBeta(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n'
+            ),
+            'core/gateway/contract_regression_test.go': (
+                'package gateway_test\n'
+                'import "testing"\n'
+                'func TestGatewayContract(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n'
+            ),
+            'app/gateway_wire_parity_test.go': (
+                'package app_test\n'
+                'import "testing"\n'
+                'func TestWireParity(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n'
+            ),
+            'core/hooks/testdata/antigravity/empty_mcp_config.json': '',
+        }
+        for rel, content in files.items():
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding='utf-8')
+        subprocess.run(['git', 'add', '.'], cwd=repo, check=True)
+        subprocess.run(['git', 'commit', '-m', 'init contracts'], cwd=repo, check=True, capture_output=True)
+
+    def test_blocks_deleting_or_renaming_protected_files_unless_waived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._init_contract_repo(repo)
+
+            fixture = repo / 'core/hooks/testdata/antigravity/empty_mcp_config.json'
+            fixture.unlink()
+            report = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertFalse(report['ok'])
+            self.assertEqual([(b['code'], b['path']) for b in report['blocks']], [
+                ('DG007', 'core/hooks/testdata/antigravity/empty_mcp_config.json'),
+            ])
+
+            # Explicit waiver via --allow-contract allows it with an audit entry.
+            waived = diff_guard.run_diff_guard(
+                repo,
+                staged=False,
+                allow_contract=['core/hooks/testdata/'],
+            )
+            self.assertTrue(waived['ok'], waived['blocks'])
+            self.assertTrue(any(a['kind'] == 'approved_contract_change' for a in waived['audits']))
+
+            # Rename-away of protected Go contract test is also blocked.
+            fixture.write_text('', encoding='utf-8')
+            wire = repo / 'app/gateway_wire_parity_test.go'
+            wire.rename(repo / 'app/renamed_parity_test.go')
+            subprocess.run(['git', 'add', '-A'], cwd=repo, check=True)
+            rename_report = diff_guard.run_diff_guard(repo, staged=True)
+            self.assertFalse(rename_report['ok'])
+            self.assertEqual([(b['code'], b['path']) for b in rename_report['blocks']], [
+                ('DG007', 'app/gateway_wire_parity_test.go'),
+            ])
+
+    def test_blocks_skip_and_removed_test_functions_but_allows_normal_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._init_contract_repo(repo)
+            contract = repo / 'core/hooks/contract_test.go'
+
+            # Normal addition of a new test + assertion edit passes with zero friction.
+            contract.write_text(
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    // Mentioning t.Skip() in a comment or "t.Skip()" string must not trigger.\n'
+                '    _ = "t.Skip()"\n'
+                '}\n'
+                'func TestBeta(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n'
+                'func TestGamma(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n',
+                encoding='utf-8',
+            )
+            clean_report = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertTrue(clean_report['ok'], clean_report['blocks'])
+
+            # Adding t.Skip / t.Skipf / t.SkipNow triggers DG007.
+            contract.write_text(
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    t.Skip("temporarily disabled")\n'
+                '    t.Skipf("fmt %d", 1)\n'
+                '    t.SkipNow()\n'
+                '}\n'
+                'func TestBeta(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n',
+                encoding='utf-8',
+            )
+            skip_report = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertFalse(skip_report['ok'])
+            self.assertEqual([(b['code'], b['line']) for b in skip_report['blocks']], [
+                ('DG007', 4),
+                ('DG007', 5),
+                ('DG007', 6),
+            ])
+
+            # Inline memlane:allow-guard(reason) waives t.Skip with an audit entry.
+            contract.write_text(
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    t.Skip("gated") // memlane:allow-guard(temporary platform gate)\n'
+                '}\n'
+                'func TestBeta(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n',
+                encoding='utf-8',
+            )
+            inline_waived = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertTrue(inline_waived['ok'], inline_waived['blocks'])
+            self.assertTrue(any(a['kind'] == 'contract_skip_exempted' for a in inline_waived['audits']))
+
+            # Removing func TestBeta triggers DG007 unless explicitly waived.
+            contract.write_text(
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n',
+                encoding='utf-8',
+            )
+            removed_report = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertFalse(removed_report['ok'])
+            self.assertEqual([(b['code'], b['path']) for b in removed_report['blocks']], [
+                ('DG007', 'core/hooks/contract_test.go'),
+            ])
+            self.assertIn('TestBeta', removed_report['blocks'][0]['message'])
+
+            waived_remove = diff_guard.run_diff_guard(
+                repo,
+                staged=False,
+                allow_contract=['core/hooks/contract_test.go'],
+            )
+            self.assertTrue(waived_remove['ok'], waived_remove['blocks'])
+            self.assertTrue(any(a['kind'] == 'approved_contract_change' for a in waived_remove['audits']))
+
+
 if __name__ == '__main__':
     unittest.main()

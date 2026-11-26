@@ -31,7 +31,7 @@ description: 仅供 Antigravity（agy）主控与 agy Swarm 审稿 Worker 在 Me
 | 级别 | A 类：生产核心代码 | B 类：测试与验收脚手架 | C 类：文档与规范 |
 | --- | --- | --- | --- |
 | **P0（硬阻断，不可豁免）** | 安全/ACL 绕过/凭据泄露；破坏 `.local/daily` 或清空 `build/`；违反 Cognee 零侵入红线；数据丢失/死锁/孤儿进程失控；无法编译或核心主流程不可用；违反 `ML001–ML022` | 破坏宿主真实运行环境或登录态（如误删 `Trae CN` / `Memlane` 目录或日常库）；泄露真实密钥/凭据到日志或仓库；硬编码吞失败造成明确假绿 | 引导危险命令（清 `build/`、改上游 Cognee、改全局 `~/.gitconfig`）；正式 `docs/` 引用 `docs/process/`（触发 `ML018`） |
-| **P1（阻断本轮合入）** | 真实场景可复现的功能正确性缺陷、并发/状态机竞态、HTTP/JSON/退出码契约偏差、FD/WAL/进程泄漏、错误吞噬、模型参数补默认值或丢显式 `0`、画像总超时（`ML006`）；**违背既定架构的绕行/旁路实现、未经审批的冗余防御兜底/静默降级、为过测塞进生产代码的临时特判**（不只查漏做，也要打回删掉多余盔甲） | **仅允许以下 4 类且必须给出真实（非合成 mock）触发路径**：<br>① **假绿风险**：断言缺失/永真/过度 mock 致被测核心逻辑挂掉仍过测；<br>② **掩盖真实产品缺陷**：吞掉非零退出码/异常、测错版本/二进制却报通过；<br>③ **环境污染/状态串扰**：未隔离 `$TMPDIR`/`HOME`、残留进程、跨场景污染；<br>④ **凭据泄露/越权写入**：打印 token 或写入仓库跟踪目录 | 接口/命令行参数/退出码文档与现行实现直接矛盾且会误导使用 |
+| **P1（阻断本轮合入）** | 真实场景可复现的功能正确性缺陷、并发/状态机竞态、HTTP/JSON/退出码契约偏差、FD/WAL/进程泄漏、错误吞噬、模型参数补默认值或丢显式 `0`、画像总超时（`ML006`）；**前后端真实联调契约**：凡修改 `core/gateway` HTTP 响应结构或 `app/api` 解码结构体，必须在 `app/gateway_wire_parity_test.go` 具备直连真实 `core/gateway.NewServer` 的端到端断言（禁止仅以手写假 JSON mock 替代）；**违背既定架构的绕行/旁路实现、未经审批的冗余防御兜底/静默降级、为过测塞进生产代码的临时特判**（不只查漏做，也要打回删掉多余盔甲） | **仅允许以下 4 类且必须给出真实（非合成 mock）触发路径**：<br>① **假绿风险**：断言缺失/永真/过度 mock 致被测核心逻辑挂掉仍过测，或删除/跳过/弱化受 `DG007` 保护的契约测试与黄金夹具（`contract_test.go` / `*_contract_test.go`、`contract_regression_test.go` / `*_contract_regression_test.go`、`app/gateway_wire_parity_test.go`、`core/hooks/testdata/**`）；<br>② **掩盖真实产品缺陷**：吞掉非零退出码/异常、测错版本/二进制却报通过；<br>③ **环境污染/状态串扰**：未隔离 `$TMPDIR`/`HOME`、残留进程、跨场景污染；<br>④ **凭据泄露/越权写入**：打印 token 或写入仓库跟踪目录 | 接口/命令行参数/退出码文档与现行实现直接矛盾且会误导使用 |
 | **P2（记录不阻断，禁拉新轮）** | 可读性、命名风格、非热路径微优化、极端不可达防御分支 | **一律强制归 P2（严禁升级 P1）**：仅合成 mock 异常序列才出现的轮询/重试边角；对上轮新增防御代码再做“防御套防御”的次生挑刺；测试 helper 风格重构或文案润色 | 措辞润色、排版微调 |
 
 - **主控预筛降级权**：审稿人对 B 类文件提 P1 时，若未显式勾选 ①–④ 并写明真实（非合成 mock）触发路径，主控在汇总去重阶段**直接降级为 P2 并记入账本**，不下发修复。
@@ -43,7 +43,7 @@ description: 仅供 Antigravity（agy）主控与 agy Swarm 审稿 Worker 在 Me
 ### Stage 0 · Pre-Review Gate（主控 1 分钟预检）
 1. 核对单切片规模：目标 ≤30 文件、软上限 40 文件（含测试 ≤50、净增产码 ≤2,500 行）；超限先按垂直切片拆批，禁止把 100+ 文件巨型 diff 直接送审。
 2. 初始化本切片「已确认契约例外账本（Contract Exception Ledger）」：填入设计阶段已拍板取舍、刻意保留的兼容行为或有意暂缓项。
-3. 确认编码侧已通过改动感知定向门禁 `python3 scripts/task.py -- python3 scripts/check.py --changed`（自动联动 `scripts/diff_guard.py` 硬拦 `DG001–DG005`（含非 Cognee Python 新增冻结）并输出新增防御/兜底/豁免/跨层 `import` 审计清单；若本切片锁定了骨架文件须附 `--lock`/`--allow`；**本阶段不跑无关全量测试**），并将 `diff_guard` 审计清单与 `SLICE_BASE_REF`、`R1_BASE_REF` 一并写入账本。
+3. 确认编码侧已通过改动感知定向门禁 `python3 scripts/task.py -- python3 scripts/check.py --changed`（自动联动 `scripts/diff_guard.py` 硬拦 `DG001–DG007`（含非 Cognee Python 新增冻结、Go 分层 `import` 红线与契约测试/黄金夹具防删改）并输出新增防御/兜底/豁免/跨层 `import` 审计清单；若本切片锁定了骨架文件须附 `--lock`/`--allow`；**本阶段不跑无关全量测试**），并将 `diff_guard` 审计清单与 `SLICE_BASE_REF`、`R1_BASE_REF` 一并写入账本。
 
 ### Round 1 · 双路独立全量对抗审查
 1. 并行启动两路只读审稿人（`agy` Swarm 审稿 Worker / `invoke_subagent`，可选其中一路调用只读 `codex exec --ephemeral` 实现异构视角），使用 [review-ledger-template.md](../../../docs/engineering/templates/review-ledger-template.md) 的 R1 Prompt，注入切片目标、A/B/C 分层清单与初始契约例外账本。
@@ -71,4 +71,6 @@ description: 仅供 Antigravity（agy）主控与 agy Swarm 审稿 Worker 在 Me
 2. **单一日常库与目录保护**：未触碰或污染 `.local/daily/official-store`、未清空 `build/` 或破坏 `build/disk-cleanup/` 回执、受管重任务经 `scripts/task.py`（50/55 GiB 门禁）。
 3. **静态与模型契约**：全仓 `scripts/lint.py`（`ML001–ML003`、`ML006–ML022`）零违规；改动模型参数/构造/探针/切换链路时已跑 4 项 `test_generation_*` 回归且未 stub 共享构造器；保留显式 `0`、省略未配置项、画像无总超时（`ML006`）。
 4. **隐私、身份与过程隔离**：无密钥/真实路径/聊天记录入库；未修改 `.githooks/_identity_guard.sh` 或全局 `~/.gitconfig`；正式 `docs/` 零引用 `docs/process/`（`ML018`）。
-5. **与「四次失败停止规则」正交**：本协议只收敛静态代码审核轮次，不替代或削弱 `docs/engineering/workflow.md` 中「同一具体缺陷累计第 4 次验收未通过即停止并汇报」的实测验收红线。
+5. **前后端真实联调契约**：凡修改 `core/gateway` HTTP 响应结构或 `app/api` 解码结构体，必须在 `app/gateway_wire_parity_test.go` 具备直连真实 `core/gateway.NewServer` 的端到端断言（禁止仅以手写假 JSON mock 替代）。
+6. **契约测试与黄金夹具防删除**：受 `DG007` 保护的 `contract_test.go` / `*_contract_test.go`、`contract_regression_test.go` / `*_contract_regression_test.go`、`app/gateway_wire_parity_test.go` 与 `core/hooks/testdata/**` 在重构中不得删除、跳过（`t.Skip*`）或弱化断言。
+7. **与「四次失败停止规则」正交**：本协议只收敛静态代码审核轮次，不替代或削弱 `docs/engineering/workflow.md` 中「同一具体缺陷累计第 4 次验收未通过即停止并汇报」的实测验收红线。

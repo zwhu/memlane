@@ -1,0 +1,14 @@
+# User Codex settings preserved during migration
+model = "gpt-5"
+
+[mcp_servers.user_tools]
+url = "http://127.0.0.1:9910/mcp"
+
+[mcp_servers.memlane-cognee]
+command = "/synthetic/legacy/memlane-cognee-mcp"
+
+[plugins."cognee@memlane-0123456789ab-0123456789abcdef0123"]
+enabled = true
+
+[plugins.flux]
+enabled = true
