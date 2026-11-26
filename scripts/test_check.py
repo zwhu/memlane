@@ -64,7 +64,11 @@ class CheckTests(unittest.TestCase):
         path = {'scripts/test_check.py': 'M'}
         for flags, expected in ((['--changed', 'baseline'], ['--base', 'baseline']), (['--staged'], ['--staged'])):
             with self.subTest(flags=flags):
-                options = ['--lock', 'app/*', '--allow', 'scripts/*', '--allow-new-py', 'scripts/new.py']
+                options = [
+                    '--lock', 'app/*', '--allow', 'scripts/*',
+                    '--allow-new-py', 'scripts/new.py',
+                    '--allow-contract', 'core/hooks/contract_test.go',
+                ]
                 plan, git = self.plan(check.ROOT, flags + options, path)
                 steps = self.commands(plan)
                 args = steps['diff_guard']['command'][2:]

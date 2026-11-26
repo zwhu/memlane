@@ -42,6 +42,7 @@ FALLBACK_AUDIT_RE = re.compile(
 
 GO_EMPTY_ERR_RE = re.compile(r'\bif\s+err\s*!=\s*nil\s*\{\s*\}')
 GO_ERR_BLOCK_START_RE = re.compile(r'\bif\s+err\s*!=\s*nil\s*\{')
+GO_BUILD_TAG_RE = re.compile(r'^\s*//(?:go:build\b|\s+\+build\b)')
 GO_SWALLOW_STMT_RE = re.compile(r'^\s*(?:continue|break|return\s*(?:nil|false|""|0)?)\s*$')
 GO_TOKEN_RE = re.compile(
     r'(?P<trivia>\s+|//[^\n]*|/\*[\s\S]*?(?:\*/|$))'
@@ -674,6 +675,16 @@ def check_contract_protection(
         added_lines = added_map.get(rel, set())
 
         if added_lines:
+            for comment_line, comment_text in _extract_go_comments(target_source):
+                if comment_line not in added_lines:
+                    continue
+                if GO_BUILD_TAG_RE.match(comment_text):
+                    if waived:
+                        audits.append(audit('approved_contract_change', rel, comment_line,
+                            f'已通过 --allow-contract 放行受保护契约测试中的构建标签 {comment_text.strip()}'))
+                    else:
+                        blocks.append(block('DG007', rel, comment_line,
+                            '禁止在受保护的契约测试中新增 //go:build 或 // +build 条件编译标签屏蔽执行；如确属契约重构请经确认并通过 --allow-contract 放行'))
             for call_line, call_name in _find_added_go_skip_calls(target_source, added_lines):
                 if waived:
                     audits.append(audit('approved_contract_change', rel, call_line,

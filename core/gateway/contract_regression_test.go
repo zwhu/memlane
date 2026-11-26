@@ -383,12 +383,16 @@ func TestContractHalfFailedRetryZeroReceiptConflict(t *testing.T) {
 
 	eng.mu.Lock()
 	ingestCalls, extractCalls := eng.ingestCalls, eng.extractCalls
+	retryExtractReqs := slices.Clone(eng.extractReqs)
 	eng.mu.Unlock()
 	if ingestCalls != 1 {
 		t.Fatalf("retry called Ingest again: ingestCalls=%d, want 1", ingestCalls)
 	}
-	if extractCalls != 2 {
+	if extractCalls != 2 || len(retryExtractReqs) != 2 {
 		t.Fatalf("extractCalls=%d, want 2", extractCalls)
+	}
+	if !slices.Equal(retryExtractReqs[1].DocIDs, []string{"sess-half"}) {
+		t.Fatalf("attempt 2 extract DocIDs = %v, want [sess-half] (must not fall back to receipt EntryID)", retryExtractReqs[1].DocIDs)
 	}
 
 	status, projAfter := doHTTPJSON(t, srv, http.MethodGet, "/api/projects/proj-retry", "", mgmtHeaders())

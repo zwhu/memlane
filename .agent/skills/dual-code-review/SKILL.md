@@ -65,12 +65,12 @@ description: 仅供 Antigravity（agy）主控与 agy Swarm 审稿 Worker 在 Me
 
 ---
 
-## 4. Memlane 审稿必查红线清单（任一违规直判 P0）
+## 4. Memlane 审稿必查红线清单（P0 与阻断级 P1）
 
-1. **Cognee 零侵入**：未修改上游 Cognee 源码、未绕过 `official_service_dev.verify_source` v2 校验、无运行期无契约 monkey-patch、受校验源码目录零 `.pyc`/`.pyo`。
-2. **单一日常库与目录保护**：未触碰或污染 `.local/daily/official-store`、未清空 `build/` 或破坏 `build/disk-cleanup/` 回执、受管重任务经 `scripts/task.py`（50/55 GiB 门禁）。
-3. **静态与模型契约**：全仓 `scripts/lint.py`（`ML001–ML003`、`ML006–ML022`）零违规；改动模型参数/构造/探针/切换链路时已跑 4 项 `test_generation_*` 回归且未 stub 共享构造器；保留显式 `0`、省略未配置项、画像无总超时（`ML006`）。
-4. **隐私、身份与过程隔离**：无密钥/真实路径/聊天记录入库；未修改 `.githooks/_identity_guard.sh` 或全局 `~/.gitconfig`；正式 `docs/` 零引用 `docs/process/`（`ML018`）。
-5. **前后端真实联调契约**：凡修改 `core/gateway` HTTP 响应结构或 `app/api` 解码结构体，必须在 `app/gateway_wire_parity_test.go` 具备直连真实 `core/gateway.NewServer` 的端到端断言（禁止仅以手写假 JSON mock 替代）。
-6. **契约测试与黄金夹具防删除**：受 `DG007` 保护的 `contract_test.go` / `*_contract_test.go`、`contract_regression_test.go` / `*_contract_regression_test.go`、`app/gateway_wire_parity_test.go` 与 `core/hooks/testdata/**` 在重构中不得删除、跳过（`t.Skip*`）或弱化断言。
+1. **`[P0]` Cognee 零侵入**：未修改上游 Cognee 源码、未绕过 `official_service_dev.verify_source` v2 校验、无运行期无契约 monkey-patch、受校验源码目录零 `.pyc`/`.pyo`。
+2. **`[P0]` 单一日常库与目录保护**：未触碰或污染 `.local/daily/official-store`、未清空 `build/` 或破坏 `build/disk-cleanup/` 回执、受管重任务经 `scripts/task.py`（50/55 GiB 门禁）。
+3. **`[P0]` 静态与模型契约**：全仓 `scripts/lint.py`（`ML001–ML003`、`ML006–ML022`）零违规；改动模型参数/构造/探针/切换链路时已跑 4 项 `test_generation_*` 回归且未 stub 共享构造器；保留显式 `0`、省略未配置项、画像无总超时（`ML006`）。
+4. **`[P0]` 隐私、身份与过程隔离**：无密钥/真实路径/聊天记录入库；未修改 `.githooks/_identity_guard.sh` 或全局 `~/.gitconfig`；正式 `docs/` 零引用 `docs/process/`（`ML018`）。
+5. **`[阻断级 P1]` 前后端真实联调契约**：凡修改 `core/gateway` HTTP 响应结构或 `app/api` 解码结构体，必须在 `app/gateway_wire_parity_test.go` 具备直连真实 `core/gateway.NewServer` 的端到端断言（禁止仅以手写假 JSON mock 替代）。
+6. **`[阻断级 P1]` 契约测试与黄金夹具防删除**：受 `DG007` 保护的 `contract_test.go` / `*_contract_test.go`、`contract_regression_test.go` / `*_contract_regression_test.go`、`app/gateway_wire_parity_test.go` 与 `core/hooks/testdata/**` 在重构中不得删除、跳过（`t.Skip*`）或以 `//go:build` 屏蔽执行，也不得弱化断言。
 7. **与「四次失败停止规则」正交**：本协议只收敛静态代码审核轮次，不替代或削弱 `docs/engineering/workflow.md` 中「同一具体缺陷累计第 4 次验收未通过即停止并汇报」的实测验收红线。

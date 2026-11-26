@@ -7,7 +7,7 @@ cd "$REPO_ROOT"
 sh "$REPO_ROOT/.githooks/_identity_guard.sh" current
 sh "$REPO_ROOT/.githooks/_chain_global.sh" pre-commit "$@"
 
-STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
+STAGED="$(git diff --cached --no-renames --name-only --diff-filter=ACMRD)"
 [ -n "$STAGED" ] || exit 0
 
 NEEDS_LINT=0
@@ -41,6 +41,9 @@ for relpath in $STAGED; do
             NEEDS_DIFF_GUARD=1
             ;;
         internal/*.go|cmd/*.go|cmd/*/*.go|kit/*.go|kit/*/*.go|core/*.go|core/*/*.go|arch_guard_test.go)
+            NEEDS_DIFF_GUARD=1
+            ;;
+        core/hooks/testdata/*|*contract_test.go|*contract_regression_test.go|app/gateway_wire_parity_test.go)
             NEEDS_DIFF_GUARD=1
             ;;
         docs/*.md)
@@ -80,6 +83,19 @@ if [ "$NEEDS_DIFF_GUARD" -eq 1 ] && [ -f "$REPO_ROOT/scripts/diff_guard.py" ]; t
             set -- "$@" --allow-new-py "$pat"
         done
         IFS="$OLD_IFS"
+    fi
+    if [ -n "${MEMLANE_ALLOW_CONTRACT:-}" ]; then
+        if [ "$MEMLANE_ALLOW_CONTRACT" = "1" ]; then
+            set -- "$@" --allow-contract '*'
+        else
+            OLD_IFS="$IFS"
+            IFS=','
+            for pat in $MEMLANE_ALLOW_CONTRACT; do
+                [ -n "$pat" ] || continue
+                set -- "$@" --allow-contract "$pat"
+            done
+            IFS="$OLD_IFS"
+        fi
     fi
     "$PYTHON_BIN" "$REPO_ROOT/scripts/diff_guard.py" "$@"
 fi

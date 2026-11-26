@@ -317,6 +317,7 @@ class ContractProtectionTests(unittest.TestCase):
         protected = [
             'core/hooks/contract_test.go',
             'core/hooks/antigravity_contract_test.go',
+            'core/engine/cognee/contract_test.go',
             'core/gateway/contract_regression_test.go',
             'core/gateway/acl_contract_regression_test.go',
             'app/gateway_wire_parity_test.go',
@@ -495,6 +496,60 @@ class ContractProtectionTests(unittest.TestCase):
             )
             self.assertTrue(waived_remove['ok'], waived_remove['blocks'])
             self.assertTrue(any(a['kind'] == 'approved_contract_change' for a in waived_remove['audits']))
+
+    def test_blocks_git_rm_and_go_build_tags_unless_waived(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._init_contract_repo(repo)
+
+            # Staged `git rm` of a protected golden fixture must trigger DG007.
+            subprocess.run(
+                ['git', 'rm', '-q', 'core/hooks/testdata/antigravity/empty_mcp_config.json'],
+                cwd=repo,
+                check=True,
+            )
+            rm_report = diff_guard.run_diff_guard(repo, staged=True)
+            self.assertFalse(rm_report['ok'])
+            self.assertEqual([(b['code'], b['path']) for b in rm_report['blocks']], [
+                ('DG007', 'core/hooks/testdata/antigravity/empty_mcp_config.json'),
+            ])
+            # Wildcard waiver (matching MEMLANE_ALLOW_CONTRACT=1 -> --allow-contract '*') allows it.
+            rm_waived = diff_guard.run_diff_guard(repo, staged=True, allow_contract=['*'])
+            self.assertTrue(rm_waived['ok'], rm_waived['blocks'])
+            subprocess.run(['git', 'reset', '-q', '--hard', 'HEAD'], cwd=repo, check=True)
+
+            # Adding //go:build or // +build tags to a protected contract test triggers DG007;
+            # string literals containing "//go:build" must NOT trigger.
+            contract = repo / 'core/hooks/contract_test.go'
+            contract.write_text(
+                '//go:build ignore\n'
+                '// +build ignore\n'
+                '\n'
+                'package hooks_test\n'
+                'import "testing"\n'
+                'func TestAlpha(t *testing.T) {\n'
+                '    _ = "//go:build ignore"\n'
+                '    _ = t\n'
+                '}\n'
+                'func TestBeta(t *testing.T) {\n'
+                '    _ = t\n'
+                '}\n',
+                encoding='utf-8',
+            )
+            build_tag_report = diff_guard.run_diff_guard(repo, staged=False)
+            self.assertFalse(build_tag_report['ok'])
+            self.assertEqual([(b['code'], b['line']) for b in build_tag_report['blocks']], [
+                ('DG007', 1),
+                ('DG007', 2),
+            ])
+
+            waived_build_tag = diff_guard.run_diff_guard(
+                repo,
+                staged=False,
+                allow_contract=['core/hooks/contract_test.go'],
+            )
+            self.assertTrue(waived_build_tag['ok'], waived_build_tag['blocks'])
+            self.assertTrue(any(a['kind'] == 'approved_contract_change' for a in waived_build_tag['audits']))
 
 
 if __name__ == '__main__':

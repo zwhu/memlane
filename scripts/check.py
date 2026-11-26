@@ -94,7 +94,12 @@ def build_plan(args, root):
         guard_args.append('--staged')
     elif args.changed:
         guard_args.extend(['--base', args.changed])
-    for flag, values in (('--lock', args.lock), ('--allow', args.allow), ('--allow-new-py', args.allow_new_py)):
+    for flag, values in (
+        ('--lock', args.lock),
+        ('--allow', args.allow),
+        ('--allow-new-py', args.allow_new_py),
+        ('--allow-contract', args.allow_contract),
+    ):
         for value in values:
             guard_args.extend([flag, value])
 
@@ -177,7 +182,7 @@ def parse_args(argv):
     for flag in ('pre-push', 'full', 'release'):
         modes.add_argument('--' + flag, action='store_true')
     parser.add_argument('--staged', action='store_true')
-    for flag in ('race-pkg', 'lock', 'allow', 'allow-new-py'):
+    for flag in ('race-pkg', 'lock', 'allow', 'allow-new-py', 'allow-contract'):
         parser.add_argument('--' + flag, action='append', default=[])
     parser.add_argument('--app', default='')
     parser.add_argument('--jobs', type=int, default=max(1, min(6, (os.cpu_count() or 4) // 2)))
