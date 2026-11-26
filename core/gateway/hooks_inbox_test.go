@@ -347,3 +347,110 @@ func TestInboxWorkerUsesOwnerScopeDespiteAgentPrincipalID(t *testing.T) {
 			eng.ingest[0].Scope.DatasetID, eng.extract[0].Scope.DatasetID)
 	}
 }
+
+func TestIngestPersistsSessionRelations(t *testing.T) {
+	s, store, _ := testServer(t, nil)
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// 1. Top-level parent_session_id and subagent_role.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"child-top","parent_session_id":"parent-1","subagent_role":"research",
+		"message_id":"m1","kind":"capture_trace","content":{"origin_function":"Read"}
+	}`, http.StatusAccepted)
+
+	// 2. Subsequent event without subagent_role preserves the stored role.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"child-top","parent_session_id":"parent-1",
+		"message_id":"m2","kind":"capture_trace","content":{"origin_function":"Grep"}
+	}`, http.StatusAccepted)
+
+	// 3. Fallback to source_meta.external_metadata.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"child-ext","message_id":"m3","kind":"capture_trace",
+		"content":{"origin_function":"Bash"},
+		"source_meta":{"external_metadata":{"parent_session_id":"parent-2","subagent_role":"worker"}}
+	}`, http.StatusAccepted)
+
+	// 4. Self-parent is ignored cleanly without failing /ingest.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"self-loop","parent_session_id":"self-loop",
+		"message_id":"m4","kind":"capture_trace","content":{"origin_function":"Edit"}
+	}`, http.StatusAccepted)
+
+	rels, err := store.ListSessionRelations(ctx, "ds")
+	must(t, err)
+	if len(rels) != 2 {
+		t.Fatalf("session relations = %+v, want 2", rels)
+	}
+	byID := map[string]domain.SessionRelation{}
+	for _, r := range rels {
+		byID[r.SessionID] = r
+	}
+	if r := byID["child-top"]; r.ParentSessionID != "parent-1" || r.SubagentRole != "research" {
+		t.Fatalf("child-top relation = %+v", r)
+	}
+	if r := byID["child-ext"]; r.ParentSessionID != "parent-2" || r.SubagentRole != "worker" {
+		t.Fatalf("child-ext relation = %+v", r)
+	}
+}
+
+func TestInboxSkipsDefaultExtractForCaptureTrace(t *testing.T) {
+	s, store, fake := testServer(t, nil)
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// 1. Default capture_trace ingests + marks receipt saved + syncs catalog, WITHOUT calling Extract.
+	traceResp := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s1","message_id":"trace-1","kind":"capture_trace",
+		"content":{"origin_function":"Bash","method_params":{"command":"go test"}}
+	}`, http.StatusAccepted)
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected trace item to be processed")
+	}
+	if fmt.Sprint(fake.calls) != "[ingest sync]" || len(fake.extract) != 0 {
+		t.Fatalf("default capture_trace should skip Extract: calls=%v extract=%+v", fake.calls, fake.extract)
+	}
+	receipt, err := store.GetCaptureReceipt(ctx, traceResp["capture_key"].(string))
+	must(t, err)
+	if receipt.Status != "saved" || receipt.EntryID == "" {
+		t.Fatalf("trace receipt not saved: %+v", receipt)
+	}
+	item, err := store.GetInboxItem(ctx, traceResp["inbox_id"].(string))
+	must(t, err)
+	if item.Status != "succeeded" {
+		t.Fatalf("trace inbox item = %+v", item)
+	}
+
+	// 2. capture_trace with explicit tool_graph extract_mode still runs Extract.
+	fake.calls = nil
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s1","message_id":"trace-tg","kind":"capture_trace",
+		"extract_mode":"tool_graph","content":{"origin_function":"Edit"}
+	}`, http.StatusAccepted)
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || fmt.Sprint(fake.calls) != "[ingest extract sync]" || len(fake.extract) != 1 || fake.extract[0].Mode != engine.ExtractModeToolGraph {
+		t.Fatalf("tool_graph trace should call Extract: calls=%v extract=%+v", fake.calls, fake.extract)
+	}
+
+	// 3. capture_qa and document still trigger Extract.
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"capture_qa", `{"project_id":"p","session_id":"s1","message_id":"qa-1","kind":"capture_qa","content":{"question":"q","answer":"a"}}`},
+		{"document", `{"project_id":"p","session_id":"s1","message_id":"doc-1","kind":"document","content":"hello doc"}`},
+	} {
+		fake.calls = nil
+		beforeExtract := len(fake.extract)
+		agentRequest(t, s, "/ingest", tc.body, http.StatusAccepted)
+		worked, err := s.Inbox().ProcessOnce(ctx)
+		must(t, err)
+		if !worked || fmt.Sprint(fake.calls) != "[ingest extract sync]" || len(fake.extract) != beforeExtract+1 {
+			t.Fatalf("%s should trigger Extract: calls=%v extracts=%d", tc.name, fake.calls, len(fake.extract)-beforeExtract)
+		}
+	}
+}

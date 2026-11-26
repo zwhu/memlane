@@ -4,7 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
+
+const sessionRelationsDDL = `
+CREATE TABLE IF NOT EXISTS session_relations (
+ dataset_id TEXT NOT NULL, session_id TEXT NOT NULL, parent_session_id TEXT NOT NULL DEFAULT '',
+ root_session_id TEXT NOT NULL DEFAULT '', subagent_role TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(dataset_id,session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_relations_parent ON session_relations(dataset_id,parent_session_id);
+`
 
 const catalogDDL = `
 CREATE TABLE IF NOT EXISTS catalog_docs (
@@ -42,7 +52,7 @@ CREATE TABLE IF NOT EXISTS catalog_sync_state (
  raw_doc_count INTEGER NOT NULL DEFAULT 0, common_count INTEGER NOT NULL DEFAULT 0, session_count INTEGER NOT NULL DEFAULT 0,
  session_sig TEXT NOT NULL DEFAULT '', catalog_version TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT ''
 );
-`
+` + sessionRelationsDDL
 
 func (s *Store) ClearCatalogProjection(ctx context.Context) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
@@ -223,4 +233,55 @@ func (s *Store) UpsertCatalogSyncState(ctx context.Context, p CatalogSyncState) 
 		p.DatasetID, p.DatasetHex, p.DocCount, p.MaxRowID, p.SumRowID, p.MaxUpdatedAt, p.IDChecksum,
 		p.DataHash, p.KnowledgeCount, p.RawDocCount, p.CommonCount, p.SessionCount, p.SessionSig, p.CatalogVersion,
 		p.SyncedAt)
+}
+
+type SessionRelation struct {
+	DatasetID       string
+	SessionID       string
+	ParentSessionID string
+	RootSessionID   string
+	SubagentRole    string
+	UpdatedAt       string
+}
+
+const sessionRelationColumns = `dataset_id, session_id, parent_session_id, root_session_id, subagent_role, updated_at`
+
+func scanSessionRelation(row scanner) (SessionRelation, error) {
+	var r SessionRelation
+	err := row.Scan(&r.DatasetID, &r.SessionID, &r.ParentSessionID, &r.RootSessionID, &r.SubagentRole, &r.UpdatedAt)
+	return r, rowError(err)
+}
+
+func (s *Store) UpsertSessionRelation(ctx context.Context, rel SessionRelation) error {
+	rel.DatasetID = strings.TrimSpace(rel.DatasetID)
+	rel.SessionID = strings.TrimSpace(rel.SessionID)
+	rel.ParentSessionID = strings.TrimSpace(rel.ParentSessionID)
+	rel.RootSessionID = strings.TrimSpace(rel.RootSessionID)
+	rel.SubagentRole = strings.TrimSpace(rel.SubagentRole)
+	if err := requireIDs(rel.DatasetID, rel.SessionID); err != nil {
+		return err
+	}
+	if rel.ParentSessionID != "" && rel.ParentSessionID == rel.SessionID {
+		return fmt.Errorf("session cannot be its own parent: %w", ErrInvalidArgument)
+	}
+	if rel.UpdatedAt == "" {
+		rel.UpdatedAt = NowUTCNS()
+	}
+	return execSQL(ctx, s.db, `INSERT INTO session_relations (`+sessionRelationColumns+`)
+		VALUES(?,?,?,?,?,?) ON CONFLICT(dataset_id,session_id) DO UPDATE SET
+		parent_session_id=CASE WHEN excluded.parent_session_id<>'' THEN excluded.parent_session_id ELSE session_relations.parent_session_id END,
+		root_session_id=CASE WHEN excluded.root_session_id<>'' THEN excluded.root_session_id ELSE session_relations.root_session_id END,
+		subagent_role=CASE WHEN excluded.subagent_role<>'' THEN excluded.subagent_role ELSE session_relations.subagent_role END,
+		updated_at=excluded.updated_at`,
+		rel.DatasetID, rel.SessionID, rel.ParentSessionID, rel.RootSessionID, rel.SubagentRole, rel.UpdatedAt)
+}
+
+func (s *Store) ListSessionRelations(ctx context.Context, datasetID string) ([]SessionRelation, error) {
+	datasetID = strings.TrimSpace(datasetID)
+	if datasetID == "" {
+		return queryList(ctx, s.db, scanSessionRelation,
+			`SELECT `+sessionRelationColumns+` FROM session_relations ORDER BY dataset_id, session_id`)
+	}
+	return queryList(ctx, s.db, scanSessionRelation,
+		`SELECT `+sessionRelationColumns+` FROM session_relations WHERE dataset_id=? ORDER BY session_id`, datasetID)
 }

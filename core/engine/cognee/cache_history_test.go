@@ -54,3 +54,56 @@ func TestReadSessionHistoryPaginatesQAAndTraces(t *testing.T) {
 		t.Fatalf("unexpected Traces: %+v", page.Traces)
 	}
 }
+
+func TestCacheStripsAntigravityRequestTagsFromSessionLabel(t *testing.T) {
+	storeRoot := t.TempDir()
+	cachePath := filepath.Join(storeRoot, "system", "databases", "cache.db")
+	db, err := domain.OpenPrivateSQLite(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	uid := "cfff15f2-b69c-4f02-bfb3-6e64ea5de031"
+	_, err = db.Exec(`
+		CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, qa_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
+		CREATE TABLE cache_trace_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
+		INSERT INTO cache_qa_entries VALUES
+			(1, ?, 's-wrapped', 'q1', '{"question":"<USER_REQUEST>\n实现子会话聚合后端\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nworkspace: /tmp\n</ADDITIONAL_METADATA>","answer":"好的"}', '2026-11-26', '2099-01-01 00:00:00'),
+			(2, ?, 's-meta-first', 'q2', '{"question":"<ADDITIONAL_METADATA>\nfoo: bar\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\n  排查缓存标签  \n</USER_REQUEST>","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00'),
+			(3, ?, 's-truncated', 'q3', '{"question":"<USER_REQUEST>\n未闭合的提问内容","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00');
+	`, uid, uid, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projector := NewProjector(storeRoot, nil)
+	ctx := context.Background()
+	want := map[string]string{
+		"s-wrapped":    "实现子会话聚合后端",
+		"s-meta-first": "排查缓存标签",
+		"s-truncated":  "未闭合的提问内容",
+	}
+	refs := []SessionRef{
+		{UserID: uid, SessionID: "s-wrapped"},
+		{UserID: uid, SessionID: "s-meta-first"},
+		{UserID: uid, SessionID: "s-truncated"},
+	}
+	hydrated, err := projector.HydrateSessionsFromCache(ctx, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sid, wantLabel := range want {
+		got := hydrated[SessionRef{UserID: uid, SessionID: sid}]
+		if got.Label != wantLabel {
+			t.Fatalf("HydrateSessionsFromCache(%s) label = %q, want %q", sid, got.Label, wantLabel)
+		}
+		page, err := projector.ReadSessionHistory(ctx, engine.SessionHistoryRequest{UserID: uid, SessionID: sid, Limit: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if page.Label != wantLabel {
+			t.Fatalf("ReadSessionHistory(%s) label = %q, want %q", sid, page.Label, wantLabel)
+		}
+	}
+}

@@ -64,8 +64,15 @@ func (f *fakeEngine) Ingest(_ context.Context, in engine.IngestRequest) (engine.
 	}
 	id := "doc-" + in.IdempotencyKey
 	if in.Kind == engine.IngestKindDocument {
-		content, ok := in.Content.(string)
-		if !ok {
+		var content string
+		switch v := in.Content.(type) {
+		case string:
+			content = v
+		case json.RawMessage:
+			if err := json.Unmarshal(v, &content); err != nil {
+				return engine.IngestResult{}, errors.New("expected text document")
+			}
+		default:
 			return engine.IngestResult{}, errors.New("expected text document")
 		}
 		title, _ := in.SourceMeta.ExternalMetadata["title"].(string)

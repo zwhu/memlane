@@ -142,6 +142,11 @@ func (p *Projector) SyncCatalog(ctx context.Context, store *domain.Store) (*engi
 	if err := p.resolveDocumentTitles(ctx, store, snapshot.docs); err != nil {
 		return nil, fmt.Errorf("resolve catalog titles: %w", err)
 	}
+	relations, err := store.ListSessionRelations(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("load session relations: %w", err)
+	}
+	applySessionRelations(snapshot.sessions, relations)
 	stats := &engine.SyncStats{
 		Datasets: len(snapshot.states), DocsProjected: len(snapshot.docs), SessionsProjected: len(snapshot.sessions),
 	}
@@ -433,6 +438,155 @@ func sessionRelationColumns(cols map[string]bool) string {
 		expressions[1] = "(COALESCE(parent_session_id,'')='')"
 	}
 	return strings.Join(expressions, ",")
+}
+
+type sessionRelKey struct{ dataset, session string }
+
+func applySessionRelations(sessions []domain.CatalogSession, relations []domain.SessionRelation) {
+	if len(sessions) == 0 {
+		return
+	}
+	relMap := make(map[sessionRelKey]domain.SessionRelation, len(relations))
+	for _, rel := range relations {
+		ds := uuidText(rel.DatasetID)
+		sid := strings.TrimSpace(rel.SessionID)
+		if ds == "" || sid == "" {
+			continue
+		}
+		rel.DatasetID = ds
+		rel.SessionID = sid
+		rel.ParentSessionID = strings.TrimSpace(rel.ParentSessionID)
+		rel.RootSessionID = strings.TrimSpace(rel.RootSessionID)
+		rel.SubagentRole = strings.TrimSpace(rel.SubagentRole)
+		relMap[sessionRelKey{ds, sid}] = rel
+	}
+
+	byDataset := make(map[string][]int)
+	for i := range sessions {
+		s := &sessions[i]
+		s.ParentSessionID = strings.TrimSpace(s.ParentSessionID)
+		s.RootSessionID = strings.TrimSpace(s.RootSessionID)
+		s.SubagentRole = strings.TrimSpace(s.SubagentRole)
+		if rel, ok := relMap[sessionRelKey{s.DatasetID, s.SessionID}]; ok {
+			if s.ParentSessionID == "" && rel.ParentSessionID != "" && rel.ParentSessionID != s.SessionID {
+				s.ParentSessionID = rel.ParentSessionID
+			}
+			if s.RootSessionID == "" && rel.RootSessionID != "" {
+				s.RootSessionID = rel.RootSessionID
+			}
+			if s.SubagentRole == "" && rel.SubagentRole != "" {
+				s.SubagentRole = rel.SubagentRole
+			}
+		}
+		if s.ParentSessionID == s.SessionID {
+			s.ParentSessionID = ""
+		}
+		s.ChildCount = 0
+		byDataset[s.DatasetID] = append(byDataset[s.DatasetID], i)
+	}
+
+	for _, idxs := range byDataset {
+		byUserSession := make(map[SessionKey]int, len(idxs))
+		bySession := make(map[string]int, len(idxs))
+		for _, idx := range idxs {
+			s := sessions[idx]
+			byUserSession[SessionKey{UserID: s.UserID, SessionID: s.SessionID}] = idx
+			if _, exists := bySession[s.SessionID]; !exists {
+				bySession[s.SessionID] = idx
+			}
+		}
+		rawParent := func(idx int) (int, bool) {
+			pid := sessions[idx].ParentSessionID
+			if pid == "" || pid == sessions[idx].SessionID {
+				return -1, false
+			}
+			if p, ok := byUserSession[SessionKey{UserID: sessions[idx].UserID, SessionID: pid}]; ok && p != idx {
+				return p, true
+			}
+			if p, ok := bySession[pid]; ok && p != idx {
+				return p, true
+			}
+			return -1, false
+		}
+		inCycle := make(map[int]bool)
+		for _, idx := range idxs {
+			visited := map[int]bool{idx: true}
+			curr := idx
+			for {
+				p, ok := rawParent(curr)
+				if !ok {
+					break
+				}
+				if p == idx {
+					inCycle[idx] = true
+					break
+				}
+				if visited[p] {
+					break
+				}
+				visited[p] = true
+				curr = p
+			}
+		}
+		findParent := func(idx int) (int, bool) {
+			if inCycle[idx] {
+				return -1, false
+			}
+			return rawParent(idx)
+		}
+		for _, idx := range idxs {
+			s := &sessions[idx]
+			if inCycle[idx] {
+				s.IsTopLevel = true
+				s.NestingDepth = 0
+				if s.RootSessionID == "" {
+					s.RootSessionID = s.SessionID
+				}
+				continue
+			}
+			directParent, hasParent := findParent(idx)
+			if !hasParent {
+				s.IsTopLevel = true
+				if s.ParentSessionID != "" || s.SubagentRole != "" {
+					if s.NestingDepth < 1 {
+						s.NestingDepth = 1
+					}
+					if s.RootSessionID == "" && s.ParentSessionID != "" {
+						s.RootSessionID = s.ParentSessionID
+					}
+				} else {
+					s.NestingDepth = 0
+				}
+				continue
+			}
+			visited := map[int]bool{idx: true}
+			depth := 0
+			curr := idx
+			for {
+				p, ok := findParent(curr)
+				if !ok || visited[p] {
+					break
+				}
+				visited[p] = true
+				depth++
+				curr = p
+			}
+			s.IsTopLevel = false
+			root := sessions[curr]
+			if root.ParentSessionID != "" && !inCycle[curr] {
+				s.NestingDepth = depth + 1
+				if root.RootSessionID != "" {
+					s.RootSessionID = root.RootSessionID
+				} else {
+					s.RootSessionID = root.ParentSessionID
+				}
+			} else {
+				s.NestingDepth = depth
+				s.RootSessionID = root.SessionID
+			}
+			sessions[directParent].ChildCount++
+		}
+	}
 }
 
 func syncState(id string, docs []projectedDoc, sessions []domain.CatalogSession) domain.CatalogSyncState {

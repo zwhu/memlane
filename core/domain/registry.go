@@ -189,13 +189,25 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 
 func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		var datasetID string
+		if err := tx.QueryRowContext(ctx, `SELECT dataset_id FROM projects WHERE id=?`, id).Scan(&datasetID); err != nil {
+			return rowError(err)
+		}
 		if err := requireAffected(tx.ExecContext(ctx, `DELETE FROM projects WHERE id=?`, id)); err != nil {
 			return err
 		}
 		if err := execSQL(ctx, tx, `DELETE FROM project_acl_overrides WHERE target_kind='project' AND target_id=?`, id); err != nil {
 			return err
 		}
-		return execSQL(ctx, tx, `DELETE FROM session_bindings WHERE project_id=?`, id)
+		if err := execSQL(ctx, tx, `DELETE FROM session_bindings WHERE project_id=?`, id); err != nil {
+			return err
+		}
+		if strings.TrimSpace(datasetID) != "" {
+			if err := execSQL(ctx, tx, `DELETE FROM session_relations WHERE dataset_id=? AND NOT EXISTS(SELECT 1 FROM projects WHERE dataset_id=?)`, datasetID, datasetID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -461,3 +461,81 @@ func TestProjectorReadableTitles(t *testing.T) {
 	tests[1].want = "Updated title"
 	check()
 }
+
+func TestProjectorMergesSessionRelationsAndHierarchy(t *testing.T) {
+	ctx := context.Background()
+	p, store := testProjector(t), openProjectionStore(t)
+	// Upstream Cognee 1.6.7 session_records has no parent_session_id or subagent_role columns.
+	src := openProjectionTestDB(t, p.database("cognee_db"), `
+		CREATE TABLE datasets(id TEXT,name TEXT);
+		CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT);
+		CREATE TABLE session_records(dataset_id TEXT,session_id TEXT,user_id TEXT,status TEXT,started_at DATETIME,last_activity_at DATETIME);
+	`)
+	registerProjectionProject(t, store, "project", projectDS, "Project")
+	execProjectionTestSQL(t, src, "INSERT INTO datasets VALUES(?,?)", uuidHex(projectDS), "Project")
+
+	insertSession := func(sid, uid, ts string) {
+		t.Helper()
+		execProjectionTestSQL(t, src, "INSERT INTO session_records VALUES(?,?,?,?,?,?)",
+			uuidHex(projectDS), sid, uid, "active", ts, ts)
+	}
+	insertSession("root", uuidHex(userOne), "2026-11-26 10:00:00")
+	insertSession("child1", uuidHex(userOne), "2026-11-26 10:01:00")
+	insertSession("child2", uuidHex(userTwo), "2026-11-26 10:02:00")
+	insertSession("grandchild", uuidHex(userOne), "2026-11-26 10:03:00")
+	insertSession("orphan", uuidHex(userOne), "2026-11-26 10:04:00")
+	insertSession("cycleA", uuidHex(userOne), "2026-11-26 10:05:00")
+	insertSession("cycleB", uuidHex(userOne), "2026-11-26 10:06:00")
+
+	for _, rel := range []domain.SessionRelation{
+		{DatasetID: projectDS, SessionID: "child1", ParentSessionID: "root", SubagentRole: "research"},
+		{DatasetID: projectDS, SessionID: "child2", ParentSessionID: "root", SubagentRole: "worker"},
+		{DatasetID: projectDS, SessionID: "grandchild", ParentSessionID: "child1", SubagentRole: "verifier"},
+		{DatasetID: projectDS, SessionID: "orphan", ParentSessionID: "missing-parent", SubagentRole: "explorer"},
+		{DatasetID: projectDS, SessionID: "cycleA", ParentSessionID: "cycleB", SubagentRole: "loop-a"},
+		{DatasetID: projectDS, SessionID: "cycleB", ParentSessionID: "cycleA", SubagentRole: "loop-b"},
+	} {
+		if err := store.UpsertSessionRelation(ctx, rel); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := p.SyncCatalog(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.ListCatalogSessions(ctx, projectDS, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]domain.CatalogSession, len(sessions))
+	for _, s := range sessions {
+		byID[s.SessionID] = s
+	}
+
+	root := byID["root"]
+	if !root.IsTopLevel || root.ChildCount != 2 || root.NestingDepth != 0 {
+		t.Fatalf("root = %+v", root)
+	}
+	c1 := byID["child1"]
+	if c1.IsTopLevel || c1.ParentSessionID != "root" || c1.RootSessionID != "root" || c1.SubagentRole != "research" || c1.NestingDepth != 1 || c1.ChildCount != 1 {
+		t.Fatalf("child1 = %+v", c1)
+	}
+	c2 := byID["child2"]
+	if c2.IsTopLevel || c2.ParentSessionID != "root" || c2.RootSessionID != "root" || c2.SubagentRole != "worker" || c2.NestingDepth != 1 || c2.ChildCount != 0 {
+		t.Fatalf("child2 = %+v", c2)
+	}
+	gc := byID["grandchild"]
+	if gc.IsTopLevel || gc.ParentSessionID != "child1" || gc.RootSessionID != "root" || gc.SubagentRole != "verifier" || gc.NestingDepth != 2 || gc.ChildCount != 0 {
+		t.Fatalf("grandchild = %+v", gc)
+	}
+	orphan := byID["orphan"]
+	if !orphan.IsTopLevel || orphan.ParentSessionID != "missing-parent" || orphan.RootSessionID != "missing-parent" || orphan.SubagentRole != "explorer" || orphan.NestingDepth != 1 {
+		t.Fatalf("orphan = %+v", orphan)
+	}
+	for _, id := range []string{"cycleA", "cycleB"} {
+		c := byID[id]
+		if !c.IsTopLevel || c.NestingDepth != 0 || c.ChildCount != 0 {
+			t.Fatalf("%s = %+v", id, c)
+		}
+	}
+}

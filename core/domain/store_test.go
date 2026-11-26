@@ -65,8 +65,8 @@ func TestStoreSchema(t *testing.T) {
 	checkFileMode(t, path, 0o600)
 	version, err := store.SchemaVersion()
 	must(t, err)
-	if version != 3 {
-		t.Fatalf("schema version = %d", version)
+	if version != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, SchemaVersion)
 	}
 	ctx := context.Background()
 	must(t, store.UpsertProject(ctx, Project{ID: "project", Name: "project"}))
@@ -75,15 +75,16 @@ func TestStoreSchema(t *testing.T) {
 	must(t, err)
 	_, err = store.GetProject(ctx, "project")
 	must(t, err)
-	_, err = store.DB().Exec("UPDATE schema_meta SET schema_version=4")
+	futureVersion := SchemaVersion + 1
+	_, err = store.DB().Exec("UPDATE schema_meta SET schema_version=?", futureVersion)
 	must(t, err)
 	must(t, store.Close())
 	_, err = OpenStore(path)
 	wantError(t, err, ErrConflict)
 	var future int
 	must(t, openReadOnlyTestDB(t, path).QueryRow("SELECT schema_version FROM schema_meta").Scan(&future))
-	if future != 4 {
-		t.Fatalf("future database changed to version %d", future)
+	if future != futureVersion {
+		t.Fatalf("future database changed to version %d, want %d", future, futureVersion)
 	}
 }
 
@@ -166,6 +167,7 @@ func TestClearCatalogProjection(t *testing.T) {
 		INSERT INTO tool_graph_jobs(scope,operation_id) VALUES('control','op');
 		INSERT INTO tool_graph_watermarks(user_id,session_id) VALUES('u','s');`)
 	must(t, err)
+	must(t, s.UpsertSessionRelation(ctx, SessionRelation{DatasetID: "d", SessionID: "child", ParentSessionID: "parent", SubagentRole: "worker"}))
 	_, err = s.RecordCaptureFilterEvent(ctx, CaptureFilterEvent{ProjectID: "p", Rule: "*.key"})
 	must(t, err)
 	must(t, s.UpsertCatalogDoc(ctx, CatalogDoc{DatasetID: "d", DocID: "doc", Kind: "knowledge", IsKnowledge: true}))
@@ -378,5 +380,81 @@ func TestUserProfilesAndToolGraph(t *testing.T) {
 	must(t, err)
 	if wm.PersistedMaxSeq != 2 {
 		t.Fatalf("other user's watermark: %+v", wm)
+	}
+}
+
+func TestSessionRelationsCRUDMigrationAndProjectDelete(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v3.sqlite3")
+	db, err := OpenPrivateSQLite(path)
+	must(t, err)
+	v3Catalog := strings.ReplaceAll(catalogDDL, sessionRelationsDDL, "")
+	v3Schema := strings.ReplaceAll(schemaDDL, catalogDDL, v3Catalog)
+	must(t, execSQL(ctx, db, v3Schema+`
+		INSERT INTO schema_meta VALUES(1,3,'created','updated');
+		INSERT INTO projects(id,name,dataset_id) VALUES('p1','Project 1','ds-1');
+	`))
+	must(t, db.Close())
+
+	for range 2 {
+		store, err := OpenStore(path)
+		must(t, err)
+		version, err := store.SchemaVersion()
+		must(t, err)
+		if version != SchemaVersion {
+			t.Fatalf("migrated version = %d, want %d", version, SchemaVersion)
+		}
+		must(t, store.Close())
+	}
+
+	s, err := OpenStore(path)
+	must(t, err)
+	defer func() { must(t, s.Close()) }()
+
+	wantError(t, s.UpsertSessionRelation(ctx, SessionRelation{DatasetID: "", SessionID: "c1", ParentSessionID: "p1"}), ErrInvalidArgument)
+	wantError(t, s.UpsertSessionRelation(ctx, SessionRelation{DatasetID: "ds-1", SessionID: "", ParentSessionID: "p1"}), ErrInvalidArgument)
+	wantError(t, s.UpsertSessionRelation(ctx, SessionRelation{DatasetID: "ds-1", SessionID: "same", ParentSessionID: "same"}), ErrInvalidArgument)
+
+	must(t, s.UpsertSessionRelation(ctx, SessionRelation{
+		DatasetID: "ds-1", SessionID: "child-1", ParentSessionID: "root-1", RootSessionID: "root-1", SubagentRole: "research",
+	}))
+	// Updating without subagent_role must preserve the existing non-empty subagent_role.
+	must(t, s.UpsertSessionRelation(ctx, SessionRelation{
+		DatasetID: "ds-1", SessionID: "child-1", ParentSessionID: "root-1", SubagentRole: "",
+	}))
+	must(t, s.UpsertSessionRelation(ctx, SessionRelation{
+		DatasetID: "ds-2", SessionID: "child-2", ParentSessionID: "root-2", SubagentRole: "worker",
+	}))
+
+	ds1Rels, err := s.ListSessionRelations(ctx, "ds-1")
+	must(t, err)
+	if len(ds1Rels) != 1 || ds1Rels[0].SessionID != "child-1" || ds1Rels[0].ParentSessionID != "root-1" ||
+		ds1Rels[0].RootSessionID != "root-1" || ds1Rels[0].SubagentRole != "research" || ds1Rels[0].UpdatedAt == "" {
+		t.Fatalf("ds-1 relations = %+v", ds1Rels)
+	}
+	allRels, err := s.ListSessionRelations(ctx, "")
+	must(t, err)
+	if len(allRels) != 2 {
+		t.Fatalf("all relations = %+v", allRels)
+	}
+
+	// Updating with a new non-empty subagent_role overwrites it.
+	must(t, s.UpsertSessionRelation(ctx, SessionRelation{
+		DatasetID: "ds-1", SessionID: "child-1", ParentSessionID: "root-1", SubagentRole: "reviewer",
+	}))
+	ds1Rels, err = s.ListSessionRelations(ctx, "ds-1")
+	must(t, err)
+	if len(ds1Rels) != 1 || ds1Rels[0].SubagentRole != "reviewer" {
+		t.Fatalf("updated relation = %+v", ds1Rels)
+	}
+
+	// Deleting p1 removes ds-1 relations while preserving ds-2.
+	must(t, s.DeleteProject(ctx, "p1"))
+	ds1Rels, err = s.ListSessionRelations(ctx, "ds-1")
+	must(t, err)
+	ds2Rels, err := s.ListSessionRelations(ctx, "ds-2")
+	must(t, err)
+	if len(ds1Rels) != 0 || len(ds2Rels) != 1 {
+		t.Fatalf("after delete: ds1=%+v ds2=%+v", ds1Rels, ds2Rels)
 	}
 }

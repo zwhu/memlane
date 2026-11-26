@@ -37,7 +37,7 @@ func TestCaptureFilterSchemaV2Migration(t *testing.T) {
 		must(t, err)
 		items, err := store.ListInboxItems(ctx, "old", "failed", 1)
 		must(t, err)
-		if version != 3 || p.Name != "Old Project" || p.AutoCapture || p.AutoCaptureUpdatedAt != "" || p.AutoCaptureReason != "" || p.AutoCaptureActor != "" ||
+		if version != SchemaVersion || p.Name != "Old Project" || p.AutoCapture || p.AutoCaptureUpdatedAt != "" || p.AutoCaptureReason != "" || p.AutoCaptureActor != "" ||
 			len(items) != 1 || items[0].LastError != "old error" || items[0].LastErrorAt != "" || items[0].UpdatedAt != "updated" {
 			t.Fatalf("migration changed historical values: v%d %+v %+v", version, p, items)
 		}

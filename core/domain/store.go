@@ -12,7 +12,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 const utcNSLayout = "2006-01-02T15:04:05.000000000Z"
 
 var (

@@ -186,25 +186,27 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 			return err
 		}
 	}
-	model, err := w.expectedDigest(ctx)
-	if err != nil {
-		return err
-	}
 	mode := payload.ExtractMode
 	if mode == "" {
 		mode = engine.ExtractModeDefault
 	}
-	if mode == engine.ExtractModeDefault && result.DocumentID == "" && item.SessionID != "" &&
-		(item.Kind == string(engine.IngestKindCaptureQA) || item.Kind == string(engine.IngestKindCaptureTrace)) {
-		docID = item.SessionID
-	}
-	extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{Scope: scope, DocIDs: []string{docID},
-		ExpectedModelDigest: model, OutputLanguage: w.cfg.OutputLanguage, Mode: mode})
-	if err != nil {
-		return fmt.Errorf("extract inbox: %w", err)
-	}
-	if !extracted.OK {
-		return errors.New("engine did not complete extraction")
+	if !(item.Kind == string(engine.IngestKindCaptureTrace) && mode == engine.ExtractModeDefault) {
+		model, err := w.expectedDigest(ctx)
+		if err != nil {
+			return err
+		}
+		if mode == engine.ExtractModeDefault && result.DocumentID == "" && item.SessionID != "" &&
+			item.Kind == string(engine.IngestKindCaptureQA) {
+			docID = item.SessionID
+		}
+		extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{Scope: scope, DocIDs: []string{docID},
+			ExpectedModelDigest: model, OutputLanguage: w.cfg.OutputLanguage, Mode: mode})
+		if err != nil {
+			return fmt.Errorf("extract inbox: %w", err)
+		}
+		if !extracted.OK {
+			return errors.New("engine did not complete extraction")
+		}
 	}
 	if w.cfg.Projector != nil {
 		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {

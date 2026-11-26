@@ -5,12 +5,39 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/zwhu/memlane/core/engine"
 )
+
+var (
+	reUserRequestBlock        = regexp.MustCompile(`(?is)<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>`)
+	reAdditionalMetadataBlock = regexp.MustCompile(`(?is)<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>`)
+	reAdditionalMetadataOpen  = regexp.MustCompile(`(?is)<ADDITIONAL_METADATA>.*$`)
+	reUserRequestTag          = regexp.MustCompile(`(?i)</?USER_REQUEST>`)
+)
+
+func cleanSessionLabel(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	if m := reUserRequestBlock.FindStringSubmatch(text); len(m) == 2 {
+		text = m[1]
+	}
+	text = reAdditionalMetadataBlock.ReplaceAllString(text, "")
+	text = reAdditionalMetadataOpen.ReplaceAllString(text, "")
+	text = reUserRequestTag.ReplaceAllString(text, "")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	return string(runes[:min(120, len(runes))])
+}
 
 type SessionKey = engine.SessionRef
 
@@ -88,9 +115,7 @@ func hydrateQuestions(ctx context.Context, tx *sql.Tx, user, where string, args 
 		info := result[key]
 		info.MsgCount++
 		if info.Label == "" {
-			label := strings.TrimSpace(metadataText(parseJSONDict(payload), "question"))
-			runes := []rune(label)
-			info.Label = string(runes[:min(120, len(runes))])
+			info.Label = cleanSessionLabel(metadataText(parseJSONDict(payload), "question"))
 		}
 		result[key] = info
 	}
@@ -153,14 +178,26 @@ func (p *Projector) ReadSessionHistory(ctx context.Context, req engine.SessionHi
 			return out, err
 		}
 
-		var firstPayload string
-		if err := tx.QueryRowContext(ctx, "SELECT payload FROM cache_qa_entries"+where+" ORDER BY seq LIMIT 1", baseArgs...).Scan(&firstPayload); err == nil {
-			label := strings.TrimSpace(metadataText(parseJSONDict(firstPayload), "question"))
-			runes := []rune(label)
-			out.Label = string(runes[:min(120, len(runes))])
-		} else if err != sql.ErrNoRows {
+		labelRows, err := tx.QueryContext(ctx, "SELECT payload FROM cache_qa_entries"+where+" ORDER BY seq LIMIT 10", baseArgs...)
+		if err != nil {
 			return out, err
 		}
+		for labelRows.Next() {
+			var payload string
+			if err := labelRows.Scan(&payload); err != nil {
+				labelRows.Close()
+				return out, err
+			}
+			if label := cleanSessionLabel(metadataText(parseJSONDict(payload), "question")); label != "" {
+				out.Label = label
+				break
+			}
+		}
+		if err := labelRows.Err(); err != nil {
+			labelRows.Close()
+			return out, err
+		}
+		labelRows.Close()
 
 		qaArgs := append(slices.Clone(baseArgs), limit, max(0, req.QAOffset))
 		qaRows, err := tx.QueryContext(ctx, "SELECT COALESCE(qa_id,''), payload FROM cache_qa_entries"+where+" ORDER BY seq LIMIT ? OFFSET ?", qaArgs...)

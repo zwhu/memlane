@@ -37,11 +37,12 @@ type rawItem struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	RootSessionID   string `json:"root_session_id,omitempty"`
 	SubagentRole    string `json:"subagent_role,omitempty"`
-	NestingDepth    int    `json:"nesting_depth,omitempty"`
-	IsTopLevel      bool   `json:"is_top_level"`
-	ChildCount      int    `json:"child_count"`
-	ChildrenHasMore bool   `json:"children_has_more"`
-	EffectiveDate   string `json:"effective_date,omitempty"`
+	NestingDepth    int       `json:"nesting_depth,omitempty"`
+	IsTopLevel      bool      `json:"is_top_level"`
+	ChildCount      int       `json:"child_count"`
+	ChildrenPreview []rawItem `json:"children_preview,omitempty"`
+	ChildrenHasMore bool      `json:"children_has_more"`
+	EffectiveDate   string    `json:"effective_date,omitempty"`
 	CreatedAt       string `json:"created_at,omitempty"`
 	UpdatedAt       string `json:"updated_at,omitempty"`
 }
@@ -67,7 +68,7 @@ func scanRaw(row rowScanner) (pageRow[rawItem], error) {
 		i.Label = i.Title
 	}
 	i.ChildrenHasMore = i.ChildCount > 0
-	i.IsSubagent = i.Kind == "session" && !i.IsTopLevel
+	i.IsSubagent = i.Kind == "session" && (!i.IsTopLevel || i.ParentSessionID != "" || i.SubagentRole != "")
 	return pageRow[rawItem]{i, k}, err
 }
 
@@ -87,9 +88,17 @@ func (s *Server) hydrateRawSessions(ctx context.Context, items []rawItem) (attem
 		return false, false
 	}
 	refs := make([]engine.SessionRef, 0, len(items))
-	for _, item := range items {
-		if item.Kind == "session" && item.UserID != "" && item.SessionID != "" {
-			refs = append(refs, engine.SessionRef{UserID: item.UserID, SessionID: item.SessionID})
+	collectRefs := func(list []rawItem) {
+		for _, item := range list {
+			if item.Kind == "session" && item.UserID != "" && item.SessionID != "" {
+				refs = append(refs, engine.SessionRef{UserID: item.UserID, SessionID: item.SessionID})
+			}
+		}
+	}
+	collectRefs(items)
+	for i := range items {
+		if len(items[i].ChildrenPreview) > 0 {
+			collectRefs(items[i].ChildrenPreview)
 		}
 	}
 	if len(refs) == 0 {
@@ -99,19 +108,27 @@ func (s *Server) hydrateRawSessions(ctx context.Context, items []rawItem) (attem
 	if err != nil {
 		return true, false
 	}
+	apply := func(list []rawItem) {
+		for i := range list {
+			if list[i].Kind != "session" {
+				continue
+			}
+			info, ok := hydrated[engine.SessionRef{UserID: list[i].UserID, SessionID: list[i].SessionID}]
+			if !ok {
+				continue
+			}
+			list[i].MsgCount = info.MsgCount
+			list[i].ToolCalls = info.ToolCalls
+			if label := strings.TrimSpace(info.Label); label != "" {
+				list[i].Label = label
+				list[i].Title = label
+			}
+		}
+	}
+	apply(items)
 	for i := range items {
-		if items[i].Kind != "session" {
-			continue
-		}
-		info, ok := hydrated[engine.SessionRef{UserID: items[i].UserID, SessionID: items[i].SessionID}]
-		if !ok {
-			continue
-		}
-		items[i].MsgCount = info.MsgCount
-		items[i].ToolCalls = info.ToolCalls
-		if label := strings.TrimSpace(info.Label); label != "" {
-			items[i].Label = label
-			items[i].Title = label
+		if len(items[i].ChildrenPreview) > 0 {
+			apply(items[i].ChildrenPreview)
 		}
 	}
 	return true, true
@@ -193,7 +210,29 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out, err = page(ctx, tx, s.cursors, opts, source, args, scanRaw)
-		return err
+		if err != nil {
+			return err
+		}
+		if parent == "" {
+			const childrenPreviewLimit = 5
+			childQuery := rawSessions + " CROSS JOIN (SELECT ? AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=? ORDER BY k1,k3,k4 LIMIT ?"
+			for i := range out.Items {
+				if out.Items[i].Kind != "session" || out.Items[i].ChildCount <= 0 {
+					continue
+				}
+				rows, err := readRows(ctx, tx, childQuery, []any{out.Items[i].ProjectID, out.Items[i].DatasetID, out.Items[i].SessionID, childrenPreviewLimit}, scanRaw)
+				if err != nil {
+					return err
+				}
+				preview := make([]rawItem, 0, len(rows))
+				for _, row := range rows {
+					preview = append(preview, row.item)
+				}
+				out.Items[i].ChildrenPreview = preview
+				out.Items[i].ChildrenHasMore = out.Items[i].ChildCount > len(preview)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		writeDomainError(w, err)
@@ -324,9 +363,19 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var parentLabel string
-	if reader != nil && sess.ParentSessionID != "" && sess.UserID != "" {
-		if parentInfo, err := reader.HydrateSessionsFromCache(ctx, []engine.SessionRef{{UserID: sess.UserID, SessionID: sess.ParentSessionID}}); err == nil {
-			parentLabel = strings.TrimSpace(parentInfo[engine.SessionRef{UserID: sess.UserID, SessionID: sess.ParentSessionID}].Label)
+	if reader != nil && sess.ParentSessionID != "" {
+		parentUserID := sess.UserID
+		var resolvedParentUser string
+		if err := s.cfg.Store.DB().QueryRowContext(ctx,
+			`SELECT user_id FROM catalog_sessions WHERE dataset_id=? AND session_id=? ORDER BY (user_id=?) DESC, user_id LIMIT 1`,
+			ds, sess.ParentSessionID, sess.UserID).Scan(&resolvedParentUser); err == nil && resolvedParentUser != "" {
+			parentUserID = resolvedParentUser
+		}
+		if parentUserID != "" {
+			parentRef := engine.SessionRef{UserID: parentUserID, SessionID: sess.ParentSessionID}
+			if parentInfo, err := reader.HydrateSessionsFromCache(ctx, []engine.SessionRef{parentRef}); err == nil {
+				parentLabel = strings.TrimSpace(parentInfo[parentRef].Label)
+			}
 		}
 	}
 
@@ -334,10 +383,6 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 	if sess.ChildCount > 0 {
 		childQuery := rawSessions + " CROSS JOIN (SELECT '' AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=?"
 		childArgs := []any{ds, sid}
-		if sess.UserID != "" {
-			childQuery += " AND x.user_id=?"
-			childArgs = append(childArgs, sess.UserID)
-		}
 		if rows, err := readRows(ctx, s.cfg.Store.DB(), childQuery+" ORDER BY k1,k3,k4 LIMIT 50", childArgs, scanRaw); err == nil {
 			subagents = make([]rawItem, 0, len(rows))
 			for _, child := range rows {

@@ -54,11 +54,13 @@ type inboxPayload struct {
 type captureRequest struct {
 	hookScope
 	inboxPayload
-	Kind       engine.IngestKind `json:"kind"`
-	Mode       string            `json:"mode"`
-	MessageID  string            `json:"message_id"`
-	Host       string            `json:"host"`
-	CaptureKey string            `json:"capture_key"`
+	Kind            engine.IngestKind `json:"kind"`
+	Mode            string            `json:"mode"`
+	MessageID       string            `json:"message_id"`
+	Host            string            `json:"host"`
+	CaptureKey      string            `json:"capture_key"`
+	ParentSessionID string            `json:"parent_session_id,omitempty"`
+	SubagentRole    string            `json:"subagent_role,omitempty"`
 }
 
 func captureQAContextDate(content any) string {
@@ -227,6 +229,34 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 		if err := s.cfg.Store.UpsertSessionBinding(persist, key, project.ID, float64(time.Now().UnixMilli())/1000); err != nil {
 			writeDomainError(w, err)
 			return
+		}
+		parentSessionID := strings.TrimSpace(req.ParentSessionID)
+		subagentRole := strings.TrimSpace(req.SubagentRole)
+		if ext := req.SourceMeta.ExternalMetadata; ext != nil {
+			if parentSessionID == "" {
+				if v, ok := ext["parent_session_id"].(string); ok {
+					parentSessionID = strings.TrimSpace(v)
+				}
+			}
+			if subagentRole == "" {
+				if v, ok := ext["subagent_role"].(string); ok {
+					subagentRole = strings.TrimSpace(v)
+				}
+			}
+		}
+		if parentSessionID == req.SessionID {
+			parentSessionID = ""
+		}
+		if parentSessionID != "" || subagentRole != "" {
+			if err := s.cfg.Store.UpsertSessionRelation(persist, domain.SessionRelation{
+				DatasetID:       project.DatasetID,
+				SessionID:       req.SessionID,
+				ParentSessionID: parentSessionID,
+				SubagentRole:    subagentRole,
+			}); err != nil {
+				writeDomainError(w, err)
+				return
+			}
 		}
 	}
 	writeJSON(w, status, response)
