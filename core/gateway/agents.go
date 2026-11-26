@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"math"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -180,17 +182,165 @@ type connectionCaptureState struct {
 }
 
 type connectionView struct {
-	ID              string                  `json:"instance_id"`
-	Kind            string                  `json:"kind"`
-	Status          string                  `json:"status"`
-	Detected        bool                    `json:"detected"`
-	Registered      bool                    `json:"agent_registered"`
-	Version         string                  `json:"host_version,omitempty"`
-	Profile         string                  `json:"profile,omitempty"`
-	NewSessions     int                     `json:"new_sessions"`
-	NeedsHookRepair bool                    `json:"needs_hook_repair"`
-	LastReceiptAt   float64                 `json:"last_receipt_at,omitempty"`
-	Capture         *connectionCaptureState `json:"capture,omitempty"`
+	ID                  string                  `json:"instance_id"`
+	Kind                string                  `json:"kind"`
+	Status              string                  `json:"status"`
+	Detected            bool                    `json:"detected"`
+	Registered          bool                    `json:"agent_registered"`
+	Version             string                  `json:"host_version,omitempty"`
+	Profile             string                  `json:"profile,omitempty"`
+	NewSessions         int                     `json:"new_sessions"`
+	NeedsHookRepair     bool                    `json:"needs_hook_repair"`
+	LastReceiptAt       float64                 `json:"last_receipt_at,omitempty"`
+	PluginVersion       string                  `json:"plugin_version,omitempty"`
+	EnvironmentVerified bool                    `json:"environment_verified,omitempty"`
+	Capture             *connectionCaptureState `json:"capture,omitempty"`
+}
+
+type managedHookStatus struct {
+	installed     bool
+	needsRepair   bool
+	pluginVersion string
+}
+
+const managedHookConfigLimit = 1 << 20
+
+func isSupportedTraeIDEHookEvent(event string) bool {
+	switch event {
+	case "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLegacyTraeIDECommand(command string) bool {
+	return strings.Contains(command, "trae_ide_hook.py")
+}
+
+func isManagedHookEntry(entry any, hostKind string) (managed bool, legacyTrae bool) {
+	obj, ok := entry.(map[string]any)
+	if !ok {
+		return false, false
+	}
+	if obj["_memlane_managed"] == "memlane-hook" {
+		managed = true
+	}
+	if cmd, ok := obj["command"].(string); ok {
+		if strings.Contains(cmd, "memlane-hook") ||
+			(strings.Contains(cmd, " hook ") && strings.Contains(cmd, "--gateway-url ") && strings.Contains(cmd, "--key-file ")) {
+			managed = true
+		}
+		if hostKind == agents.HostTraeIDE && isLegacyTraeIDECommand(cmd) {
+			managed = true
+			legacyTrae = true
+		}
+	}
+	if nested, ok := obj["hooks"].([]any); ok {
+		for _, child := range nested {
+			m, lt := isManagedHookEntry(child, hostKind)
+			managed = managed || m
+			legacyTrae = legacyTrae || lt
+		}
+	}
+	return managed, legacyTrae
+}
+
+func scanHookEventGroups(groups map[string]any, hostKind string) (installed bool, needsRepair bool) {
+	for event, raw := range groups {
+		rows, ok := raw.([]any)
+		if !ok {
+			continue
+		}
+		eventManaged := false
+		for _, row := range rows {
+			m, lt := isManagedHookEntry(row, hostKind)
+			if m {
+				eventManaged = true
+				installed = true
+			}
+			if lt {
+				needsRepair = true
+			}
+		}
+		if eventManaged && hostKind == agents.HostTraeIDE && !isSupportedTraeIDEHookEvent(event) {
+			needsRepair = true
+		}
+	}
+	return installed, needsRepair
+}
+
+func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
+	if strings.TrimSpace(profileDir) == "" {
+		return managedHookStatus{}
+	}
+	if kind == agents.HostPi {
+		raw, err := agents.SafeReadFile(filepath.Join(profileDir, "extensions", "memlane-cognee", "host-binding.json"), managedHookConfigLimit)
+		if err != nil {
+			return managedHookStatus{}
+		}
+		var doc map[string]any
+		if json.Unmarshal(raw, &doc) != nil || doc == nil {
+			return managedHookStatus{}
+		}
+		if doc["managed_by"] == "memlane" {
+			return managedHookStatus{installed: true, pluginVersion: "memlane-pi"}
+		}
+		if py, ok := doc["python"].(string); ok && strings.TrimSpace(py) != "" {
+			return managedHookStatus{installed: true, pluginVersion: "memlane-pi"}
+		}
+		return managedHookStatus{}
+	}
+
+	candidates := []string{filepath.Join(profileDir, "hooks.json")}
+	if kind == agents.HostTraeX {
+		candidates = append(candidates, filepath.Join(profileDir, "cli", "hooks.json"))
+	}
+	var result managedHookStatus
+	for _, path := range candidates {
+		raw, err := agents.SafeReadFile(path, managedHookConfigLimit)
+		if err != nil {
+			continue
+		}
+		doc, err := agents.ParseJSONC(raw)
+		if err != nil || doc == nil {
+			continue
+		}
+		if kind == agents.HostAntigravity {
+			if memlaneGroup, ok := doc["memlane"].(map[string]any); ok {
+				if inst, _ := scanHookEventGroups(memlaneGroup, kind); inst {
+					result.installed = true
+					result.pluginVersion = "memlane-hook"
+					continue
+				}
+			}
+		}
+		if wrapper, ok := doc["hooks"].(map[string]any); ok {
+			inst, repair := scanHookEventGroups(wrapper, kind)
+			if inst {
+				result.installed = true
+				result.pluginVersion = "memlane-hook"
+				if repair {
+					result.needsRepair = true
+				}
+				if kind == agents.HostTraeIDE {
+					if v, hasVersion := doc["version"]; !hasVersion || (v != float64(1) && v != json.Number("1")) {
+						result.needsRepair = true
+					}
+				}
+			}
+			continue
+		}
+		inst, repair := scanHookEventGroups(doc, kind)
+		if inst {
+			result.installed = true
+			result.pluginVersion = "memlane-hook"
+			if repair || kind == agents.HostTraeIDE {
+				result.needsRepair = true
+			}
+		}
+	}
+	return result
 }
 
 type captureActivityStats struct {
@@ -336,21 +486,29 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 		stats := mergeCaptureStats(a, inboxByAgent, receiptByUser)
 		row.NewSessions = stats.newSessions
 		if isCaptureManagedHostKind(a.Kind) && row.Detected {
-			row.Status = "configured_pending_new_session"
-			if stats.newSessions > 0 {
-				row.Capture = &connectionCaptureState{
-					State:       "healthy",
-					Permission:  "observed",
-					SavedCount:  stats.savedCount,
-					LastSavedAt: stats.lastSavedAt,
-					CheckedAt:   checkedAt,
-				}
-				row.LastReceiptAt = stats.lastSavedAt
-			} else {
-				row.Capture = &connectionCaptureState{
-					State:      "waiting_session",
-					Permission: "observed",
-					CheckedAt:  checkedAt,
+			hookStatus := inspectManagedHookStatus(a.Kind, row.Profile)
+			row.NeedsHookRepair = hookStatus.needsRepair
+			if hookStatus.installed || stats.newSessions > 0 {
+				row.Status = "configured_pending_new_session"
+				if stats.newSessions > 0 {
+					row.Capture = &connectionCaptureState{
+						State:       "healthy",
+						Permission:  "observed",
+						SavedCount:  stats.savedCount,
+						LastSavedAt: stats.lastSavedAt,
+						CheckedAt:   checkedAt,
+					}
+					row.LastReceiptAt = stats.lastSavedAt
+					if hookStatus.installed {
+						row.EnvironmentVerified = true
+						row.PluginVersion = hookStatus.pluginVersion
+					}
+				} else {
+					row.Capture = &connectionCaptureState{
+						State:      "waiting_session",
+						Permission: "observed",
+						CheckedAt:  checkedAt,
+					}
 				}
 			}
 		}

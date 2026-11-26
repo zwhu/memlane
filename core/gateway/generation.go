@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -47,50 +49,85 @@ type agentBridgeProfileView struct {
 	Model          string `json:"model"`
 }
 
-func hasAnyCredential(secrets []string, values ...string) bool {
-	for _, value := range values {
-		if value != "" && containsCredential(value, secrets) {
-			return true
+func sanitizeAgentDefaults(in agentModelDefaultsView, secrets []string) (agentModelDefaultsView, bool) {
+	if strings.TrimSpace(in.Model) == "" {
+		return agentModelDefaultsView{}, false
+	}
+	for _, value := range []string{
+		in.Model, in.Provider, in.Source, in.ConfigurationSource,
+		in.ReasoningEffort, in.ThinkingLevel, in.ServiceTier,
+	} {
+		if value == "" {
+			continue
+		}
+		if containsCredential(value, secrets) || daemon.RedactLogLine(value) != value {
+			return agentModelDefaultsView{}, false
 		}
 	}
-	return false
+	return in, true
+}
+
+func readHostModelDefaults(host agents.DetectedHost, opts agents.DiscoveryOptions, modelOpts agents.ModelDefaultsOptions, credentials []string) (agentModelDefaultsView, bool) {
+	profileDir := host.ProfileDir
+	if profileDir == "" {
+		profileDir = agents.DefaultProfileDir(host.Kind, opts)
+	}
+	var defaults agents.ModelDefaults
+	var err error
+	if host.Kind == agents.HostAntigravity {
+		if !filepath.IsAbs(host.Executable) || !filepath.IsAbs(profileDir) {
+			return agentModelDefaultsView{}, false
+		}
+		if _, err = filepath.EvalSymlinks(host.Executable); err != nil {
+			return agentModelDefaultsView{}, false
+		}
+		resolvedHome, resolveErr := filepath.EvalSymlinks(profileDir)
+		if resolveErr != nil {
+			return agentModelDefaultsView{}, false
+		}
+		st, statErr := os.Stat(resolvedHome)
+		if statErr != nil || !st.IsDir() {
+			return agentModelDefaultsView{}, false
+		}
+		defaults, err = agents.ReadModelDefaults(host.Kind, resolvedHome, modelOpts)
+	} else {
+		runtime, runtimeErr := agents.CheckBridgeRuntime(host.Kind, host.Executable, profileDir, modelOpts)
+		if runtimeErr != nil {
+			return agentModelDefaultsView{}, false
+		}
+		defaults, err = agents.ReadModelDefaults(host.Kind, runtime.Home, modelOpts)
+	}
+	if err != nil || defaults.Model == "" {
+		return agentModelDefaultsView{}, false
+	}
+	return sanitizeAgentDefaults(agentModelDefaultsView{
+		Model:               defaults.Model,
+		Provider:            defaults.Provider,
+		Source:              defaults.Source,
+		ConfigurationSource: defaults.ConfigurationSource,
+		ReasoningEffort:     defaults.ReasoningEffort,
+		ThinkingLevel:       defaults.ThinkingLevel,
+		ServiceTier:         defaults.ServiceTier,
+	}, credentials)
 }
 
 func detectGenerationBridges(opts agents.DiscoveryOptions, credentials []string) ([]string, map[string]agentModelDefaultsView, map[string]agentBridgeProfileView) {
 	processing := []string{}
 	agentDefaults := map[string]agentModelDefaultsView{}
 	agentBridges := map[string]agentBridgeProfileView{}
-	modelOpts := agents.ModelDefaultsOptions{Environ: opts.Environ}
+	// Always isolate session environment variables so GET /api/generation reads
+	// stable CLI defaults without copying session state_*.sqlite databases.
+	modelOpts := agents.ModelDefaultsOptions{Environ: func(string) string { return "" }}
 	for _, host := range agents.DetectHosts(opts) {
 		if !host.Detected || !host.SupportsProcessingCLI || host.Executable == "" {
 			continue
 		}
 		processing = append(processing, host.Kind)
-		profileDir := host.ProfileDir
-		if profileDir == "" {
-			profileDir = agents.DefaultProfileDir(host.Kind, opts)
-		}
-		runtime, err := agents.CheckBridgeRuntime(host.Kind, host.Executable, profileDir, modelOpts)
-		if err != nil {
+		defaults, ok := readHostModelDefaults(host, opts, modelOpts, credentials)
+		if !ok {
 			continue
 		}
-		defaults, err := agents.ReadModelDefaults(host.Kind, runtime.Home, modelOpts)
-		if err != nil || defaults.Model == "" {
-			continue
-		}
-		if hasAnyCredential(credentials, defaults.Model, defaults.Provider, defaults.Source,
-			defaults.ConfigurationSource, defaults.ReasoningEffort, defaults.ThinkingLevel, defaults.ServiceTier) {
-			continue
-		}
-		agentDefaults[host.Kind] = agentModelDefaultsView{
-			Model:               defaults.Model,
-			Provider:            defaults.Provider,
-			Source:              defaults.Source,
-			ConfigurationSource: defaults.ConfigurationSource,
-			ReasoningEffort:     defaults.ReasoningEffort,
-			ThinkingLevel:       defaults.ThinkingLevel,
-			ServiceTier:         defaults.ServiceTier,
-		}
+		agentDefaults[host.Kind] = defaults
 		bridge := agentBridgeProfileView{
 			Mode:       "agent_bridge",
 			BridgeKind: host.Kind,
@@ -104,6 +141,17 @@ func detectGenerationBridges(opts agents.DiscoveryOptions, credentials []string)
 		agentBridges[host.Kind] = bridge
 	}
 	return processing, agentDefaults, agentBridges
+}
+
+func detectBridgeDefaultsForKind(opts agents.DiscoveryOptions, kind string, credentials []string) (agentModelDefaultsView, bool) {
+	if kind == "" {
+		return agentModelDefaultsView{}, false
+	}
+	scoped := opts
+	scoped.Kinds = []string{kind}
+	_, defaults, _ := detectGenerationBridges(scoped, credentials)
+	val, ok := defaults[kind]
+	return val, ok
 }
 
 func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
@@ -173,15 +221,16 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 }
 
 type validationView struct {
-	OperationID        string `json:"-"`
-	Digest             string `json:"digest"`
-	RegisteredRevision int    `json:"registered_revision"`
-	Status             string `json:"status"`
-	PlainPassed        bool   `json:"plain_passed"`
-	SchemaPassed       bool   `json:"schema_passed"`
-	QualityPassed      bool   `json:"quality_passed"`
-	StructuredMode     string `json:"structured_mode"`
-	ErrorCode          string `json:"error_code"`
+	OperationID        string                  `json:"-"`
+	Digest             string                  `json:"digest"`
+	RegisteredRevision int                     `json:"registered_revision"`
+	Status             string                  `json:"status"`
+	PlainPassed        bool                    `json:"plain_passed"`
+	SchemaPassed       bool                    `json:"schema_passed"`
+	QualityPassed      bool                    `json:"quality_passed"`
+	StructuredMode     string                  `json:"structured_mode"`
+	ErrorCode          string                  `json:"error_code"`
+	AgentDefaults      *agentModelDefaultsView `json:"agent_defaults,omitempty"`
 	Reference          struct {
 		ID       string `json:"id"`
 		Revision int    `json:"revision"`
@@ -189,19 +238,24 @@ type validationView struct {
 }
 
 func (s *Server) generationValidations(ctx context.Context, secrets []string) (map[string]validationView, error) {
+	type validationRow struct {
+		view        validationView
+		payloadJSON string
+	}
 	rows, err := readRows(ctx, s.cfg.Store.DB(), `SELECT operation_id,profile_id,profile_revision,digest,registered_revision,
-  status,plain_passed,schema_passed,quality_passed,structured_mode,error_code FROM generation_validations`, nil,
-		func(row rowScanner) (validationView, error) {
-			var v validationView
-			err := row.Scan(&v.OperationID, &v.Reference.ID, &v.Reference.Revision, &v.Digest, &v.RegisteredRevision,
-				&v.Status, &v.PlainPassed, &v.SchemaPassed, &v.QualityPassed, &v.StructuredMode, &v.ErrorCode)
-			return v, err
+  status,plain_passed,schema_passed,quality_passed,structured_mode,error_code,payload_json FROM generation_validations`, nil,
+		func(row rowScanner) (validationRow, error) {
+			var r validationRow
+			err := row.Scan(&r.view.OperationID, &r.view.Reference.ID, &r.view.Reference.Revision, &r.view.Digest, &r.view.RegisteredRevision,
+				&r.view.Status, &r.view.PlainPassed, &r.view.SchemaPassed, &r.view.QualityPassed, &r.view.StructuredMode, &r.view.ErrorCode, &r.payloadJSON)
+			return r, err
 		})
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]validationView, len(rows))
-	for _, v := range rows {
+	for _, r := range rows {
+		v := r.view
 		op := safeModelDigest(v.OperationID, secrets...)
 		if op == "" {
 			continue
@@ -211,6 +265,16 @@ func (s *Server) generationValidations(ctx context.Context, secrets []string) (m
 		v.Status = cleanReceipt(v.Status, secrets...)
 		v.StructuredMode = cleanReceipt(v.StructuredMode, secrets...)
 		v.ErrorCode = cleanReceipt(v.ErrorCode, secrets...)
+		if r.payloadJSON != "" {
+			var payload struct {
+				AgentDefaults *agentModelDefaultsView `json:"agent_defaults"`
+			}
+			if json.Unmarshal([]byte(r.payloadJSON), &payload) == nil && payload.AgentDefaults != nil {
+				if clean, ok := sanitizeAgentDefaults(*payload.AgentDefaults, secrets); ok {
+					v.AgentDefaults = &clean
+				}
+			}
+		}
 		out[op] = v
 	}
 	return out, nil
@@ -569,7 +633,15 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	if probeErr != nil || res.Status != "passed" && res.Status != "failed" && res.Status != "result_unknown" {
 		res = engine.ProbeResult{Status: "result_unknown", ErrorCode: "probe_result_unconfirmed"}
 	}
-	payload := "{}"
+	payloadObj := map[string]any{}
+	var validatedDefaults *agentModelDefaultsView
+	if p.Mode == "agent_bridge" && res.Status == "passed" {
+		if defaults, ok := detectBridgeDefaultsForKind(s.cfg.DiscoveryOptions, p.BridgeKind, []string{key}); ok {
+			snapshot := defaults
+			validatedDefaults = &snapshot
+			payloadObj["agent_defaults"] = snapshot
+		}
+	}
 	if p.Provider == "ollama" && res.Status == "passed" {
 		want := map[string]string{"contract": "ollama-native-nonce-v1", "status": "verified",
 			"model": qualifiedModel(provider, p.Model), "endpoint_sha256": digest([]byte(endpoint))}
@@ -581,13 +653,17 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if matches {
-			raw, err := json.Marshal(map[string]any{"ollama_schema_evidence": want})
-			if err != nil {
-				writeDomainError(w, err)
-				return
-			}
-			payload = string(raw)
+			payloadObj["ollama_schema_evidence"] = want
 		}
+	}
+	payload := "{}"
+	if len(payloadObj) > 0 {
+		raw, err := json.Marshal(payloadObj)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		payload = string(raw)
 	}
 	var rev int
 	if err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT COALESCE(MAX(registered_revision),0)+1 FROM generation_validations WHERE digest=?`, p.Digest).Scan(&rev); err != nil {
@@ -610,9 +686,10 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, struct {
 		engine.ProbeResult
-		OperationID string            `json:"operation_id"`
-		Result      map[string]string `json:"result"`
-	}{res, op, map[string]string{"operation_id": op}})
+		AgentDefaults *agentModelDefaultsView `json:"agent_defaults,omitempty"`
+		OperationID   string                  `json:"operation_id"`
+		Result        map[string]string       `json:"result"`
+	}{res, validatedDefaults, op, map[string]string{"operation_id": op}})
 }
 
 func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (map[string]any, string, error) {

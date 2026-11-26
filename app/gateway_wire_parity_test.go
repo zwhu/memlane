@@ -1166,3 +1166,266 @@ func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
 		t.Fatalf("expected zero hits to stale :18173, got %d", deadPortHits.Load())
 	}
 }
+
+type wireBridgeProbeEngine struct {
+	wireEngine
+}
+
+func (wireBridgeProbeEngine) ProbeModel(context.Context, engine.ProbeRequest) (engine.ProbeResult, error) {
+	return engine.ProbeResult{
+		Status:         "passed",
+		PlainPassed:    true,
+		SchemaPassed:   true,
+		QualityPassed:  true,
+		StructuredMode: "json_schema",
+	}, nil
+}
+
+func (wireBridgeProbeEngine) Ingest(context.Context, engine.IngestRequest) (engine.IngestResult, error) {
+	return engine.IngestResult{OK: true, EntryID: "wire-entry-1"}, nil
+}
+
+func (wireBridgeProbeEngine) Extract(context.Context, engine.ExtractRequest) (engine.ExtractResult, error) {
+	return engine.ExtractResult{OK: true, ModelDigest: "live-digest"}, nil
+}
+
+func TestGatewayWireParityGenerationBridgesAndConnections(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	appsDir := filepath.Join(home, "Applications")
+	writeExe := func(path string) string {
+		check(os.MkdirAll(filepath.Dir(path), 0o700))
+		check(os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+		return path
+	}
+	codexBin := writeExe(filepath.Join(binDir, "codex"))
+	piBin := writeExe(filepath.Join(binDir, "pi"))
+	traexBin := writeExe(filepath.Join(binDir, "traecli"))
+	agyBin := writeExe(filepath.Join(binDir, "agy"))
+	claudeBin := writeExe(filepath.Join(binDir, "claude"))
+
+	traeApp := filepath.Join(appsDir, "Trae CN.app")
+	writeExe(filepath.Join(traeApp, "Contents", "MacOS", "Electron"))
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleShortVersionString</key><string>1.9.8</string>
+</dict></plist>`
+	check(os.WriteFile(filepath.Join(traeApp, "Contents", "Info.plist"), []byte(plist), 0o600))
+
+	files := map[string]string{
+		filepath.Join(home, ".codex", "auth.json"):                                          `{"token":"wire-codex-secret-never-leak"}`,
+		filepath.Join(home, ".codex", "config.toml"):                                        "model = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\nservice_tier = \"fast\"\n",
+		filepath.Join(home, ".codex", "hooks.json"):                                         `{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k","_memlane_managed":"memlane-hook"}]}]}}`,
+		filepath.Join(home, ".pi", "agent", "auth.json"):                                    `{"token":"wire-pi-secret-never-leak"}`,
+		filepath.Join(home, ".pi", "agent", "settings.json"):                                `{"defaultProvider":"deepseek","defaultModel":"deepseek-reasoner","defaultThinkingLevel":"medium"}`,
+		filepath.Join(home, ".pi", "agent", "extensions", "memlane-cognee", "host-binding.json"): `{"managed_by":"memlane","gateway_url":"http://127.0.0.1:18174","token_file":"/tmp/k"}`,
+		filepath.Join(home, ".trae", "cli", "auth.json"):                                    `{"token":"wire-traex-secret-never-leak"}`,
+		filepath.Join(home, ".trae", "traecli.toml"):                                        "model = \"doubao-seed-code\"\n",
+		filepath.Join(home, ".trae-cn", "hooks.json"):                                       `{"version":1,"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"python3 '/home/.trae/managed-marketplaces/trae_ide-0123456789abcdef01234567/0123456789abcdef0123/plugins/cognee/scripts/trae_ide_hook.py' UserPromptSubmit"}]}]}}`,
+		filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"):                  `{"model":"gemini-2.5-pro"}`,
+	}
+	check(os.MkdirAll(filepath.Join(home, ".gemini", "config"), 0o700))
+	check(os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+	for path, body := range files {
+		check(os.MkdirAll(filepath.Dir(path), 0o700))
+		check(os.WriteFile(path, []byte(body), 0o600))
+	}
+
+	storeDir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(storeDir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const mgmtToken = "wire-parity-generation-connections-token"
+	const codexTok = "wire-parity-codex-agent-token"
+	tokenFile := filepath.Join(storeDir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(mgmtToken), 0o600))
+
+	check(store.UpsertRegistryDefaults(ctx, domain.RegistryDefaults{
+		Access: domain.AccessMaintain, Capture: true, AutoProcess: true, Revision: 4,
+	}))
+	check(store.UpsertProject(ctx, domain.Project{
+		ID: "proj-wire", Name: "wire-app", DatasetID: "ds-wire", DatasetName: "wire-app", AutoCapture: true,
+	}))
+	for _, ag := range []domain.Agent{
+		{ID: "agent-codex", Kind: agents.HostCodex, Name: "Codex", PrincipalID: "u-codex", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-pi", Kind: agents.HostPi, Name: "pi", PrincipalID: "u-pi", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-traex", Kind: agents.HostTraeX, Name: "TRAE CLI", PrincipalID: "u-traex", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-trae", Kind: agents.HostTraeIDE, Name: "TRAE CN", PrincipalID: "u-trae", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-claude", Kind: agents.HostClaudeCode, Name: "Claude Code", PrincipalID: "u-claude", DefaultAccess: domain.AccessMaintain},
+	} {
+		check(store.UpsertAgent(ctx, ag))
+	}
+
+	discovery := agents.DiscoveryOptions{
+		Home:    home,
+		AppDirs: []string{appsDir},
+		Kinds:   []string{agents.HostCodex, agents.HostPi, agents.HostTraeX, agents.HostAntigravity, agents.HostTraeIDE, agents.HostClaudeCode},
+		LookPath: func(name string) (string, error) {
+			candidate := filepath.Join(binDir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+			return "", errors.New("not found")
+		},
+		Environ: func(string) string { return "" },
+		RuntimeOverrides: map[string]agents.HostOverride{
+			agents.HostCodex:       {Executable: codexBin, ProfileDir: filepath.Join(home, ".codex")},
+			agents.HostPi:          {Executable: piBin, ProfileDir: filepath.Join(home, ".pi", "agent")},
+			agents.HostTraeX:       {Executable: traexBin, ProfileDir: filepath.Join(home, ".trae")},
+			agents.HostAntigravity: {Executable: agyBin, ProfileDir: filepath.Join(home, ".gemini", "config")},
+			agents.HostClaudeCode:  {Executable: claudeBin, ProfileDir: filepath.Join(home, ".claude")},
+		},
+	}
+
+	eng := wireBridgeProbeEngine{}
+	server, err := gateway.NewServer(gateway.Config{
+		Store:            store,
+		Engine:           eng,
+		Models:           eng,
+		ManagementToken:  mgmtToken,
+		AgentTokens:      map[string]string{"agent-codex": codexTok},
+		DiscoveryOptions: discovery,
+	})
+	check(err)
+
+	// Seed a real succeeded capture for agent-codex through POST /ingest + InboxWorker.
+	ingestReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:61259/ingest", strings.NewReader(`{
+		"project_id":"proj-wire","session_id":"wire-sess-1","message_id":"wire-msg-1",
+		"kind":"capture_qa","content":{"question":"wire check","answer":"saved"}
+	}`))
+	check(err)
+	ingestReq.Header.Set("Content-Type", "application/json")
+	ingestReq.Header.Set("X-Api-Key", codexTok)
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	ingestRes, err := httpClient.Do(ingestReq)
+	check(err)
+	check(ingestRes.Body.Close())
+	if ingestRes.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /ingest = %d, want 202", ingestRes.StatusCode)
+	}
+	worked, err := server.Inbox().ProcessOnce(ctx)
+	check(err)
+	if !worked {
+		t.Fatal("expected InboxWorker.ProcessOnce to process queued item")
+	}
+
+	// Seed a saved capture_receipt for agent-trae to pair with its legacy hooks.json.
+	_, _, err = store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "wire-trae-key", UserID: "u-trae", DatasetID: "ds-wire", SessionID: "wire-trae-sess",
+		MessageID: "wire-trae-msg", PayloadSHA256: "wire-trae-sha", EntryType: "capture_qa",
+	})
+	check(err)
+	check(store.MarkCaptureReceiptSaved(ctx, "wire-trae-key", "wire-trae-entry"))
+
+	const gatewayURL = "http://127.0.0.1:61259"
+	control := settings.ProjectControlClient{
+		Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		HTTP:   httpClient,
+	}
+
+	// 1. GET /v1/generation -> real settings.GenerationDirectory decoding + agent_bridge save/validate parity.
+	var genBefore settings.GenerationDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation", nil, nil, &genBefore, 0))
+	if len(genBefore.DetectedProcessingCLIs) != 4 || len(genBefore.AgentDefaults) != 4 || len(genBefore.AgentBridges) != 4 {
+		t.Fatalf("GET /v1/generation missing detected CLIs/defaults/bridges: detected=%v defaults=%+v bridges=%+v",
+			genBefore.DetectedProcessingCLIs, genBefore.AgentDefaults, genBefore.AgentBridges)
+	}
+	wantCodexDef := settings.AgentModelDefaults{
+		Model: "gpt-5.4", Provider: "openai", Source: "agent_config", ReasoningEffort: "high", ServiceTier: "fast",
+	}
+	if genBefore.AgentDefaults["codex"] != wantCodexDef {
+		t.Fatalf("codex AgentDefaults = %+v, want %+v", genBefore.AgentDefaults["codex"], wantCodexDef)
+	}
+	if genBefore.AgentBridges["pi"].BridgeProvider != "deepseek" || genBefore.AgentBridges["codex"].BridgeProvider != "" {
+		t.Fatalf("unexpected AgentBridges providers: %+v", genBefore.AgentBridges)
+	}
+
+	// Save the exact AgentBridges["codex"] profile via PUT /v1/generation/profiles/agent-codex and validate it.
+	var saved struct{ Result settings.GenerationRef }
+	check(control.RequestWithHeaders(ctx, http.MethodPut, "/v1/generation/profiles/agent-codex", nil, map[string]any{
+		"profile": genBefore.AgentBridges["codex"], "expected_revision": genBefore.Revision, "operation_id": "wire-save-codex",
+	}, &saved, 0))
+	var valReceipt struct {
+		Status        string                       `json:"status"`
+		AgentDefaults *settings.AgentModelDefaults `json:"agent_defaults"`
+		Result        struct {
+			OperationID string `json:"operation_id"`
+		} `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodPost, "/v1/generation/validations", nil, map[string]any{
+		"profile": saved.Result, "expected_revision": genBefore.Revision, "operation_id": "wire-val-codex",
+	}, &valReceipt, 0))
+	if valReceipt.Status != "passed" || valReceipt.AgentDefaults == nil || *valReceipt.AgentDefaults != wantCodexDef {
+		t.Fatalf("POST /v1/generation/validations receipt mismatch: %+v", valReceipt)
+	}
+
+	var genAfter settings.GenerationDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation", nil, nil, &genAfter, 0))
+	rows := genAfter.Profiles["agent-codex"]
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 saved agent-codex profile row, got %+v", rows)
+	}
+	gotVal, ok := genAfter.Validations["wire-val-codex"]
+	if !ok || gotVal.Status != "passed" || !gotVal.Plain || !gotVal.Schema || !gotVal.Quality ||
+		gotVal.Digest != rows[0].Digest || gotVal.AgentDefaults == nil || *gotVal.AgentDefaults != genAfter.AgentDefaults["codex"] {
+		t.Fatalf("GET /v1/generation validation does not satisfy frontend validated(ref) contract: val=%+v defaults=%+v",
+			gotVal, genAfter.AgentDefaults["codex"])
+	}
+
+	// 2. GET /v1/connections -> real settings.ConnectionsDirectory decoding across all hook & capture states.
+	var conns settings.ConnectionsDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/connections", nil, nil, &conns, 0))
+	if conns.Revision != 4 {
+		t.Fatalf("connections revision = %d, want 4", conns.Revision)
+	}
+	connByID := map[string]settings.AgentConnection{}
+	for _, row := range conns.Connections {
+		connByID[row.ID] = row
+	}
+
+	codexConn := connByID["agent-codex"]
+	if codexConn.Status != "configured_pending_new_session" || !codexConn.Detected || !codexConn.AgentRegistered ||
+		codexConn.Profile != filepath.Join(home, ".codex") || codexConn.NewSessions != 1 || codexConn.NeedsHookRepair ||
+		!codexConn.EnvironmentVerified || codexConn.LastReceiptAt <= 0 ||
+		codexConn.Capture == nil || codexConn.Capture.State != "healthy" || codexConn.Capture.LastSavedAt <= 0 {
+		t.Fatalf("wire agent-codex connection mismatch: %+v", codexConn)
+	}
+
+	piConn := connByID["agent-pi"]
+	if piConn.Status != "configured_pending_new_session" || !piConn.Detected || !piConn.AgentRegistered ||
+		piConn.Profile != filepath.Join(home, ".pi", "agent") || piConn.NewSessions != 0 || piConn.EnvironmentVerified ||
+		piConn.Capture == nil || piConn.Capture.State != "waiting_session" {
+		t.Fatalf("wire agent-pi connection mismatch: %+v", piConn)
+	}
+
+	traexConn := connByID["agent-traex"]
+	if traexConn.Status != "registered" || !traexConn.Detected || !traexConn.AgentRegistered ||
+		traexConn.Profile != filepath.Join(home, ".trae") || traexConn.NewSessions != 0 ||
+		traexConn.EnvironmentVerified || traexConn.Capture != nil {
+		t.Fatalf("wire agent-traex (unhooked) connection mismatch: %+v", traexConn)
+	}
+
+	traeConn := connByID["agent-trae"]
+	if traeConn.Status != "configured_pending_new_session" || !traeConn.Detected || traeConn.HostVersion != "1.9.8" ||
+		traeConn.Profile != filepath.Join(home, ".trae-cn") || traeConn.NewSessions != 1 ||
+		!traeConn.NeedsHookRepair || !traeConn.EnvironmentVerified ||
+		traeConn.Capture == nil || traeConn.Capture.State != "healthy" || traeConn.Capture.LastSavedAt <= 0 {
+		t.Fatalf("wire agent-trae (legacy hook) connection mismatch: %+v", traeConn)
+	}
+
+	claudeConn := connByID["agent-claude"]
+	if claudeConn.Status != "registered" || !claudeConn.Detected ||
+		claudeConn.Profile != filepath.Join(home, ".claude") || claudeConn.Capture != nil {
+		t.Fatalf("wire agent-claude connection mismatch: %+v", claudeConn)
+	}
+}

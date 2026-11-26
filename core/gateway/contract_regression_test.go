@@ -740,7 +740,31 @@ func writeSyntheticExecutable(t *testing.T, path string) string {
 	return path
 }
 
+type contractBridgeModels struct{}
+
+func (contractBridgeModels) ModelStatus(context.Context) (engine.ModelStatusResult, error) {
+	return engine.ModelStatusResult{OK: true, Mode: "ready", ModelDigest: "bridge-live-digest", OutputLanguage: "zh-CN"}, nil
+}
+
+func (contractBridgeModels) ProbeModel(context.Context, engine.ProbeRequest) (engine.ProbeResult, error) {
+	return engine.ProbeResult{
+		Status:         "passed",
+		PlainPassed:    true,
+		SchemaPassed:   true,
+		QualityPassed:  true,
+		StructuredMode: "json_schema",
+	}, nil
+}
+
+func (contractBridgeModels) ApplyModel(_ context.Context, req engine.ApplyModelRequest) (engine.ApplyModelResult, error) {
+	return engine.ApplyModelResult{OK: true, Applied: true, OperationID: req.OperationID, ModelDigest: "bridge-live-digest"}, nil
+}
+
 func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
+	// Ensure inherited session env vars never trigger state_*.sqlite copies or override defaults.
+	t.Setenv("CODEX_THREAD_ID", "inherited-daemon-session-should-be-ignored")
+	t.Setenv("TRAE_THREAD_ID", "inherited-trae-session-should-be-ignored")
+
 	home := t.TempDir()
 	binDir := filepath.Join(home, "bin")
 	emptyApps := filepath.Join(home, "apps")
@@ -754,12 +778,13 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 	agyBin := writeSyntheticExecutable(t, filepath.Join(binDir, "agy"))
 
 	fixtures := map[string]string{
-		filepath.Join(home, ".codex", "auth.json"):                   `{"token":"synthetic-secret-codex-never-leak"}`,
-		filepath.Join(home, ".codex", "config.toml"):                 "model = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\nservice_tier = \"fast\"\n",
-		filepath.Join(home, ".pi", "agent", "auth.json"):             `{"token":"synthetic-secret-pi-never-leak"}`,
-		filepath.Join(home, ".pi", "agent", "settings.json"):         `{"defaultProvider":"deepseek","defaultModel":"deepseek-reasoner","defaultThinkingLevel":"medium"}`,
-		filepath.Join(home, ".trae", "cli", "auth.json"):             `{"token":"synthetic-secret-traex-never-leak"}`,
-		filepath.Join(home, ".trae", "traecli.toml"):                 "model = \"doubao-seed-code\"\n",
+		filepath.Join(home, ".codex", "auth.json"):                        `{"token":"synthetic-secret-codex-never-leak"}`,
+		filepath.Join(home, ".codex", "config.toml"):                      "model = \"gpt-5.4\"\nmodel_reasoning_effort = \"high\"\nservice_tier = \"fast\"\n",
+		filepath.Join(home, ".codex", "state_1.sqlite"):                   "not-a-valid-sqlite-file-if-read-this-fails",
+		filepath.Join(home, ".pi", "agent", "auth.json"):                  `{"token":"synthetic-secret-pi-never-leak"}`,
+		filepath.Join(home, ".pi", "agent", "settings.json"):              `{"defaultProvider":"deepseek","defaultModel":"deepseek-reasoner","defaultThinkingLevel":"medium"}`,
+		filepath.Join(home, ".trae", "cli", "auth.json"):                  `{"token":"synthetic-secret-traex-never-leak"}`,
+		filepath.Join(home, ".trae", "traecli.toml"):                      "model = \"doubao-seed-code\"\n",
 		filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"): `{"model":"gemini-2.5-pro"}`,
 	}
 	if err := os.MkdirAll(filepath.Join(home, ".gemini", "config"), 0o700); err != nil {
@@ -774,6 +799,8 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 		}
 	}
 
+	// Intentionally leave DiscoveryOptions.Environ == nil to prove detectGenerationBridges
+	// isolates session env vars even in default production configuration.
 	discovery := agents.DiscoveryOptions{
 		Home:    home,
 		AppDirs: []string{emptyApps},
@@ -785,7 +812,6 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 			}
 			return "", errors.New("not found")
 		},
-		Environ: func(string) string { return "" },
 		RuntimeOverrides: map[string]agents.HostOverride{
 			agents.HostCodex:       {Executable: codexBin, ProfileDir: filepath.Join(home, ".codex")},
 			agents.HostPi:          {Executable: piBin, ProfileDir: filepath.Join(home, ".pi", "agent")},
@@ -803,6 +829,7 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 	srv, err := gateway.NewServer(gateway.Config{
 		Store:            store,
 		Engine:           eng,
+		Models:           contractBridgeModels{},
 		Projector:        eng,
 		ManagementToken:  contractMgmtToken,
 		DiscoveryOptions: discovery,
@@ -871,7 +898,8 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 			t.Fatalf("unexpected pi agent_bridges: %+v", piBridge)
 		}
 
-		// Verify returned bridge profiles round-trip cleanly through PUT /api/generation/profiles/{id}.
+		// Verify returned bridge profiles round-trip cleanly through PUT /api/generation/profiles/{id},
+		// and POST /v1/generation/validations persists & returns agent_defaults on GET /api/generation.
 		if route == "/api/generation" {
 			for _, kind := range []string{"codex", "pi", "traex", "antigravity"} {
 				profileBytes, err := json.Marshal(bridgesMap[kind])
@@ -883,7 +911,37 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 					t.Fatalf("PUT bridge profile %s = %d: %+v (payload=%s)", kind, saveCode, saveResp, string(profileBytes))
 				}
 			}
+			valCode, valResp := doHTTPJSON(t, srv, http.MethodPost, "/v1/generation/validations",
+				`{"profile":{"id":"agent-codex","revision":1},"operation_id":"op-codex-val"}`, mgmtHeaders())
+			if valCode != http.StatusOK || valResp["status"] != "passed" {
+				t.Fatalf("POST /v1/generation/validations = %d %+v", valCode, valResp)
+			}
+			valDefaults, _ := valResp["agent_defaults"].(map[string]any)
+			if valDefaults["model"] != "gpt-5.4" || valDefaults["provider"] != "openai" || valDefaults["reasoning_effort"] != "high" {
+				t.Fatalf("POST validation missing agent_defaults: %+v", valResp)
+			}
+			getValCode, getValResp := doHTTPJSON(t, srv, http.MethodGet, "/v1/generation/validations/op-codex-val", "", mgmtHeaders())
+			if getValCode != http.StatusOK {
+				t.Fatalf("GET /v1/generation/validations/op-codex-val = %d %+v", getValCode, getValResp)
+			}
+			getValDefaults, _ := getValResp["agent_defaults"].(map[string]any)
+			if getValDefaults["model"] != "gpt-5.4" || getValDefaults["provider"] != "openai" || getValDefaults["service_tier"] != "fast" {
+				t.Fatalf("GET validation missing persisted agent_defaults: %+v", getValResp)
+			}
 		}
+	}
+
+	// Verify GET /api/generation exposes validations["op-codex-val"].agent_defaults matching top-level agent_defaults["codex"].
+	code, afterVal := doHTTPJSON(t, srv, http.MethodGet, "/api/generation", "", mgmtHeaders())
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/generation after validation = %d: %+v", code, afterVal)
+	}
+	validationsMap, _ := afterVal["validations"].(map[string]any)
+	codexVal, _ := validationsMap["op-codex-val"].(map[string]any)
+	codexValDef, _ := codexVal["agent_defaults"].(map[string]any)
+	if codexValDef["model"] != "gpt-5.4" || codexValDef["provider"] != "openai" ||
+		codexValDef["source"] != "agent_config" || codexValDef["reasoning_effort"] != "high" || codexValDef["service_tier"] != "fast" {
+		t.Fatalf("GET /api/generation validation agent_defaults mismatch: %+v", codexVal)
 	}
 
 	// Unauthenticated / unconfigured CLI must be skipped silently and return non-nil empty maps.
@@ -928,6 +986,7 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 
 	codexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "codex"))
 	piBin := writeSyntheticExecutable(t, filepath.Join(binDir, "pi"))
+	traexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "traecli"))
 	claudeBin := writeSyntheticExecutable(t, filepath.Join(binDir, "claude"))
 
 	// Create synthetic Trae CN.app bundle with Info.plist version and executable.
@@ -943,13 +1002,32 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 	}
 	for _, dir := range []string{
 		filepath.Join(home, ".codex"),
-		filepath.Join(home, ".pi", "agent"),
+		filepath.Join(home, ".pi", "agent", "extensions", "memlane-cognee"),
+		filepath.Join(home, ".trae"),
 		filepath.Join(home, ".trae-cn"),
 		filepath.Join(home, ".claude"),
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Install managed hooks for codex (healthy) and pi (waiting_session), legacy hooks for trae_ide (needs_hook_repair),
+	// and NO hooks for traex (must remain registered).
+	if err := os.WriteFile(filepath.Join(home, ".codex", "hooks.json"), []byte(`{
+		"hooks": {"Stop": [{"_memlane_managed": "memlane-hook", "hooks": [{"type": "command", "command": "/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k", "_memlane_managed": "memlane-hook"}]}]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".pi", "agent", "extensions", "memlane-cognee", "host-binding.json"),
+		[]byte(`{"managed_by":"memlane","gateway_url":"http://127.0.0.1:18174","token_file":"/tmp/k"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".trae-cn", "hooks.json"), []byte(`{
+		"version": 1,
+		"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 '/home/.trae/managed-marketplaces/trae_ide-0123456789abcdef01234567/0123456789abcdef0123/plugins/cognee/scripts/trae_ide_hook.py' UserPromptSubmit"}]}]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	eng := newContractMockEngine()
@@ -973,6 +1051,7 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 		{ID: "agent-codex", Kind: agents.HostCodex, Name: "Codex", PrincipalID: "u-codex", DefaultAccess: domain.AccessMaintain},
 		{ID: "agent-trae", Kind: agents.HostTraeIDE, Name: "TRAE CN", PrincipalID: "u-trae", DefaultAccess: domain.AccessMaintain},
 		{ID: "agent-pi", Kind: agents.HostPi, Name: "pi", PrincipalID: "u-pi", DefaultAccess: domain.AccessMaintain},
+		{ID: "agent-traex", Kind: agents.HostTraeX, Name: "TRAE CLI", PrincipalID: "u-traex", DefaultAccess: domain.AccessMaintain},
 		{ID: "agent-claude", Kind: agents.HostClaudeCode, Name: "Claude Code", PrincipalID: "u-claude", DefaultAccess: domain.AccessMaintain},
 	} {
 		if err := store.UpsertAgent(ctx, ag); err != nil {
@@ -990,7 +1069,7 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 		DiscoveryOptions: agents.DiscoveryOptions{
 			Home:    home,
 			AppDirs: []string{appsDir},
-			Kinds:   []string{agents.HostCodex, agents.HostTraeIDE, agents.HostPi, agents.HostClaudeCode, agents.HostCursor},
+			Kinds:   []string{agents.HostCodex, agents.HostTraeIDE, agents.HostPi, agents.HostTraeX, agents.HostClaudeCode, agents.HostCursor},
 			LookPath: func(name string) (string, error) {
 				candidate := filepath.Join(binDir, name)
 				if _, err := os.Stat(candidate); err == nil {
@@ -1002,6 +1081,7 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 			RuntimeOverrides: map[string]agents.HostOverride{
 				agents.HostCodex:      {Executable: codexBin, ProfileDir: filepath.Join(home, ".codex")},
 				agents.HostPi:         {Executable: piBin, ProfileDir: filepath.Join(home, ".pi", "agent")},
+				agents.HostTraeX:      {Executable: traexBin, ProfileDir: filepath.Join(home, ".trae")},
 				agents.HostClaudeCode: {Executable: claudeBin, ProfileDir: filepath.Join(home, ".claude")},
 			},
 		},
@@ -1058,34 +1138,44 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 		byID[row["instance_id"].(string)] = row
 	}
 
-	// agent-codex: healthy with capture stats and profile.
+	// agent-codex: managed hook + capture receipt -> healthy & environment_verified.
 	codexRow := byID["agent-codex"]
 	codexCap, _ := codexRow["capture"].(map[string]any)
 	if codexRow["status"] != "configured_pending_new_session" || codexRow["detected"] != true ||
 		codexRow["agent_registered"] != true || codexRow["profile"] != filepath.Join(home, ".codex") ||
 		codexRow["new_sessions"] != float64(1) || codexRow["needs_hook_repair"] != false ||
+		codexRow["environment_verified"] != true || codexRow["plugin_version"] != "memlane-hook" ||
 		codexCap == nil || codexCap["state"] != "healthy" || codexCap["saved_count"] != float64(1) ||
 		codexCap["last_saved_at"].(float64) <= 0 {
 		t.Fatalf("unexpected agent-codex connection row: %+v", codexRow)
 	}
 
-	// agent-trae: healthy with Info.plist host_version and profile.
+	// agent-trae: legacy trae_ide_hook.py + saved receipt -> healthy, environment_verified, needs_hook_repair=true.
 	traeRow := byID["agent-trae"]
 	traeCap, _ := traeRow["capture"].(map[string]any)
 	if traeRow["status"] != "configured_pending_new_session" || traeRow["detected"] != true ||
 		traeRow["host_version"] != "1.9.8" || traeRow["profile"] != filepath.Join(home, ".trae-cn") ||
-		traeRow["new_sessions"] != float64(1) || traeCap == nil || traeCap["state"] != "healthy" ||
+		traeRow["new_sessions"] != float64(1) || traeRow["needs_hook_repair"] != true ||
+		traeRow["environment_verified"] != true || traeCap == nil || traeCap["state"] != "healthy" ||
 		traeCap["last_saved_at"].(float64) <= 0 {
 		t.Fatalf("unexpected agent-trae connection row: %+v", traeRow)
 	}
 
-	// agent-pi: registered & detected, no saved receipts -> waiting_session.
+	// agent-pi: managed host-binding.json, no saved receipts -> waiting_session.
 	piRow := byID["agent-pi"]
 	piCap, _ := piRow["capture"].(map[string]any)
 	if piRow["status"] != "configured_pending_new_session" || piRow["detected"] != true ||
 		piRow["profile"] != filepath.Join(home, ".pi", "agent") || piRow["new_sessions"] != float64(0) ||
-		piCap == nil || piCap["state"] != "waiting_session" {
+		piRow["environment_verified"] != nil || piCap == nil || piCap["state"] != "waiting_session" {
 		t.Fatalf("unexpected agent-pi connection row: %+v", piRow)
+	}
+
+	// agent-traex: registered & detected, but NO managed hook and NO capture receipts -> stays registered.
+	traexRow := byID["agent-traex"]
+	if traexRow["status"] != "registered" || traexRow["detected"] != true ||
+		traexRow["profile"] != filepath.Join(home, ".trae") || traexRow["capture"] != nil ||
+		traexRow["needs_hook_repair"] != false {
+		t.Fatalf("unexpected agent-traex connection row: %+v", traexRow)
 	}
 
 	// agent-claude: registered & detected, non-capture-managed kind -> stays registered with profile.
