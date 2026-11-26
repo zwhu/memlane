@@ -315,3 +315,35 @@ func newCaptureTestRequest() *http.Request {
 	req.Header.Set("Content-Type", "application/json")
 	return req
 }
+
+func TestInboxWorkerUsesOwnerScopeDespiteAgentPrincipalID(t *testing.T) {
+	s, store, eng := testServer(t, nil)
+	ctx := context.Background()
+	agent, err := store.GetAgent(ctx, "agent")
+	must(t, err)
+	agent.PrincipalID = "11111111-1111-4111-8111-111111111111"
+	must(t, store.UpsertAgent(ctx, agent))
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	recorder := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recorder, newCaptureTestRequest())
+	if recorder.Code != 202 {
+		t.Fatalf("ingest status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected inbox worker to process queued item")
+	}
+	if len(eng.ingest) != 1 || len(eng.extract) != 1 {
+		t.Fatalf("expected 1 ingest + 1 extract call, got %d / %d", len(eng.ingest), len(eng.extract))
+	}
+	if eng.ingest[0].Scope.UserID != "" || eng.extract[0].Scope.UserID != "" {
+		t.Fatalf("expected empty owner scope UserID for engine writes, got ingest=%q extract=%q",
+			eng.ingest[0].Scope.UserID, eng.extract[0].Scope.UserID)
+	}
+	if eng.ingest[0].Scope.DatasetID != "ds" || eng.extract[0].Scope.DatasetID != "ds" {
+		t.Fatalf("unexpected dataset scope: ingest=%q extract=%q",
+			eng.ingest[0].Scope.DatasetID, eng.extract[0].Scope.DatasetID)
+	}
+}

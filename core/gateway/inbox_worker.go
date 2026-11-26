@@ -155,7 +155,9 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 	if len(payload.Content) == 0 || string(payload.Content) == "null" {
 		return errors.New("inbox content missing")
 	}
-	scope := engine.Scope{DatasetID: item.DatasetID, UserID: payload.UserID}
+	// Gateway already enforced project ACL before enqueueing; run stateless engine
+	// writes under the owner scope so newly created datasets auto-provision cleanly.
+	scope := engine.Scope{DatasetID: item.DatasetID}
 	key := payload.IdempotencyKey
 	if key == "" {
 		key = item.CaptureKey

@@ -36,9 +36,9 @@
 
 ### App 记录与日志的可读性和时间（含 TRAE CLI 补丁过滤提示）
 
-- [ ] 梳理 App 中展示的记录、状态提示和日志：用清楚的中文说明发生了什么、为何进入当前状态及下一步操作；技术错误码与操作 ID 保留在诊断详情中。
-- [ ] 核对各类日志是否记录并展示事件发生时间；缺失时间字段在事件产生时补记，历史缺失显示「时间未知」（如项目管理页不能仅显示「自动采集已暂停」而不知暂停时间与触发原因）。
-- [ ] **2026-11-25 item-fe 的 TRAE CLI 补丁记录过滤**：在 App 的「因采集规则未采集」提示中直接展示具体原因（如「TRAE CLI 补丁正文在命令路径检查中命中 `*.key` 规则，记录保留在本机」，同时说明规则命中本身不足以确认补丁包含密钥）。说明：2026-11-25 复查两条 `apply_patch` 记录均按 shell 命令扫描误判普通 `.key` 属性，两条摘要均已取得日常库回执、原补丁留存本机受限文件；通用摘要回退因模拟写入被拒时会覆盖原队列而暂缓，补丁结构化采集与过滤规则调整待后续排期。
+- [x] 梳理 App 中展示的记录、状态提示和日志（`8f94d3d`）：用清楚的中文说明发生了什么、为何进入当前状态及下一步操作；技术错误码与操作 ID 保留在可展开的诊断详情中。
+- [x] 核对各类日志是否记录并展示事件发生时间（`8f94d3d`）：SQLite v2→v3 增量补齐 `auto_capture_reason`/`auto_capture_actor`/`last_error_at`/`capture_filter_events`，历史缺失统一显示「时间未知」。
+- [x] **2026-11-25 item-fe 的 TRAE CLI 补丁记录过滤**（`8f94d3d`）：`core/hooks/capture_filter.go` 改为结构化解析 `apply_patch` / unified diff 文件头（含 hunk 行追踪），普通代码中的 `.key` 不再误判，真实敏感路径与密钥值仍拦截且零原文泄露；App「因采集规则未采集」提示直接展示具体规则命中原因与说明。
 
 ### 新项目记忆冷启动交互效果优化（2026-11-21）
 
@@ -57,7 +57,7 @@
 - [ ] **首次安装依赖瘦身**：按 [安装依赖瘦身调研](../research/install-dependency-slimming-20261125.md) 推进零侵入分级瘦身，压缩首次安装下载量与运行库解压体积。
 - [ ] **首屏性能深度演进**：按 [首屏 20× 性能调研](../research/native-first-screen-performance-20261122.md) 继续优化冷启动与大库列表渲染路径。
 - [x] **工程测试提速（Phase P1）与 UTM 热复用**：按 [多 Agent 耗时复盘](../engineering/agent-workflow-efficiency-retrospective-20261125.md) 重构 Go/Python Top 慢测、落地全局 LPT 调度与同版本 UTM 隔离热环境复用（`f6e82f5`、`418d06e`、`ef7bc08`、`c033a5b`）。
-- [ ] **架构治理、旧回退清理与定时 Loop 架构巡检（2026-11-25）**：见 [架构守护、Python 扩张冻结与定时架构巡检规划](../engineering/architecture-governance-and-py-freeze.md)——在已落地的 `diff_guard.py`（`DG001–DG005`，含非 Cognee Python 新增冻结）基础上，单开切片清掉 `internal/simpledesktop/` 残留的 7 处 `overviewDocuments` / `overviewSessions` 旧回退并同步移除 `ML019`，并设计定时 Loop 巡检架构漂移、Python 存量瘦身与僵尸 lint 规则。
+- [ ] **定时 Loop 架构巡检（2026-11-25）**：见 [架构守护、Python 扩张冻结与定时架构巡检规划](../engineering/architecture-governance-and-py-freeze.md)——`diff_guard.py`（`DG001–DG006`）、`arch_guard_test.go`、`ML023` 与原 `internal/simpledesktop/` 旧回退及 `ML019` 清理已在 Wave 0–4 全部落地，后续按需设计定时 Loop 巡检架构漂移与僵尸 lint 规则。
 
 ---
 
