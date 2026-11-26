@@ -226,8 +226,8 @@ func TestProjectorCacheUserScopeAndExpiration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 3 || got[first] != (SessionCacheInfo{"user one", 2, 1}) ||
-		got[second] != (SessionCacheInfo{"user two", 1, 1}) || got[missing] != (SessionCacheInfo{}) {
+	if len(got) != 3 || got[first] != (SessionCacheInfo{Label: "user one", MsgCount: 2, ToolCalls: 1}) ||
+		got[second] != (SessionCacheInfo{Label: "user two", MsgCount: 1, ToolCalls: 1}) || got[missing] != (SessionCacheInfo{}) {
 		t.Fatalf("cache hydrated = %+v", got)
 	}
 }

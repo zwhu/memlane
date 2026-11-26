@@ -170,6 +170,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/raw-records", s.rawRecords)
 	both("GET", "/projects/{id}/raw-records", s.rawRecords)
 	both("GET", "/projects/{id}/raw-records/sessions/{sid}/children", s.rawRecords)
+	both("GET", "/raw-records/session-history", s.rawSessionHistory)
 	both("GET", "/datasets/{ds}/sessions/{sid}", s.session)
 	mux.HandleFunc("GET /api/common", s.commonList)
 	mux.HandleFunc("GET /v1/common/knowledge", s.commonList)

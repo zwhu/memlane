@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/zwhu/memlane/core/domain"
@@ -88,4 +89,58 @@ func AsModelController(e MemoryEngine) (ModelController, bool) {
 func AsCatalogProjector(e MemoryEngine) (CatalogProjector, bool) {
 	projector, ok := e.(CatalogProjector)
 	return projector, ok
+}
+
+type SessionRef struct {
+	UserID    string
+	SessionID string
+}
+
+type SessionCacheInfo struct {
+	Label     string
+	MsgCount  int
+	ToolCalls int
+}
+
+type SessionQA struct {
+	ID                string `json:"qa_id"`
+	Question          string `json:"question"`
+	Answer            string `json:"answer"`
+	QuestionTruncated bool   `json:"question_truncated"`
+	AnswerTruncated   bool   `json:"answer_truncated"`
+}
+
+type SessionTrace struct {
+	ID     string          `json:"trace_id"`
+	Name   string          `json:"origin_function"`
+	Status string          `json:"status"`
+	Params json.RawMessage `json:"method_params"`
+	Result json.RawMessage `json:"method_return_value"`
+	Error  string          `json:"error_message"`
+}
+
+type SessionHistoryRequest struct {
+	UserID      string
+	SessionID   string
+	QAOffset    int
+	TraceOffset int
+	Limit       int
+}
+
+type SessionHistoryResult struct {
+	Label     string
+	MsgCount  int
+	ToolCalls int
+	QAs       []SessionQA
+	Traces    []SessionTrace
+}
+
+type SessionHistoryReader interface {
+	HydrateSessionsFromCache(ctx context.Context, refs []SessionRef) (map[SessionRef]SessionCacheInfo, error)
+	ReadSessionHistory(ctx context.Context, req SessionHistoryRequest) (SessionHistoryResult, error)
+}
+
+func AsSessionHistoryReader(e MemoryEngine) (SessionHistoryReader, bool) {
+	reader, ok := e.(SessionHistoryReader)
+	return reader, ok
 }

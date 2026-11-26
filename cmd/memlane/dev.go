@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zwhu/memlane"
 	"github.com/zwhu/memlane/core/hooks"
 	"github.com/zwhu/memlane/kit/daemon"
 )
@@ -217,6 +218,8 @@ const devAppInfoPlist = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>Memlane</string>
 	<key>CFBundleExecutable</key>
 	<string>Memlane</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.memlane.desktop.dev</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -280,6 +283,9 @@ func stageDevExecutable(storeRoot, sourcePath string) (string, error) {
 		if err := ensureDevBundleFile(filepath.Join(contentsDir, "Info.plist"), []byte(devAppInfoPlist)); err != nil {
 			return "", err
 		}
+		if err := ensureDevAppIcon(contentsDir); err != nil {
+			return "", err
+		}
 		target = filepath.Join(macOSDir, "Memlane")
 	} else if err := os.MkdirAll(baseDir, 0o700); err != nil {
 		return "", err
@@ -326,12 +332,77 @@ func stageDevExecutable(storeRoot, sourcePath string) (string, error) {
 }
 
 func ensureDevBundleFile(path string, content []byte) error {
-	if _, err := os.Stat(path); err == nil {
+	if existing, err := os.ReadFile(path); err == nil && string(existing) == string(content) {
 		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return os.WriteFile(path, content, 0o600)
+}
+
+func ensureDevAppIcon(contentsDir string) error {
+	if runtime.GOOS != "darwin" || len(memlane.AppIconPNG) == 0 {
+		return nil
+	}
+	resourcesDir := filepath.Join(contentsDir, "Resources")
+	if err := os.MkdirAll(resourcesDir, 0o700); err != nil {
+		return err
+	}
+	icnsPath := filepath.Join(resourcesDir, "AppIcon.icns")
+	stampPath := filepath.Join(resourcesDir, ".AppIcon.sha256")
+	sum := sha256.Sum256(memlane.AppIconPNG)
+	wantStamp := hex.EncodeToString(sum[:])
+	if _, err := os.Stat(icnsPath); err == nil {
+		if got, readErr := os.ReadFile(stampPath); readErr == nil && strings.TrimSpace(string(got)) == wantStamp {
+			return nil
+		}
+	}
+	tmpDir, err := os.MkdirTemp(resourcesDir, ".iconset-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	srcPNG := filepath.Join(tmpDir, "source.png")
+	if err := os.WriteFile(srcPNG, memlane.AppIconPNG, 0o600); err != nil {
+		return err
+	}
+	iconsetDir := filepath.Join(tmpDir, "AppIcon.iconset")
+	if err := os.MkdirAll(iconsetDir, 0o700); err != nil {
+		return err
+	}
+	specs := []struct {
+		name string
+		size string
+	}{
+		{"icon_16x16.png", "16"},
+		{"icon_16x16@2x.png", "32"},
+		{"icon_32x32.png", "32"},
+		{"icon_32x32@2x.png", "64"},
+		{"icon_128x128.png", "128"},
+		{"icon_128x128@2x.png", "256"},
+		{"icon_256x256.png", "256"},
+		{"icon_256x256@2x.png", "512"},
+		{"icon_512x512.png", "512"},
+		{"icon_512x512@2x.png", "1024"},
+	}
+	for _, spec := range specs {
+		if out, err := exec.Command("sips", "-z", spec.size, spec.size, srcPNG, "--out", filepath.Join(iconsetDir, spec.name)).CombinedOutput(); err != nil {
+			return fmt.Errorf("sips %s: %w (%s)", spec.name, err, strings.TrimSpace(string(out)))
+		}
+	}
+	builtICNS := filepath.Join(tmpDir, "AppIcon.icns")
+	if out, err := exec.Command("iconutil", "-c", "icns", iconsetDir, "-o", builtICNS).CombinedOutput(); err != nil {
+		return fmt.Errorf("iconutil: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Rename(builtICNS, icnsPath); err != nil {
+		return err
+	}
+	if err := os.WriteFile(stampPath, []byte(wantStamp+"\n"), 0o600); err != nil {
+		return err
+	}
+	now := time.Now()
+	_ = os.Chtimes(filepath.Dir(contentsDir), now, now)
+	return nil
 }
 
 func fileSHA256(path string) (string, error) {

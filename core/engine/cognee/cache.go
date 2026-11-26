@@ -3,22 +3,20 @@ package cognee
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/core/engine"
 )
 
-type SessionKey struct {
-	UserID, SessionID string
-}
+type SessionKey = engine.SessionRef
 
-type SessionRef = SessionKey
+type SessionRef = engine.SessionRef
 
-type SessionCacheInfo struct {
-	Label               string
-	MsgCount, ToolCalls int
-}
+type SessionCacheInfo = engine.SessionCacheInfo
 
 func (p *Projector) HydrateSessionsFromCache(ctx context.Context, refs []SessionRef) (map[SessionKey]SessionCacheInfo, error) {
 	grouped := map[string][]string{}
@@ -116,4 +114,126 @@ func hydrateTraces(ctx context.Context, tx *sql.Tx, user, where string, args []a
 		result[key] = info
 	}
 	return rows.Err()
+}
+
+const maxSessionTextRunes = 32000
+
+func (p *Projector) ReadSessionHistory(ctx context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	out := engine.SessionHistoryResult{
+		QAs:    []engine.SessionQA{},
+		Traces: []engine.SessionTrace{},
+	}
+	if strings.TrimSpace(req.SessionID) == "" {
+		return out, nil
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	now := time.Now().UTC().Format("2006-01-02 15:04:05.000000")
+	return readSQLiteSnapshot(ctx, p.database("cache.db"), func(tx *sql.Tx) (engine.SessionHistoryResult, error) {
+		var whereParts []string
+		var baseArgs []any
+		if variants := idVariants(req.UserID); len(variants) > 0 {
+			whereParts = append(whereParts, "user_id IN ("+placeholders(len(variants))+")")
+			for _, v := range variants {
+				baseArgs = append(baseArgs, v)
+			}
+		}
+		whereParts = append(whereParts, "session_id=?")
+		baseArgs = append(baseArgs, req.SessionID)
+		whereParts = append(whereParts, "(expires_at IS NULL OR REPLACE(substr(expires_at,1,26),'T',' ')>?)")
+		baseArgs = append(baseArgs, now)
+		where := " WHERE " + strings.Join(whereParts, " AND ")
+
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cache_qa_entries"+where, baseArgs...).Scan(&out.MsgCount); err != nil {
+			return out, err
+		}
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM cache_trace_entries"+where, baseArgs...).Scan(&out.ToolCalls); err != nil {
+			return out, err
+		}
+
+		var firstPayload string
+		if err := tx.QueryRowContext(ctx, "SELECT payload FROM cache_qa_entries"+where+" ORDER BY seq LIMIT 1", baseArgs...).Scan(&firstPayload); err == nil {
+			label := strings.TrimSpace(metadataText(parseJSONDict(firstPayload), "question"))
+			runes := []rune(label)
+			out.Label = string(runes[:min(120, len(runes))])
+		} else if err != sql.ErrNoRows {
+			return out, err
+		}
+
+		qaArgs := append(slices.Clone(baseArgs), limit, max(0, req.QAOffset))
+		qaRows, err := tx.QueryContext(ctx, "SELECT COALESCE(qa_id,''), payload FROM cache_qa_entries"+where+" ORDER BY seq LIMIT ? OFFSET ?", qaArgs...)
+		if err != nil {
+			return out, err
+		}
+		defer qaRows.Close()
+		for qaRows.Next() {
+			var qaID, payload string
+			if err := qaRows.Scan(&qaID, &payload); err != nil {
+				return out, err
+			}
+			dict := parseJSONDict(payload)
+			q, qTrunc := truncateRunes(metadataText(dict, "question"), maxSessionTextRunes)
+			a, aTrunc := truncateRunes(metadataText(dict, "answer"), maxSessionTextRunes)
+			if qaID == "" {
+				qaID = metadataText(dict, "qa_id")
+			}
+			out.QAs = append(out.QAs, engine.SessionQA{
+				ID:                qaID,
+				Question:          q,
+				Answer:            a,
+				QuestionTruncated: qTrunc,
+				AnswerTruncated:   aTrunc,
+			})
+		}
+		if err := qaRows.Err(); err != nil {
+			return out, err
+		}
+
+		traceArgs := append(slices.Clone(baseArgs), limit, max(0, req.TraceOffset))
+		traceRows, err := tx.QueryContext(ctx, "SELECT payload FROM cache_trace_entries"+where+" ORDER BY seq LIMIT ? OFFSET ?", traceArgs...)
+		if err != nil {
+			return out, err
+		}
+		defer traceRows.Close()
+		for traceRows.Next() {
+			var payload string
+			if err := traceRows.Scan(&payload); err != nil {
+				return out, err
+			}
+			out.Traces = append(out.Traces, parseSessionTrace(payload))
+		}
+		return out, traceRows.Err()
+	})
+}
+
+func truncateRunes(text string, limit int) (string, bool) {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text, false
+	}
+	return string(runes[:limit]), true
+}
+
+func parseSessionTrace(payload string) engine.SessionTrace {
+	var raw struct {
+		ID     string          `json:"trace_id"`
+		Name   string          `json:"origin_function"`
+		Status string          `json:"status"`
+		Params json.RawMessage `json:"method_params"`
+		Result json.RawMessage `json:"method_return_value"`
+		Error  string          `json:"error_message"`
+	}
+	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
+		return engine.SessionTrace{}
+	}
+	return engine.SessionTrace{
+		ID:     raw.ID,
+		Name:   raw.Name,
+		Status: raw.Status,
+		Params: raw.Params,
+		Result: raw.Result,
+		Error:  raw.Error,
+	}
 }

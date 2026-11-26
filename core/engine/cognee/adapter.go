@@ -35,9 +35,10 @@ type Adapter struct {
 }
 
 var (
-	_ engine.MemoryEngine     = (*Adapter)(nil)
-	_ engine.ModelController  = (*Adapter)(nil)
-	_ engine.CatalogProjector = (*Adapter)(nil)
+	_ engine.MemoryEngine         = (*Adapter)(nil)
+	_ engine.ModelController      = (*Adapter)(nil)
+	_ engine.CatalogProjector     = (*Adapter)(nil)
+	_ engine.SessionHistoryReader = (*Adapter)(nil)
 )
 
 func init() {
@@ -262,6 +263,14 @@ func (a *Adapter) SyncCatalog(ctx context.Context, store *domain.Store) (*engine
 func (a *Adapter) ReadLocalBody(ctx context.Context, ref engine.LocalBodyRef) (string, error) {
 	result, err := a.bodyReader.ReadBody(ctx, ref)
 	return result.Body, err
+}
+
+func (a *Adapter) HydrateSessionsFromCache(ctx context.Context, refs []engine.SessionRef) (map[engine.SessionRef]engine.SessionCacheInfo, error) {
+	return a.projector.HydrateSessionsFromCache(ctx, refs)
+}
+
+func (a *Adapter) ReadSessionHistory(ctx context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	return a.projector.ReadSessionHistory(ctx, req)
 }
 
 func qaWithContextDate(req engine.IngestRequest, now time.Time, loc *time.Location) (engine.IngestRequest, error) {

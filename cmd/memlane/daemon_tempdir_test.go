@@ -72,6 +72,9 @@ func TestResolveDetachedExecutableStagesEphemeralBinary(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(storeRoot, "cache", "dev-bin", "Memlane.app", "Contents", "Info.plist")); err != nil {
 			t.Fatalf("expected Info.plist in staged dev bundle: %v", err)
 		}
+		if _, err := os.Stat(filepath.Join(storeRoot, "cache", "dev-bin", "Memlane.app", "Contents", "Resources", "AppIcon.icns")); err != nil {
+			t.Fatalf("expected AppIcon.icns in staged dev bundle: %v", err)
+		}
 	}
 
 	// Re-resolving identical payload reuses staged binary cleanly.

@@ -3,12 +3,16 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
+	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zwhu/memlane/core/domain"
+	"github.com/zwhu/memlane/core/engine"
 )
 
 type rawItem struct {
@@ -22,6 +26,8 @@ type rawItem struct {
 	AgentID         string `json:"agent_id,omitempty"`
 	Title           string `json:"title"`
 	Label           string `json:"label,omitempty"`
+	MsgCount        int    `json:"msg_count"`
+	ToolCalls       int    `json:"tool_calls"`
 	IsSubagent      bool   `json:"is_subagent,omitempty"`
 	DocName         string `json:"doc_name,omitempty"`
 	DocLabel        string `json:"doc_label,omitempty"`
@@ -57,10 +63,58 @@ func scanRaw(row rowScanner) (pageRow[rawItem], error) {
 		&i.Title, &i.DocName, &i.DocLabel, &i.Status, &i.StartedAt, &i.LastActivityAt, &i.ParentSessionID, &i.RootSessionID,
 		&i.SubagentRole, &i.NestingDepth, &i.IsTopLevel, &i.ChildCount, &i.EffectiveDate, &i.CreatedAt, &i.UpdatedAt,
 		&k.first, &k.second, &k.dataset, &k.id)
-	i.Label = i.Title
+	if i.Kind != "session" {
+		i.Label = i.Title
+	}
 	i.ChildrenHasMore = i.ChildCount > 0
 	i.IsSubagent = i.Kind == "session" && !i.IsTopLevel
 	return pageRow[rawItem]{i, k}, err
+}
+
+func (s *Server) sessionHistoryReader() engine.SessionHistoryReader {
+	if reader, ok := engine.AsSessionHistoryReader(s.cfg.Engine); ok {
+		return reader
+	}
+	if reader, ok := s.cfg.Projector.(engine.SessionHistoryReader); ok {
+		return reader
+	}
+	return nil
+}
+
+func (s *Server) hydrateRawSessions(ctx context.Context, items []rawItem) (attempted bool, ready bool) {
+	reader := s.sessionHistoryReader()
+	if reader == nil {
+		return false, false
+	}
+	refs := make([]engine.SessionRef, 0, len(items))
+	for _, item := range items {
+		if item.Kind == "session" && item.UserID != "" && item.SessionID != "" {
+			refs = append(refs, engine.SessionRef{UserID: item.UserID, SessionID: item.SessionID})
+		}
+	}
+	if len(refs) == 0 {
+		return false, false
+	}
+	hydrated, err := reader.HydrateSessionsFromCache(ctx, refs)
+	if err != nil {
+		return true, false
+	}
+	for i := range items {
+		if items[i].Kind != "session" {
+			continue
+		}
+		info, ok := hydrated[engine.SessionRef{UserID: items[i].UserID, SessionID: items[i].SessionID}]
+		if !ok {
+			continue
+		}
+		items[i].MsgCount = info.MsgCount
+		items[i].ToolCalls = info.ToolCalls
+		if label := strings.TrimSpace(info.Label); label != "" {
+			items[i].Label = label
+			items[i].Title = label
+		}
+	}
+	return true, true
 }
 
 func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +199,7 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	hydratedAttempted, hydratedReady := s.hydrateRawSessions(ctx, out.Items)
 	if !strings.HasPrefix(r.URL.Path, "/v1/") {
 		writeJSON(w, 200, out)
 		return
@@ -167,11 +222,13 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		Document map[string]any `json:"document,omitempty"`
 	}
 	entries := make([]desktopEntry, 0, len(out.Items))
-	for _, item := range out.Items {
+	for i := range out.Items {
+		item := out.Items[i]
 		entry := desktopEntry{rawItem: item, ItemKind: item.Kind}
 		timestamp := item.LastActivityAt
 		if item.Kind == "session" {
-			entry.Session = &item
+			sessionCopy := item
+			entry.Session = &sessionCopy
 		} else {
 			timestamp = item.UpdatedAt
 			if timestamp == "" {
@@ -185,8 +242,8 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 		}
 		entries = append(entries, entry)
 	}
-	var ready bool
-	if dataset != "" {
+	ready := hydratedReady
+	if !hydratedAttempted && dataset != "" {
 		if err := s.cfg.Store.DB().QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM catalog_sync_state WHERE dataset_id=?)", dataset).Scan(&ready); err != nil {
 			writeDomainError(w, err)
 			return
@@ -194,6 +251,128 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"project_id": project, "dataset_id": dataset, "kind": kind, "cache_ready": ready,
 		"items": entries, "next_cursor": out.NextCursor, "has_more": out.HasMore})
+}
+
+func parseNonNegativeInt(raw string) (int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, domain.ErrInvalidArgument
+	}
+	return n, nil
+}
+
+func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ds := strings.TrimSpace(q.Get("dataset_id"))
+	sid := strings.TrimSpace(q.Get("session_id"))
+	user := strings.TrimSpace(q.Get("user_id"))
+	if ds == "" || sid == "" {
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return
+	}
+	qaOffset, err := parseNonNegativeInt(q.Get("qa_offset"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	traceOffset, err := parseNonNegativeInt(q.Get("trace_offset"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	limit := parseLimit(q.Get("limit"), 20, 50)
+	ctx := r.Context()
+	if err := s.managedDataset(ctx, ds); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	query := rawSessions + " CROSS JOIN (SELECT '' AS project_id) WHERE x.dataset_id=? AND x.session_id=?"
+	args := []any{ds, sid}
+	if user != "" {
+		query += " AND x.user_id=?"
+		args = append(args, user)
+	}
+	row, err := scanRaw(s.cfg.Store.DB().QueryRowContext(ctx, query+" ORDER BY x.user_id LIMIT 1", args...))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	sess := row.item
+	history := engine.SessionHistoryResult{
+		QAs:    []engine.SessionQA{},
+		Traces: []engine.SessionTrace{},
+	}
+	reader := s.sessionHistoryReader()
+	if reader != nil {
+		readResult, readErr := reader.ReadSessionHistory(ctx, engine.SessionHistoryRequest{
+			UserID:      sess.UserID,
+			SessionID:   sess.SessionID,
+			QAOffset:    qaOffset,
+			TraceOffset: traceOffset,
+			Limit:       limit,
+		})
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			writeEngineError(w, readErr)
+			return
+		}
+		if readErr == nil {
+			history = readResult
+		}
+	}
+
+	var parentLabel string
+	if reader != nil && sess.ParentSessionID != "" && sess.UserID != "" {
+		if parentInfo, err := reader.HydrateSessionsFromCache(ctx, []engine.SessionRef{{UserID: sess.UserID, SessionID: sess.ParentSessionID}}); err == nil {
+			parentLabel = strings.TrimSpace(parentInfo[engine.SessionRef{UserID: sess.UserID, SessionID: sess.ParentSessionID}].Label)
+		}
+	}
+
+	var subagents []rawItem
+	if sess.ChildCount > 0 {
+		childQuery := rawSessions + " CROSS JOIN (SELECT '' AS project_id) WHERE x.dataset_id=? AND x.parent_session_id=?"
+		childArgs := []any{ds, sid}
+		if sess.UserID != "" {
+			childQuery += " AND x.user_id=?"
+			childArgs = append(childArgs, sess.UserID)
+		}
+		if rows, err := readRows(ctx, s.cfg.Store.DB(), childQuery+" ORDER BY k1,k3,k4 LIMIT 50", childArgs, scanRaw); err == nil {
+			subagents = make([]rawItem, 0, len(rows))
+			for _, child := range rows {
+				subagents = append(subagents, child.item)
+			}
+			s.hydrateRawSessions(ctx, subagents)
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"session_id":        sess.SessionID,
+		"dataset_id":        sess.DatasetID,
+		"user_id":           sess.UserID,
+		"agent_id":          sess.AgentID,
+		"status":            sess.Status,
+		"started_at":        sess.StartedAt,
+		"last_activity_at":  sess.LastActivityAt,
+		"is_subagent":       sess.IsSubagent,
+		"parent_session_id": sess.ParentSessionID,
+		"subagent_role":     sess.SubagentRole,
+		"nesting_depth":     sess.NestingDepth,
+		"label":             history.Label,
+		"qas":               history.QAs,
+		"traces":            history.Traces,
+		"msg_count":         history.MsgCount,
+		"tool_calls":        history.ToolCalls,
+		"history_paging":    true,
+		"qa_offset":         qaOffset,
+		"trace_offset":      traceOffset,
+		"page_limit":        limit,
+		"qa_more":           qaOffset+len(history.QAs) < history.MsgCount,
+		"trace_more":        traceOffset+len(history.Traces) < history.ToolCalls,
+		"parent_label":      parentLabel,
+		"subagents":         subagents,
+	})
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +393,9 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, 200, item.item)
+	items := []rawItem{item.item}
+	s.hydrateRawSessions(ctx, items)
+	writeJSON(w, 200, items[0])
 }
 
 func rawSessionSearch(ctx context.Context, db sqlRead, scope string, args []any, limit int) ([]rawItem, error) {

@@ -12,3 +12,8 @@ var RuntimeAssets embed.FS
 //
 //go:embed engine/coding-memory-components.json engines/cognee/[^t]*.py engines/cognee/t[^e]*.py
 var GoEngineAssets embed.FS
+
+// AppIconPNG supplies the macOS application icon for staged dev app bundles.
+//
+//go:embed assets/branding/memlane-icon.png
+var AppIconPNG []byte
