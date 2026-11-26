@@ -499,3 +499,173 @@ func TestInboxSkipsDefaultExtractForCaptureTrace(t *testing.T) {
 		}
 	}
 }
+
+type mintingIngestEngine struct {
+	*fakeEngine
+	mu          sync.Mutex
+	ingestCalls int
+}
+
+func (m *mintingIngestEngine) Ingest(_ context.Context, in engine.IngestRequest) (engine.IngestResult, error) {
+	m.mu.Lock()
+	m.ingestCalls++
+	seq := m.ingestCalls
+	m.mu.Unlock()
+	m.fakeEngine.mu.Lock()
+	defer m.fakeEngine.mu.Unlock()
+	m.fakeEngine.calls = append(m.fakeEngine.calls, "ingest")
+	m.fakeEngine.ingest = append(m.fakeEngine.ingest, in)
+	if m.fakeEngine.ingestErr != nil {
+		return engine.IngestResult{}, m.fakeEngine.ingestErr
+	}
+	entryID := fmt.Sprintf("minted-entry-%d", seq)
+	docID := ""
+	if in.Kind == engine.IngestKindDocument {
+		docID = entryID
+	}
+	return engine.IngestResult{OK: true, EntryID: entryID, DocumentID: docID}, nil
+}
+
+func TestInboxRetrySkipsIngestWhenReceiptAlreadySaved(t *testing.T) {
+	var eng *mintingIngestEngine
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &mintingIngestEngine{fakeEngine: cfg.Engine.(*fakeEngine)}
+		cfg.Engine = eng
+	})
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// Attempt 1: Ingest succeeds (saving receipt with minted-entry-1), then Extract times out.
+	fake.extractErr = &engine.EngineError{
+		Code:    "extract_timeout",
+		Message: "engine request timed out",
+		Err:     errors.Join(engine.ErrUnavailable, context.DeadlineExceeded),
+	}
+	out := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"sess-retry","message_id":"m-retry",
+		"kind":"capture_qa","content":{"question":"q","answer":"a"}
+	}`, http.StatusAccepted)
+	inboxID := out["inbox_id"].(string)
+	captureKey := out["capture_key"].(string)
+
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected attempt 1 to claim inbox item")
+	}
+	if eng.ingestCalls != 1 || len(fake.extract) != 1 {
+		t.Fatalf("attempt 1 calls: ingest=%d extract=%d", eng.ingestCalls, len(fake.extract))
+	}
+	receipt, err := store.GetCaptureReceipt(ctx, captureKey)
+	must(t, err)
+	if receipt.Status != "saved" || receipt.EntryID != "minted-entry-1" {
+		t.Fatalf("unexpected saved receipt after attempt 1: %+v", receipt)
+	}
+	summary, err := s.Inbox().Summary(ctx, "p")
+	must(t, err)
+	if summary.Failed != 1 || len(summary.RecentFailures) != 1 {
+		t.Fatalf("expected 1 failed inbox item in summary: %+v", summary)
+	}
+	failure := summary.RecentFailures[0]
+	if failure.ErrorCode != "extract_timeout" || strings.Contains(failure.Summary, "暂时无法连接") ||
+		!strings.Contains(failure.Summary, "超时") || !strings.Contains(failure.NextAction, "一键重试") {
+		t.Fatalf("unexpected timeout failure classification: %+v", failure)
+	}
+
+	// Attempt 2 after RetryFailed: must skip Ingest (avoiding receipt conflict) and extract using session ID.
+	fake.extractErr = nil
+	fake.calls = nil
+	retried, err := s.Inbox().RetryFailed(ctx, "p")
+	must(t, err)
+	if len(retried) != 1 || retried[0] != inboxID {
+		t.Fatalf("RetryFailed = %v, want [%s]", retried, inboxID)
+	}
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected attempt 2 to claim retried inbox item")
+	}
+	if eng.ingestCalls != 1 {
+		t.Fatalf("retry called Ingest again: ingestCalls=%d, want 1", eng.ingestCalls)
+	}
+	if fmt.Sprint(fake.calls) != "[extract sync]" || len(fake.extract) != 2 {
+		t.Fatalf("attempt 2 calls = %v, extracts = %+v", fake.calls, fake.extract)
+	}
+	if !slices.Equal(fake.extract[1].DocIDs, []string{"sess-retry"}) {
+		t.Fatalf("attempt 2 extract DocIDs = %v, want [sess-retry]", fake.extract[1].DocIDs)
+	}
+	item, err := store.GetInboxItem(ctx, inboxID)
+	must(t, err)
+	if item.Status != "succeeded" || item.Attempts != 2 || item.LastError != "" {
+		t.Fatalf("unexpected item state after retry: %+v", item)
+	}
+	receiptAfter, err := store.GetCaptureReceipt(ctx, captureKey)
+	must(t, err)
+	if receiptAfter.Status != "saved" || receiptAfter.EntryID != "minted-entry-1" {
+		t.Fatalf("receipt changed on retry: %+v", receiptAfter)
+	}
+}
+
+func TestInboxRetrySavedCaptureTraceSkipsIngestAndExtract(t *testing.T) {
+	var eng *mintingIngestEngine
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &mintingIngestEngine{fakeEngine: cfg.Engine.(*fakeEngine)}
+		cfg.Engine = eng
+	})
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// Attempt 1: capture_trace ingests + saves receipt, skips Extract, then fails in SyncCatalog.
+	fake.syncErr = errors.New("temporary catalog sync error")
+	out := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"sess-trace","message_id":"m-trace",
+		"kind":"capture_trace","content":{"origin_function":"Read"}
+	}`, http.StatusAccepted)
+	inboxID := out["inbox_id"].(string)
+
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || eng.ingestCalls != 1 || len(fake.extract) != 0 {
+		t.Fatalf("attempt 1 trace: worked=%v ingest=%d extract=%d", worked, eng.ingestCalls, len(fake.extract))
+	}
+
+	// Attempt 2: skips both Ingest and Extract, runs SyncCatalog, and succeeds.
+	fake.syncErr = nil
+	fake.calls = nil
+	retried, err := s.Inbox().RetryFailed(ctx, "p")
+	must(t, err)
+	if len(retried) != 1 || retried[0] != inboxID {
+		t.Fatalf("RetryFailed = %v, want [%s]", retried, inboxID)
+	}
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected retried trace item to be claimed")
+	}
+	if eng.ingestCalls != 1 || len(fake.extract) != 0 || fmt.Sprint(fake.calls) != "[sync]" {
+		t.Fatalf("retried trace should skip Ingest and Extract: ingest=%d extract=%d calls=%v", eng.ingestCalls, len(fake.extract), fake.calls)
+	}
+	item, err := store.GetInboxItem(ctx, inboxID)
+	must(t, err)
+	if item.Status != "succeeded" || item.Attempts != 2 || item.LastError != "" {
+		t.Fatalf("retried trace item = %+v", item)
+	}
+}
+
+func TestDescribeInboxFailureExtractTimeout(t *testing.T) {
+	for _, raw := range []string{
+		"extract inbox: extract_timeout: engine request timed out",
+		"engine request timed out",
+		"context deadline exceeded",
+	} {
+		code, summary, nextAction := describeInboxFailure(raw)
+		if code != "extract_timeout" || strings.Contains(summary, "暂时无法连接") ||
+			!strings.Contains(summary, "超时") || !strings.Contains(nextAction, "一键重试") {
+			t.Errorf("describeInboxFailure(%q) = (%q, %q, %q), want extract_timeout", raw, code, summary, nextAction)
+		}
+	}
+	code, summary, _ := describeInboxFailure("dial tcp: connection refused")
+	if code != "engine_unavailable" || summary != "提炼服务暂时无法连接" {
+		t.Errorf("connection refused = (%q, %q), want engine_unavailable", code, summary)
+	}
+}

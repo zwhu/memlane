@@ -496,3 +496,102 @@ func TestAdapterTransportLimits(t *testing.T) {
 		}
 	})
 }
+
+type staticTimeoutNetError struct{}
+
+func (staticTimeoutNetError) Error() string   { return "i/o timeout" }
+func (staticTimeoutNetError) Timeout() bool   { return true }
+func (staticTimeoutNetError) Temporary() bool { return true }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
+func TestNewClientDefaultExtractTimeout(t *testing.T) {
+	cfg := testConfig(t, "http://127.0.0.1:1")
+	a, err := New(cfg)
+	requireNoError(t, err)
+	if a.client.extractHTTP.Timeout != 30*time.Minute {
+		t.Fatalf("default extractHTTP.Timeout = %v, want 30m", a.client.extractHTTP.Timeout)
+	}
+	if a.client.http.Timeout != 10*time.Second {
+		t.Fatalf("default http.Timeout = %v, want 10s", a.client.http.Timeout)
+	}
+
+	customCfg := cfg
+	customCfg.ExtractTimeout = 45 * time.Second
+	custom, err := New(customCfg)
+	requireNoError(t, err)
+	if custom.client.extractHTTP.Timeout != 45*time.Second {
+		t.Fatalf("custom extractHTTP.Timeout = %v, want 45s", custom.client.extractHTTP.Timeout)
+	}
+}
+
+func TestAdapterTimeoutClassification(t *testing.T) {
+	t.Run("extract HTTP timeout", func(t *testing.T) {
+		a, _ := openTestAdapter(t, func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		})
+		a.client.extractHTTP.Timeout = 40 * time.Millisecond
+		_, err := a.Extract(context.Background(), engine.ExtractRequest{})
+		var typed *engine.EngineError
+		if !errors.As(err, &typed) || typed.Code != extractTimeoutCode ||
+			!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, engine.ErrUnavailable) {
+			t.Fatalf("Extract timeout error = %#v (%v), want %s wrapping DeadlineExceeded & ErrUnavailable", err, err, extractTimeoutCode)
+		}
+		if strings.Contains(err.Error(), "contact engine runner") {
+			t.Fatalf("Extract timeout error leaked misleading unavailable copy: %v", err)
+		}
+	})
+
+	t.Run("extract context deadline", func(t *testing.T) {
+		a, _ := openTestAdapter(t, func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+		defer cancel()
+		_, err := a.Extract(ctx, engine.ExtractRequest{})
+		var typed *engine.EngineError
+		if !errors.As(err, &typed) || typed.Code != extractTimeoutCode ||
+			!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, engine.ErrUnavailable) {
+			t.Fatalf("Extract deadline error = %#v (%v), want %s", err, err, extractTimeoutCode)
+		}
+	})
+
+	t.Run("health timeout", func(t *testing.T) {
+		a, _ := openTestAdapter(t, func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+		})
+		a.client.http.Timeout = 40 * time.Millisecond
+		_, err := a.Health(context.Background())
+		var typed *engine.EngineError
+		if !errors.As(err, &typed) || typed.Code != engineTimeoutCode ||
+			!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, engine.ErrUnavailable) {
+			t.Fatalf("Health timeout error = %#v (%v), want %s", err, err, engineTimeoutCode)
+		}
+	})
+
+	t.Run("net.Error timeout", func(t *testing.T) {
+		cfg := testConfig(t, "http://127.0.0.1:1")
+		a, err := New(cfg)
+		requireNoError(t, err)
+		a.client.extractHTTP.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, staticTimeoutNetError{}
+		})
+		_, err = a.Extract(context.Background(), engine.ExtractRequest{})
+		var typed *engine.EngineError
+		if !errors.As(err, &typed) || typed.Code != extractTimeoutCode ||
+			!errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, engine.ErrUnavailable) {
+			t.Fatalf("net.Error timeout = %#v (%v), want %s wrapping DeadlineExceeded & ErrUnavailable", err, err, extractTimeoutCode)
+		}
+	})
+}

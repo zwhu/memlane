@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,10 +20,14 @@ import (
 
 const (
 	apiPrefix               = "/internal/v1"
+	defaultHTTPTimeout      = 10 * time.Second
+	defaultExtractTimeout   = 30 * time.Minute
 	maxRunnerResponseBytes  = 2 << 20
 	maxRunnerErrorBytes     = 4096
 	maxInternalTokenBytes   = 4096
 	modelDigestMismatchCode = "model_digest_mismatch"
+	extractTimeoutCode      = "extract_timeout"
+	engineTimeoutCode       = "engine_timeout"
 )
 
 type client struct {
@@ -43,11 +48,11 @@ func newClient(cfg Config) (*client, error) {
 
 	timeout := cfg.HTTPTimeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultHTTPTimeout
 	}
 	extractTimeout := cfg.ExtractTimeout
 	if extractTimeout <= 0 {
-		extractTimeout = 10 * time.Minute
+		extractTimeout = defaultExtractTimeout
 	}
 	return &client{
 		origin: origin, tokenFile: cfg.TokenFile,
@@ -126,6 +131,9 @@ func (c *client) request(ctx context.Context, method, path string, query url.Val
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		if isTimeoutError(err) {
+			return runnerTimeout(path, err)
+		}
 		return runnerUnavailable("contact engine runner", err)
 	}
 	defer resp.Body.Close()
@@ -138,6 +146,9 @@ func (c *client) request(ctx context.Context, method, path string, query url.Val
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRunnerResponseBytes+1))
 	if err != nil {
+		if isTimeoutError(err) {
+			return runnerTimeout(path, err)
+		}
 		return runnerUnavailable("read engine response", err)
 	}
 	if len(data) > maxRunnerResponseBytes {
@@ -147,6 +158,26 @@ func (c *client) request(ctx context.Context, method, path string, query url.Val
 		return runnerUnavailable("decode engine response", err)
 	}
 	return nil
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func runnerTimeout(path string, err error) error {
+	code := engineTimeoutCode
+	if path == "/extract" {
+		code = extractTimeoutCode
+	}
+	cause := errors.Join(engine.ErrUnavailable, err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		cause = errors.Join(engine.ErrUnavailable, context.DeadlineExceeded, err)
+	}
+	return &engine.EngineError{Code: code, Message: "engine request timed out", Err: cause}
 }
 
 func runnerUnavailable(message string, err error) error {

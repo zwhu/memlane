@@ -165,37 +165,57 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 	if key == "" {
 		key = item.ID
 	}
-	result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
-		IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
-	if err != nil {
-		return fmt.Errorf("ingest inbox: %w", err)
-	}
-	if !result.OK || result.DocumentID == "" && result.EntryID == "" {
-		return errors.New("engine did not accept inbox item")
-	}
-	docID := result.DocumentID
-	if docID == "" {
-		docID = result.EntryID
-	}
-	if item.CaptureKey != "" {
-		entry := result.EntryID
-		if entry == "" {
-			entry = docID
-		}
-		if err := w.cfg.Store.MarkCaptureReceiptSaved(ctx, item.CaptureKey, entry); err != nil {
-			return err
-		}
-	}
 	mode := payload.ExtractMode
 	if mode == "" {
 		mode = engine.ExtractModeDefault
+	}
+	var docID string
+	var ingestDocID string
+	alreadySaved := false
+	if item.CaptureKey != "" {
+		receipt, err := w.cfg.Store.GetCaptureReceipt(ctx, item.CaptureKey)
+		if err == nil && receipt.Status == "saved" && receipt.EntryID != "" {
+			alreadySaved = true
+			if mode == engine.ExtractModeDefault && item.SessionID != "" &&
+				(item.Kind == string(engine.IngestKindCaptureQA) || item.Kind == string(engine.IngestKindCaptureTrace)) {
+				docID = item.SessionID
+			} else {
+				docID = receipt.EntryID
+			}
+		} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("lookup capture receipt: %w", err)
+		}
+	}
+	if !alreadySaved {
+		result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
+			IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
+		if err != nil {
+			return fmt.Errorf("ingest inbox: %w", err)
+		}
+		if !result.OK || result.DocumentID == "" && result.EntryID == "" {
+			return errors.New("engine did not accept inbox item")
+		}
+		ingestDocID = result.DocumentID
+		docID = result.DocumentID
+		if docID == "" {
+			docID = result.EntryID
+		}
+		if item.CaptureKey != "" {
+			entry := result.EntryID
+			if entry == "" {
+				entry = docID
+			}
+			if err := w.cfg.Store.MarkCaptureReceiptSaved(ctx, item.CaptureKey, entry); err != nil {
+				return err
+			}
+		}
 	}
 	if !(item.Kind == string(engine.IngestKindCaptureTrace) && mode == engine.ExtractModeDefault) {
 		model, err := w.expectedDigest(ctx)
 		if err != nil {
 			return err
 		}
-		if mode == engine.ExtractModeDefault && result.DocumentID == "" && item.SessionID != "" &&
+		if !alreadySaved && mode == engine.ExtractModeDefault && ingestDocID == "" && item.SessionID != "" &&
 			item.Kind == string(engine.IngestKindCaptureQA) {
 			docID = item.SessionID
 		}
