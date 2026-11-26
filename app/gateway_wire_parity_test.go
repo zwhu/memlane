@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -298,225 +296,54 @@ func TestGatewayWireParity(t *testing.T) {
 	}
 }
 
-var (
-	wireReUserRequestBlock        = regexp.MustCompile(`(?is)<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>`)
-	wireReAdditionalMetadataBlock = regexp.MustCompile(`(?is)<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>`)
-	wireReUserRequestTag          = regexp.MustCompile(`(?i)</?USER_REQUEST>`)
-)
-
-func wireCleanCacheLabel(raw string) string {
-	text := strings.TrimSpace(raw)
-	if text == "" {
-		return ""
-	}
-	if m := wireReUserRequestBlock.FindStringSubmatch(text); len(m) == 2 {
-		text = m[1]
-	}
-	text = wireReAdditionalMetadataBlock.ReplaceAllString(text, "")
-	text = wireReUserRequestTag.ReplaceAllString(text, "")
-	return strings.TrimSpace(text)
-}
-
-type wireCacheSessionRecord struct {
-	DatasetID      string
-	UserID         string
-	AgentID        string
-	SessionID      string
-	Status         string
-	StartedAt      string
-	LastActivityAt string
-}
-
-// wireSessionEngine wires real SQLite cache_qa_entries / cache_trace_entries and
-// store.ListSessionRelations into gateway.Server through the engine-agnostic
-// CatalogProjector + SessionHistoryReader interfaces (without importing core/engine/cognee).
+// wireSessionEngine is a pure engine-agnostic wire stub supplying pre-cleaned
+// session labels and history fixtures so this test focuses strictly on
+// core/gateway JSON wire -> app/api & app/settings decoding -> MyGo ui.NewTester
+// rendering parity. Real Cognee label cleaning (cleanSessionLabel), cache
+// hydration (HydrateSessionsFromCache), and relation projection
+// (SyncCatalog / applySessionRelations) are covered in
+// core/engine/cognee/contract_test.go (arch_guard_test.go forbids importing
+// core/engine/cognee from app/).
 type wireSessionEngine struct {
 	wireEngine
-	cacheDB  *sql.DB
-	sessions []wireCacheSessionRecord
+	histories map[engine.SessionRef]engine.SessionHistoryResult
 }
 
-var (
-	_ engine.CatalogProjector     = (*wireSessionEngine)(nil)
-	_ engine.SessionHistoryReader = (*wireSessionEngine)(nil)
-)
+var _ engine.SessionHistoryReader = (*wireSessionEngine)(nil)
 
-func (e *wireSessionEngine) ReadLocalBody(context.Context, engine.LocalBodyRef) (string, error) {
-	return "", engine.ErrNotFound
-}
-
-func (e *wireSessionEngine) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
-	byDataset := map[string][]wireCacheSessionRecord{}
-	for _, s := range e.sessions {
-		byDataset[s.DatasetID] = append(byDataset[s.DatasetID], s)
-	}
-	projected := 0
-	for ds, list := range byDataset {
-		rels, err := store.ListSessionRelations(ctx, ds)
-		if err != nil {
-			return nil, err
-		}
-		relBySID := make(map[string]domain.SessionRelation, len(rels))
-		for _, r := range rels {
-			relBySID[r.SessionID] = r
-		}
-		present := make(map[string]bool, len(list))
-		for _, s := range list {
-			present[s.SessionID] = true
-		}
-		childCounts := map[string]int{}
-		for _, s := range list {
-			if rel, ok := relBySID[s.SessionID]; ok && rel.ParentSessionID != "" && present[rel.ParentSessionID] {
-				childCounts[rel.ParentSessionID]++
-			}
-		}
-		for _, s := range list {
-			var sortDescKey int64
-			if parsedTS, err := time.Parse(time.RFC3339Nano, s.LastActivityAt); err == nil {
-				sortDescKey = -parsedTS.UnixNano()
-			}
-			row := domain.CatalogSession{
-				DatasetID:      s.DatasetID,
-				UserID:         s.UserID,
-				AgentID:        s.AgentID,
-				SessionID:      s.SessionID,
-				Status:         s.Status,
-				StartedAt:      s.StartedAt,
-				LastActivityAt: s.LastActivityAt,
-				SortTSDescKey:  sortDescKey,
-				IsTopLevel:     true,
-				ChildCount:     childCounts[s.SessionID],
-			}
-			if rel, ok := relBySID[s.SessionID]; ok && rel.ParentSessionID != "" {
-				row.ParentSessionID = rel.ParentSessionID
-				row.RootSessionID = rel.ParentSessionID
-				row.SubagentRole = rel.SubagentRole
-				row.NestingDepth = 1
-				if present[rel.ParentSessionID] {
-					row.IsTopLevel = false
-				}
-			}
-			if err := store.UpsertCatalogSession(ctx, row); err != nil {
-				return nil, err
-			}
-			projected++
-		}
-		if err := store.UpsertCatalogSyncState(ctx, domain.CatalogSyncState{DatasetID: ds, CatalogVersion: "wire-sync-1"}); err != nil {
-			return nil, err
-		}
-	}
-	return &engine.SyncStats{Datasets: len(byDataset), SessionsProjected: projected}, nil
-}
-
-func (e *wireSessionEngine) HydrateSessionsFromCache(ctx context.Context, refs []engine.SessionRef) (map[engine.SessionRef]engine.SessionCacheInfo, error) {
+func (e *wireSessionEngine) HydrateSessionsFromCache(_ context.Context, refs []engine.SessionRef) (map[engine.SessionRef]engine.SessionCacheInfo, error) {
 	out := make(map[engine.SessionRef]engine.SessionCacheInfo, len(refs))
 	for _, ref := range refs {
-		var info engine.SessionCacheInfo
-		rows, err := e.cacheDB.QueryContext(ctx,
-			`SELECT payload FROM cache_qa_entries WHERE user_id=? AND session_id=? ORDER BY seq`,
-			ref.UserID, ref.SessionID)
-		if err != nil {
-			return nil, err
+		h := e.histories[ref]
+		out[ref] = engine.SessionCacheInfo{
+			Label:     h.Label,
+			MsgCount:  len(h.QAs),
+			ToolCalls: len(h.Traces),
 		}
-		for rows.Next() {
-			var payload string
-			if err := rows.Scan(&payload); err != nil {
-				_ = rows.Close()
-				return nil, err
-			}
-			info.MsgCount++
-			if info.Label == "" {
-				var parsed map[string]any
-				if err := json.Unmarshal([]byte(payload), &parsed); err == nil {
-					if q, ok := parsed["question"].(string); ok {
-						info.Label = wireCleanCacheLabel(q)
-					}
-				}
-			}
-		}
-		if err := rows.Close(); err != nil {
-			return nil, err
-		}
-		if err := e.cacheDB.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM cache_trace_entries WHERE user_id=? AND session_id=?`,
-			ref.UserID, ref.SessionID).Scan(&info.ToolCalls); err != nil {
-			return nil, err
-		}
-		out[ref] = info
 	}
 	return out, nil
 }
 
-func (e *wireSessionEngine) ReadSessionHistory(ctx context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+func (e *wireSessionEngine) ReadSessionHistory(_ context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
 	}
+	h := e.histories[engine.SessionRef{UserID: req.UserID, SessionID: req.SessionID}]
 	res := engine.SessionHistoryResult{
-		QAs:    []engine.SessionQA{},
-		Traces: []engine.SessionTrace{},
+		Label:     h.Label,
+		MsgCount:  len(h.QAs),
+		ToolCalls: len(h.Traces),
+		QAs:       []engine.SessionQA{},
+		Traces:    []engine.SessionTrace{},
 	}
-	qaRows, err := e.cacheDB.QueryContext(ctx,
-		`SELECT qa_id, payload FROM cache_qa_entries WHERE user_id=? AND session_id=? ORDER BY seq`,
-		req.UserID, req.SessionID)
-	if err != nil {
-		return res, err
+	if req.QAOffset < len(h.QAs) {
+		end := min(len(h.QAs), req.QAOffset+limit)
+		res.QAs = append(res.QAs, h.QAs[req.QAOffset:end]...)
 	}
-	var allQAs []engine.SessionQA
-	for qaRows.Next() {
-		var id, payload string
-		if err := qaRows.Scan(&id, &payload); err != nil {
-			_ = qaRows.Close()
-			return res, err
-		}
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-			_ = qaRows.Close()
-			return res, err
-		}
-		q, _ := parsed["question"].(string)
-		a, _ := parsed["answer"].(string)
-		if res.Label == "" {
-			res.Label = wireCleanCacheLabel(q)
-		}
-		allQAs = append(allQAs, engine.SessionQA{ID: id, Question: q, Answer: a})
-	}
-	if err := qaRows.Close(); err != nil {
-		return res, err
-	}
-	res.MsgCount = len(allQAs)
-	if req.QAOffset < len(allQAs) {
-		end := min(len(allQAs), req.QAOffset+limit)
-		res.QAs = append(res.QAs, allQAs[req.QAOffset:end]...)
-	}
-
-	traceRows, err := e.cacheDB.QueryContext(ctx,
-		`SELECT payload FROM cache_trace_entries WHERE user_id=? AND session_id=? ORDER BY seq`,
-		req.UserID, req.SessionID)
-	if err != nil {
-		return res, err
-	}
-	var allTraces []engine.SessionTrace
-	for traceRows.Next() {
-		var payload string
-		if err := traceRows.Scan(&payload); err != nil {
-			_ = traceRows.Close()
-			return res, err
-		}
-		var trace engine.SessionTrace
-		if err := json.Unmarshal([]byte(payload), &trace); err != nil {
-			_ = traceRows.Close()
-			return res, err
-		}
-		allTraces = append(allTraces, trace)
-	}
-	if err := traceRows.Close(); err != nil {
-		return res, err
-	}
-	res.ToolCalls = len(allTraces)
-	if req.TraceOffset < len(allTraces) {
-		end := min(len(allTraces), req.TraceOffset+limit)
-		res.Traces = append(res.Traces, allTraces[req.TraceOffset:end]...)
+	if req.TraceOffset < len(h.Traces) {
+		end := min(len(h.Traces), req.TraceOffset+limit)
+		res.Traces = append(res.Traces, h.Traces[req.TraceOffset:end]...)
 	}
 	return res, nil
 }
@@ -534,10 +361,6 @@ func TestGatewayWireParityRawRecordsSubagentsAndLabelCleanup(t *testing.T) {
 	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
 	check(err)
 	t.Cleanup(func() { check(store.Close()) })
-
-	cacheDB, err := domain.OpenPrivateSQLite(filepath.Join(dir, "cache.db"))
-	check(err)
-	t.Cleanup(func() { check(cacheDB.Close()) })
 
 	const (
 		token     = "wire-parity-subagent-management-token"
@@ -560,74 +383,73 @@ func TestGatewayWireParityRawRecordsSubagentsAndLabelCleanup(t *testing.T) {
 		ID: "antigravity-1", Kind: "antigravity", Name: "Antigravity", DefaultAccess: domain.AccessMaintain,
 	}))
 
-	// Persist real parent/child and orphan subagent relations in SQLite.
-	for _, rel := range []domain.SessionRelation{
-		{DatasetID: datasetID, SessionID: verifSID, ParentSessionID: parentSID, SubagentRole: "verifier"},
-		{DatasetID: datasetID, SessionID: monSID, ParentSessionID: parentSID, SubagentRole: "monitor"},
-		{DatasetID: datasetID, SessionID: orphanSID, ParentSessionID: "missing-parent-999", SubagentRole: "explorer"},
-	} {
-		check(store.UpsertSessionRelation(ctx, rel))
-	}
-
-	// Seed real SQLite cache_qa_entries and cache_trace_entries with Antigravity XML tags.
-	_, err = cacheDB.ExecContext(ctx, `
-		CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, qa_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
-		CREATE TABLE cache_trace_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
-	`)
-	check(err)
-
-	parentPayload, err := json.Marshal(map[string]any{
-		"question": "<USER_REQUEST>\n/swarm 修复问题\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nworkspace: /tmp/memlane\n</ADDITIONAL_METADATA>",
-		"answer":   "已完成修复并验证通过",
-	})
-	check(err)
-	_, err = cacheDB.ExecContext(ctx,
-		`INSERT INTO cache_qa_entries VALUES (1, ?, ?, 'qa-parent-1', ?, '2026-11-26', '2099-01-01 00:00:00')`,
-		userID, parentSID, string(parentPayload))
-	check(err)
-
-	seq := 1
-	insertTraces := func(sid string, tools []string) {
-		t.Helper()
-		for i, tool := range tools {
-			body, err := json.Marshal(map[string]any{
-				"trace_id":            fmt.Sprintf("%s-t%d", sid, i+1),
-				"origin_function":     tool,
-				"status":              "success",
-				"method_params":       map[string]any{"step": i + 1},
-				"method_return_value": "ok",
-			})
-			check(err)
-			_, err = cacheDB.ExecContext(ctx,
-				`INSERT INTO cache_trace_entries VALUES (?, ?, ?, ?, '2026-11-26', '2099-01-01 00:00:00')`,
-				seq, userID, sid, string(body))
-			check(err)
-			seq++
-		}
-	}
-	insertTraces(verifSID, []string{"Read", "Grep", "Bash", "Edit", "Bash"})
-	insertTraces(monSID, []string{"Read", "Bash", "Bash"})
-	insertTraces(orphanSID, []string{"Glob"})
-
+	// Seed projected catalog_sessions directly in SQLite (parent + 2 linked Swarm
+	// workers + 1 orphan subagent); real SyncCatalog/applySessionRelations
+	// projection from session_relations is tested in core/engine/cognee/contract_test.go.
 	baseTime := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
-	eng := &wireSessionEngine{
-		cacheDB: cacheDB,
-		sessions: []wireCacheSessionRecord{
-			{DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: parentSID, Status: "active",
-				StartedAt: domain.FormatUTCNS(baseTime), LastActivityAt: domain.FormatUTCNS(baseTime.Add(4 * time.Minute))},
-			{DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: verifSID, Status: "active",
-				StartedAt: domain.FormatUTCNS(baseTime.Add(time.Minute)), LastActivityAt: domain.FormatUTCNS(baseTime.Add(3 * time.Minute))},
-			{DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: monSID, Status: "active",
-				StartedAt: domain.FormatUTCNS(baseTime.Add(2 * time.Minute)), LastActivityAt: domain.FormatUTCNS(baseTime.Add(2 * time.Minute))},
-			{DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: orphanSID, Status: "active",
-				StartedAt: domain.FormatUTCNS(baseTime), LastActivityAt: domain.FormatUTCNS(baseTime.Add(time.Minute))},
+	for _, row := range []domain.CatalogSession{
+		{
+			DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: parentSID, Status: "active",
+			StartedAt: domain.FormatUTCNS(baseTime), LastActivityAt: domain.FormatUTCNS(baseTime.Add(4 * time.Minute)),
+			SortTSDescKey: -baseTime.Add(4 * time.Minute).UnixNano(), IsTopLevel: true, ChildCount: 2,
 		},
+		{
+			DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: verifSID, Status: "active",
+			StartedAt: domain.FormatUTCNS(baseTime.Add(time.Minute)), LastActivityAt: domain.FormatUTCNS(baseTime.Add(3 * time.Minute)),
+			SortTSDescKey: -baseTime.Add(3 * time.Minute).UnixNano(),
+			ParentSessionID: parentSID, RootSessionID: parentSID, SubagentRole: "verifier", NestingDepth: 1, IsTopLevel: false,
+		},
+		{
+			DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: monSID, Status: "active",
+			StartedAt: domain.FormatUTCNS(baseTime.Add(2 * time.Minute)), LastActivityAt: domain.FormatUTCNS(baseTime.Add(2 * time.Minute)),
+			SortTSDescKey: -baseTime.Add(2 * time.Minute).UnixNano(),
+			ParentSessionID: parentSID, RootSessionID: parentSID, SubagentRole: "monitor", NestingDepth: 1, IsTopLevel: false,
+		},
+		{
+			DatasetID: datasetID, UserID: userID, AgentID: "antigravity-1", SessionID: orphanSID, Status: "active",
+			StartedAt: domain.FormatUTCNS(baseTime), LastActivityAt: domain.FormatUTCNS(baseTime.Add(time.Minute)),
+			SortTSDescKey: -baseTime.Add(time.Minute).UnixNano(),
+			ParentSessionID: "missing-parent-999", RootSessionID: "missing-parent-999", SubagentRole: "explorer", NestingDepth: 1, IsTopLevel: true,
+		},
+	} {
+		check(store.UpsertCatalogSession(ctx, row))
+	}
+	check(store.UpsertCatalogSyncState(ctx, domain.CatalogSyncState{DatasetID: datasetID, CatalogVersion: "wire-sync-1"}))
+
+	makeTraces := func(sid string, tools []string) []engine.SessionTrace {
+		out := make([]engine.SessionTrace, 0, len(tools))
+		for i, tool := range tools {
+			out = append(out, engine.SessionTrace{
+				ID:     fmt.Sprintf("%s-t%d", sid, i+1),
+				Name:   tool,
+				Status: "success",
+				Params: json.RawMessage(fmt.Sprintf(`{"step":%d}`, i+1)),
+				Result: json.RawMessage(`"ok"`),
+			})
+		}
+		return out
 	}
 
-	stats, err := eng.SyncCatalog(ctx, store)
-	check(err)
-	if stats.SessionsProjected != 4 {
-		t.Fatalf("SyncCatalog projected %d sessions, want 4", stats.SessionsProjected)
+	eng := &wireSessionEngine{
+		histories: map[engine.SessionRef]engine.SessionHistoryResult{
+			{UserID: userID, SessionID: parentSID}: {
+				Label: "/swarm 修复问题",
+				QAs: []engine.SessionQA{{
+					ID:       "qa-parent-1",
+					Question: "/swarm 修复问题",
+					Answer:   "已完成修复并验证通过",
+				}},
+			},
+			{UserID: userID, SessionID: verifSID}: {
+				Traces: makeTraces(verifSID, []string{"Read", "Grep", "Bash", "Edit", "Bash"}),
+			},
+			{UserID: userID, SessionID: monSID}: {
+				Traces: makeTraces(monSID, []string{"Read", "Bash", "Bash"}),
+			},
+			{UserID: userID, SessionID: orphanSID}: {
+				Traces: makeTraces(orphanSID, []string{"Glob"}),
+			},
+		},
 	}
 
 	server, err := gateway.NewServer(gateway.Config{
@@ -994,6 +816,9 @@ type timeoutRetryEngine struct {
 
 func (e *timeoutRetryEngine) Ingest(_ context.Context, _ engine.IngestRequest) (engine.IngestResult, error) {
 	n := e.ingestCalls.Add(1)
+	if n > 1 {
+		return engine.IngestResult{}, fmt.Errorf("duplicate ingest call %d: %w", n, engine.ErrConflict)
+	}
 	id := fmt.Sprintf("minted-entry-%d", n)
 	return engine.IngestResult{OK: true, EntryID: id}, nil
 }
