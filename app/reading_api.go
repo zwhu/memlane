@@ -96,11 +96,20 @@ func (c ProjectControlClient) readingBody(ctx context.Context, dataset, id strin
 }
 
 func rawSessionFromAPI(row api.RawItem) rawSessionEntry {
-	return rawSessionEntry{Session: Session{
-		ID: row.SessionID, Dataset: row.DatasetID, User: row.UserID, Agent: row.AgentID,
-		Started: row.StartedAt, Updated: row.LastActivityAt, IsSubagent: row.ParentSessionID != "",
-		ParentSessionID: row.ParentSessionID, SubagentRole: row.SubagentRole, NestingDepth: row.NestingDepth,
-	}, Label: row.Title}
+	label := row.Label
+	if label == "" && row.Title != row.SessionID {
+		label = row.Title
+	}
+	return rawSessionEntry{
+		Session: Session{
+			ID: row.SessionID, Dataset: row.DatasetID, User: row.UserID, Agent: row.AgentID,
+			Started: row.StartedAt, Updated: row.LastActivityAt, IsSubagent: row.ParentSessionID != "",
+			ParentSessionID: row.ParentSessionID, SubagentRole: row.SubagentRole, NestingDepth: row.NestingDepth,
+		},
+		Label:     label,
+		MsgCount:  row.MsgCount,
+		ToolCalls: row.ToolCalls,
+	}
 }
 
 func (c ProjectControlClient) rawPage(ctx context.Context, project, kind, cursor string) (v2RawRecordsResponse, error) {
@@ -119,8 +128,11 @@ func (c ProjectControlClient) rawPage(ctx context.Context, project, kind, cursor
 		switch row.Kind {
 		case "session":
 			session := rawSessionFromAPI(row)
-			entry.Session = &v2RawSessionEntry{Session: session.Session, Label: session.Label,
-				ChildCount: row.ChildCount, ChildrenHasMore: row.ChildCount > 0}
+			entry.Session = &v2RawSessionEntry{
+				Session: session.Session, Label: session.Label,
+				MsgCount: session.MsgCount, ToolCalls: session.ToolCalls,
+				ChildCount: row.ChildCount, ChildrenHasMore: row.ChildCount > 0,
+			}
 		case "document":
 			id := row.DocID
 			if id == "" {

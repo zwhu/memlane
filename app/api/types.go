@@ -320,6 +320,9 @@ type RawItem struct {
 	UserID          string `json:"user_id,omitempty"`
 	AgentID         string `json:"agent_id,omitempty"`
 	Title           string `json:"title"`
+	Label           string `json:"label,omitempty"`
+	MsgCount        int    `json:"msg_count"`
+	ToolCalls       int    `json:"tool_calls"`
 	DocName         string `json:"doc_name,omitempty"`
 	DocLabel        string `json:"doc_label,omitempty"`
 	Status          string `json:"status,omitempty"`
