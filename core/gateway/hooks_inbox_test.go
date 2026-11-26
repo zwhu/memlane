@@ -655,13 +655,24 @@ func TestInboxRetrySavedCaptureTraceSkipsIngestAndExtract(t *testing.T) {
 func TestDescribeInboxFailureExtractTimeout(t *testing.T) {
 	for _, raw := range []string{
 		"extract inbox: extract_timeout: engine request timed out",
-		"engine request timed out",
-		"context deadline exceeded",
+		"extract_timeout: engine request timed out",
+		"extract inbox: context deadline exceeded",
 	} {
 		code, summary, nextAction := describeInboxFailure(raw)
 		if code != "extract_timeout" || strings.Contains(summary, "暂时无法连接") ||
 			!strings.Contains(summary, "超时") || !strings.Contains(nextAction, "一键重试") {
 			t.Errorf("describeInboxFailure(%q) = (%q, %q, %q), want extract_timeout", raw, code, summary, nextAction)
+		}
+	}
+	for _, raw := range []string{
+		"engine_timeout: engine request timed out",
+		"ingest inbox: engine_timeout: engine request timed out",
+		"engine request timed out",
+		"context deadline exceeded",
+	} {
+		code, summary, nextAction := describeInboxFailure(raw)
+		if code != "engine_timeout" || summary != "提炼服务连接超时" || nextAction == "" {
+			t.Errorf("describeInboxFailure(%q) = (%q, %q, %q), want engine_timeout", raw, code, summary, nextAction)
 		}
 	}
 	code, summary, _ := describeInboxFailure("dial tcp: connection refused")

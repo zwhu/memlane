@@ -70,12 +70,14 @@ func (s *Server) listFilteredCaptures(w http.ResponseWriter, r *http.Request) {
 
 func describeInboxFailure(rawErr string) (code, summary, nextAction string) {
 	errText := strings.ToLower(rawErr)
+	isTimeout := strings.Contains(errText, "timed out") ||
+		strings.Contains(errText, "timeout") ||
+		strings.Contains(errText, "deadline") ||
+		strings.Contains(errText, "超时")
 	switch {
-	case strings.Contains(errText, "extract_timeout"),
-		strings.Contains(errText, "timed out"),
-		strings.Contains(errText, "context deadline exceeded"):
+	case strings.Contains(errText, "extract_timeout") || (strings.Contains(errText, "extract") && isTimeout):
 		code, summary, nextAction = "extract_timeout", "记忆提炼超时（耗时超过上限）", "引擎可能仍在处理大数据集，请稍后刷新或点击「一键重试」。"
-	case strings.Contains(errText, "timeout"), strings.Contains(errText, "deadline"), strings.Contains(errText, "超时"):
+	case isTimeout:
 		code, summary, nextAction = "engine_timeout", "提炼服务连接超时", "请确认提炼服务可以连接，然后一键重试。"
 	case strings.Contains(errText, "connection refused"), strings.Contains(errText, "engine_unavailable"), strings.Contains(errText, "unavailable"), strings.Contains(errText, "503"):
 		code, summary, nextAction = "engine_unavailable", "提炼服务暂时无法连接", "请检查服务状态，恢复后再重试。"
