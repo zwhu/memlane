@@ -749,9 +749,20 @@ const (
 	sessionOwnershipConflict
 )
 
+func sessionBindingMatchesSession(sessionKey, sessionID string) bool {
+	if sessionKey == sessionID {
+		return true
+	}
+	var tuple []string
+	if err := json.Unmarshal([]byte(sessionKey), &tuple); err == nil && len(tuple) == 2 && tuple[1] == sessionID {
+		return true
+	}
+	return false
+}
+
 // verifyAuthorizedSession checks whether sessionID belongs to an authorized project dataset in scopes
 // and has no conflicting ownership in an unauthorized dataset before allowing session-scoped reads.
-func (s *Server) verifyAuthorizedSession(ctx context.Context, agent domain.Agent, sessionID string, scopes []engine.Scope, commonDatasetID string) (sessionOwnership, string) {
+func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, sessionID string, scopes []engine.Scope, commonDatasetID string) (sessionOwnership, string) {
 	sid := strings.TrimSpace(sessionID)
 	if sid == "" || len(scopes) == 0 {
 		return sessionOwnershipUnknown, ""
@@ -793,17 +804,58 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, agent domain.Agent
 		}
 	}
 
-	bindingAuthorized := false
-	binding, err := s.cfg.Store.GetSessionBinding(ctx, sessionBindingKey(agent.ID, sid))
-	if errors.Is(err, domain.ErrNotFound) {
-		binding, err = s.cfg.Store.GetSessionBinding(ctx, sid)
+	captureDatasets, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT DISTINCT dataset_id FROM capture_receipts WHERE session_id=?
+		 UNION
+		 SELECT DISTINCT dataset_id FROM capture_inbox WHERE session_id=?`,
+		[]any{sid, sid}, func(row rowScanner) (string, error) {
+			var datasetID string
+			err := row.Scan(&datasetID)
+			return datasetID, err
+		})
+	if err != nil {
+		log.Printf("gateway recall session capture lookup: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
 	}
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+	captureAuthorized := false
+	for _, rawDataset := range captureDatasets {
+		datasetID := strings.TrimSpace(rawDataset)
+		if datasetID == "" {
+			continue
+		}
+		if !allowed[datasetID] {
+			return sessionOwnershipConflict, ""
+		}
+		captureAuthorized = true
+	}
+
+	encodedSession, err := json.Marshal(sid)
+	if err != nil {
+		log.Printf("gateway recall session encode: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
+	}
+	bindingSuffix := string(encodedSession) + "]"
+	type bindingRow struct {
+		sessionKey string
+		projectID  string
+	}
+	bindings, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT session_key, project_id FROM session_bindings WHERE session_key=? OR substr(session_key, -length(?))=?`,
+		[]any{sid, bindingSuffix, bindingSuffix}, func(row rowScanner) (bindingRow, error) {
+			var b bindingRow
+			err := row.Scan(&b.sessionKey, &b.projectID)
+			return b, err
+		})
+	if err != nil {
 		log.Printf("gateway recall session binding lookup: %s", sanitizeError(err))
 		return sessionOwnershipConflict, ""
 	}
-	if err == nil {
-		project, pErr := s.cfg.Store.GetProject(ctx, binding.ProjectID)
+	bindingAuthorized := false
+	for _, b := range bindings {
+		if !sessionBindingMatchesSession(b.sessionKey, sid) {
+			continue
+		}
+		project, pErr := s.cfg.Store.GetProject(ctx, b.projectID)
 		if pErr != nil {
 			if !errors.Is(pErr, domain.ErrNotFound) {
 				log.Printf("gateway recall session binding project: %s", sanitizeError(pErr))
@@ -819,7 +871,7 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, agent domain.Agent
 	if catalogAuthorized {
 		return sessionOwnershipAuthorized, catalogUserID
 	}
-	if bindingAuthorized {
+	if captureAuthorized || bindingAuthorized {
 		return sessionOwnershipAuthorized, ""
 	}
 	return sessionOwnershipUnknown, ""

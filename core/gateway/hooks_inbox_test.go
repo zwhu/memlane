@@ -1229,6 +1229,56 @@ func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
 	if crossIngest["accepted"] != false || crossIngest["status"] != "skipped_missing_question" {
 		t.Fatalf("project p prompt leaked into proj-c ingest: %+v", crossIngest)
 	}
+
+	// 6. R2-B1 two-step active-session bypass via capture_receipts / capture_inbox (before catalog_sessions exists).
+	// Victim has an active session in unauthorized project proj-b (ds-b) recorded in capture_receipts & capture_inbox only.
+	_, _, err = store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "victim-receipt-1", UserID: "victim", DatasetID: "ds-b",
+		SessionID: "sess-active-b", MessageID: "vm1", PayloadSHA256: "sha-v1", EntryType: "capture_trace",
+	})
+	must(t, err)
+	_, err = store.EnqueueInboxItem(ctx, domain.CaptureInboxItem{
+		ID: "victim-inbox-1", ProjectID: "proj-b", DatasetID: "ds-b", AgentID: "victim-agent",
+		SessionID: "sess-active-b", MessageID: "vm1", CaptureKey: "victim-receipt-1",
+		Kind: "capture_trace", PayloadJSON: `{"content":{"origin_function":"Read"}}`,
+	})
+	must(t, err)
+	// Attacker (maintain on p) self-creates session_bindings(["agent", "sess-active-b"] -> p) via /ingest, then calls /recall.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"sess-active-b","message_id":"atk-1","kind":"capture_trace",
+		"content":{"origin_function":"Bash"}
+	}`, 202)
+	beforeAttack := len(fake.search)
+	beforeHistory := historyCalls
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-active-b","query":"steal","include_session_context":true}`, 200)
+	if len(fake.search) != beforeAttack+1 || fake.search[beforeAttack].Filters.IncludeSessionContext || fake.search[beforeAttack].Filters.SessionID != "" {
+		t.Fatalf("two-step capture_receipts/inbox bypass succeeded: %+v", fake.search[beforeAttack].Filters)
+	}
+	attackCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-active-b","purpose":"compact_restore","include_session_context":true}`, 200)
+	if len(fake.search) != beforeAttack+1 || attackCompact["context"] != "" || historyCalls != beforeHistory {
+		t.Fatalf("two-step compact_restore bypass leaked history/prompt: searches=%d out=%+v history=%d", len(fake.search), attackCompact, historyCalls)
+	}
+
+	// 7. Cross-agent session_bindings conflict: victim's binding to unauthorized proj-b blocks attacker even with no receipts/catalog rows.
+	must(t, store.UpsertSessionBinding(ctx, sessionBindingKey("victim-agent", "sess-victim-bound"), "proj-b", 200))
+	must(t, store.UpsertSessionBinding(ctx, sessionBindingKey("agent", "sess-victim-bound"), "p", 201))
+	beforeCrossBind := len(fake.search)
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-victim-bound","query":"steal","include_session_context":true}`, 200)
+	if len(fake.search) != beforeCrossBind+1 || fake.search[beforeCrossBind].Filters.IncludeSessionContext || fake.search[beforeCrossBind].Filters.SessionID != "" {
+		t.Fatalf("cross-agent session_bindings bypass succeeded: %+v", fake.search[beforeCrossBind].Filters)
+	}
+
+	// 8. Positive ownership via capture_receipts alone (only authorized dataset ds) enables IncludeSessionContext.
+	_, _, err = store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "auth-receipt-only", UserID: "agent", DatasetID: "ds",
+		SessionID: "sess-receipt-only", MessageID: "am1", PayloadSHA256: "sha-a1", EntryType: "capture_trace",
+	})
+	must(t, err)
+	beforeReceiptOnly := len(fake.search)
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-receipt-only","query":"legit","include_session_context":true}`, 200)
+	if len(fake.search) != beforeReceiptOnly+1 || !fake.search[beforeReceiptOnly].Filters.IncludeSessionContext || fake.search[beforeReceiptOnly].Filters.SessionID != "sess-receipt-only" {
+		t.Fatalf("authorized capture_receipts session was blocked: %+v", fake.search[beforeReceiptOnly].Filters)
+	}
 }
 
 type countingSessionHistoryEngine struct {
