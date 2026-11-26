@@ -288,6 +288,18 @@ func recall(ctx context.Context, host string, scope object, cfg Config) ([]byte,
 
 var localTransport = &http.Transport{DialContext: (&net.Dialer{}).DialContext}
 
+const (
+	defaultRecallTimeout = 10 * time.Second
+	defaultIngestTimeout = 5 * time.Second
+)
+
+func defaultTimeout(path string) time.Duration {
+	if path == "/recall" {
+		return defaultRecallTimeout
+	}
+	return defaultIngestTimeout
+}
+
 func forward(ctx context.Context, cfg Config, path string, payload object, result any) error {
 	if err := ValidateGatewayURL(cfg.GatewayURL); err != nil {
 		return err
@@ -298,7 +310,7 @@ func forward(ctx context.Context, cfg Config, path string, payload object, resul
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 2500 * time.Millisecond
+		timeout = defaultTimeout(path)
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

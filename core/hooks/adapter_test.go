@@ -750,3 +750,66 @@ func TestAntigravityStopTranscript(t *testing.T) {
 		}
 	})
 }
+
+func TestDefaultHookTimeouts(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	key := privateKey(t)
+	workspace := t.TempDir()
+
+	for _, tc := range []struct {
+		name      string
+		event     string
+		payload   object
+		explicit  time.Duration
+		minBudget time.Duration
+		maxBudget time.Duration
+	}{
+		{
+			name:      "recall defaults to 10s",
+			event:     PreInvocation,
+			payload:   object{"conversationId": "c1", "cwd": workspace, "lastUserInput": "find architecture notes"},
+			minBudget: 8 * time.Second,
+			maxBudget: 11 * time.Second,
+		},
+		{
+			name:      "ingest defaults to 5s",
+			event:     PostToolUse,
+			payload:   object{"conversationId": "c1", "cwd": workspace, "toolCall": object{"id": "t1", "name": "run_command", "args": object{}}},
+			minBudget: 3 * time.Second,
+			maxBudget: 6 * time.Second,
+		},
+		{
+			name:      "explicit timeout overrides default",
+			event:     PreInvocation,
+			payload:   object{"conversationId": "c1", "cwd": workspace, "lastUserInput": "find architecture notes"},
+			explicit:  250 * time.Millisecond,
+			minBudget: 50 * time.Millisecond,
+			maxBudget: 500 * time.Millisecond,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var remaining time.Duration
+			var hasDeadline bool
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				var deadline time.Time
+				deadline, hasDeadline = r.Context().Deadline()
+				remaining = time.Until(deadline)
+				w := httptest.NewRecorder()
+				if _, err := io.WriteString(w, `{"hits":[]}`); err != nil {
+					t.Error(err)
+				}
+				return w.Result(), nil
+			})}
+			cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: key, HTTPClient: client, Timeout: tc.explicit}
+			if _, err := Handle(context.Background(), HostAntigravity, tc.event, mustJSON(t, tc.payload), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if !hasDeadline {
+				t.Fatal("expected request context deadline")
+			}
+			if remaining < tc.minBudget || remaining > tc.maxBudget {
+				t.Fatalf("deadline remaining=%v, want in [%v, %v]", remaining, tc.minBudget, tc.maxBudget)
+			}
+		})
+	}
+}
