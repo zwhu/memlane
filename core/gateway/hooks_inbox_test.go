@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
@@ -679,4 +681,579 @@ func TestDescribeInboxFailureExtractTimeout(t *testing.T) {
 	if code != "engine_unavailable" || summary != "提炼服务暂时无法连接" {
 		t.Errorf("connection refused = (%q, %q), want engine_unavailable", code, summary)
 	}
+}
+
+type hybridRecallTestEngine struct {
+	*fakeEngine
+	mu           sync.Mutex
+	graphContext *engine.GraphSearchContext
+	history      engine.SessionHistoryResult
+	historyErr   error
+	extractHook  func(context.Context, engine.ExtractRequest) (engine.ExtractResult, error)
+}
+
+func (h *hybridRecallTestEngine) Search(ctx context.Context, in engine.SearchRequest) (engine.SearchResult, error) {
+	res, err := h.fakeEngine.Search(ctx, in)
+	if err != nil {
+		return res, err
+	}
+	h.mu.Lock()
+	res.GraphContext = h.graphContext
+	h.mu.Unlock()
+	return res, nil
+}
+
+func (h *hybridRecallTestEngine) Extract(ctx context.Context, in engine.ExtractRequest) (engine.ExtractResult, error) {
+	h.mu.Lock()
+	hook := h.extractHook
+	h.mu.Unlock()
+	if hook != nil {
+		return hook(ctx, in)
+	}
+	return h.fakeEngine.Extract(ctx, in)
+}
+
+func (h *hybridRecallTestEngine) HydrateSessionsFromCache(_ context.Context, _ []engine.SessionRef) (map[engine.SessionRef]engine.SessionCacheInfo, error) {
+	return map[engine.SessionRef]engine.SessionCacheInfo{}, nil
+}
+
+func (h *hybridRecallTestEngine) ReadSessionHistory(_ context.Context, _ engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.history, h.historyErr
+}
+
+func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
+	var eng *hybridRecallTestEngine
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &hybridRecallTestEngine{fakeEngine: cfg.Engine.(*fakeEngine)}
+		cfg.Engine = eng
+	})
+	ctx := context.Background()
+	must(t, store.UpsertProject(ctx, domain.Project{ID: "secret", Name: "Secret", DatasetID: "secret-ds"}))
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"read"}`, 200)
+	manage(t, s, "PUT", "/api/common/acl/agent", `{"access":"read"}`, 200)
+
+	// Invalid mode / purpose rejected with 400 before hitting engine.
+	requireCode(t, request(t, s, "POST", "/recall", `{"project_id":"p","query":"q","mode":"bogus"}`,
+		map[string]string{"X-Api-Key": testAgent}, 400), "invalid_recall")
+	requireCode(t, request(t, s, "POST", "/recall", `{"project_id":"p","query":"q","purpose":"unknown"}`,
+		map[string]string{"X-Api-Key": testAgent}, 400), "invalid_recall")
+	if len(fake.search) != 0 {
+		t.Fatalf("invalid recall reached engine: %+v", fake.search)
+	}
+
+	fake.hits = []engine.SearchHit{
+		{DatasetID: "secret-ds", DocumentID: "leak-doc", Title: "Secret", Snippet: "classified"},
+		{DatasetID: "ds", DocumentID: "self-1", Title: "Current transcript", Snippet: "Session ID: sess-1\nUser: current question"},
+		{DatasetID: "ds", DocumentID: "self-2", Title: "Current learning", Snippet: "# Session learning 2026-11-26 (session sess-1)\nEchoed learning"},
+		{DatasetID: "ds", DocumentID: "prefix-ok", Title: "Other session", Snippet: "Session ID: sess-10\nUser: keep prefix neighbor", Metadata: map[string]any{"kind": "raw_doc"}},
+		{DatasetID: "ds", DocumentID: "distilled-1", Title: "WAL rule", Snippet: "Always set PRAGMA journal_size_limit on SQLite WAL.", Metadata: map[string]any{"lesson_type": "convention"}},
+		{DatasetID: "common", DocumentID: "common-1", Title: "General Go tip", Snippet: "Prefer concise error messages."},
+	}
+	eng.graphContext = &engine.GraphSearchContext{
+		Entities: []engine.GraphSearchEntity{
+			{
+				DatasetID: "secret-ds",
+				Name:      "SecretEntity",
+				Type:      "Service",
+				Edges:     []engine.GraphSearchEdge{{Text: "SecretEntity stores private keys."}},
+				Conflicts: []string{"Secret conflict must not leak"},
+			},
+			{
+				DatasetID: "ds",
+				Name:      "OnlyNoiseEntity",
+				Type:      "Concept",
+				Edges: []engine.GraphSearchEdge{
+					{Text: "OnlyNoiseEntity is a concept."},
+					{Text: "OnlyNoiseEntity belongs to set session_learnings."},
+				},
+			},
+			{
+				DatasetID: "ds",
+				Name:      "Gateway",
+				Type:      "Component",
+				Edges: []engine.GraphSearchEdge{
+					{Text: "Gateway is a web service."},
+					{Text: "Gateway belongs to set core"},
+					{Text: "Gateway enforces project ACL before search.", Authoritative: true},
+					{Text: "Gateway used legacy sync ingest.", Superseded: true},
+				},
+				Conflicts: []string{"Ingest switched from sync to async inbox."},
+			},
+		},
+		Facts: []engine.GraphSearchFact{
+			{DatasetID: "secret-ds", Text: "Secret fact must be dropped."},
+			{DatasetID: "ds", Text: "Gateway is an application."},
+			{DatasetID: "ds", Text: "Gateway enforces project ACL before search."},
+			{DatasetID: "ds", Text: "Daemon holds flock on .service-owner."},
+		},
+		Conflicts: []string{
+			"Secret conflict must not leak",
+			"Ingest switched from sync to async inbox.",
+			"Ingest switched from sync to async inbox.",
+		},
+		SessionGuidance: "Keep focus on recall ACL filtering.",
+		CodeFacts: []engine.CodeSearchFact{
+			{DatasetID: "secret-ds", Name: "secretFunc", Kind: "func", File: "secret.go", Line: 10},
+			{DatasetID: "ds", Name: "recallScopes", Kind: "func", File: "core/gateway/hooks.go", Line: 304,
+				Relations: []engine.CodeSearchRelation{{Type: "calls", Target: "EvaluateProjectACL"}}},
+		},
+		DegradedToChunks: true,
+	}
+
+	out := agentRequest(t, s, "/recall", `{
+		"project_id":"p","session_id":"sess-1","query":"gateway acl",
+		"include_session_context":true,"node_sets":["session_learnings","session_learnings","user_context"]
+	}`, 200)
+
+	// Verify SearchRequest fields passed to engine.
+	if len(fake.search) != 1 {
+		t.Fatalf("search count = %d, want 1", len(fake.search))
+	}
+	req := fake.search[0]
+	if req.Mode != engine.SearchModeHybrid {
+		t.Fatalf("default mode = %q, want hybrid", req.Mode)
+	}
+	if !req.Filters.IncludeSessionContext || req.Filters.SessionID != "sess-1" ||
+		!slices.Equal(req.Filters.NodeSets, []string{"session_learnings", "user_context"}) {
+		t.Fatalf("unexpected search filters: %+v", req.Filters)
+	}
+
+	// Verify response metadata & ACL-filtered hits (current session excluded, prefix neighbor kept, secret excluded).
+	if out["mode"] != "hybrid" || out["degraded_to_chunks"] != true {
+		t.Fatalf("unexpected mode/degraded fields: %+v", out)
+	}
+	rawHits := out["hits"].([]any)
+	hitIDs := make([]string, 0, len(rawHits))
+	for _, item := range rawHits {
+		hitIDs = append(hitIDs, item.(map[string]any)["document_id"].(string))
+	}
+	if !slices.Equal(hitIDs, []string{"prefix-ok", "distilled-1", "common-1"}) {
+		t.Fatalf("filtered hit IDs = %v, want [prefix-ok distilled-1 common-1]", hitIDs)
+	}
+
+	// Verify graph_context strictly filtered to authorized scopes.
+	rawGC, err := json.Marshal(out["graph_context"])
+	must(t, err)
+	gcJSON := string(rawGC)
+	for _, forbidden := range []string{"secret-ds", "SecretEntity", "Secret fact", "Secret conflict", "secretFunc"} {
+		if strings.Contains(gcJSON, forbidden) {
+			t.Fatalf("graph_context leaked unauthorized %q: %s", forbidden, gcJSON)
+		}
+	}
+
+	// Verify rendered Markdown context denoising, self-filtering, dedupe, and section ordering.
+	contextText := out["context"].(string)
+	for _, absent := range []string{
+		"SecretEntity", "Secret fact", "Secret conflict", "secretFunc", "classified",
+		"OnlyNoiseEntity", "is a web service", "belongs to set core", "Gateway is an application",
+		"current question", "Echoed learning",
+	} {
+		if strings.Contains(contextText, absent) {
+			t.Fatalf("context should not contain %q:\n%s", absent, contextText)
+		}
+	}
+	if strings.Count(contextText, "Ingest switched from sync to async inbox.") != 1 {
+		t.Fatalf("conflict was not deduplicated:\n%s", contextText)
+	}
+	if strings.Count(contextText, "Gateway enforces project ACL before search.") != 1 {
+		t.Fatalf("entity edge duplicated in facts:\n%s", contextText)
+	}
+	for _, want := range []string{
+		"## Conflicts & Updates",
+		"## Relevant Entities",
+		"- **Gateway** (Component)",
+		"[authoritative]",
+		"[superseded]",
+		"## Related Facts",
+		"Daemon holds flock on .service-owner.",
+		"## Active Session Guidance",
+		"Keep focus on recall ACL filtering.",
+		"## Code Graph",
+		"`recallScopes` (func, core/gateway/hooks.go:304): calls -> EvaluateProjectACL",
+		"## Project Memories",
+		"WAL rule",
+		"## Project Transcripts",
+		"keep prefix neighbor",
+		"## Common Reference",
+		"Project conventions take precedence over common reference.",
+		"General Go tip",
+	} {
+		if !strings.Contains(contextText, want) {
+			t.Fatalf("context missing %q:\n%s", want, contextText)
+		}
+	}
+	// Check section ordering: Conflicts -> Entities -> Facts -> Guidance -> Code -> Project Memories -> Transcripts -> Common.
+	orderMarkers := []string{
+		"## Conflicts & Updates",
+		"## Relevant Entities",
+		"## Related Facts",
+		"## Active Session Guidance",
+		"## Code Graph",
+		"## Project Memories",
+		"## Project Transcripts",
+		"## Common Reference",
+	}
+	prevIdx := -1
+	for _, marker := range orderMarkers {
+		idx := strings.Index(contextText, marker)
+		if idx <= prevIdx {
+			t.Fatalf("section %q out of priority order (idx=%d prev=%d):\n%s", marker, idx, prevIdx, contextText)
+		}
+		prevIdx = idx
+	}
+
+	// Verify recall metrics only counted authorized returned hits (3, not secret/self).
+	if countRows(t, store, "recall_hits") != 3 {
+		t.Fatalf("recall_hits = %d, want 3", countRows(t, store, "recall_hits"))
+	}
+
+	// When session_id is empty, include_session_context must be false even if requested true.
+	agentRequest(t, s, "/recall", `{"project_id":"p","query":"no session","include_session_context":true}`, 200)
+	if fake.search[1].Filters.IncludeSessionContext {
+		t.Fatal("IncludeSessionContext should be false when session_id is empty")
+	}
+}
+
+func TestRecallContextBudgetAndPrecompactKeepsCurrentSession(t *testing.T) {
+	longSnippet := strings.Repeat("项目架构规范", 400) // 2400 runes (> 1200 per-passage cap)
+	hits := []engine.SearchHit{
+		{DatasetID: "ds", DocumentID: "curr", Title: "Current", Snippet: "Session ID: sess-now\nUser: active turn"},
+		{DatasetID: "ds", DocumentID: "d1", Title: "Distilled 1", Snippet: longSnippet, Metadata: map[string]any{"lesson_type": "state"}},
+		{DatasetID: "ds", DocumentID: "d2", Title: "Distilled 2", Snippet: strings.Repeat("b", 1500), Metadata: map[string]any{"lesson_type": "pitfall"}},
+		{DatasetID: "ds", DocumentID: "d3", Title: "Distilled 3", Snippet: strings.Repeat("c", 1500), Metadata: map[string]any{"lesson_type": "convention"}},
+		{DatasetID: "ds", DocumentID: "d4", Title: "Distilled 4", Snippet: strings.Repeat("d", 1500), Metadata: map[string]any{"lesson_type": "change"}},
+		{DatasetID: "ds", DocumentID: "d5", Title: "Distilled 5", Snippet: strings.Repeat("e", 1500), Metadata: map[string]any{"lesson_type": "constraint"}},
+		{DatasetID: "common", DocumentID: "c1", Title: "Common 1", Snippet: strings.Repeat("z", 1500)},
+	}
+	gc := &engine.GraphSearchContext{
+		Conflicts:       []string{"Critical migration conflict must survive tight budget."},
+		SessionGuidance: "Active guidance priority 3.",
+	}
+
+	normal := formatRecallContext(hits, gc, recallFormatOptions{
+		CommonDatasetID: "common",
+		SessionID:       "sess-now",
+		Purpose:         "",
+	})
+	if utf8.RuneCountInString(normal) > defaultRecallContextMaxChars {
+		t.Fatalf("context exceeded budget: %d > %d", utf8.RuneCountInString(normal), defaultRecallContextMaxChars)
+	}
+	if !utf8.ValidString(normal) {
+		t.Fatal("truncated UTF-8 context became invalid")
+	}
+	if strings.Contains(normal, "active turn") {
+		t.Fatalf("normal recall should exclude current-session hit:\n%s", normal)
+	}
+	if !strings.Contains(normal, "Critical migration conflict") || !strings.Contains(normal, "Active guidance priority 3.") {
+		t.Fatalf("high-priority conflict/guidance dropped under budget:\n%s", normal)
+	}
+	// Each passage must be capped at <= 1200 runes.
+	for _, line := range strings.Split(normal, "\n") {
+		if strings.HasPrefix(line, "- **Distilled ") && utf8.RuneCountInString(line) > defaultRecallPassageMaxChars {
+			t.Fatalf("passage exceeded %d runes: %d", defaultRecallPassageMaxChars, utf8.RuneCountInString(line))
+		}
+	}
+
+	precompact := formatRecallContext(hits[:2], nil, recallFormatOptions{
+		CommonDatasetID: "common",
+		SessionID:       "sess-now",
+		Purpose:         "precompact",
+	})
+	if !strings.Contains(precompact, "active turn") {
+		t.Fatalf("precompact recall must keep current-session hit:\n%s", precompact)
+	}
+}
+
+func TestRecallCompactEmptyQueryResolution(t *testing.T) {
+	var eng *hybridRecallTestEngine
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &hybridRecallTestEngine{fakeEngine: cfg.Engine.(*fakeEngine)}
+		cfg.Engine = eng
+	})
+	ctx := context.Background()
+
+	// Unauthorized agent gets 403 and never stores pending/last prompt.
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-unauth","query":"secret prompt"}`, 403)
+	if _, ok := s.prompts.last("agent", "s-unauth"); ok {
+		t.Fatal("unauthorized recall stored prompt in memory")
+	}
+
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// Empty query with precompact / compact_restore and no prior prompt returns clean 200 without calling engine.
+	for _, purpose := range []string{"precompact", "compact_restore"} {
+		out := agentRequest(t, s, "/recall", fmt.Sprintf(`{"project_id":"p","session_id":"s-empty","purpose":%q}`, purpose), 200)
+		if out["ok"] != true || out["event_id"] != "" || out["context"] != "" || out["mode"] != "hybrid" || len(out["hits"].([]any)) != 0 {
+			t.Fatalf("%s empty recall = %+v", purpose, out)
+		}
+	}
+	if len(fake.search) != 0 {
+		t.Fatalf("empty compact recall invoked engine: %+v", fake.search)
+	}
+
+	// Record prompt via normal /recall, then consume pending via /ingest; lastPrompt must remain for compact hooks.
+	fake.hits = []engine.SearchHit{
+		{DatasetID: "ds", DocumentID: "curr-doc", Title: "Current", Snippet: "Session ID: s-compact\nUser: keep for precompact"},
+	}
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-compact","turn_id":"t1","query":"refactor auth middleware"}`, 200)
+	agentRequest(t, s, "/ingest", `{"project_id":"p","session_id":"s-compact","turn_id":"t1","kind":"capture_qa","content":{"question":"","answer":"done"}}`, 202)
+
+	beforeSearches := len(fake.search)
+	preOut := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-compact","purpose":"precompact","limit":5}`, 200)
+	if len(fake.search) != beforeSearches+1 || fake.search[beforeSearches].Query != "refactor auth middleware" {
+		t.Fatalf("precompact did not resolve lastPrompt: %+v", fake.search[beforeSearches:])
+	}
+	if !strings.Contains(preOut["context"].(string), "keep for precompact") {
+		t.Fatalf("precompact did not retain current-session hit: %+v", preOut)
+	}
+
+	restoreOut := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-compact","purpose":"compact_restore","limit":8}`, 200)
+	if len(fake.search) != beforeSearches+2 || fake.search[beforeSearches+1].Query != "refactor auth middleware" {
+		t.Fatalf("compact_restore did not resolve lastPrompt: %+v", fake.search[beforeSearches+1:])
+	}
+	if !strings.Contains(restoreOut["context"].(string), "keep for precompact") {
+		t.Fatalf("compact_restore context missing expected hit: %+v", restoreOut)
+	}
+
+	// When in-memory prompt is absent, fall back to SessionHistoryReader for authorized session.
+	must(t, store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: "ds", SessionID: "s-hist", UserID: "u-hist", SortTSDescKey: -10, IsTopLevel: true,
+	}))
+	eng.mu.Lock()
+	eng.history = engine.SessionHistoryResult{
+		Label: "fallback label",
+		QAs: []engine.SessionQA{
+			{ID: "q1", Question: "older topic", Answer: "a1"},
+			{ID: "q2", Question: "latest history question", Answer: "a2"},
+		},
+	}
+	eng.mu.Unlock()
+	beforeHist := len(fake.search)
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-hist","purpose":"compact_restore"}`, 200)
+	if len(fake.search) != beforeHist+1 || fake.search[beforeHist].Query != "latest history question" {
+		t.Fatalf("session history query resolution failed: %+v", fake.search[beforeHist:])
+	}
+}
+
+func TestIngestPendingPromptPairingAndCaptureFilter(t *testing.T) {
+	s, store, fake := testServer(t, nil)
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	// 1. UserPromptSubmit (/recall) -> Stop (/ingest with empty question) pairs prompt & prompt_time.
+	const promptTime = "2026-11-20T08:30:00Z"
+	agentRequest(t, s, "/recall", fmt.Sprintf(
+		`{"project_id":"p","session_id":"s-pair","turn_id":"turn-1","prompt_time":%q,"query":"how do we run check.py"}`, promptTime), 200)
+
+	// Mismatched turn_id must not consume turn-1's pending prompt.
+	mismatched := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-pair","turn_id":"turn-other","kind":"capture_qa",
+		"content":{"question":"","answer":"wrong turn answer"}
+	}`, 200)
+	if mismatched["accepted"] != false || mismatched["status"] != "skipped_missing_question" {
+		t.Fatalf("mismatched turn_id = %+v", mismatched)
+	}
+
+	// Matching turn_id recovers question + prompt_time and enqueues 202.
+	paired := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-pair","turn_id":"turn-1","message_id":"turn-1","kind":"capture_qa",
+		"content":{"question":"","answer":"run python3 scripts/task.py -- python3 scripts/check.py --staged"}
+	}`, 202)
+	if paired["accepted"] != true || paired["status"] != "pending" {
+		t.Fatalf("paired ingest = %+v", paired)
+	}
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.ingest) != 1 {
+		t.Fatalf("paired item not processed: worked=%v ingests=%d", worked, len(fake.ingest))
+	}
+	var ingestedContent map[string]any
+	must(t, json.Unmarshal(fake.ingest[0].Content.(json.RawMessage), &ingestedContent))
+	if ingestedContent["question"] != "how do we run check.py" || ingestedContent["prompt_time"] != promptTime {
+		t.Fatalf("recovered content mismatch: %+v", ingestedContent)
+	}
+	wantDate := domain.LocalCalendarDate(promptTime, time.Local)
+	if fake.ingest[0].SourceMeta.ContextDate != wantDate {
+		t.Fatalf("context date = %q, want %q", fake.ingest[0].SourceMeta.ContextDate, wantDate)
+	}
+
+	// 2. Subsequent empty-question Stop with no pending prompt returns skipped_missing_question cleanly.
+	unpaired := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-pair","kind":"capture_qa",
+		"content":{"question":"","answer":"orphan answer"}
+	}`, 200)
+	if unpaired["ok"] != true || unpaired["accepted"] != false || unpaired["status"] != "skipped_missing_question" {
+		t.Fatalf("unpaired ingest = %+v", unpaired)
+	}
+	if countRows(t, store, "capture_inbox") != 1 {
+		t.Fatalf("unpaired ingest leaked into capture_inbox: %d", countRows(t, store, "capture_inbox"))
+	}
+
+	// 3. Sensitive recovered prompt must still be blocked by filterCapture!
+	agentRequest(t, s, "/recall", `{
+		"project_id":"p","session_id":"s-secret","turn_id":"turn-sec",
+		"query":"please rotate sk-abcdefghijklmnopqrstuvwxyz01234 immediately"
+	}`, 200)
+	filtered := agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-secret","turn_id":"turn-sec","kind":"capture_qa",
+		"content":{"question":"","answer":"rotated"}
+	}`, 200)
+	if filtered["accepted"] != false || filtered["filtered"] != true || filtered["filter_rule"] != "api_token" {
+		t.Fatalf("recovered secret prompt bypassed capture filter: %+v", filtered)
+	}
+	if countRows(t, store, "capture_inbox") != 1 || countRows(t, store, "capture_receipts") != 1 {
+		t.Fatal("filtered recovered prompt reached capture_inbox or capture_receipts")
+	}
+
+	// 4. Bounded LRU (<= 256) and TTL (<= 2h) on pendingPromptStore.
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	ps := &pendingPromptStore{now: func() time.Time { return now }}
+	for i := range 270 {
+		ps.record("agent", fmt.Sprintf("sess-%03d", i), pendingPrompt{Prompt: fmt.Sprintf("p-%03d", i)})
+	}
+	if len(ps.entries) != maxPendingPromptSessions {
+		t.Fatalf("pendingPromptStore size = %d, want %d", len(ps.entries), maxPendingPromptSessions)
+	}
+	if _, ok := ps.last("agent", "sess-000"); ok {
+		t.Fatal("oldest session was not evicted by LRU")
+	}
+	if got, ok := ps.last("agent", "sess-269"); !ok || got.Prompt != "p-269" {
+		t.Fatalf("newest session missing: %+v (%v)", got, ok)
+	}
+	now = now.Add(pendingPromptTTL + time.Minute)
+	if _, ok := ps.last("agent", "sess-269"); ok {
+		t.Fatal("expired prompt survived TTL")
+	}
+	if _, ok := ps.popPending("agent", "sess-269", "", ""); ok {
+		t.Fatal("expired pending prompt survived TTL")
+	}
+}
+
+func TestSessionEndACLFlushDeduplicationAndStopSafety(t *testing.T) {
+	var eng *hybridRecallTestEngine
+	s, store, fake := testServer(t, func(cfg *Config) {
+		eng = &hybridRecallTestEngine{fakeEngine: cfg.Engine.(*fakeEngine)}
+		cfg.Engine = eng
+	})
+	ctx := context.Background()
+
+	// Auth & validation checks.
+	requireCode(t, request(t, s, "POST", "/session-end", `{"project_id":"p","session_id":"s1"}`, nil, 401), "unauthorized")
+	requireCode(t, request(t, s, "POST", "/session-end", `{"project_id":"p","session_id":"  "}`,
+		map[string]string{"X-Api-Key": testAgent}, 400), "invalid_session_end")
+
+	// Protected project rejected.
+	manage(t, s, "POST", "/api/projects", `{"id":"prot","name":"ml-user-profiles","dataset_name":"ml-user-profiles","dataset_id":"prot-ds"}`, 201)
+	manage(t, s, "PUT", "/api/projects/prot/acl/agent", `{"access":"maintain","capture":true}`, 200)
+	if got := agentRequest(t, s, "/session-end", `{"project_id":"prot","session_id":"s1"}`, 403); got["error"] != "project_protected" {
+		t.Fatalf("protected session-end = %+v", got)
+	}
+
+	// Read-only ACL rejected.
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"read"}`, 200)
+	if got := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s1"}`, 403); got["error"] != "dataset_write_denied" {
+		t.Fatalf("read-only session-end = %+v", got)
+	}
+
+	// Paused auto-capture rejected unless manual.
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+	manage(t, s, "PUT", "/api/projects/p/auto-capture", `{"auto_capture":false}`, 200)
+	if got := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s-empty"}`, 403); got["error"] != "capture_paused" {
+		t.Fatalf("paused session-end = %+v", got)
+	}
+	manualEnd := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s-empty","mode":"manual"}`, 202)
+	if manualEnd["ok"] != true || manualEnd["queued"] != false || manualEnd["session_id"] != "s-empty" {
+		t.Fatalf("empty manual session-end = %+v", manualEnd)
+	}
+	manage(t, s, "PUT", "/api/projects/p/auto-capture", `{"auto_capture":true}`, 200)
+
+	// Session with pending prompt + captured trace: /session-end clears prompt cache, deduplicates flush, and triggers Extract once.
+	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"s-flush","query":"trace session prompt"}`, 200)
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-flush","message_id":"trace-1","kind":"capture_trace",
+		"content":{"origin_function":"Read","method_params":{"path":"a.go"}}
+	}`, 202)
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.extract) != 0 {
+		t.Fatalf("trace setup failed: worked=%v extracts=%d", worked, len(fake.extract))
+	}
+
+	firstEnd := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s-flush","host":"codex"}`, 202)
+	if firstEnd["ok"] != true || firstEnd["queued"] != true || firstEnd["project_id"] != "p" ||
+		firstEnd["dataset_id"] != "ds" || firstEnd["session_id"] != "s-flush" {
+		t.Fatalf("first session-end = %+v", firstEnd)
+	}
+	if _, ok := s.prompts.last("agent", "s-flush"); ok {
+		t.Fatal("session-end did not clear in-memory prompt state")
+	}
+	// Duplicate call while flush is queued must deduplicate.
+	dupEnd := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s-flush","host":"codex"}`, 202)
+	if dupEnd["queued"] != false {
+		t.Fatalf("duplicate session-end should not enqueue again: %+v", dupEnd)
+	}
+
+	// Start InboxWorker and Stop cleanly; queued flush drains and calls Extract strictly once.
+	s.Inbox().Start(ctx)
+	stopCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	must(t, s.Inbox().Stop(stopCtx))
+	if len(fake.extract) != 1 || !slices.Equal(fake.extract[0].DocIDs, []string{"s-flush"}) || fake.extract[0].Scope.DatasetID != "ds" {
+		t.Fatalf("session-end extract calls = %+v", fake.extract)
+	}
+
+	// Verify Stop cancels an in-flight blocked session-end flush cleanly with zero goroutine leaks.
+	agentRequest(t, s, "/ingest", `{
+		"project_id":"p","session_id":"s-cancel","message_id":"trace-cancel","kind":"capture_trace",
+		"content":{"origin_function":"Bash"}
+	}`, 202)
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected trace-cancel to be processed")
+	}
+	extractStarted := make(chan struct{})
+	extractCanceled := make(chan struct{})
+	eng.mu.Lock()
+	eng.extractHook = func(ectx context.Context, _ engine.ExtractRequest) (engine.ExtractResult, error) {
+		close(extractStarted)
+		<-ectx.Done()
+		close(extractCanceled)
+		return engine.ExtractResult{}, ectx.Err()
+	}
+	eng.mu.Unlock()
+
+	s.Inbox().Start(ctx)
+	cancelEnd := agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"s-cancel"}`, 202)
+	if cancelEnd["queued"] != true {
+		t.Fatalf("expected s-cancel queued=true, got %+v", cancelEnd)
+	}
+	select {
+	case <-extractStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session-end flush to start")
+	}
+
+	shortStop, shortCancel := context.WithTimeout(ctx, 40*time.Millisecond)
+	defer shortCancel()
+	if err := s.Inbox().Stop(shortStop); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected Stop deadline exceeded on blocked extract, got %v", err)
+	}
+	select {
+	case <-extractCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked session-end extract did not honor worker context cancellation")
+	}
+	// Ensure worker goroutine fully exits after cancellation.
+	s.Inbox().mu.Lock()
+	doneCh := s.Inbox().run.done
+	s.Inbox().mu.Unlock()
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("inbox worker did not exit after cancellation")
+	}
+	_ = store
 }

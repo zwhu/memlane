@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,11 +14,21 @@ import (
 	"github.com/zwhu/memlane/core/engine"
 )
 
+const maxSessionFlushQueue = 256
+
+type sessionFlushKey struct {
+	datasetID string
+	sessionID string
+}
+
 type InboxWorker struct {
-	cfg  Config
-	wake chan struct{}
-	mu   sync.Mutex
-	run  *inboxRun
+	cfg         Config
+	wake        chan struct{}
+	mu          sync.Mutex
+	run         *inboxRun
+	flushQueued map[sessionFlushKey]bool
+	flushActive map[sessionFlushKey]bool
+	flushOrder  []sessionFlushKey
 }
 
 type inboxRun struct {
@@ -127,10 +138,157 @@ func (w *InboxWorker) Stop(ctx context.Context) error {
 	}
 }
 
+func (w *InboxWorker) ScheduleSessionFlush(datasetID, sessionID string) bool {
+	key := sessionFlushKey{
+		datasetID: strings.TrimSpace(datasetID),
+		sessionID: strings.TrimSpace(sessionID),
+	}
+	if key.datasetID == "" || key.sessionID == "" {
+		return false
+	}
+	w.mu.Lock()
+	if w.run != nil && w.run.stopping {
+		select {
+		case <-w.run.done:
+		default:
+			w.mu.Unlock()
+			return false
+		}
+	}
+	if w.flushQueued == nil {
+		w.flushQueued = make(map[sessionFlushKey]bool)
+	}
+	if w.flushActive == nil {
+		w.flushActive = make(map[sessionFlushKey]bool)
+	}
+	if w.flushQueued[key] || w.flushActive[key] || len(w.flushOrder) >= maxSessionFlushQueue {
+		w.mu.Unlock()
+		return false
+	}
+	w.flushQueued[key] = true
+	w.flushOrder = append(w.flushOrder, key)
+	w.mu.Unlock()
+	w.Notify()
+	return true
+}
+
+func (w *InboxWorker) hasQueuedSessionFlushes() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.flushOrder) > 0
+}
+
+func (w *InboxWorker) claimNextSessionFlush(ctx context.Context) (sessionFlushKey, bool, error) {
+	w.mu.Lock()
+	candidates := append([]sessionFlushKey(nil), w.flushOrder...)
+	w.mu.Unlock()
+	if len(candidates) == 0 {
+		return sessionFlushKey{}, false, nil
+	}
+	for _, key := range candidates {
+		inFlight, err := w.sessionHasInFlightInbox(ctx, key.datasetID, key.sessionID)
+		if err != nil {
+			return sessionFlushKey{}, false, err
+		}
+		if inFlight {
+			continue
+		}
+		w.mu.Lock()
+		if !w.flushQueued[key] || w.flushActive[key] {
+			w.mu.Unlock()
+			continue
+		}
+		delete(w.flushQueued, key)
+		for i, item := range w.flushOrder {
+			if item == key {
+				w.flushOrder = append(w.flushOrder[:i], w.flushOrder[i+1:]...)
+				break
+			}
+		}
+		if w.flushActive == nil {
+			w.flushActive = make(map[sessionFlushKey]bool)
+		}
+		w.flushActive[key] = true
+		w.mu.Unlock()
+		return key, true, nil
+	}
+	return sessionFlushKey{}, false, nil
+}
+
+func (w *InboxWorker) finishSessionFlush(key sessionFlushKey) {
+	w.mu.Lock()
+	delete(w.flushActive, key)
+	w.mu.Unlock()
+}
+
+func (w *InboxWorker) sessionHasInFlightInbox(ctx context.Context, datasetID, sessionID string) (bool, error) {
+	var exists bool
+	err := w.cfg.Store.DB().QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM capture_inbox WHERE dataset_id=? AND session_id=? AND status IN ('pending','processing'))`,
+		datasetID, sessionID).Scan(&exists)
+	return exists, err
+}
+
+func (w *InboxWorker) sessionNeedsConsolidation(ctx context.Context, datasetID, sessionID string) (bool, error) {
+	var exists bool
+	err := w.cfg.Store.DB().QueryRowContext(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM capture_receipts WHERE dataset_id=? AND session_id=?
+			UNION ALL
+			SELECT 1 FROM capture_inbox WHERE dataset_id=? AND session_id=? AND status IN ('pending','processing','succeeded')
+		)`,
+		datasetID, sessionID, datasetID, sessionID).Scan(&exists)
+	return exists, err
+}
+
+func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) error {
+	needs, err := w.sessionNeedsConsolidation(ctx, key.datasetID, key.sessionID)
+	if err != nil {
+		return fmt.Errorf("check session consolidation: %w", err)
+	}
+	if !needs {
+		return nil
+	}
+	model, err := w.expectedDigest(ctx)
+	if err != nil {
+		return err
+	}
+	extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{
+		Scope:               engine.Scope{DatasetID: key.datasetID},
+		DocIDs:              []string{key.sessionID},
+		ExpectedModelDigest: model,
+		OutputLanguage:      w.cfg.OutputLanguage,
+		Mode:                engine.ExtractModeDefault,
+	})
+	if err != nil {
+		return fmt.Errorf("extract session end: %w", err)
+	}
+	if !extracted.OK {
+		return errors.New("engine did not complete session-end extraction")
+	}
+	if w.cfg.Projector != nil {
+		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {
+			return fmt.Errorf("publish catalog: %w", err)
+		}
+	}
+	return nil
+}
+
 func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	item, err := w.cfg.Store.ClaimNextInboxItem(ctx)
 	if errors.Is(err, domain.ErrNotFound) {
-		return false, nil
+		key, ok, claimErr := w.claimNextSessionFlush(ctx)
+		if claimErr != nil {
+			return false, claimErr
+		}
+		if !ok {
+			return false, nil
+		}
+		defer w.finishSessionFlush(key)
+		if flushErr := w.flushSession(ctx, key); flushErr != nil {
+			return true, flushErr
+		}
+		return true, nil
 	}
 	if err != nil {
 		return false, err
@@ -142,9 +300,18 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		if persistErr := w.cfg.Store.MarkInboxFailed(finish, item.ID, sanitizeError(err)); persistErr != nil {
 			return true, errors.Join(err, persistErr)
 		}
+		if w.hasQueuedSessionFlushes() {
+			w.Notify()
+		}
 		return true, nil
 	}
-	return true, w.cfg.Store.MarkInboxSucceeded(finish, item.ID)
+	if err := w.cfg.Store.MarkInboxSucceeded(finish, item.ID); err != nil {
+		return true, err
+	}
+	if w.hasQueuedSessionFlushes() {
+		w.Notify()
+	}
+	return true, nil
 }
 
 func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem) error {

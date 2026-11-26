@@ -48,6 +48,7 @@ func (s *Server) memoryTools() []tool {
 		{toolDefinition{"remember", "Save content to an authorized project.", remember}, s.remember},
 		{toolDefinition{"recall", "Search authorized memory scopes.", schema(map[string]any{
 			"project_id": text, "project_path": text, "query": text, "kind": text,
+			"mode":  map[string]any{"type": "string", "enum": []string{"hybrid", "graph", "chunks", "code"}, "default": "hybrid"},
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
 		}, "query")}, s.recall},
 		{toolDefinition{"forget", "Delete an item from an authorized project.", forget}, s.forget},

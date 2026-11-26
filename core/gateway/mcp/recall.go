@@ -92,22 +92,40 @@ type RecallObservation struct {
 func (s *Server) recall(ctx context.Context, agent domain.Agent, raw json.RawMessage) (any, error) {
 	var args struct {
 		projectSelector
-		Query string `json:"query"`
-		Kind  string `json:"kind"`
-		Limit int    `json:"limit"`
+		Query string            `json:"query"`
+		Kind  string            `json:"kind"`
+		Mode  engine.SearchMode `json:"mode"`
+		Limit int               `json:"limit"`
 	}
 	if json.Unmarshal(raw, &args) != nil || strings.TrimSpace(args.Query) == "" || args.Limit < 0 {
+		return nil, domain.ErrInvalidArgument
+	}
+	mode := engine.SearchMode(strings.TrimSpace(string(args.Mode)))
+	if mode == "" {
+		if strings.EqualFold(args.Kind, "code") {
+			mode = engine.SearchModeCode
+		} else {
+			mode = engine.SearchModeHybrid
+		}
+	}
+	switch mode {
+	case engine.SearchModeHybrid, engine.SearchModeGraph, engine.SearchModeChunks, engine.SearchModeCode:
+	default:
 		return nil, domain.ErrInvalidArgument
 	}
 	if args.Limit == 0 {
 		args.Limit = 10
 	}
 	args.Limit = min(args.Limit, 50)
-	scopes, err := s.scopes(ctx, agent, args.projectSelector, args.Kind, false)
+	scopeKind := args.Kind
+	if strings.EqualFold(scopeKind, "code") || mode == engine.SearchModeCode {
+		scopeKind = "code"
+	}
+	scopes, err := s.scopes(ctx, agent, args.projectSelector, scopeKind, false)
 	if err != nil {
 		return nil, err
 	}
-	req := engine.SearchRequest{Query: args.Query, Limit: args.Limit,
+	req := engine.SearchRequest{Query: args.Query, Mode: mode, Limit: args.Limit,
 		Filters: engine.SearchFilters{Kind: args.Kind, Limit: args.Limit}}
 	authorized := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
@@ -118,6 +136,8 @@ func (s *Server) recall(ctx context.Context, agent domain.Agent, raw json.RawMes
 	}
 	hits := make([]engine.SearchHit, 0, args.Limit)
 	recorded := make([]domain.RecallHit, 0, args.Limit)
+	var graphContext *engine.GraphSearchContext
+	degraded := false
 	if len(req.Scopes) > 0 {
 		searchCtx, cancel := context.WithTimeout(ctx, s.cfg.SearchTimeout)
 		result, err := s.cfg.Engine.Search(searchCtx, req)
@@ -147,6 +167,7 @@ func (s *Server) recall(ctx context.Context, agent domain.Agent, raw json.RawMes
 				break
 			}
 		}
+		graphContext, degraded = filterAuthorizedGraphContext(result.GraphContext, authorized)
 	}
 	at, id := domain.NowUTCNS(), "mcp:"+randomID()
 	if err := s.cfg.Store.RecordRecallQueryStat(ctx, "explicit", len(recorded), at); err != nil {
@@ -161,7 +182,95 @@ func (s *Server) recall(ctx context.Context, agent domain.Agent, raw json.RawMes
 	if s.cfg.OnRecall != nil {
 		s.cfg.OnRecall(RecallObservation{AgentID: agent.ID, EventID: id, Channel: "mcp", ReceivedAt: at, Hits: recorded})
 	}
-	return map[string]any{"hits": hits, "channel": "mcp"}, nil
+	reply := map[string]any{
+		"hits":               hits,
+		"channel":            "mcp",
+		"mode":               mode,
+		"degraded_to_chunks": degraded,
+	}
+	if graphContext != nil {
+		reply["graph_context"] = graphContext
+	}
+	return reply, nil
+}
+
+func filterAuthorizedGraphContext(gc *engine.GraphSearchContext, authorized map[string]struct{}) (*engine.GraphSearchContext, bool) {
+	if gc == nil {
+		return nil, false
+	}
+	degraded := gc.DegradedToChunks
+	allowedEntityConflicts := make(map[string]bool)
+	droppedEntityConflicts := make(map[string]bool)
+	entities := make([]engine.GraphSearchEntity, 0, len(gc.Entities))
+	for _, entity := range gc.Entities {
+		if _, ok := authorized[entity.DatasetID]; !ok {
+			for _, conflict := range entity.Conflicts {
+				if trimmed := strings.TrimSpace(conflict); trimmed != "" {
+					droppedEntityConflicts[trimmed] = true
+				}
+			}
+			continue
+		}
+		cloned := entity
+		if len(entity.Edges) > 0 {
+			cloned.Edges = append([]engine.GraphSearchEdge(nil), entity.Edges...)
+		}
+		if len(entity.Conflicts) > 0 {
+			seen := make(map[string]bool, len(entity.Conflicts))
+			cleaned := make([]string, 0, len(entity.Conflicts))
+			for _, conflict := range entity.Conflicts {
+				if trimmed := strings.TrimSpace(conflict); trimmed != "" && !seen[trimmed] {
+					seen[trimmed] = true
+					allowedEntityConflicts[trimmed] = true
+					cleaned = append(cleaned, trimmed)
+				}
+			}
+			cloned.Conflicts = cleaned
+		}
+		entities = append(entities, cloned)
+	}
+	facts := make([]engine.GraphSearchFact, 0, len(gc.Facts))
+	for _, fact := range gc.Facts {
+		if _, ok := authorized[fact.DatasetID]; ok && strings.TrimSpace(fact.Text) != "" {
+			facts = append(facts, fact)
+		}
+	}
+	codeFacts := make([]engine.CodeSearchFact, 0, len(gc.CodeFacts))
+	for _, cf := range gc.CodeFacts {
+		if _, ok := authorized[cf.DatasetID]; !ok || strings.TrimSpace(cf.Name) == "" {
+			continue
+		}
+		cloned := cf
+		if len(cf.Relations) > 0 {
+			cloned.Relations = append([]engine.CodeSearchRelation(nil), cf.Relations...)
+		}
+		codeFacts = append(codeFacts, cloned)
+	}
+	conflicts := make([]string, 0, len(gc.Conflicts))
+	seenConflicts := make(map[string]bool, len(gc.Conflicts))
+	for _, raw := range gc.Conflicts {
+		text := strings.TrimSpace(raw)
+		if text == "" || seenConflicts[text] {
+			continue
+		}
+		if droppedEntityConflicts[text] && !allowedEntityConflicts[text] {
+			continue
+		}
+		seenConflicts[text] = true
+		conflicts = append(conflicts, text)
+	}
+	guidance := strings.TrimSpace(gc.SessionGuidance)
+	if len(entities) == 0 && len(facts) == 0 && len(conflicts) == 0 && guidance == "" && len(codeFacts) == 0 {
+		return nil, degraded
+	}
+	return &engine.GraphSearchContext{
+		Entities:         entities,
+		Facts:            facts,
+		Conflicts:        conflicts,
+		SessionGuidance:  guidance,
+		CodeFacts:        codeFacts,
+		DegradedToChunks: degraded,
+	}, degraded
 }
 
 func (s *Server) health(ctx context.Context, agent domain.Agent, _ json.RawMessage) (any, error) {

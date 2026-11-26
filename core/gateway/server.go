@@ -53,6 +53,7 @@ type Server struct {
 	cursors      cursorCodec
 	secrets      secretFileCache
 	searches     userSearchHistory
+	prompts      pendingPromptStore
 	since        time.Time
 	mu           sync.Mutex
 	listener     *loopback
@@ -210,6 +211,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/agents/conflicts", s.agentConflicts)
 	mux.HandleFunc("POST /ingest", s.agentOnly(s.ingest))
 	mux.HandleFunc("POST /recall", s.agentOnly(s.recall))
+	mux.HandleFunc("POST /session-end", s.agentOnly(s.sessionEnd))
 	if s.cfg.CompletionHandler != nil {
 		mux.Handle(completionPath, s.cfg.CompletionHandler)
 	}

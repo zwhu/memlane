@@ -3,15 +3,247 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
+
+const (
+	maxPendingPromptSessions = 256
+	maxPendingTurnsPerSess   = 8
+	pendingPromptTTL         = 2 * time.Hour
+	maxPendingPromptRunes    = 32000
+)
+
+type pendingPrompt struct {
+	Prompt     string
+	TurnID     string
+	PromptTime string
+	RecordedAt time.Time
+}
+
+type sessionPromptKey struct {
+	agentID   string
+	sessionID string
+}
+
+type sessionPromptState struct {
+	pending    []pendingPrompt
+	lastPrompt *pendingPrompt
+	updatedAt  time.Time
+}
+
+type pendingPromptStore struct {
+	mu      sync.Mutex
+	now     func() time.Time
+	entries map[sessionPromptKey]*sessionPromptState
+	order   []sessionPromptKey
+}
+
+func (p *pendingPromptStore) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+func (p *pendingPromptStore) pruneLocked(now time.Time) {
+	if len(p.entries) == 0 {
+		return
+	}
+	keptOrder := p.order[:0]
+	for _, key := range p.order {
+		state, ok := p.entries[key]
+		if !ok {
+			continue
+		}
+		if now.Sub(state.updatedAt) > pendingPromptTTL {
+			delete(p.entries, key)
+			continue
+		}
+		if len(state.pending) > 0 {
+			live := state.pending[:0]
+			for _, item := range state.pending {
+				if now.Sub(item.RecordedAt) <= pendingPromptTTL {
+					live = append(live, item)
+				}
+			}
+			state.pending = live
+		}
+		if state.lastPrompt != nil && now.Sub(state.lastPrompt.RecordedAt) > pendingPromptTTL {
+			state.lastPrompt = nil
+		}
+		if len(state.pending) == 0 && state.lastPrompt == nil {
+			delete(p.entries, key)
+			continue
+		}
+		keptOrder = append(keptOrder, key)
+	}
+	p.order = keptOrder
+}
+
+func (p *pendingPromptStore) touchLocked(key sessionPromptKey) {
+	for i, existing := range p.order {
+		if existing == key {
+			p.order = append(p.order[:i], p.order[i+1:]...)
+			break
+		}
+	}
+	p.order = append(p.order, key)
+}
+
+func (p *pendingPromptStore) record(agentID, sessionID string, item pendingPrompt) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	item.Prompt = strings.TrimSpace(item.Prompt)
+	item.TurnID = strings.TrimSpace(item.TurnID)
+	item.PromptTime = strings.TrimSpace(item.PromptTime)
+	if agentID == "" || sessionID == "" || item.Prompt == "" {
+		return
+	}
+	if utf8.RuneCountInString(item.Prompt) > maxPendingPromptRunes {
+		item.Prompt = truncateRunes(item.Prompt, maxPendingPromptRunes)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	if item.RecordedAt.IsZero() {
+		item.RecordedAt = now
+	}
+	p.pruneLocked(now)
+	if p.entries == nil {
+		p.entries = make(map[sessionPromptKey]*sessionPromptState)
+	}
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	state, ok := p.entries[key]
+	if !ok {
+		for len(p.order) >= maxPendingPromptSessions {
+			oldest := p.order[0]
+			p.order = p.order[1:]
+			delete(p.entries, oldest)
+		}
+		state = &sessionPromptState{}
+		p.entries[key] = state
+	}
+	lastCopy := item
+	state.lastPrompt = &lastCopy
+	state.updatedAt = now
+
+	filtered := state.pending[:0]
+	for _, existing := range state.pending {
+		if existing.TurnID == item.TurnID {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	state.pending = append(filtered, item)
+	if len(state.pending) > maxPendingTurnsPerSess {
+		state.pending = append([]pendingPrompt(nil), state.pending[len(state.pending)-maxPendingTurnsPerSess:]...)
+	}
+	p.touchLocked(key)
+}
+
+func (p *pendingPromptStore) popPending(agentID, sessionID, turnID, messageID string) (pendingPrompt, bool) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	turnID = strings.TrimSpace(turnID)
+	messageID = strings.TrimSpace(messageID)
+	if agentID == "" || sessionID == "" {
+		return pendingPrompt{}, false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	p.pruneLocked(now)
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	state, ok := p.entries[key]
+	if !ok || len(state.pending) == 0 {
+		return pendingPrompt{}, false
+	}
+
+	popAt := func(idx int) pendingPrompt {
+		chosen := state.pending[idx]
+		state.pending = append(state.pending[:idx], state.pending[idx+1:]...)
+		state.updatedAt = now
+		p.touchLocked(key)
+		return chosen
+	}
+
+	if turnID != "" {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == turnID {
+				return popAt(i), true
+			}
+		}
+	}
+	if messageID != "" && messageID != turnID {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == messageID {
+				return popAt(i), true
+			}
+		}
+	}
+	if turnID != "" {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == "" {
+				return popAt(i), true
+			}
+		}
+		return pendingPrompt{}, false
+	}
+	return popAt(len(state.pending) - 1), true
+}
+
+func (p *pendingPromptStore) last(agentID, sessionID string) (pendingPrompt, bool) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	if agentID == "" || sessionID == "" {
+		return pendingPrompt{}, false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	p.pruneLocked(now)
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	state, ok := p.entries[key]
+	if !ok || state.lastPrompt == nil {
+		return pendingPrompt{}, false
+	}
+	p.touchLocked(key)
+	return *state.lastPrompt, true
+}
+
+func (p *pendingPromptStore) clear(agentID, sessionID string) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	if agentID == "" || sessionID == "" {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	delete(p.entries, key)
+	for i, existing := range p.order {
+		if existing == key {
+			p.order = append(p.order[:i], p.order[i+1:]...)
+			break
+		}
+	}
+}
 
 type hookScope struct {
 	ProjectID string `json:"project_id"`
@@ -57,6 +289,7 @@ type captureRequest struct {
 	Kind            engine.IngestKind `json:"kind"`
 	Mode            string            `json:"mode"`
 	MessageID       string            `json:"message_id"`
+	TurnID          string            `json:"turn_id"`
 	Host            string            `json:"host"`
 	CaptureKey      string            `json:"capture_key"`
 	ParentSessionID string            `json:"parent_session_id,omitempty"`
@@ -137,6 +370,33 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 	if err := decoder.Decode(&content); err != nil || content == nil {
 		writeError(w, 400, "invalid_content", "capture content required")
 		return
+	}
+	if req.Kind == engine.IngestKindCaptureQA && strings.TrimSpace(req.SessionID) != "" {
+		if fields, ok := content.(map[string]any); ok {
+			questionText, _ := fields["question"].(string)
+			answerText, _ := fields["answer"].(string)
+			if strings.TrimSpace(questionText) == "" && strings.TrimSpace(answerText) != "" {
+				explicitTurnID := strings.TrimSpace(req.TurnID)
+				if explicitTurnID == "" {
+					if rawTurnID, ok := fields["turn_id"].(string); ok {
+						explicitTurnID = strings.TrimSpace(rawTurnID)
+					}
+				}
+				pending, found := s.prompts.popPending(agent.ID, req.SessionID, explicitTurnID, req.MessageID)
+				if !found {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"ok": true, "accepted": false, "status": "skipped_missing_question",
+						"project_id": project.ID, "dataset_id": project.DatasetID,
+					})
+					return
+				}
+				fields["question"] = pending.Prompt
+				existingPromptTime, _ := fields["prompt_time"].(string)
+				if strings.TrimSpace(existingPromptTime) == "" && pending.PromptTime != "" {
+					fields["prompt_time"] = pending.PromptTime
+				}
+			}
+		}
 	}
 	if s.filterCapture(w, ctx, req, agent, project, content) {
 		return
@@ -292,29 +552,60 @@ func tupleDigest(parts ...string) string {
 
 type recallRequest struct {
 	hookScope
-	Query      string   `json:"query"`
-	Q          string   `json:"q"`
-	DatasetIDs []string `json:"dataset_ids"`
-	Kind       string   `json:"kind"`
-	Scope      string   `json:"scope"`
-	Channel    string   `json:"channel"`
-	Limit      int      `json:"limit"`
+	Query                 string            `json:"query"`
+	Q                     string            `json:"q"`
+	DatasetIDs            []string          `json:"dataset_ids"`
+	Kind                  string            `json:"kind"`
+	Scope                 string            `json:"scope"`
+	Channel               string            `json:"channel"`
+	Limit                 int               `json:"limit"`
+	Mode                  engine.SearchMode `json:"mode"`
+	Purpose               string            `json:"purpose"`
+	IncludeSessionContext bool              `json:"include_session_context"`
+	NodeSets              []string          `json:"node_sets"`
+	TurnID                string            `json:"turn_id"`
+	PromptTime            string            `json:"prompt_time"`
 }
 
-func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent domain.Agent) ([]engine.Scope, bool, error) {
+func resolveRecallMode(raw engine.SearchMode, kind, scope string) (engine.SearchMode, bool) {
+	mode := engine.SearchMode(strings.TrimSpace(string(raw)))
+	if mode == "" {
+		if strings.EqualFold(kind, "code") || strings.EqualFold(scope, "code") {
+			return engine.SearchModeCode, true
+		}
+		return engine.SearchModeHybrid, true
+	}
+	switch mode {
+	case engine.SearchModeHybrid, engine.SearchModeGraph, engine.SearchModeChunks, engine.SearchModeCode:
+		return mode, true
+	default:
+		return "", false
+	}
+}
+
+func validRecallPurpose(purpose string) bool {
+	switch purpose {
+	case "", "precompact", "compact_restore":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent domain.Agent) ([]engine.Scope, bool, string, error) {
 	projects, err := s.cfg.Store.ListProjects(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	explicit := req.ProjectID != "" || req.Workspace != "" || req.SessionID != ""
 	if explicit {
 		p, err := s.hookProject(ctx, req.hookScope, agent.ID)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		projects = []domain.Project{p}
 	}
-	codeOnly := strings.EqualFold(req.Kind, "code") || strings.EqualFold(req.Scope, "code")
+	codeOnly := strings.EqualFold(req.Kind, "code") || strings.EqualFold(req.Scope, "code") || req.Mode == engine.SearchModeCode
 	type target struct {
 		projectID string
 		code      bool
@@ -330,7 +621,7 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 	}
 	common, err := s.cfg.Store.GetCommonConfig(ctx)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	ids := req.DatasetIDs
 	if len(ids) == 0 {
@@ -356,16 +647,16 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 			continue
 		}
 		if len(targets[id]) != 1 {
-			return nil, false, domain.ErrForbidden
+			return nil, false, "", domain.ErrForbidden
 		}
 		target := targets[id][0]
 		acl, err := s.cfg.Store.EvaluateProjectACL(ctx, target.projectID, agent.ID)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		if acl.Access != domain.AccessRead && acl.Access != domain.AccessMaintain {
 			if explicit || len(req.DatasetIDs) > 0 {
-				return nil, false, domain.ErrForbidden
+				return nil, false, "", domain.ErrForbidden
 			}
 			continue
 		}
@@ -374,17 +665,17 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 		scopes = append(scopes, engine.Scope{DatasetID: id})
 	}
 	if explicit && len(scopes) == 0 {
-		return nil, false, domain.ErrForbidden
+		return nil, false, "", domain.ErrForbidden
 	}
 	include := false
 	commonEligible := !codeOnly && !(len(scopes) > 0 && allCode)
 	if common.DatasetID != "" && (commonRequested || commonEligible) {
 		acl, err := s.cfg.Store.EvaluateCommonACL(ctx, agent.ID)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		if commonRequested && acl.Access != domain.AccessRead {
-			return nil, false, domain.ErrForbidden
+			return nil, false, "", domain.ErrForbidden
 		}
 		if commonEligible && acl.Access == domain.AccessRead {
 			scopes = append(scopes, engine.Scope{DatasetID: common.DatasetID})
@@ -392,9 +683,64 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 		}
 	}
 	if len(scopes) == 0 {
-		return nil, false, domain.ErrForbidden
+		return nil, false, "", domain.ErrForbidden
 	}
-	return scopes, include, nil
+	return scopes, include, common.DatasetID, nil
+}
+
+func (s *Server) resolveCompactQuery(ctx context.Context, agent domain.Agent, sessionID string, scopes []engine.Scope) string {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return ""
+	}
+	if last, ok := s.prompts.last(agent.ID, sid); ok && strings.TrimSpace(last.Prompt) != "" {
+		return strings.TrimSpace(last.Prompt)
+	}
+	reader := s.sessionHistoryReader()
+	if reader == nil {
+		return ""
+	}
+	userID := s.resolveAuthorizedSessionUser(ctx, scopes, sid, agent.PrincipalID)
+	if userID == "" {
+		return ""
+	}
+	history, err := reader.ReadSessionHistory(ctx, engine.SessionHistoryRequest{
+		UserID:    userID,
+		SessionID: sid,
+		QAOffset:  0,
+		Limit:     20,
+	})
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("gateway recall session history: %s", sanitizeError(err))
+		}
+		return ""
+	}
+	for i := len(history.QAs) - 1; i >= 0; i-- {
+		if q := strings.TrimSpace(history.QAs[i].Question); q != "" {
+			return truncateRunes(q, 1000)
+		}
+	}
+	return truncateRunes(strings.TrimSpace(history.Label), 1000)
+}
+
+func (s *Server) resolveAuthorizedSessionUser(ctx context.Context, scopes []engine.Scope, sessionID, principalID string) string {
+	for _, scope := range scopes {
+		if scope.DatasetID == "" {
+			continue
+		}
+		var userID string
+		err := s.cfg.Store.DB().QueryRowContext(ctx,
+			`SELECT user_id FROM catalog_sessions WHERE dataset_id=? AND session_id=? ORDER BY sort_ts_desc_key ASC, user_id LIMIT 1`,
+			scope.DatasetID, sessionID).Scan(&userID)
+		if err == nil && strings.TrimSpace(userID) != "" {
+			return strings.TrimSpace(userID)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("gateway recall session lookup: %s", sanitizeError(err))
+		}
+	}
+	return strings.TrimSpace(principalID)
 }
 
 func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Agent) {
@@ -408,13 +754,29 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 	if req.Channel == "" {
 		req.Channel = "automatic"
 	}
-	if strings.TrimSpace(req.Query) == "" || req.Channel != "automatic" && req.Channel != "explicit" {
+	req.Purpose = strings.TrimSpace(req.Purpose)
+	if req.Channel != "automatic" && req.Channel != "explicit" {
+		writeError(w, 400, "invalid_recall", "query and valid recall channel required")
+		return
+	}
+	if !validRecallPurpose(req.Purpose) {
+		writeError(w, 400, "invalid_recall", "unsupported recall purpose")
+		return
+	}
+	mode, validMode := resolveRecallMode(req.Mode, req.Kind, req.Scope)
+	if !validMode {
+		writeError(w, 400, "invalid_recall", "unsupported recall mode")
+		return
+	}
+	req.Mode = mode
+	query := strings.TrimSpace(req.Query)
+	if req.Purpose == "" && query == "" {
 		writeError(w, 400, "invalid_recall", "query and valid recall channel required")
 		return
 	}
 	ctx := r.Context()
 	s.registryMu.Lock()
-	scopes, include, err := s.recallScopes(ctx, req, agent)
+	scopes, include, commonDatasetID, err := s.recallScopes(ctx, req, agent)
 	s.registryMu.Unlock()
 	if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) {
 		writeError(w, 403, "dataset_read_denied", "dataset read access required")
@@ -423,6 +785,28 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+	if query == "" {
+		query = s.resolveCompactQuery(ctx, agent, req.SessionID, scopes)
+		if query == "" {
+			writeJSON(w, 200, map[string]any{
+				"ok":              true,
+				"event_id":        "",
+				"channel":         req.Channel,
+				"scopes":          scopes,
+				"common_included": include,
+				"hits":            []engine.SearchHit{},
+				"context":         "",
+				"mode":            mode,
+			})
+			return
+		}
+	} else if req.Purpose == "" && strings.TrimSpace(req.SessionID) != "" {
+		s.prompts.record(agent.ID, req.SessionID, pendingPrompt{
+			Prompt:     query,
+			TurnID:     req.TurnID,
+			PromptTime: req.PromptTime,
+		})
 	}
 	limit := req.Limit
 	if limit < 1 {
@@ -435,8 +819,20 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 	if kind == "" && strings.EqualFold(req.Scope, "code") {
 		kind = "code"
 	}
-	result, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{Scopes: scopes, Query: req.Query, Limit: limit,
-		Filters: engine.SearchFilters{Kind: kind, Limit: limit}})
+	nodeSets := dedupeTrimmedStrings(req.NodeSets)
+	result, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{
+		Scopes: scopes,
+		Query:  query,
+		Mode:   mode,
+		Limit:  limit,
+		Filters: engine.SearchFilters{
+			Kind:                  kind,
+			Limit:                 limit,
+			NodeSets:              nodeSets,
+			SessionID:             req.SessionID,
+			IncludeSessionContext: req.IncludeSessionContext && strings.TrimSpace(req.SessionID) != "",
+		},
+	})
 	if err == nil {
 		err = searchCtx.Err()
 	}
@@ -447,7 +843,13 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		writeEngineError(w, err)
 		return
 	}
-	hits := authorizedHits(result.Hits, scopes, limit)
+	hits := authorizedHits(filterCurrentSessionHits(result.Hits, req.SessionID, req.Purpose), scopes, limit)
+	graphContext, degraded := authorizedGraphContext(result.GraphContext, scopes)
+	contextText := formatRecallContext(hits, graphContext, recallFormatOptions{
+		CommonDatasetID: commonDatasetID,
+		SessionID:       req.SessionID,
+		Purpose:         req.Purpose,
+	})
 	eventID := ""
 	if len(hits) > 0 {
 		eventID = rand.Text()
@@ -464,8 +866,97 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "event_id": eventID, "channel": req.Channel,
-		"scopes": scopes, "common_included": include, "hits": hits})
+	resp := map[string]any{
+		"ok":                 true,
+		"event_id":           eventID,
+		"channel":            req.Channel,
+		"scopes":             scopes,
+		"common_included":    include,
+		"hits":               hits,
+		"context":            contextText,
+		"mode":               mode,
+		"degraded_to_chunks": degraded,
+	}
+	if graphContext != nil {
+		resp["graph_context"] = graphContext
+	}
+	writeJSON(w, 200, resp)
+}
+
+type sessionEndRequest struct {
+	hookScope
+	Host string `json:"host"`
+	Mode string `json:"mode"`
+}
+
+func (s *Server) sessionEnd(w http.ResponseWriter, r *http.Request, agent domain.Agent) {
+	var req sessionEndRequest
+	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &req) {
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_session_end", "session_id required")
+		return
+	}
+	ctx := r.Context()
+	s.registryMu.Lock()
+	project, err := s.hookProject(ctx, req.hookScope, agent.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		s.registryMu.Unlock()
+		writeError(w, 403, "project_access_denied", "managed project required")
+		return
+	}
+	if err != nil {
+		s.registryMu.Unlock()
+		writeDomainError(w, err)
+		return
+	}
+	if domain.IsProtectedProject(project.Name, project.DatasetName) {
+		s.registryMu.Unlock()
+		writeError(w, 403, "project_protected", "host capture is disabled for protected projects")
+		return
+	}
+	if project.DatasetID == "" {
+		s.registryMu.Unlock()
+		writeError(w, 403, "project_access_denied", "managed project required")
+		return
+	}
+	acl, err := s.cfg.Store.EvaluateProjectACL(ctx, project.ID, agent.ID)
+	s.registryMu.Unlock()
+	if errors.Is(err, domain.ErrForbidden) || err == nil && acl.Access != domain.AccessMaintain {
+		writeError(w, 403, "dataset_write_denied", "project maintain access required")
+		return
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	manual := req.Mode == "manual" || strings.EqualFold(r.Header.Get("X-Memlane-Capture-Mode"), "manual")
+	if !manual && !acl.CanCapture {
+		writeJSON(w, 403, map[string]any{"error": "capture_paused", "message": "automatic capture is paused",
+			"capture_scope": acl.CaptureScope, "project_auto_capture": acl.ProjectAutoCapture, "auto_capture_version": acl.AutoCaptureVersion})
+		return
+	}
+
+	s.prompts.clear(agent.ID, req.SessionID)
+	needsConsolidation, err := s.inbox.sessionNeedsConsolidation(ctx, project.DatasetID, req.SessionID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	s.inbox.Notify()
+	queued := false
+	if needsConsolidation {
+		queued = s.inbox.ScheduleSessionFlush(project.DatasetID, req.SessionID)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"ok":         true,
+		"queued":     queued,
+		"project_id": project.ID,
+		"dataset_id": project.DatasetID,
+		"session_id": req.SessionID,
+	})
 }
 
 func authorizedHits(hits []engine.SearchHit, scopes []engine.Scope, limit int) []engine.SearchHit {

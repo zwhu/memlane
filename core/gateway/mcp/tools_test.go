@@ -312,3 +312,149 @@ func TestRememberCaptureKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
+	store, eng := fixture(t)
+	configureScopes(t, store)
+	allow(t, store, "common", "common", domain.AccessRead)
+
+	var requests []engine.SearchRequest
+	var nextGC *engine.GraphSearchContext
+	eng.search = func(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
+		requests = append(requests, req)
+		return engine.SearchResult{
+			OK: true,
+			Hits: []engine.SearchHit{
+				{DatasetID: "hidden-dataset", DocumentID: "secret"},
+				{DatasetID: "write-dataset", DocumentID: "doc-1", Title: "Note", Snippet: "Body"},
+				{DatasetID: "write-code", DocumentID: "code-1", Title: "Code", Snippet: "Func"},
+			},
+			GraphContext: nextGC,
+		}, nil
+	}
+	h := newTestServer(t, Config{Store: store, Engine: eng})
+
+	// 1. Tool schema advertises recall mode enum and default hybrid.
+	listReply := rpc(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	var list struct{ Tools []toolDefinition }
+	requireOK(t, json.Unmarshal(listReply.Result, &list))
+	foundModeSchema := false
+	for _, tool := range list.Tools {
+		if tool.Name != "recall" {
+			continue
+		}
+		props, _ := tool.InputSchema["properties"].(map[string]any)
+		modeProp, _ := props["mode"].(map[string]any)
+		if modeProp["default"] != "hybrid" {
+			t.Fatalf("recall mode schema default = %+v, want hybrid", modeProp)
+		}
+		foundModeSchema = true
+	}
+	if !foundModeSchema {
+		t.Fatal("recall tool schema missing mode property")
+	}
+
+	// 2. Default mode is hybrid; kind=code defaults to code; explicit modes pass through.
+	for _, tc := range []struct {
+		args      string
+		wantMode  engine.SearchMode
+		wantScope string
+	}{
+		{`{"project_id":"write","query":"auth"}`, engine.SearchModeHybrid, "write-dataset"},
+		{`{"project_id":"write","query":"auth","kind":"code"}`, engine.SearchModeCode, "write-code"},
+		{`{"project_id":"write","query":"auth","mode":"graph"}`, engine.SearchModeGraph, "write-dataset"},
+		{`{"project_id":"write","query":"auth","mode":"chunks"}`, engine.SearchModeChunks, "write-dataset"},
+		{`{"project_id":"write","query":"auth","mode":"code"}`, engine.SearchModeCode, "write-code"},
+	} {
+		data, msg := callTool(t, h, "recall", tc.args)
+		if msg != "" {
+			t.Fatalf("%s failed: %s", tc.args, msg)
+		}
+		req := requests[len(requests)-1]
+		if req.Mode != tc.wantMode || len(req.Scopes) == 0 || req.Scopes[0].DatasetID != tc.wantScope {
+			t.Fatalf("%s -> req=%+v, want mode=%q firstScope=%q", tc.args, req, tc.wantMode, tc.wantScope)
+		}
+		var out map[string]any
+		requireOK(t, json.Unmarshal(data, &out))
+		if out["mode"] != string(tc.wantMode) || out["degraded_to_chunks"] != false {
+			t.Fatalf("%s -> out=%+v", tc.args, out)
+		}
+		if _, hasGC := out["graph_context"]; hasGC {
+			t.Fatalf("%s should omit empty graph_context: %s", tc.args, data)
+		}
+	}
+
+	// 3. Invalid mode returns JSON-RPC Invalid params (-32602) without invoking engine.
+	beforeInvalid := len(requests)
+	badReply := rpc(t, h, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"recall","arguments":{"project_id":"write","query":"auth","mode":"invalid"}}}`)
+	if badReply.Error == nil || badReply.Error.Code != -32602 {
+		t.Fatalf("invalid mode reply = %+v, want -32602", badReply)
+	}
+	if len(requests) != beforeInvalid {
+		t.Fatal("invalid mode reached engine")
+	}
+
+	// 4. GraphContext strictly filters unauthorized datasets and strips leaked entity conflicts.
+	nextGC = &engine.GraphSearchContext{
+		Entities: []engine.GraphSearchEntity{
+			{DatasetID: "hidden-dataset", Name: "HiddenEntity", Conflicts: []string{"hidden-only-conflict"}},
+			{DatasetID: "private-profiles", Name: "ProfileEntity"},
+			{DatasetID: "write-dataset", Name: "AllowedEntity", Edges: []engine.GraphSearchEdge{{Text: "AllowedEntity handles auth"}}},
+		},
+		Facts: []engine.GraphSearchFact{
+			{DatasetID: "hidden-dataset", Text: "hidden fact"},
+			{DatasetID: "write-dataset", Text: "allowed fact"},
+		},
+		Conflicts: []string{"hidden-only-conflict", "allowed-conflict"},
+		CodeFacts: []engine.CodeSearchFact{
+			{DatasetID: "hidden-code", Name: "hiddenFn"},
+			{DatasetID: "write-dataset", Name: "allowedFn"},
+		},
+		DegradedToChunks: true,
+	}
+	data, msg := callTool(t, h, "recall", `{"project_id":"write","query":"auth","mode":"hybrid"}`)
+	if msg != "" {
+		t.Fatalf("recall with graph_context failed: %s", msg)
+	}
+	raw := string(data)
+	for _, forbidden := range []string{"hidden-dataset", "HiddenEntity", "private-profiles", "ProfileEntity", "hidden fact", "hidden-only-conflict", "hidden-code", "hiddenFn"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("MCP recall leaked unauthorized %q: %s", forbidden, raw)
+		}
+	}
+	var out struct {
+		Channel          string                     `json:"channel"`
+		Mode             engine.SearchMode          `json:"mode"`
+		DegradedToChunks bool                       `json:"degraded_to_chunks"`
+		GraphContext     *engine.GraphSearchContext `json:"graph_context"`
+	}
+	requireOK(t, json.Unmarshal(data, &out))
+	if out.Channel != "mcp" || out.Mode != engine.SearchModeHybrid || !out.DegradedToChunks || out.GraphContext == nil {
+		t.Fatalf("unexpected MCP recall envelope: %+v", out)
+	}
+	if len(out.GraphContext.Entities) != 1 || out.GraphContext.Entities[0].Name != "AllowedEntity" ||
+		len(out.GraphContext.Facts) != 1 || out.GraphContext.Facts[0].Text != "allowed fact" ||
+		!slices.Equal(out.GraphContext.Conflicts, []string{"allowed-conflict"}) ||
+		len(out.GraphContext.CodeFacts) != 1 || out.GraphContext.CodeFacts[0].Name != "allowedFn" {
+		t.Fatalf("unexpected filtered graph_context: %+v", out.GraphContext)
+	}
+
+	// 5. When all graph_context entries are unauthorized, graph_context is omitted while degraded_to_chunks stays true.
+	nextGC = &engine.GraphSearchContext{
+		Entities:         []engine.GraphSearchEntity{{DatasetID: "hidden-dataset", Name: "OnlyHidden"}},
+		Facts:            []engine.GraphSearchFact{{DatasetID: "hidden-dataset", Text: "OnlyHiddenFact"}},
+		DegradedToChunks: true,
+	}
+	data, msg = callTool(t, h, "recall", `{"project_id":"write","query":"auth"}`)
+	if msg != "" {
+		t.Fatalf("recall with only unauthorized graph_context failed: %s", msg)
+	}
+	var degradedOut map[string]any
+	requireOK(t, json.Unmarshal(data, &degradedOut))
+	if degradedOut["degraded_to_chunks"] != true {
+		t.Fatalf("expected degraded_to_chunks=true, got %+v", degradedOut)
+	}
+	if _, hasGC := degradedOut["graph_context"]; hasGC {
+		t.Fatalf("expected empty filtered graph_context to be omitted: %s", data)
+	}
+}
