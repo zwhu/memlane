@@ -153,6 +153,11 @@ type GraphSearchFact struct {
 	Text      string `json:"text"`
 }
 
+type GraphSearchConflict struct {
+	DatasetID string `json:"dataset_id"`
+	Text      string `json:"text"`
+}
+
 type CodeSearchRelation struct {
 	Type   string `json:"type"`
 	Target string `json:"target"`
@@ -168,12 +173,12 @@ type CodeSearchFact struct {
 }
 
 type GraphSearchContext struct {
-	Entities         []GraphSearchEntity `json:"entities,omitempty"`
-	Facts            []GraphSearchFact   `json:"facts,omitempty"`
-	Conflicts        []string            `json:"conflicts,omitempty"`
-	SessionGuidance  string              `json:"session_guidance,omitempty"`
-	CodeFacts        []CodeSearchFact    `json:"code_facts,omitempty"`
-	DegradedToChunks bool                `json:"degraded_to_chunks,omitempty"`
+	Entities         []GraphSearchEntity   `json:"entities,omitempty"`
+	Facts            []GraphSearchFact     `json:"facts,omitempty"`
+	Conflicts        []GraphSearchConflict `json:"conflicts,omitempty"`
+	SessionGuidance  string                `json:"session_guidance,omitempty"`
+	CodeFacts        []CodeSearchFact      `json:"code_facts,omitempty"`
+	DegradedToChunks bool                  `json:"degraded_to_chunks,omitempty"`
 }
 
 type SearchResult struct {

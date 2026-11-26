@@ -164,7 +164,7 @@ func TestAdapterRunnerWire(t *testing.T) {
 		{
 			method: "POST", path: "/search",
 			body:     `{"scopes":[{"dataset_id":"ds & space","user_id":"user + symbol"}],"query":"auth flow","mode":"hybrid","filters":{"kind":"document","node_sets":["auth"],"session_id":"sess-1","include_session_context":true},"limit":6}`,
-			response: `{"ok":true,"hits":[{"dataset_id":"ds & space","document_id":"doc","title":"auth.md","snippet":"jwt check","score":0.15}],"graph_context":{"entities":[{"dataset_id":"ds & space","name":"AuthService","type":"Service","edges":[{"text":"AuthService validates JWT","source":"AuthService","target":"JWT","relationship":"validates","superseded":true,"authoritative":true}],"conflicts":["TTL conflict"]}],"facts":[{"dataset_id":"ds & space","text":"Refresh tokens rotate"}],"conflicts":["TTL conflict"],"session_guidance":"## Active session guidance","code_facts":[{"dataset_id":"ds & space","name":"VerifyToken","kind":"symbol","file":"auth.go","line":18,"relations":[{"type":"calls","target":"ParseJWT"}]}],"degraded_to_chunks":true}}`,
+			response: `{"ok":true,"hits":[{"dataset_id":"ds & space","document_id":"doc","title":"auth.md","snippet":"jwt check","score":0.15}],"graph_context":{"entities":[{"dataset_id":"ds & space","name":"AuthService","type":"Service","edges":[{"text":"AuthService validates JWT","source":"AuthService","target":"JWT","relationship":"validates","superseded":true,"authoritative":true}],"conflicts":["TTL conflict"]}],"facts":[{"dataset_id":"ds & space","text":"Refresh tokens rotate"}],"conflicts":[{"dataset_id":"ds & space","text":"TTL conflict"}],"session_guidance":"## Active session guidance","code_facts":[{"dataset_id":"ds & space","name":"VerifyToken","kind":"symbol","file":"auth.go","line":18,"relations":[{"type":"calls","target":"ParseJWT"}]}],"degraded_to_chunks":true}}`,
 			call: func(a *Adapter) (any, error) {
 				return a.Search(ctx, engine.SearchRequest{
 					Scopes: []engine.Scope{scope},
@@ -196,7 +196,7 @@ func TestAdapterRunnerWire(t *testing.T) {
 						Conflicts: []string{"TTL conflict"},
 					}},
 					Facts:           []engine.GraphSearchFact{{DatasetID: scope.DatasetID, Text: "Refresh tokens rotate"}},
-					Conflicts:       []string{"TTL conflict"},
+					Conflicts:       []engine.GraphSearchConflict{{DatasetID: scope.DatasetID, Text: "TTL conflict"}},
 					SessionGuidance: "## Active session guidance",
 					CodeFacts: []engine.CodeSearchFact{{
 						DatasetID: scope.DatasetID, Name: "VerifyToken", Kind: "symbol", File: "auth.go", Line: 18,

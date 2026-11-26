@@ -147,7 +147,7 @@ func TestSearchContractJSONRoundTrip(t *testing.T) {
 				Conflicts: []string{"Token TTL changed from 15m to 30m"},
 			}},
 			Facts:           []GraphSearchFact{{DatasetID: "ds-1", Text: "Refresh tokens rotate on use"}},
-			Conflicts:       []string{"Token TTL changed from 15m to 30m"},
+			Conflicts:       []GraphSearchConflict{{DatasetID: "ds-1", Text: "Token TTL changed from 15m to 30m"}},
 			SessionGuidance: "## Active session guidance\n### Rules\n- Keep token TTL short",
 			CodeFacts: []CodeSearchFact{{
 				DatasetID: "ds-1",

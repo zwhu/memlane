@@ -21,6 +21,10 @@ from .tool_graph import run_tool_graph_pipeline
 logger = logging.getLogger(__name__)
 _SUPERSEDED_TAG_RE = re.compile(r'\[superseded(?:;|\])', re.IGNORECASE)
 _SEARCH_MODES = ['hybrid', 'graph', 'chunks', 'code']
+_HYBRID_EXTERNAL_METADATA_KEYS = (
+    'kind', 'memlane_kind', 'lesson_type', 'state_key',
+    'category', 'common_category', 'session_id', 'session_date', 'node_set',
+)
 
 
 class Scope(BaseModel):
@@ -254,18 +258,24 @@ class CogneeBackend:
             if payload.mode in ('hybrid', 'graph'):
                 query_type = SearchType.HYBRID_COMPLETION if payload.mode == 'hybrid' else SearchType.GRAPH_COMPLETION
                 parser = _parse_hybrid_results if payload.mode == 'hybrid' else _parse_graph_results
+                search_kwargs = {
+                    'query_text': payload.query,
+                    'query_type': query_type,
+                    'user': user,
+                    'dataset_ids': [dataset],
+                    'top_k': limit,
+                    'node_name': node_sets,
+                    'only_context': True,
+                    'verbose': True,
+                    'include_references': True,
+                }
+                if payload.mode == 'hybrid':
+                    search_kwargs['retriever_specific_config'] = {
+                        'include_external_metadata': True,
+                        'external_metadata_keys': list(_HYBRID_EXTERNAL_METADATA_KEYS),
+                    }
                 try:
-                    result = await search(
-                        query_text=payload.query,
-                        query_type=query_type,
-                        user=user,
-                        dataset_ids=[dataset],
-                        top_k=limit,
-                        node_name=node_sets,
-                        only_context=True,
-                        verbose=True,
-                        include_references=True,
-                    )
+                    result = await search(**search_kwargs)
                 except NoDataError:
                     degraded = await search_chunks(user, dataset)
                     if degraded is None:
@@ -276,6 +286,8 @@ class CogneeBackend:
                 return {'hits': hits, 'entities': entities, 'facts': facts, 'conflicts': conflicts,
                         'code_facts': [], 'degraded_to_chunks': False}
 
+            if not payload.query.strip():
+                return _empty_scope_result()
             from cognee.modules.retrieval.code_retriever import CodeSeedNotFoundError
             try:
                 result = await search(
@@ -284,6 +296,12 @@ class CogneeBackend:
                     user=user,
                     dataset_ids=[dataset],
                     top_k=limit,
+                    retriever_specific_config={
+                        'operation': 'ask',
+                        'question': payload.query,
+                        'max_seeds': min(limit, 10),
+                        'max_nodes': min(max(limit * 4, limit), 200),
+                    },
                 )
             except (NoDataError, CodeSeedNotFoundError):
                 return _empty_scope_result()
@@ -292,16 +310,15 @@ class CogneeBackend:
 
         session_id = (payload.filters.session_id or '').strip()
         scope_tasks = [search_scope(user, dataset) for user, dataset in authorized]
-        if payload.filters.include_session_context and session_id:
-            session_user = authorized[0][0] if authorized else None
-            gathered = await asyncio.gather(*scope_tasks, self._read_session_context(session_user, session_id, payload.query))
+        if authorized and payload.filters.include_session_context and session_id:
+            gathered = await asyncio.gather(*scope_tasks, self._read_session_context(authorized[0][0], session_id, payload.query))
             scope_results, session_guidance = gathered[:-1], gathered[-1]
         else:
             scope_results = await asyncio.gather(*scope_tasks)
             session_guidance = ''
 
         hits, entities, facts, conflicts, code_facts = [], [], [], [], []
-        seen_facts, seen_code_facts = set(), set()
+        seen_facts, seen_conflicts, seen_code_facts = set(), set(), set()
         degraded_to_chunks = False
         for part in scope_results:
             hits.extend(part['hits'])
@@ -311,7 +328,11 @@ class CogneeBackend:
                 if key not in seen_facts:
                     seen_facts.add(key)
                     facts.append(fact)
-            conflicts.extend(part['conflicts'])
+            for conflict in part['conflicts']:
+                key = (conflict['dataset_id'], conflict['text'])
+                if key not in seen_conflicts:
+                    seen_conflicts.add(key)
+                    conflicts.append(conflict)
             for code_fact in part['code_facts']:
                 key = (code_fact['dataset_id'], code_fact['name'], code_fact.get('file', ''), code_fact.get('line', 0))
                 if key not in seen_code_facts:
@@ -320,14 +341,13 @@ class CogneeBackend:
             degraded_to_chunks = degraded_to_chunks or part['degraded_to_chunks']
 
         hits.sort(key=lambda hit: hit['score'] if hit['score'] is not None else float('inf'))
-        unique_conflicts = list(dict.fromkeys(c for c in conflicts if c))
         graph_context = {}
         if entities:
             graph_context['entities'] = entities
         if facts:
             graph_context['facts'] = facts
-        if unique_conflicts:
-            graph_context['conflicts'] = unique_conflicts
+        if conflicts:
+            graph_context['conflicts'] = conflicts
         if session_guidance:
             graph_context['session_guidance'] = session_guidance
         if code_facts:
@@ -339,17 +359,14 @@ class CogneeBackend:
     @staticmethod
     async def _read_session_context(user, session_id: str, query_text: str) -> str:
         try:
+            user_id = getattr(user, 'id', None)
+            if user_id is None:
+                return ''
             from cognee.infrastructure.session.get_session_manager import get_session_manager
             from cognee.infrastructure.session.session_context_builder import build_active_context_block
 
             sm = get_session_manager()
             if not getattr(sm, 'is_available', False):
-                return ''
-            user_id = getattr(user, 'id', None)
-            if user_id is None:
-                from cognee.modules.users.methods.get_default_user import get_default_user
-                user_id = getattr(await get_default_user(), 'id', None)
-            if user_id is None:
                 return ''
             block, _served = await build_active_context_block(
                 session_manager=sm,
@@ -454,7 +471,7 @@ def _chunk_dict(chunk: Any) -> dict | None:
 
 
 def _chunk_to_hit(chunk: Any, dataset_str: str, kind_filter: str | None,
-                  evidence_by_chunk: dict[str, dict] | None = None) -> tuple[dict | None, list[str]]:
+                  evidence_by_chunk: dict[str, dict] | None = None) -> tuple[dict | None, list[dict]]:
     item = _chunk_dict(chunk)
     if item is None:
         return None, []
@@ -464,8 +481,9 @@ def _chunk_to_hit(chunk: Any, dataset_str: str, kind_filter: str | None,
             metadata = json.loads(metadata)
         except ValueError:
             metadata = None
-    if not isinstance(metadata, dict):
-        metadata = item.get('metadata') or {}
+    metadata = dict(metadata) if isinstance(metadata, dict) else dict(item.get('metadata') or {})
+    if not metadata.get('node_set') and (belongs := _clean_strings(item.get('belongs_to_set'))):
+        metadata['node_set'] = belongs
     kind = item.get('kind', metadata.get('kind', 'document'))
     if kind_filter is not None and kind != kind_filter:
         return None, []
@@ -478,7 +496,7 @@ def _chunk_to_hit(chunk: Any, dataset_str: str, kind_filter: str | None,
     ev = (evidence_by_chunk or {}).get(chunk_id) if chunk_id else None
     document = (item.get('data_id') or item.get('document_id') or parent
                 or (ev.get('data_id') if ev else None) or item.get('id'))
-    chunk_conflicts = _clean_strings(item.get('conflicts'))
+    chunk_conflicts = [{'dataset_id': dataset_str, 'text': text} for text in _clean_strings(item.get('conflicts'))]
     if not document:
         return None, chunk_conflicts
     title = item.get('document_name') or item.get('title') or (ev.get('document_name') if ev else '') or ''
@@ -492,7 +510,7 @@ def _chunk_to_hit(chunk: Any, dataset_str: str, kind_filter: str | None,
     }, chunk_conflicts)
 
 
-def _parse_chunk_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[str]]:
+def _parse_chunk_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[dict]]:
     hits, conflicts = [], []
     for value in result or []:
         if isinstance(value, dict):
@@ -514,16 +532,35 @@ def _parse_chunk_results(result: Any, dataset: UUID, kind_filter: str | None) ->
     return hits, conflicts
 
 
+def _read_conflict_marks(attrs: dict) -> list[dict]:
+    marks = attrs.get('conflict_marks')
+    if marks is None:
+        raw_json = attrs.get('conflict_marks_json')
+        if raw_json is not None:
+            if isinstance(raw_json, str):
+                try:
+                    marks = json.loads(raw_json)
+                except ValueError:
+                    return []
+            else:
+                marks = raw_json
+    elif isinstance(marks, str):
+        try:
+            marks = json.loads(marks)
+        except ValueError:
+            return []
+    return [mark for mark in marks if isinstance(mark, dict)] if isinstance(marks, list) else []
+
+
 def _edge_is_superseded(attrs: dict, text: str) -> bool:
     raw = attrs.get('superseded')
     if raw is not None:
         return bool(raw)
-    marks = attrs.get('conflict_marks')
-    if isinstance(marks, list):
-        if any(isinstance(mark, dict) and mark.get('resolution_source') == 'user'
-               and mark.get('status') == 'current' for mark in marks):
+    marks = _read_conflict_marks(attrs)
+    if marks:
+        if any(mark.get('resolution_source') == 'user' and mark.get('status') == 'current' for mark in marks):
             return False
-        if any(isinstance(mark, dict) and mark.get('status') == 'superseded' for mark in marks):
+        if any(mark.get('status') == 'superseded' for mark in marks):
             return True
     return bool(_SUPERSEDED_TAG_RE.search(text))
 
@@ -575,7 +612,7 @@ def _evidence_to_hits(evidence_list: list[dict], dataset_str: str, kind_filter: 
     return hits
 
 
-def _parse_context_conflicts(context_result: Any) -> list[str]:
+def _parse_context_conflicts(context_result: Any, dataset_str: str) -> list[dict]:
     if not isinstance(context_result, str) or '## Fact conflicts' not in context_result:
         return []
     section = context_result.split('## Fact conflicts', 1)[1]
@@ -585,30 +622,24 @@ def _parse_context_conflicts(context_result: Any) -> list[str]:
         if line.startswith('## '):
             break
         if line.startswith('- ') and (item := line[2:].strip()):
-            conflicts.append(item)
+            conflicts.append({'dataset_id': dataset_str, 'text': item})
     return conflicts
 
 
 def _verbose_entry(value: Any, dataset: UUID) -> tuple[str, Any, list[dict], dict[str, dict], Any]:
-    if isinstance(value, dict):
-        result_dataset = value.get('dataset_id')
-        objects_result = value.get('objects_result')
-        if objects_result is None and 'search_result' in value:
-            objects_result = value.get('search_result')
-        raw_evidence = value.get('evidence')
-        context_result = value.get('context_result')
-    else:
-        result_dataset = getattr(value, 'dataset_id', None)
-        objects_result = getattr(value, 'objects_result', None)
-        if objects_result is None:
-            objects_result = getattr(value, 'result_object', None)
-        raw_evidence = getattr(value, 'evidence', None)
-        context_result = getattr(value, 'context_result', getattr(value, 'context', None))
-    evidence_list, evidence_by_chunk = _normalize_evidence(raw_evidence)
-    return str(result_dataset or dataset), objects_result, evidence_list, evidence_by_chunk, context_result
+    if not isinstance(value, dict):
+        return str(dataset), None, [], {}, None
+    evidence_list, evidence_by_chunk = _normalize_evidence(value.get('evidence'))
+    return (
+        str(value.get('dataset_id') or dataset),
+        value.get('objects_result'),
+        evidence_list,
+        evidence_by_chunk,
+        value.get('context_result'),
+    )
 
 
-def _parse_hybrid_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[str]]:
+def _parse_hybrid_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     hits, entities, facts, conflicts = [], [], [], []
     for value in result or []:
         dataset_str, objects_result, evidence_list, evidence_by_chunk, context_result = _verbose_entry(value, dataset)
@@ -622,7 +653,7 @@ def _parse_hybrid_results(result: Any, dataset: UUID, kind_filter: str | None) -
             continue
         if not isinstance(objects_result, dict):
             hits.extend(_evidence_to_hits(evidence_list, dataset_str, kind_filter))
-            conflicts.extend(_parse_context_conflicts(context_result))
+            conflicts.extend(_parse_context_conflicts(context_result, dataset_str))
             continue
 
         raw_chunks = objects_result.get('chunks') or []
@@ -661,7 +692,7 @@ def _parse_hybrid_results(result: Any, dataset: UUID, kind_filter: str | None) -
                     'authoritative': bool(edge.get('authoritative')),
                 })
             entity_conflicts = _clean_strings(entity.get('conflicts'))
-            conflicts.extend(entity_conflicts)
+            conflicts.extend({'dataset_id': dataset_str, 'text': text} for text in entity_conflicts)
             entity_item = {'dataset_id': dataset_str, 'name': name, 'type': _text(entity.get('type')), 'edges': entity_edges}
             if entity_conflicts:
                 entity_item['conflicts'] = entity_conflicts
@@ -675,12 +706,12 @@ def _parse_hybrid_results(result: Any, dataset: UUID, kind_filter: str | None) -
                 fact_text = _text(fact_dict.get('text') if fact_dict is not None else getattr(raw_fact, 'text', None))
             if fact_text:
                 facts.append({'dataset_id': dataset_str, 'text': fact_text})
-        conflicts.extend(_parse_context_conflicts(context_result))
+        conflicts.extend(_parse_context_conflicts(context_result, dataset_str))
     return hits, entities, facts, conflicts
 
 
 def _parse_graph_objects(objects_result: Any, evidence_list: list[dict], context_result: Any,
-                         dataset_str: str, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[str]]:
+                         dataset_str: str, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     triplets = objects_result.get('triplets') if isinstance(objects_result, dict) else objects_result
     if not isinstance(triplets, (list, tuple)):
         triplets = []
@@ -689,59 +720,49 @@ def _parse_graph_objects(objects_result: Any, evidence_list: list[dict], context
     facts: list[dict] = []
 
     for triplet in triplets:
-        source = source_type = target = relationship = edge_text = ''
-        superseded = authoritative = False
         if isinstance(triplet, str):
-            edge_text = triplet.strip()
-        elif hasattr(triplet, 'node1') and hasattr(triplet, 'node2'):
-            n1, n2 = triplet.node1, triplet.node2
-            n1_attrs = getattr(n1, 'attributes', None) or {}
-            n2_attrs = getattr(n2, 'attributes', None) or {}
-            attrs = getattr(triplet, 'attributes', None) or {}
-            for node, node_attrs in ((n1, n1_attrs), (n2, n2_attrs)):
-                if node_attrs.get('type') == 'DocumentChunk' and (chunk_text := _text(node_attrs.get('text'))):
-                    chunk_text_by_id[_text(getattr(node, 'id', None))] = chunk_text
-            source = _text(n1_attrs.get('name')) or _text(getattr(n1, 'id', None))
-            source_type = _text(n1_attrs.get('type'))
-            target = _text(n2_attrs.get('name')) or _text(getattr(n2, 'id', None))
-            relationship = _text(attrs.get('relationship_name') or attrs.get('relationship_type'))
-            edge_text = _text(attrs.get('edge_text'))
-            authoritative = bool(attrs.get('authoritative'))
-            superseded = _edge_is_superseded(attrs, edge_text)
-        elif (item := _as_dict(triplet)) is not None:
-            n1_attrs = item.get('source_node_attributes') or (item.get('node1') or {}).get('node_attributes') or {}
-            n2_attrs = item.get('target_node_attributes') or (item.get('node2') or {}).get('node_attributes') or {}
-            attrs = item.get('edge_attributes') or item.get('attributes') or item
-            for node_id, node_attrs in ((item.get('source_node_id'), n1_attrs), (item.get('target_node_id'), n2_attrs)):
-                if isinstance(node_attrs, dict) and node_attrs.get('type') == 'DocumentChunk' and (chunk_text := _text(node_attrs.get('text'))):
-                    chunk_text_by_id[_text(node_id)] = chunk_text
-            source = _text(item.get('source') or (n1_attrs.get('name') if isinstance(n1_attrs, dict) else None) or item.get('source_node_id'))
-            source_type = _text(n1_attrs.get('type') if isinstance(n1_attrs, dict) else item.get('source_type'))
-            target = _text(item.get('target') or (n2_attrs.get('name') if isinstance(n2_attrs, dict) else None) or item.get('target_node_id'))
-            relationship = _text((attrs.get('relationship_name') or attrs.get('relationship_type')) if isinstance(attrs, dict) else None) or _text(item.get('relationship'))
-            edge_text = _text((attrs.get('edge_text') if isinstance(attrs, dict) else None) or item.get('text'))
-            authoritative = bool(attrs.get('authoritative') if isinstance(attrs, dict) else item.get('authoritative'))
-            superseded = _edge_is_superseded(attrs if isinstance(attrs, dict) else item, edge_text)
+            if edge_text := triplet.strip():
+                facts.append({'dataset_id': dataset_str, 'text': edge_text})
+            continue
+        if not (hasattr(triplet, 'node1') and hasattr(triplet, 'node2')):
+            continue
+        n1, n2 = triplet.node1, triplet.node2
+        n1_attrs = getattr(n1, 'attributes', None) or {}
+        n2_attrs = getattr(n2, 'attributes', None) or {}
+        attrs = getattr(triplet, 'attributes', None) or {}
+        for node, node_attrs in ((n1, n1_attrs), (n2, n2_attrs)):
+            if node_attrs.get('type') == 'DocumentChunk' and (chunk_text := _text(node_attrs.get('text'))):
+                chunk_text_by_id[_text(getattr(node, 'id', None))] = chunk_text
+        source_type, target_type = _text(n1_attrs.get('type')), _text(n2_attrs.get('type'))
+        if source_type == 'DocumentChunk' or target_type == 'DocumentChunk':
+            continue
+        relationship = _text(attrs.get('relationship_name') or attrs.get('relationship_type'))
+        edge_text = _text(attrs.get('edge_text'))
+        source_name = _text(n1_attrs.get('name'))
+        if relationship.lower() == 'contains' and (not source_name or edge_text.startswith('Document chunk mentions ')):
+            continue
+        source = source_name or _text(getattr(n1, 'id', None))
+        target = _text(n2_attrs.get('name')) or _text(getattr(n2, 'id', None))
         if not edge_text and source and relationship and target:
             edge_text = f'{source} -- {relationship} -- {target}'
         if not edge_text:
             continue
         facts.append({'dataset_id': dataset_str, 'text': edge_text})
-        if source and source_type != 'DocumentChunk':
+        if source:
             entity = entities_by_name.setdefault(source, {
                 'dataset_id': dataset_str, 'name': source, 'type': source_type, 'edges': [],
             })
             entity['edges'].append({
                 'text': edge_text, 'source': source, 'target': target, 'relationship': relationship,
-                'superseded': superseded, 'authoritative': authoritative,
+                'superseded': _edge_is_superseded(attrs, edge_text), 'authoritative': bool(attrs.get('authoritative')),
             })
 
     hits = _evidence_to_hits(evidence_list, dataset_str, kind_filter, chunk_text_by_id)
-    conflicts = _parse_context_conflicts(context_result)
+    conflicts = _parse_context_conflicts(context_result, dataset_str)
     return hits, list(entities_by_name.values()), facts, conflicts
 
 
-def _parse_graph_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[str]]:
+def _parse_graph_results(result: Any, dataset: UUID, kind_filter: str | None) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     hits, entities, facts, conflicts = [], [], [], []
     for value in result or []:
         dataset_str, objects_result, evidence_list, _, context_result = _verbose_entry(value, dataset)
@@ -772,7 +793,9 @@ def _parse_code_results(result: Any, dataset: UUID, limit: int) -> list[dict]:
         if isinstance(body, dict):
             if body.get('seed_not_found'):
                 continue
-            for edge in body.get('edges') or []:
+            neighborhood = body.get('neighborhood') if isinstance(body.get('neighborhood'), dict) else {}
+            raw_edges = [*(body.get('edges') or []), *(neighborhood.get('edges') or [])]
+            for edge in raw_edges:
                 edge_dict = _as_dict(edge)
                 if edge_dict is None:
                     continue
@@ -784,9 +807,10 @@ def _parse_code_results(result: Any, dataset: UUID, limit: int) -> list[dict]:
                         edges_by_source.setdefault(src_key, []).append({'type': rel_type, 'target': target_name})
             if isinstance(body.get('focus'), dict):
                 raw_facts.append(body['focus'])
-            for list_key in ('facts', 'nodes', 'hits', 'seeds'):
-                if isinstance(body.get(list_key), list):
-                    raw_facts.extend(body[list_key])
+            for source_list in (body.get('facts'), body.get('seeds'), neighborhood.get('nodes'),
+                                body.get('nodes'), body.get('hits')):
+                if isinstance(source_list, list):
+                    raw_facts.extend(source_list)
         elif isinstance(body, list):
             raw_facts.extend(body)
 
