@@ -85,9 +85,10 @@ func TestCompletionHealthRoute(t *testing.T) {
 		requireCode(t, manage(t, unconfigured, "GET", prefix+"/completion/health", "", http.StatusNotFound), "not_configured")
 	}
 
-	var seenMethod, seenPath string
+	var seenMethod, seenPath, seenRequestURI, seenAuth, seenMgmt string
 	delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenMethod, seenPath = r.Method, r.URL.Path
+		seenMethod, seenPath, seenRequestURI = r.Method, r.URL.Path, r.RequestURI
+		seenAuth, seenMgmt = r.Header.Get("Authorization"), r.Header.Get("X-Memlane-Management")
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready", "path": r.URL.Path})
 	})
 	configured, _, _ := testServer(t, func(c *Config) {
@@ -97,8 +98,10 @@ func TestCompletionHealthRoute(t *testing.T) {
 		requireCode(t, request(t, configured, "GET", prefix+"/completion/health", "", nil, http.StatusUnauthorized), "unauthorized")
 		res := manage(t, configured, "GET", prefix+"/completion/health", "", http.StatusOK)
 		got := decodeResponse[map[string]string](t, res)
-		if seenMethod != http.MethodGet || seenPath != "/health" || got["path"] != "/health" || got["status"] != "ready" {
-			t.Fatalf("GET %s/completion/health delegated (%s %s) body=%+v", prefix, seenMethod, seenPath, got)
+		if seenMethod != http.MethodGet || seenPath != "/health" || seenRequestURI != "" ||
+			seenAuth != "" || seenMgmt != "" || got["path"] != "/health" || got["status"] != "ready" {
+			t.Fatalf("GET %s/completion/health delegated (%s %s uri=%q auth=%q mgmt=%q) body=%+v",
+				prefix, seenMethod, seenPath, seenRequestURI, seenAuth, seenMgmt, got)
 		}
 	}
 }

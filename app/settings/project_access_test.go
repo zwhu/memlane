@@ -222,6 +222,14 @@ func TestProjectControlConflictMessagesPreserveSafeCodesAndPhases(t *testing.T) 
 	if code, phase := parseControlError([]byte(`{"error":"server_conflict","phase":"post_mutation"}`), token); code != "server_conflict" || phase != "post_mutation" {
 		t.Fatal("error field was not accepted as a fallback")
 	}
+	if code, phase := parseControlError([]byte(`{"error":{"code":"bridge_inactive","message":"bridge_inactive","type":"completion_error"}}`), token); code != "bridge_inactive" || phase != "" {
+		t.Fatalf("nested completion error code = (%q, %q), want (bridge_inactive, \"\")", code, phase)
+	}
+	for _, empty := range [][]byte{nil, []byte(""), []byte(`{"error":null}`)} {
+		if code, phase := parseControlError(empty, token); code != "" || phase != "" {
+			t.Fatalf("parseControlError(%q) = (%q, %q), want empty", string(empty), code, phase)
+		}
+	}
 }
 
 func TestEffectiveForAgentMatchesDomainACLSemantics(t *testing.T) {

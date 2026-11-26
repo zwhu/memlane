@@ -1012,6 +1012,10 @@ func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
 	})
 	check(err)
 
+	var activeGateway atomic.Pointer[http.Handler]
+	gwHandler := gwSrv.Handler()
+	activeGateway.Store(&gwHandler)
+
 	var deadPortHits atomic.Int32
 	httpClient := &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Host {
@@ -1023,7 +1027,7 @@ func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
 			}
 			http.NotFound(w, r)
 		case "127.0.0.1:61259":
-			gwSrv.Handler().ServeHTTP(w, r)
+			(*activeGateway.Load()).ServeHTTP(w, r)
 		case "127.0.0.1:18173":
 			deadPortHits.Add(1)
 			http.Error(w, "connection refused", http.StatusBadGateway)
@@ -1104,6 +1108,60 @@ func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
 	if !ttMismatch.HasText("待检查") || !ttMismatch.HasText(gatewayURL) || ttMismatch.HasText("18173") {
 		t.Fatalf("mismatch overview unexpected texts: %v", ttMismatch.Texts())
 	}
+
+	// 4. CompletionHandler == nil (404 not_configured) -> neutral / 未配置 across all surfaces, zero probe to :18173.
+	unconfiguredSrv, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          wireEngine{},
+		ManagementToken: token,
+	})
+	check(err)
+	unconfiguredHandler := unconfiguredSrv.Handler()
+	activeGateway.Store(&unconfiguredHandler)
+	poll()
+	if a.monitor.CompletionStatus != "未配置" || a.monitor.CompletionEndpoint != "" {
+		t.Fatalf("not_configured state = (%q, %q), want (未配置, \"\")", a.monitor.CompletionStatus, a.monitor.CompletionEndpoint)
+	}
+	if dot, metric, col := a.trayChannelStatus(); dot != "neutral" || metric != "未配置" || col != tok.Text3 {
+		t.Fatalf("not_configured trayChannelStatus = (%q, %q, %v), want neutral/未配置/Text3", dot, metric, col)
+	}
+	ttUnconfigured := renderOverview()
+	if !ttUnconfigured.HasText("未配置") || ttUnconfigured.HasText("待检查") {
+		t.Fatalf("not_configured overview unexpected texts: %v", ttUnconfigured.Texts())
+	}
+	a.servicePopover.PopoverOpen = true
+	ttUnconfiguredPop := ui.NewTester(a.View, 1200, 820)
+	if !ttUnconfiguredPop.HasText("未配置") || ttUnconfiguredPop.HasText("待检查") {
+		t.Fatalf("not_configured popover unexpected texts: %v", ttUnconfiguredPop.Texts())
+	}
+	a.servicePopover.PopoverOpen = false
+
+	// 5. Generic 503 (non-bridge_inactive) -> warn / 待检查 (must NOT be misclassified as 未启用).
+	generic503Srv, err := gateway.NewServer(gateway.Config{
+		Store:  store,
+		Engine: wireEngine{},
+		CompletionHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"code":"service_unavailable","message":"overloaded"}}`))
+		}),
+		ManagementToken: token,
+	})
+	check(err)
+	generic503Handler := generic503Srv.Handler()
+	activeGateway.Store(&generic503Handler)
+	poll()
+	if a.monitor.CompletionStatus == settings.CompletionInactiveStatus {
+		t.Fatalf("generic 503 misclassified as CompletionInactiveStatus: %q", a.monitor.CompletionStatus)
+	}
+	if dot, metric, col := a.trayChannelStatus(); dot != "warn" || metric != "待检查" || col != tok.Warning {
+		t.Fatalf("generic 503 trayChannelStatus = (%q, %q, %v), want warn/待检查/Warning", dot, metric, col)
+	}
+	ttGeneric503 := renderOverview()
+	if !ttGeneric503.HasText("待检查") || !ttGeneric503.HasText(gatewayURL) || ttGeneric503.HasText("未启用") || ttGeneric503.HasText("18173") {
+		t.Fatalf("generic 503 overview unexpected texts: %v", ttGeneric503.Texts())
+	}
+
 	if deadPortHits.Load() != 0 {
 		t.Fatalf("expected zero hits to stale :18173, got %d", deadPortHits.Load())
 	}

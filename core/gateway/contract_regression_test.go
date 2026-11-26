@@ -669,13 +669,18 @@ func TestContractCompletionHealthEndpoint(t *testing.T) {
 		t.Fatalf("gateway.NewServer: %v", err)
 	}
 
-	// 1. Auth enforcement: anonymous -> 401, agent credential -> 403.
+	// 1. Auth & browser Origin enforcement: anonymous -> 401, agent credential -> 403, browser Origin -> 403.
 	for _, route := range []string{"/api/completion/health", "/v1/completion/health"} {
 		if code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", nil); code != http.StatusUnauthorized || body["error"] != "unauthorized" {
 			t.Fatalf("anonymous GET %s = %d %+v, want 401 unauthorized", route, code, body)
 		}
 		if code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", agentHeaders(agentToken)); code != http.StatusForbidden || body["error"] != "management_required" {
 			t.Fatalf("agent GET %s = %d %+v, want 403 management_required", route, code, body)
+		}
+		originHeaders := mgmtHeaders()
+		originHeaders["Origin"] = "https://example.invalid"
+		if code, body := doHTTPJSON(t, srv, http.MethodGet, route, "", originHeaders); code != http.StatusForbidden || body["error"] != "browser_origin_rejected" {
+			t.Fatalf("origin GET %s = %d %+v, want 403 browser_origin_rejected", route, code, body)
 		}
 	}
 

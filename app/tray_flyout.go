@@ -120,7 +120,7 @@ func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
 	if a.monitor.CompletionStatus == settings.CompletionInactiveStatus {
 		return "neutral", "未启用", tok.Text3
 	}
-	if a.monitor.EffectiveCompletionURL(a.Config.CompletionURL) == "" && (a.monitor.CompletionStatus == "" || a.monitor.CompletionStatus == "未配置") {
+	if a.monitor.CompletionStatus == "未配置" || (a.monitor.EffectiveCompletionURL(a.Config.CompletionURL) == "" && a.monitor.CompletionStatus == "") {
 		return "neutral", "未配置", tok.Text3
 	}
 	if strings.HasPrefix(a.monitor.CompletionStatus, "端点已连接") {

@@ -54,8 +54,11 @@ func (s *Server) completionHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := r.Clone(r.Context())
+	req.RequestURI = ""
 	req.URL.Path = "/health"
 	req.URL.RawPath = ""
+	req.Header.Del("Authorization")
+	req.Header.Del("X-Memlane-Management")
 	s.cfg.CompletionHandler.ServeHTTP(w, req)
 }
 

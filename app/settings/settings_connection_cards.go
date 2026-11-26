@@ -130,9 +130,11 @@ func (a *Controller) ViewServiceOverview(c *ui.Context) {
 				compVal = "待配置提炼"
 			} else if a.monitor.CompletionStatus == CompletionInactiveStatus {
 				compVal = "未启用"
+			} else if a.monitor.CompletionStatus == "未配置" {
+				compVal = "未配置"
 			} else if strings.HasPrefix(a.monitor.CompletionStatus, "端点已连接") {
 				compDot, compVal, compCol = "ok", "已连接", tok.OK
-			} else if a.monitor.CompletionStatus != "" && a.monitor.CompletionStatus != "未配置" && a.monitor.CompletionStatus != "尚未检查" {
+			} else if a.monitor.CompletionStatus != "" && a.monitor.CompletionStatus != "尚未检查" {
 				compDot, compVal, compCol = "warn", "待检查", tok.Warning
 			}
 			var compParts []string

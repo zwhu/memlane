@@ -186,8 +186,18 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			case IsControlErrorCode(err, http.StatusServiceUnavailable, "bridge_inactive"):
 				completion = CompletionInactiveStatus
 				completionEndpoint = controlClient.Config.URL
+			case IsControlErrorCode(err, http.StatusNotFound, "not_configured"):
+				completion = "未配置"
+				completionEndpoint = ""
 			case isControlStatus(err, http.StatusNotFound):
-				probeStandaloneCompletion()
+				normCompletion := strings.TrimRight(strings.TrimSpace(completionURL), "/")
+				normControl := strings.TrimRight(strings.TrimSpace(controlClient.Config.URL), "/")
+				if normCompletion != "" && normCompletion != normControl {
+					probeStandaloneCompletion()
+				} else if normCompletion != "" {
+					completion = controlplane.RedactSecretText(err.Error())
+					completionEndpoint = controlClient.Config.URL
+				}
 			default:
 				completion = controlplane.RedactSecretText(err.Error())
 				completionEndpoint = controlClient.Config.URL
