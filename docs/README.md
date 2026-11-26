@@ -19,6 +19,7 @@
 | [boundaries.md](architecture/boundaries.md) | 现行生效架构边界契约（Go 单二进制收口、Python ≤3.5k 无状态引擎薄壳、方案 C `memlane hook` 与三级冲突策略、6 原语 `MemoryEngine`、`kit/*` 跨 App 复用边界与机械门禁） |
 | [development.md](architecture/development.md) | 日常开发入口 `cmd/memlane dev`、统一门禁（`check.py` / `lint.py` / `diff_guard.py`）、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
+| [memory-flow-3d/](architecture/memory-flow-3d/) | Memlane × Cognee 3D / 2D 记忆流转交互动画图解（离线 WebGL 3D + 零依赖 2D Canvas 双版本一键互切，均支持浅色/深空双风格，含切段/分词、GPT 代理提炼、三库与零大模型召回演示） |
 
 ## 3. 界面、视觉与动效设计 (`design/`)
 
@@ -26,6 +27,7 @@
 | --- | --- |
 | [visual-standards-v4-20261120.md](design/visual-standards-v4-20261120.md) | 现行 V4 视觉与核心交互规范（浅/深双外观令牌、字体层级、三栏布局、动效参数、§7.7 首次启动专注式向导及交互不变量；已合并原 `design.md`） |
 | [motion-implementation.md](design/motion-implementation.md) | MyGo 原生 UI 动效实施与复用契约（减少动态效果、帧率与内存守护） |
+| [technical-explainer-animation.md](design/technical-explainer-animation.md) | 技术原理动画制作经验与 2D / 3D 工程指南（叙事原则、60fps 连续时间轴、3D 浅色黏土/深空发光双配方与 2D Canvas 替代方案） |
 | [visual-v4-prototype/](design/visual-v4-prototype/) | V4 可交互 HTML 原型与自查截图脚本 |
 | [onboarding-prototype/](design/onboarding-prototype/) | 首次启动向导（2026-11-25 专注式重设计）可交互 HTML 原型与截图脚本 |
 

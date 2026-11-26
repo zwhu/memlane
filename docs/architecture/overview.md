@@ -34,4 +34,5 @@ Memlane 是面向程序员的 macOS 记忆客户端，坚持 **Go 单二进制�
 - [现行架构边界契约（含方案 C 与三级冲突策略）](boundaries.md)
 - [本地开发与运维说明](development.md)
 - [Agent 有效模型读取与调用契约](agent-effective-model-contract-20261118.md)
+- [Memlane × Cognee 3D / 2D 记忆流转交互图解](memory-flow-3d/README.md)
 - [架构守护、Python 冻结与定时巡检规划](../engineering/architecture-governance-and-py-freeze.md)

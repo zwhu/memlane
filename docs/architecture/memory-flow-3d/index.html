@@ -1,0 +1,2643 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memlane × Cognee · 3D 工作室动画讲解</title>
+<style>
+:root {
+  --paper: #f6f1e8;
+  --glass: rgba(252, 249, 243, 0.84);
+  --glass-strong: rgba(255, 253, 249, 0.93);
+  --border: rgba(120, 104, 82, 0.16);
+  --ink: #22201d;
+  --muted: #686156;
+  --subtle: #968d7f;
+  --accent: #d06542;
+  --accent-soft: rgba(208, 101, 66, 0.12);
+  --green: #2c835d;
+  --green-soft: rgba(44, 131, 93, 0.13);
+  --indigo: #5865d6;
+  --serif: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; overflow: hidden; background: var(--paper); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; user-select: none; }
+
+#canvas-wrap { position: fixed; inset: 0; cursor: grab; }
+#canvas-wrap:active { cursor: grabbing; }
+canvas { display: block; width: 100%; height: 100%; }
+
+/* 3D projected labels */
+#labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 6; }
+.tag3d {
+  position: absolute; left: 0; top: 0;
+  transform: translate(-50%, -100%);
+  padding: 5px 11px; border-radius: 99px;
+  background: rgba(255, 253, 249, 0.9);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(110, 95, 74, 0.18);
+  box-shadow: 0 6px 18px rgba(38, 28, 16, 0.08);
+  font-size: 12.5px; font-weight: 650; color: var(--ink);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+  opacity: 0; transition: opacity 260ms ease;
+  will-change: transform, opacity;
+}
+.tag3d.vis { opacity: 1; }
+.tag3d img { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
+.tag3d.brand { font-size: 13px; padding: 5px 12px 5px 7px; }
+.tag3d.brand span.sub { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+.tag3d.edge { font-size: 11.5px; padding: 3px 9px; color: #684aa3; border-color: rgba(104, 74, 163, 0.28); background: rgba(248, 244, 255, 0.92); }
+.tag3d.edge.hot { color: #fff; background: var(--green); border-color: var(--green); }
+.tag3d.node-g { font-size: 12px; padding: 4px 10px; color: #1f5c41; border-color: rgba(44, 131, 93, 0.3); }
+.tag3d.node-g.hot { color: #fff; background: var(--green); border-color: var(--green); }
+.tag3d.star { font-size: 11px; padding: 2px 8px; }
+.tag3d.star.muted { color: var(--subtle); background: rgba(250, 247, 241, 0.72); border-color: rgba(130,120,105,0.14); }
+.tag3d.star.hot { color: #fff; background: var(--green); border-color: var(--green); }
+.tag3d.pill-ai { background: #6b52ad; color: #fff; border-color: transparent; font-size: 11.5px; }
+.tag3d.pill-code { background: rgba(255,253,249,0.94); color: var(--muted); font-size: 11.5px; }
+.tag3d.pill-green { background: var(--green); color: #fff; border-color: transparent; font-size: 12px; }
+
+/* Top HUD */
+.hud-top {
+  position: fixed; top: 16px; left: 18px; right: 18px; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  pointer-events: none;
+}
+.hud-top > * { pointer-events: auto; }
+.brand-pill {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 7px 14px 7px 9px; border-radius: 99px;
+  background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(34,26,16,0.06);
+}
+.brand-pill img { width: 24px; height: 24px; border-radius: 6px; }
+.brand-pill h1 { margin: 0; font: 600 14.5px/1 var(--serif); letter-spacing: -0.01em; }
+.phase-badge {
+  font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px;
+  background: var(--accent-soft); color: var(--accent);
+}
+body.recall .phase-badge { background: var(--green-soft); color: var(--green); }
+.nollm-badge {
+  display: none; align-items: center; gap: 5px;
+  padding: 6px 13px; border-radius: 99px;
+  background: rgba(44, 131, 93, 0.92); color: #fff;
+  font-size: 12px; font-weight: 650;
+  box-shadow: 0 8px 22px rgba(44, 131, 93, 0.24);
+}
+body.recall .nollm-badge { display: inline-flex; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+  padding: 7px 13px; border-radius: 99px;
+  background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border); color: var(--ink); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: border-color 140ms, background 140ms, transform 140ms;
+}
+.chip-btn:hover { border-color: var(--accent); background: var(--glass-strong); }
+.chip-btn:active { transform: scale(0.96); }
+.chip-btn.on { background: var(--ink); color: #faf7f2; border-color: var(--ink); }
+.hint-orbit { font-size: 11.5px; color: var(--muted); padding: 6px 11px; border-radius: 99px; background: rgba(252,249,243,0.65); border: 1px solid var(--border); }
+
+/* Bottom Cinema Deck */
+.cinema-deck {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  width: min(960px, calc(100vw - 28px)); z-index: 20;
+  background: var(--glass-strong); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border); border-radius: 22px;
+  box-shadow: 0 18px 48px rgba(34, 26, 16, 0.11), 0 2px 8px rgba(34, 26, 16, 0.05);
+  padding: 13px 18px 12px;
+}
+.sub-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sub-title { font: 700 17px/1.3 var(--serif); color: var(--ink); }
+.sub-step { font: 700 11px/1 var(--mono); padding: 3px 8px; border-radius: 99px; background: var(--accent); color: #fff; vertical-align: 2px; }
+body.recall .sub-step { background: var(--green); }
+.sub-body { margin: 5px 0 0; font-size: 14px; line-height: 1.62; color: #3d3933; }
+.sub-tip {
+  margin-top: 6px; padding: 5px 10px; border-radius: 10px;
+  background: rgba(236, 229, 216, 0.55); font-size: 12.5px; line-height: 1.5; color: var(--muted);
+}
+.sub-tip:empty { display: none; }
+.sub-tip b { color: var(--ink); }
+.sub-tech { display: none; margin-top: 5px; font: 11.5px/1.45 var(--mono); color: var(--subtle); }
+body.tech .sub-tech { display: block; }
+
+/* Scrubber */
+.player-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.pbtn {
+  border: 1px solid var(--border); background: #fff; color: var(--ink);
+  border-radius: 99px; height: 34px; padding: 0 13px; font-size: 13px; font-weight: 650;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  transition: transform 140ms, border-color 140ms, background 140ms;
+}
+.pbtn:hover { border-color: var(--accent); }
+.pbtn:active { transform: scale(0.95); }
+.pbtn.primary { background: var(--ink); color: #faf7f2; border-color: var(--ink); min-width: 88px; }
+.pbtn.icon { width: 34px; padding: 0; }
+
+.scrubber-wrap { flex: 1; position: relative; height: 26px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.scrubber-track {
+  position: relative; width: 100%; height: 7px; border-radius: 99px;
+  background: rgba(120, 104, 82, 0.16); overflow: visible;
+}
+.scrubber-store-bg {
+  position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px 0 0 99px;
+  background: rgba(208, 101, 66, 0.14);
+}
+.scrubber-recall-bg {
+  position: absolute; right: 0; top: 0; bottom: 0; border-radius: 0 99px 99px 0;
+  background: rgba(44, 131, 93, 0.14);
+}
+.scrubber-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), #e0815d);
+  pointer-events: none;
+}
+body.recall .scrubber-fill { background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 75%, var(--green) 76%, #45a378 100%); }
+.scrubber-knob {
+  position: absolute; top: 50%; left: 0%; width: 15px; height: 15px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: #fff; border: 2.5px solid var(--accent);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2); pointer-events: none;
+}
+body.recall .scrubber-knob { border-color: var(--green); }
+.chap-tick {
+  position: absolute; top: -2px; width: 2px; height: 11px; border-radius: 1px;
+  background: rgba(255,255,255,0.85); pointer-events: none;
+}
+.scrub-tip {
+  position: absolute; bottom: 26px; transform: translateX(-50%);
+  padding: 3px 9px; border-radius: 8px; background: var(--ink); color: #faf7f2;
+  font-size: 11.5px; font-weight: 600; white-space: nowrap; pointer-events: none;
+  opacity: 0; transition: opacity 120ms;
+}
+.scrubber-wrap:hover .scrub-tip, .scrubber-wrap.dragging .scrub-tip { opacity: 1; }
+.timecode { font: 600 11.5px/1 var(--mono); color: var(--muted); min-width: 72px; text-align: right; }
+
+/* ==================== DEEP SPACE GLOWING SCI-FI THEME ==================== */
+body.space {
+  --paper: #060914;
+  --glass: rgba(13, 19, 36, 0.80);
+  --glass-strong: rgba(14, 20, 38, 0.88);
+  --border: rgba(110, 162, 255, 0.22);
+  --ink: #eef4ff;
+  --muted: #9eb0d1;
+  --subtle: #7588ad;
+  --accent: #ff7e54;
+  --accent-soft: rgba(255, 126, 84, 0.18);
+  --green: #32df92;
+  --green-soft: rgba(50, 223, 146, 0.18);
+}
+body.space .brand-pill, body.space .chip-btn, body.space .cinema-deck {
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(155, 198, 255, 0.12);
+}
+body.space .hint-orbit { background: rgba(13, 19, 36, 0.65); }
+body.space .chip-btn.on { background: #3b82f6; color: #fff; border-color: #60a5fa; }
+body.space .sub-body { color: #d6e2f7; }
+body.space .sub-tip { background: rgba(40, 62, 112, 0.36); border: 1px solid rgba(110, 162, 255, 0.14); }
+body.space .pbtn { background: rgba(22, 31, 56, 0.92); color: #eef4ff; }
+body.space .pbtn.primary { background: linear-gradient(135deg, #4b8bff, #6e5cff); color: #fff; border-color: transparent; box-shadow: 0 4px 18px rgba(82, 124, 255, 0.42); }
+body.space .scrubber-track { background: rgba(130, 168, 240, 0.18); }
+body.space .scrubber-knob { background: #0e1528; border-color: #ff8e66; box-shadow: 0 0 12px rgba(255, 126, 84, 0.7); }
+body.space.recall .scrubber-knob { border-color: #32df92; box-shadow: 0 0 12px rgba(50, 223, 146, 0.75); }
+body.space .scrub-tip { background: #1d2b4e; color: #f0f6ff; border: 1px solid rgba(120, 175, 255, 0.3); }
+body.space .tag3d {
+  background: rgba(13, 20, 38, 0.88);
+  border-color: rgba(112, 168, 255, 0.30);
+  color: #eef4ff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), 0 0 14px rgba(72, 136, 255, 0.14);
+}
+body.space .tag3d.edge { color: #d2bcff; background: rgba(45, 28, 86, 0.90); border-color: rgba(176, 138, 255, 0.45); }
+body.space .tag3d.node-g { color: #7ef2be; background: rgba(14, 48, 38, 0.90); border-color: rgba(56, 224, 150, 0.45); }
+body.space .tag3d.star.muted { color: #7e91b8; background: rgba(12, 18, 34, 0.76); border-color: rgba(100, 132, 192, 0.20); }
+body.space .tag3d.pill-ai { background: linear-gradient(135deg, #6e4ee6, #4a78f2); border-color: rgba(170, 156, 255, 0.45); box-shadow: 0 0 18px rgba(118, 92, 245, 0.45); }
+body.space .tag3d.pill-code { background: rgba(18, 28, 52, 0.92); color: #b8ccf0; border-color: rgba(112, 168, 255, 0.32); }
+body.space .tag3d.hot, body.space .tag3d.edge.hot, body.space .tag3d.node-g.hot, body.space .tag3d.star.hot {
+  background: #1eb976; color: #041910; border-color: #6df5b8; box-shadow: 0 0 18px rgba(46, 224, 142, 0.55);
+}
+body.space .nollm-badge { background: rgba(24, 178, 112, 0.92); color: #03190f; box-shadow: 0 0 24px rgba(46, 224, 142, 0.45); }
+
+/* Clean Full-Canvas Video Mode (?clean=1 / #clean=1) & Deterministic Record Mode (?record=1) */
+body.clean .hud-top,
+body.clean .cinema-deck { display: none !important; }
+body.record .tag3d { transition: none !important; will-change: auto !important; }
+body.clean .tag3d { font-size: 13.5px; padding: 5px 12px; font-weight: 600; color: #ffffff; }
+body.clean .tag3d.brand { font-size: 14.5px; padding: 6px 13px 6px 8px; }
+body.clean .tag3d.brand span.sub { font-size: 12.5px; color: #c8d8f5; }
+body.clean .tag3d.brand img { width: 18px; height: 18px; }
+body.clean .tag3d.node-g { font-size: 13px; padding: 4px 11px; color: #eafff5; }
+body.clean .tag3d.edge { font-size: 12.5px; padding: 3.5px 10px; color: #f4eeff; }
+body.clean .tag3d.star { font-size: 12px; padding: 3px 9px; color: #ffffff; }
+body.clean .tag3d.star.muted { color: #b7c6e0; }
+body.clean .tag3d.pill-ai,
+body.clean .tag3d.pill-code,
+body.clean .tag3d.pill-green { font-size: 13px; padding: 5px 12px; color: #ffffff; }
+
+/* Minimal Cinema Subtitles (only when ?subs=1 / #subs=1) */
+.cinema-sub {
+  display: none; position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  z-index: 18; pointer-events: none; width: max-content; max-width: calc(100vw - 64px);
+  padding: 10px 22px; border-radius: 16px;
+  background: rgba(8, 13, 28, 0.84);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(118, 174, 255, 0.30);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(160, 210, 255, 0.16);
+  align-items: center; gap: 12px; opacity: 0;
+}
+body.subs .cinema-sub { display: inline-flex; }
+.cinema-sub-step {
+  flex-shrink: 0; font: 700 13px/1 var(--mono); padding: 5.5px 11px; border-radius: 99px;
+  background: var(--accent); color: #ffffff; letter-spacing: 0.02em;
+}
+body.recall .cinema-sub-step { background: var(--green); color: #03190f; }
+.cinema-sub-text {
+  font: 600 17px/1.45 var(--sans); color: #ffffff; letter-spacing: 0.01em;
+}
+
+/* Store -> Recall Cinematic Transition Interlude */
+.interlude {
+  position: fixed; inset: 0; z-index: 15; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 48%, rgba(244, 238, 228, 0.42), rgba(244, 238, 228, 0.78));
+  opacity: 0; will-change: opacity;
+}
+body.space .interlude {
+  background: radial-gradient(circle at 50% 48%, rgba(8, 16, 36, 0.46), rgba(4, 7, 18, 0.82));
+}
+.interlude-card {
+  text-align: center; padding: 30px 52px 32px; border-radius: 28px;
+  background: rgba(255, 252, 246, 0.88);
+  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+  border: 1px solid rgba(120, 104, 82, 0.22);
+  box-shadow: 0 24px 70px rgba(24, 18, 10, 0.14);
+  transform: translateY(14px) scale(0.96); will-change: transform;
+}
+body.space .interlude-card {
+  background: rgba(11, 18, 38, 0.86);
+  border: 1px solid rgba(72, 224, 158, 0.36);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.68), 0 0 44px rgba(50, 223, 146, 0.18), inset 0 1px 0 rgba(160, 210, 255, 0.18);
+}
+.interlude-eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 14px; border-radius: 99px;
+  background: var(--green-soft); color: var(--green);
+  font: 700 13px/1 var(--sans); letter-spacing: 0.04em;
+}
+.interlude-title {
+  margin: 16px 0 10px; font: 700 34px/1.25 var(--serif); letter-spacing: -0.01em; color: var(--ink);
+}
+.interlude-sub {
+  margin: 0; font: 500 16px/1.55 var(--sans); color: var(--muted);
+}
+.interlude-line {
+  width: 68px; height: 3px; border-radius: 99px; margin: 18px auto 0;
+  background: linear-gradient(90deg, var(--accent), var(--green));
+}
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+<div id="labels"></div>
+<div class="interlude" id="interlude">
+  <div class="interlude-card" id="interlude-card">
+    <div class="interlude-eyebrow">✓ 记忆已入库 · 时间流转</div>
+    <h2 class="interlude-title">几天后，换一种说法再次提问</h2>
+    <p class="interlude-sub">进入召回阶段 · 全程 0 次大模型调用 · 向量 + 图库联合检索</p>
+    <div class="interlude-line"></div>
+  </div>
+</div>
+<div class="cinema-sub" id="cinema-sub">
+  <span class="cinema-sub-step" id="cinema-sub-step"></span>
+  <span class="cinema-sub-text" id="cinema-sub-text"></span>
+</div>
+
+<div class="hud-top">
+  <div class="brand-pill">
+    <img id="hdr-memlane" alt="Memlane">
+    <h1>Memlane × Cognee · 3D 记忆工坊</h1>
+    <span class="phase-badge" id="phase-badge">全景导览</span>
+  </div>
+  <div class="nollm-badge" id="nollm-badge">⚡ 召回全程 0 次大模型 · 向量模型 + 查库</div>
+  <div class="top-actions">
+    <span class="hint-orbit">🖱 拖动旋转 3D · 滚轮缩放</span>
+    <a class="chip-btn" id="btn-to-2d" href="2d.html">🎨 切到 2D 版</a>
+    <button class="chip-btn" id="btn-theme">🌌 深空科技</button>
+    <button class="chip-btn" id="btn-reset-cam">视角复位</button>
+    <button class="chip-btn" id="btn-tech">源码对应</button>
+  </div>
+</div>
+
+<div class="cinema-deck">
+  <div class="sub-row">
+    <span class="sub-step" id="sub-step">开场</span>
+    <span class="sub-title" id="sub-title"></span>
+  </div>
+  <div class="sub-body" id="sub-body"></div>
+  <div class="sub-tip" id="sub-tip"></div>
+  <div class="sub-tech" id="sub-tech"></div>
+  <div class="player-bar">
+    <button class="pbtn primary" id="btn-play">▶ 播放</button>
+    <button class="pbtn icon" id="btn-prev" title="上一幕">←</button>
+    <button class="pbtn icon" id="btn-next" title="下一幕">→</button>
+    <div class="scrubber-wrap" id="scrubber">
+      <div class="scrub-tip" id="scrub-tip"></div>
+      <div class="scrubber-track" id="scrub-track">
+        <div class="scrubber-store-bg" id="scrub-store-bg"></div>
+        <div class="scrubber-recall-bg" id="scrub-recall-bg"></div>
+        <div class="scrubber-fill" id="scrub-fill"></div>
+        <div class="scrubber-knob" id="scrub-knob"></div>
+      </div>
+    </div>
+    <button class="pbtn" id="btn-speed" style="min-width:54px">1×</button>
+    <span class="timecode" id="timecode">00:00 / 01:16</span>
+  </div>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/icons.js"></script>
+<script>
+"use strict";
+const ICONS = window.BRAND_ICONS || {};
+document.getElementById("hdr-memlane").src = ICONS.memlane || "";
+
+/* ==================== MATH HELPERS ==================== */
+const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+const remap = (t, a, b) => clamp01((t - a) / (b - a));
+const lerp = (a, b, u) => a + (b - a) * u;
+const smooth = u => u * u * (3 - 2 * u);
+const smoother = u => u * u * u * (u * (u * 6 - 15) + 10);
+const easeOutBack = u => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); };
+const easeOutCubic = u => 1 - Math.pow(1 - u, 3);
+const easeInOutCubic = u => u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+
+/* ==================== TIMELINE CHAPTERS (0 -> 79.5s) ==================== */
+const TRANS_T = 57.0;
+const RECALL_T = 60.5;
+const R_OFF = RECALL_T - TRANS_T; // +3.5s cinematic transition between Store and Recall
+const TOTAL = 79.5;
+
+const CHAPTERS = [
+  {
+    id: 0, start: 0.0, end: 4.5, phase: "全景导览", step: "开场",
+    title: "一座帮 AI 助手记住经验的 3D 记忆工坊",
+    body: "AI 每次新开对话都会失忆。左边是你的 Codex，中间是 Memlane 邮筒与 Cognee 加工厂，右边是三座各司其职的数据库——接下来看一段对话如何变成长期记忆，并在几天后自动被想起。",
+    tip: "💡 随时可以按住底部进度条像视频一样前后拖动，也可以用鼠标拖动画面自由旋转 3D 视角。",
+    tech: "Codex Hook → Memlane Go 网关 (memlane.sqlite3) → Cognee 1.6.7 (SQLite / Ladybug / LanceDB)",
+    cam: { pos: [-0.8, 22.5, 37.0], look: [-0.8, 1.4, 0.2], orbit: 0.07 }
+  },
+  {
+    id: 1, start: 4.5, end: 10.5, phase: "记下来", step: "01 对话",
+    title: "你和 Codex 聊完一次排障，得出一条教训",
+    body: "你和 Codex 一起查出“清理旧文件时把正在运行的程序也删掉了”，最后定下规矩：以后清理前先确认程序没在运行。这一问一答的原话，就是后续全部加工的原材料。",
+    tip: "💡 全程自动触发，你不需要手动复制或记笔记。",
+    tech: "Codex 会话结束触发 Hook → 打包本轮 QAEntry(question, answer)",
+    cam: { pos: [-14.7, 4.1, 10.8], look: [-15.5, 2.1, 0.0], orbit: 0.04 }
+  },
+  {
+    id: 2, start: 10.5, end: 17.0, phase: "记下来", step: "02 寄信排队",
+    title: "对话折成 3D 纸飞机，飞进 Memlane 邮筒排队",
+    body: "对话结束瞬间，原话自动折成一架纸飞机飞进 Memlane 邮筒。Memlane 只核对项目权限就立刻放行（不卡你写代码），把信放到队列里慢慢等前面两封处理完——哪怕后台暂时重启，信也在本机安全留着。",
+    tip: "💡 <b>信箱</b>本质是 Memlane 本机 SQLite 里的一张收件箱表（先稳稳接住，再异步排队）。",
+    tech: "memlane hook → POST /ingest → 校验项目 ACL 与 auto_capture → memlane.sqlite3 · capture_inbox (<5ms)",
+    cam: { pos: [-11.4, 6.2, 12.2], look: [-10.8, 1.75, 0.2], orbit: 0.03 }
+  },
+  {
+    id: 3, start: 17.0, end: 23.0, phase: "记下来", step: "03 原话存档",
+    title: "进入 Cognee 工厂：第一站先原样存档到 SQLite",
+    body: "排到它后，信封变成一块发光的「原话砖」滑上传送带。第 1 台激光扫描门不做任何改写，先把原话原封不动复印一份送进右后方的关系数据库 SQLite，登记名称、指纹与时间，保证永远有据可查。",
+    tip: "💡 <b>关系数据库 SQLite</b>：像表格一样登记“是什么、存哪、何时存的”，就是你电脑上的一个文件。",
+    tech: "InboxWorker → remember(QAEntry) → improve · persist_session_qa → 原文落盘 + cognee_db (SQLite)",
+    cam: { pos: [-1.5, 9.2, 13.5], look: [3.2, 1.7, -2.5], orbit: 0.04 }
+  },
+  {
+    id: 4, start: 23.0, end: 29.5, phase: "记下来", step: "04 大模型提炼",
+    title: "大模型提炼炉（GPT 模型 · Memlane 代理）：产出「经验晶体」",
+    body: "原话砖驶入紫光玻璃炉，由 Memlane 代理调用 GPT 模型提炼出一块橙色「经验晶体」。它有两条去路：① 副本立刻飞向右后方 SQLite 存档登记；② 主晶体留在传送带上和原话砖一起继续切段、分词，最终变成向量库里的橙色星点。",
+    tip: "💡 <b>Memlane 代理（GPT 模型）</b>：Cognee 不直接连外网，而是经 Memlane 代理调用隔离的 Codex / GPT 模型（防触发 Hook 死循环），也可在设置里换直连 API。",
+    tech: "improve · distill_sessions → /v1/chat/completions (Memlane agent_bridge → 隔离 Codex/GPT) → # Session learning 入 SQLite + add/cognify",
+    cam: { pos: [-2.6, 5.8, 12.2], look: [-1.4, 2.0, -0.3], orbit: 0.04 }
+  },
+  {
+    id: 5, start: 29.5, end: 35.5, phase: "记下来", step: "05 切段 Chunking",
+    title: "切段闸刀咔嚓落下：长对话按规则切成小段",
+    body: "真实聊天往往有几十轮，太长不利于精准查找。黄铜闸刀由程序按段落和句号自动切分（不用 AI），把长对话砖咔嚓切成独立小段，每段都不超过模型一次能处理的长度上限。",
+    tip: "💡 <b>切段（Chunking）</b>只按标点与长度切，又快又稳定，拼回去和原文一字不差。",
+    tech: "TextChunker → chunk_by_paragraph / chunk_by_sentence → DocumentChunk",
+    cam: { pos: [5.9, 4.6, 7.2], look: [3.25, 1.35, 0.0], orbit: 0.05 }
+  },
+  {
+    id: 6, start: 35.5, end: 43.5, phase: "记下来", step: "06 分词 Tokenization",
+    title: "微距特写：计算机如何「分词」把中文变成数字？",
+    body: "计算机看不懂汉字。喂给向量模型前，分词器先把句子物理拆成一块块彩色词元积木——[清理] [旧] [文件] [误删] [程序]——接着每块积木在空中翻转，露出词表里对应的数字编号（#4821、#0893…），数字这才进入后续计算。",
+    tip: "💡 <b>分词（Tokenization）</b>：把文字拆成固定词表里的最小积木块（Token）并换成数字 ID，是所有 AI 读懂文字的第一步。",
+    tech: "Embedding Tokenizer (BPE / WordPiece) 将文本切分为 token IDs，再送入向量模型前向编码",
+    cam: { pos: [3.65, 3.7, 9.7], look: [3.6, 1.15, 3.1], orbit: 0.05 }
+  },
+  {
+    id: 7, start: 43.5, end: 50.5, phase: "记下来", step: "07 大模型抽图",
+    title: "大模型（GPT · Memlane 代理）读出实体与关系，画进 Ladybug",
+    body: "切好的段落送进上方悬浮的「GPT 大模型（Memlane 代理）」，由它逐段读出提到的对象（实体）和动词关系；3 颗立体绿球随即从大模型飞进 Ladybug 图剧场，拉出带箭头的 3D 连线：「清理旧文件 —会误删→ 正在运行的程序 ←保护— 先确认没在运行」。",
+    tip: "💡 <b>两次调大模型各干什么？</b> 第 04 幕负责总结经验条目，这一幕负责抽出图数据库的实体与关系；两者都经 Memlane 代理调用。",
+    tech: "extract_graph_from_data → Memlane agent_bridge (隔离 Codex/GPT) → add_nodes() + add_edges() 写入 Ladybug",
+    cam: { pos: [7.6, 8.6, 14.2], look: [8.6, 3.2, -1.6], orbit: 0.06 }
+  },
+  {
+    id: 8, start: 50.5, end: 57.0, phase: "记下来", step: "08 向量库 LanceDB",
+    title: "分词积木汇入向量透镜，精准射入 LanceDB 3D 星图",
+    body: "刚才那些数字积木被向量透镜压缩成一串坐标，沿着 XYZ 三维空间射进 LanceDB 玻璃魔方。意思越接近的内容落点越近——“经验晶体、清理旧文件、会误删”聚在中央，远处的“页面配色、登录报错”离得很远。",
+    tip: "💡 <b>向量（Embedding）</b>就是“意思地图上的坐标”；换种说法意思一样，坐标也会落在附近。",
+    tech: "index_data_points() → DocumentChunk_text / Entity_name / EdgeType_relationship_name 写入 LanceDB",
+    cam: { pos: [19.4, 4.9, 12.2], look: [13.8, 2.2, 6.4], orbit: 0.22 }
+  },
+  {
+    id: 9, start: 57.0, end: 60.5, phase: "时间过渡", step: "过渡 · 几天后",
+    title: "记忆已入库 · 几天后换一种说法再次提问",
+    body: "三条存储链路全部落盘完毕。镜头拉远，上方 GPT 大模型缓缓熄灯休眠——接下来进入「召回阶段」，全程 0 次大模型调用。",
+    tip: "💡 下面即将演示：换一种完全不同的说法提问，如何靠向量与图数据库自动想起刚才的教训。",
+    tech: "写入完成 → 几天后新会话触发 /recall（零 LLM 混合检索）",
+    cam: { pos: [-1.2, 20.5, 34.5], look: [-0.8, 1.5, 0.4], orbit: 0.08 }
+  },
+  {
+    id: 10, start: 60.5, end: 67.0, phase: "想起来", step: "09 新提问变流星",
+    title: "几天后换种说法提问：同样分词→向量，0 次大模型",
+    body: "你在新对话问：“我想清理旧版本，要注意什么？”字面上压根没提“误删”。Memlane 先用绿盾限定只查本项目 + 通用经验，然后用同一个向量模型把问题直接变成一颗绿光流星——这一步完全不调大模型，毫秒级完成。",
+    tip: "💡 <b>为什么召回不用大模型？</b> 你面前的 Codex 本身就是大模型，Memlane 只需飞快翻出资料交给它。",
+    tech: "POST /recall → ACL 作用域过滤 → 同款向量模型编码 query (only_context=True，0 LLM)",
+    cam: { pos: [-8.5, 6.6, 15.0], look: [-9.2, 1.85, 0.6], orbit: 0.04 }
+  },
+  {
+    id: 11, start: 67.0, end: 74.0, phase: "想起来", step: "10 雷达波 + 顺藤摸瓜",
+    title: "3D 雷达波在星图锁定近邻，联动图库顺线找到解法",
+    body: "绿光流星落入 LanceDB 星图，瞬间炸开一圈 3D 雷达球波，抓出距离最近的「经验晶体」「清理旧文件」「会误删」；光束随即穿透 Ladybug 关系网，顺着箭头摸出解决办法「先确认没在运行」，并闪过 SQLite 核对出处。",
+    tip: "💡 向量库解决“换种说法也能找到入口”，图数据库解决“顺着关系补全前因后果”。",
+    tech: "Cognee 混合检索 (HYBRID_COMPLETION + only_context=True)：LanceDB 多集合向量近邻 + Ladybug 图扩展 + 来源核对",
+    cam: { pos: [7.6, 7.6, 14.0], look: [14.0, 2.1, 2.9], orbit: 0.16 }
+  },
+  {
+    id: 12, start: 74.0, end: 79.5, phase: "想起来", step: "11 闭环回答",
+    title: "三库汇成光带送回 Codex，AI 带着上次经验回答你",
+    body: "找到的经验、关联关系与出处打包成参考资料，沿着绿色光带飞回 Codex 上下文。Codex 立刻提醒你：“清理前先确认程序没在运行——上次就因为这个误删过。”你什么都不用做，AI 就真的“长记性”了。",
+    tip: "💡 动画结束！可点「↻ 重播」再看一遍，或拖动画面自由探索这整座 3D 记忆工坊。",
+    tech: "/recall 返回精炼上下文注入宿主 → Codex 结合记忆作答",
+    cam: { pos: [-0.8, 22.0, 36.2], look: [-0.8, 1.5, 0.4], orbit: 0.07 }
+  }
+];
+
+function getChapter(t) {
+  for (let i = CHAPTERS.length - 1; i >= 0; i--) {
+    if (t >= CHAPTERS[i].start) return CHAPTERS[i];
+  }
+  return CHAPTERS[0];
+}
+
+/* ==================== THREE.JS STUDIO SETUP ==================== */
+const wrap = document.getElementById("canvas-wrap");
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+renderer.setSize(window.innerWidth, window.innerHeight);
+const maxAniso = Math.min(16, renderer.capabilities.getMaxAnisotropy());
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.93;
+wrap.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG_HEX = 0xf4eee4;
+scene.background = new THREE.Color(BG_HEX);
+scene.fog = new THREE.FogExp2(BG_HEX, 0.0062);
+
+const camera = new THREE.PerspectiveCamera(36, window.innerWidth / window.innerHeight, 0.1, 180);
+
+// 3-Point Warm Studio Clay Lighting (crisp matte tactile depth & readable soft shadows)
+const hemi = new THREE.HemisphereLight(0xfffcf5, 0xcabca6, 0.64);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xfff4e4, 1.05);
+keyLight.position.set(16, 28, 18);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 4;
+keyLight.shadow.camera.far = 75;
+keyLight.shadow.camera.left = -26;
+keyLight.shadow.camera.right = 26;
+keyLight.shadow.camera.top = 18;
+keyLight.shadow.camera.bottom = -18;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.radius = 3.0;
+scene.add(keyLight);
+
+const rimLight = new THREE.DirectionalLight(0xd4e2ff, 0.44);
+rimLight.position.set(-22, 16, -16);
+scene.add(rimLight);
+
+const warmFill = new THREE.PointLight(0xffcfab, 0.28, 36);
+warmFill.position.set(2, 9, 8);
+scene.add(warmFill);
+
+const spaceCyanLight = new THREE.PointLight(0x30c8ff, 0.0, 42);
+spaceCyanLight.position.set(14, 9, 2);
+scene.add(spaceCyanLight);
+
+// Deep Space 3D Cosmic Starfield (shown only in space mode)
+const starfield = (function buildStarfield() {
+  const N = 650;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const palette = [
+    new THREE.Color(0xe8f2ff),
+    new THREE.Color(0x7cc8ff),
+    new THREE.Color(0xb69cff),
+    new THREE.Color(0xffc999),
+    new THREE.Color(0x6ff5c8)
+  ];
+  for (let i = 0; i < N; i++) {
+    const r = 28 + Math.random() * 48;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i * 3]     = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = Math.abs(r * Math.cos(ph)) * 0.72 + 1.5;
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    const c = palette[i % palette.length];
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  // Soft round star texture
+  const sc = document.createElement("canvas");
+  sc.width = 64; sc.height = 64;
+  const sctx = sc.getContext("2d");
+  const g = sctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.35, "rgba(255,255,255,0.65)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  sctx.fillStyle = g; sctx.fillRect(0, 0, 64, 64);
+  const stex = new THREE.CanvasTexture(sc);
+  const mat = new THREE.PointsMaterial({
+    size: 0.65, map: stex, vertexColors: true, transparent: true, opacity: 0.88,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.visible = false;
+  scene.add(pts);
+  return pts;
+})();
+
+// Infinite Matte Studio Floor (Light warm dots <-> Deep Space cyber grid)
+let floorMat, floorTexLight, floorTexSpace;
+(function buildStudioFloor() {
+  const floorGeo = new THREE.PlaneGeometry(160, 160);
+  // Light warm paper dots
+  const c1 = document.createElement("canvas");
+  c1.width = 512; c1.height = 512;
+  const ctx1 = c1.getContext("2d");
+  ctx1.fillStyle = "#f5efe6";
+  ctx1.fillRect(0, 0, 512, 512);
+  ctx1.fillStyle = "rgba(130, 114, 92, 0.16)";
+  for (let x = 16; x < 512; x += 32) {
+    for (let y = 16; y < 512; y += 32) {
+      ctx1.beginPath(); ctx1.arc(x, y, 2.2, 0, Math.PI * 2); ctx1.fill();
+    }
+  }
+  floorTexLight = new THREE.CanvasTexture(c1);
+  floorTexLight.wrapS = floorTexLight.wrapT = THREE.RepeatWrapping;
+  floorTexLight.repeat.set(24, 24);
+  floorTexLight.encoding = THREE.sRGBEncoding;
+  floorTexLight.anisotropy = maxAniso;
+
+  // Deep space glowing obsidian tech grid
+  const c2 = document.createElement("canvas");
+  c2.width = 512; c2.height = 512;
+  const ctx2 = c2.getContext("2d");
+  ctx2.fillStyle = "#080d1b";
+  ctx2.fillRect(0, 0, 512, 512);
+  ctx2.strokeStyle = "rgba(68, 138, 255, 0.14)";
+  ctx2.lineWidth = 1.5;
+  for (let p = 0; p <= 512; p += 64) {
+    ctx2.beginPath(); ctx2.moveTo(p, 0); ctx2.lineTo(p, 512); ctx2.stroke();
+    ctx2.beginPath(); ctx2.moveTo(0, p); ctx2.lineTo(512, p); ctx2.stroke();
+  }
+  ctx2.strokeStyle = "rgba(92, 184, 255, 0.28)";
+  ctx2.lineWidth = 2;
+  ctx2.strokeRect(1, 1, 510, 510);
+  ctx2.fillStyle = "rgba(110, 205, 255, 0.45)";
+  for (let x = 0; x <= 512; x += 128) {
+    for (let y = 0; y <= 512; y += 128) {
+      ctx2.beginPath(); ctx2.arc(x, y, 3, 0, Math.PI * 2); ctx2.fill();
+    }
+  }
+  floorTexSpace = new THREE.CanvasTexture(c2);
+  floorTexSpace.wrapS = floorTexSpace.wrapT = THREE.RepeatWrapping;
+  floorTexSpace.repeat.set(22, 22);
+  floorTexSpace.encoding = THREE.sRGBEncoding;
+  floorTexSpace.anisotropy = maxAniso;
+
+  floorMat = new THREE.MeshStandardMaterial({ map: floorTexLight, roughness: 0.94, metalness: 0.0 });
+  const floor = new THREE.Mesh(floorGeo, floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  scene.add(floor);
+})();
+
+/* ==================== CLAY MATERIAL, GLOW SPRITES & THEME REGISTRY ==================== */
+let currentTheme = "light";
+const clayRegistry = [];
+const SPACE_PALETTE = {
+  // Light pedestals & decks -> sleek obsidian slate
+  0xebe3d5: [0x141b2f, 0.36, 0.28, 0x1e2c52, 0.14],
+  0xede5d7: [0x12192c, 0.38, 0.28, 0x1d2a4d, 0.12],
+  0xdcd3c3: [0x1c2540, 0.38, 0.32, 0x263866, 0.10],
+  0xfdfbf7: [0x182138, 0.34, 0.32, 0x3b589c, 0.18],
+  0xe2daf5: [0x241d46, 0.38, 0.26, 0x5239a8, 0.25],
+  0xfaf6ee: [0x182138, 0.36, 0.28, 0x2a3f72, 0.16],
+  0xe8dfd0: [0x101729, 0.42, 0.26, 0x284078, 0.18],
+  0xfaf7f2: [0x222d4d, 0.32, 0.32, 0x627aff, 0.22],
+  0xe7e1f2: [0x181533, 0.40, 0.24, 0x5639b8, 0.26],
+  0xe5edf2: [0x102033, 0.36, 0.28, 0x1f5c8a, 0.20],
+  0xe4efe9: [0x0f2421, 0.36, 0.28, 0x1c7858, 0.22],
+  0xe2ebf7: [0x101e38, 0.36, 0.28, 0x265eb0, 0.24],
+  0xffffff: [0x1d2742, 0.32, 0.25, 0x4569b8, 0.18],
+  0xe8e2d6: [0x232e4a, 0.42, 0.22, 0x3a4f80, 0.12],
+  0xfffaf4: [0x272030, 0.35, 0.22, 0xff7043, 0.25],
+  // Conveyor & guides -> carbon + neon glowing conduits
+  0x52565e: [0x0e1424, 0.35, 0.40, 0x1d3461, 0.16],
+  0x6d727c: [0x1c2842, 0.38, 0.35, 0x3b68b8, 0.18],
+  0xd4a45a: [0xf0a642, 0.28, 0.40, 0xf09a2b, 0.42],
+  0xd6cab6: [0x355c9c, 0.32, 0.30, 0x4b8bff, 0.45],
+  0xdcd2c1: [0x254075, 0.35, 0.25, 0x3c7aff, 0.48],
+  // Stations -> vivid luminous sci-fi finishes
+  0x3a6f91: [0x2179a8, 0.30, 0.28, 0x2dc8ff, 0.30],
+  0x2a5673: [0x185880, 0.30, 0.30, 0x38d6ff, 0.35],
+  0x265c7a: [0x19608c, 0.30, 0.30, 0x2cc8ff, 0.28],
+  0x357294: [0x2073a3, 0.30, 0.28, 0x30ccff, 0.24],
+  0xdcebf2: [0x58e0ff, 0.22, 0.10, 0x3ad5ff, 0.85],
+  0x78b095: [0x32e092, 0.25, 0.12, 0x2be08c, 0.72],
+  0xd09b48: [0xe69f35, 0.30, 0.38, 0xf09a24, 0.30],
+  0xb88032: [0xc98324, 0.30, 0.38, 0xe88d1c, 0.32],
+  0xf3eee6: [0xdbe8ff, 0.22, 0.45, 0x7cb8ff, 0.35],
+  0x5a66d1: [0x4c5df0, 0.32, 0.25, 0x5c72ff, 0.32],
+  0xd46a47: [0xf26d44, 0.32, 0.22, 0xff6e42, 0.35],
+  0x3a6cb0: [0x2e7df0, 0.26, 0.28, 0x45a3ff, 0.45],
+  0xb6afa3: [0x5b6c94, 0.45, 0.15, 0x4e67a3, 0.25]
+};
+
+function clayMat(hex, rough = 0.62, metal = 0.02, extra = {}) {
+  const mat = new THREE.MeshStandardMaterial({ color: hex, roughness: rough, metalness: metal, ...extra });
+  clayRegistry.push({
+    mat,
+    light: {
+      hex, rough, metal,
+      emissiveHex: extra.emissive !== undefined ? extra.emissive : 0x000000,
+      emissiveIntensity: extra.emissiveIntensity !== undefined ? extra.emissiveIntensity : 0
+    }
+  });
+  return mat;
+}
+
+// Reusable procedural radial glow sprite texture (additive bloom without post-processing cost!)
+const glowSpriteTex = (function makeGlowTex() {
+  const c = document.createElement("canvas");
+  c.width = 128; c.height = 128;
+  const ctx = c.getContext("2d");
+  const g = ctx.createRadialGradient(64, 64, 2, 64, 64, 64);
+  g.addColorStop(0, "rgba(255,255,255,0.95)");
+  g.addColorStop(0.28, "rgba(255,255,255,0.45)");
+  g.addColorStop(0.65, "rgba(255,255,255,0.10)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.encoding = THREE.sRGBEncoding;
+  return tex;
+})();
+const spaceGlowSprites = [];
+function attachGlow(parent, hex, size = 2.2, opacity = 0.72) {
+  const mat = new THREE.SpriteMaterial({
+    map: glowSpriteTex, color: hex, transparent: true, opacity,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(size, size, 1);
+  sp.visible = false;
+  parent.add(sp);
+  spaceGlowSprites.push(sp);
+  return sp;
+}
+function glassMat(hex, opacity = 0.42) {
+  return new THREE.MeshPhysicalMaterial({
+    color: hex, roughness: 0.14, metalness: 0.0,
+    transparent: true, opacity, clearcoat: 0.6, clearcoatRoughness: 0.15, depthWrite: false
+  });
+}
+
+function roundedBoxGeo(w, h, d, r = 0.14) {
+  r = Math.min(r, w / 2 - 0.01, h / 2 - 0.01);
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r);
+  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r);
+  s.quadraticCurveTo(x, y, x + r, y);
+  const bevel = Math.min(0.06, d * 0.22, r * 0.6);
+  const geo = new THREE.ExtrudeGeometry(s, {
+    depth: Math.max(0.02, d - bevel * 2),
+    bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 3, curveSegments: 8
+  });
+  geo.center();
+  return geo;
+}
+
+function makeRoundedMesh(w, h, d, r, mat, shadow = true) {
+  const m = new THREE.Mesh(roundedBoxGeo(w, h, d, r), mat);
+  m.castShadow = shadow;
+  m.receiveShadow = shadow;
+  return m;
+}
+
+function makeIconTexture(key, bgHex = "#ffffff") {
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext("2d");
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  const drawBg = () => {
+    ctx.clearRect(0, 0, 256, 256);
+    ctx.fillStyle = bgHex;
+    ctx.beginPath();
+    ctx.roundRect(8, 8, 240, 240, 52);
+    ctx.fill();
+  };
+  drawBg();
+  const tex = new THREE.CanvasTexture(c);
+  tex.encoding = THREE.sRGBEncoding;
+  tex.anisotropy = maxAniso;
+  if (ICONS[key]) {
+    const img = new Image();
+    img.onload = () => {
+      drawBg();
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(14, 14, 228, 228, 46);
+      ctx.clip();
+      const pad = (key === "memlane" || key === "cognee" || key === "codex") ? 14 : 28;
+      ctx.drawImage(img, pad, pad, 256 - pad * 2, 256 - pad * 2);
+      ctx.restore();
+      tex.needsUpdate = true;
+    };
+    img.src = ICONS[key];
+  }
+  return tex;
+}
+
+function makeIconPlaque(key, size = 1.05, bgHex = "#ffffff") {
+  const g = new THREE.Group();
+  const backing = makeRoundedMesh(size, size, 0.16, size * 0.24, clayMat(0xffffff, 0.45));
+  g.add(backing);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(size * 0.88, size * 0.88),
+    new THREE.MeshBasicMaterial({ map: makeIconTexture(key, bgHex), transparent: true })
+  );
+  face.position.z = 0.088;
+  g.add(face);
+  return g;
+}
+
+function makeCanvasLabelTex(text, { w = 256, h = 256, bg = "#e06d53", fg = "#ffffff", font = "700 84px -apple-system, PingFang SC, sans-serif", sub = "" } = {}) {
+  const c = document.createElement("canvas");
+  c.width = w * 2; c.height = h * 2;
+  const ctx = c.getContext("2d");
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+  // subtle top bevel gloss
+  const gr = ctx.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, "rgba(255,255,255,0.22)");
+  gr.addColorStop(0.5, "rgba(255,255,255,0)");
+  gr.addColorStop(1, "rgba(0,0,0,0.08)");
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = fg;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = font;
+  ctx.fillText(text, w / 2, sub ? h * 0.44 : h * 0.51);
+  if (sub) {
+    ctx.font = "600 32px ui-monospace, Menlo, monospace";
+    ctx.fillStyle = "rgba(255,255,255,0.82)";
+    ctx.fillText(sub, w / 2, h * 0.77);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.encoding = THREE.sRGBEncoding;
+  tex.anisotropy = maxAniso;
+  return tex;
+}
+
+/* ==================== 1. ZONE: CODEX 3D DISPLAY (X = -15.5) ==================== */
+const codexGroup = new THREE.Group();
+codexGroup.position.set(-15.5, 0, 0);
+scene.add(codexGroup);
+
+// Studio pedestal
+const codexBase = makeRoundedMesh(4.4, 0.34, 3.0, 0.35, clayMat(0xebe3d5, 0.72));
+codexBase.position.y = 0.17;
+codexGroup.add(codexBase);
+
+// Stand neck
+const codexNeck = makeRoundedMesh(0.95, 1.2, 0.55, 0.2, clayMat(0xdcd3c3, 0.65));
+codexNeck.position.set(0, 0.85, -0.35);
+codexGroup.add(codexNeck);
+
+// Monitor frame (angled gently toward audience)
+const codexMonitor = new THREE.Group();
+codexMonitor.position.set(0, 2.55, 0.0);
+codexMonitor.rotation.y = 0.14;
+codexMonitor.rotation.x = -0.08;
+codexGroup.add(codexMonitor);
+
+const bezel = makeRoundedMesh(5.2, 3.55, 0.34, 0.32, clayMat(0xfdfbf7, 0.52));
+codexMonitor.add(bezel);
+const backShell = makeRoundedMesh(4.8, 3.15, 0.18, 0.26, clayMat(0xe2daf5, 0.62));
+backShell.position.z = -0.14;
+codexMonitor.add(backShell);
+
+// Real Codex icon plaque perched on top crest
+const codexPlaque = makeIconPlaque("codex", 0.92, "#ffffff");
+codexPlaque.position.set(0, 2.08, 0.08);
+codexMonitor.add(codexPlaque);
+
+// Dynamic live chat canvas texture (2x Retina resolution for razor-sharp 3D text!)
+const chatCanvas = document.createElement("canvas");
+chatCanvas.width = 1920; chatCanvas.height = 1280;
+const chatCtx = chatCanvas.getContext("2d");
+chatCtx.setTransform(2, 0, 0, 2, 0, 0);
+const chatTex = new THREE.CanvasTexture(chatCanvas);
+chatTex.encoding = THREE.sRGBEncoding;
+chatTex.anisotropy = maxAniso;
+const chatPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(4.78, 3.16),
+  new THREE.MeshBasicMaterial({ map: chatTex })
+);
+chatPlane.position.z = 0.18;
+codexMonitor.add(chatPlane);
+
+let lastChatKey = "";
+function drawChatScreen(mode, u1, u2) {
+  const sp = currentTheme === "space";
+  const k = `${currentTheme}:${mode}:${Math.round(u1 * 60)}:${Math.round(u2 * 60)}`;
+  if (k === lastChatKey) return;
+  lastChatKey = k;
+  const ctx = chatCtx;
+  ctx.fillStyle = sp ? "#0c1222" : "#faf7f2";
+  ctx.fillRect(0, 0, 960, 640);
+  // Top window bar
+  ctx.fillStyle = sp ? "#131c33" : "#efe9de";
+  ctx.fillRect(0, 0, 960, 68);
+  ["#e87a6a", "#e8b954", "#63b77d"].forEach((col, i) => {
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(38 + i * 28, 34, 9, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = sp ? "#a9bde3" : "#5f584e";
+  ctx.font = "600 24px -apple-system, PingFang SC, sans-serif";
+  ctx.fillText(mode === "store" ? "Codex · 排障对话" : "Codex · 几天后的新对话", 132, 42);
+
+  const wrapText = (txt, x, y, maxW, lh) => {
+    let line = "", cy = y;
+    for (const ch of txt) {
+      if (ctx.measureText(line + ch).width > maxW) {
+        ctx.fillText(line, x, cy); line = ch; cy += lh;
+      } else line += ch;
+    }
+    if (line) ctx.fillText(line, x, cy);
+  };
+
+  if (mode === "store") {
+    const qFull = "清理旧文件的时候，把正在运行的程序也删掉了……";
+    const aFull = "找到原因了。以后清理前，要先确认程序没在运行。";
+    const q = qFull.slice(0, Math.round(qFull.length * u1));
+    const a = aFull.slice(0, Math.round(aFull.length * u2));
+    if (q) {
+      ctx.fillStyle = sp ? "#1b2745" : "#ece5d8";
+      ctx.beginPath(); ctx.roundRect(140, 108, 770, 152, 26); ctx.fill();
+      ctx.fillStyle = sp ? "#8fa8d6" : "#7a7266"; ctx.font = "700 20px -apple-system, PingFang SC, sans-serif";
+      ctx.fillText("你", 174, 146);
+      ctx.fillStyle = sp ? "#f0f5ff" : "#1f1e1c"; ctx.font = "500 32px -apple-system, PingFang SC, sans-serif";
+      wrapText(q + (u1 > 0 && u1 < 1 ? "▍" : ""), 174, 196, 700, 46);
+    }
+    if (a) {
+      ctx.fillStyle = sp ? "#131c34" : "#ffffff";
+      ctx.strokeStyle = sp ? "#3a569c" : "#d9cfbe"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.roundRect(50, 296, 770, 168, 26); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = sp ? "#889eff" : "#5865d6"; ctx.font = "700 20px -apple-system, PingFang SC, sans-serif";
+      ctx.fillText("Codex", 84, 336);
+      ctx.fillStyle = sp ? "#eef4ff" : "#1f1e1c"; ctx.font = "500 32px -apple-system, PingFang SC, sans-serif";
+      wrapText(a + (u2 > 0 && u2 < 1 ? "▍" : ""), 84, 386, 700, 46);
+    }
+    if (u2 >= 0.99) {
+      ctx.fillStyle = sp ? "rgba(255, 126, 84, 0.22)" : "rgba(208, 101, 66, 0.13)";
+      ctx.beginPath(); ctx.roundRect(50, 500, 440, 56, 28); ctx.fill();
+      ctx.fillStyle = sp ? "#ff9876" : "#b54927"; ctx.font = "700 22px -apple-system, PingFang SC, sans-serif";
+      ctx.fillText("✈ 对话结束 · 自动触发 Hook 发送", 78, 536);
+    }
+  } else {
+    const qFull = "我想清理一下电脑上的旧版本，要注意什么？";
+    const aFull = "清理前先确认程序没在运行——上次就因为这个，误删过正在用的程序。";
+    const q = qFull.slice(0, Math.round(qFull.length * u1));
+    const a = aFull.slice(0, Math.round(aFull.length * u2));
+    if (q) {
+      ctx.fillStyle = sp ? "#1b2745" : "#ece5d8";
+      ctx.beginPath(); ctx.roundRect(140, 108, 770, 146, 26); ctx.fill();
+      ctx.fillStyle = sp ? "#8fa8d6" : "#7a7266"; ctx.font = "700 20px -apple-system, PingFang SC, sans-serif";
+      ctx.fillText("你 · 新提问", 174, 146);
+      ctx.fillStyle = sp ? "#f0f5ff" : "#1f1e1c"; ctx.font = "500 32px -apple-system, PingFang SC, sans-serif";
+      wrapText(q + (u1 > 0 && u1 < 1 ? "▍" : ""), 174, 196, 700, 46);
+    }
+    if (a) {
+      ctx.fillStyle = sp ? "rgba(24, 96, 68, 0.42)" : "#e6f5ee";
+      ctx.strokeStyle = sp ? "#36e396" : "#2c835d"; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.roundRect(50, 290, 810, 224, 26); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = sp ? "#56f2ac" : "#2c835d"; ctx.font = "700 22px -apple-system, PingFang SC, sans-serif";
+      ctx.fillText("⚡ Codex · 已自动想起上次的经验", 84, 334);
+      ctx.fillStyle = sp ? "#ebfff5" : "#1a2d24"; ctx.font = "600 32px -apple-system, PingFang SC, sans-serif";
+      wrapText(a + (u2 > 0 && u2 < 1 ? "▍" : ""), 84, 388, 740, 48);
+    }
+  }
+  chatTex.needsUpdate = true;
+}
+drawChatScreen("store", 1, 1);
+
+/* ==================== 2. 3D ORIGAMI PAPER AIRPLANE ==================== */
+const airplane = new THREE.Group();
+(function buildPaperAirplane() {
+  const wingGeo = new THREE.BufferGeometry();
+  // Pointing along +Z so lookAt aims nose cleanly
+  const verts = new Float32Array([
+    // Left wing
+    0, 0, 1.05,   -0.88, 0.14, -0.7,   -0.14, 0.02, -0.58,
+    // Right wing
+    0, 0, 1.05,   0.14, 0.02, -0.58,   0.88, 0.14, -0.7,
+    // Left keel
+    0, 0, 1.05,   -0.14, 0.02, -0.58,  0, -0.34, -0.62,
+    // Right keel
+    0, 0, 1.05,   0, -0.34, -0.62,     0.14, 0.02, -0.58
+  ]);
+  wingGeo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+  wingGeo.computeVertexNormals();
+  const topMesh = new THREE.Mesh(wingGeo, clayMat(0xffffff, 0.45, 0.02, { side: THREE.DoubleSide }));
+  topMesh.castShadow = true;
+  airplane.add(topMesh);
+  // Terracotta fold accent strip
+  const stripe = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.05, 1.3),
+    clayMat(0xd06542, 0.48)
+  );
+  stripe.position.set(0, 0.03, 0.05);
+  airplane.add(stripe);
+})();
+scene.add(airplane);
+
+const planeCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-12.7, 2.35, 0.25),
+  new THREE.Vector3(-11.4, 4.4, 0.8),
+  new THREE.Vector3(-9.7, 3.6, 0.55),
+  new THREE.Vector3(-8.7, 1.85, 0.6)
+]);
+const planeTrailDots = [];
+for (let i = 0; i < 16; i++) {
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 10), clayMat(0xd06542, 0.4, 0, { emissive: 0xd06542, emissiveIntensity: 0.35 }));
+  dot.visible = false;
+  scene.add(dot);
+  planeTrailDots.push(dot);
+}
+
+/* ==================== 3. ZONE: MEMLANE 3D MAILBOX & QUEUE (X = -8.5) ==================== */
+const memGroup = new THREE.Group();
+memGroup.position.set(-8.5, 0, 0);
+scene.add(memGroup);
+
+// Circular clay plinth
+const memPlinth = new THREE.Mesh(new THREE.CylinderGeometry(2.85, 3.0, 0.36, 40), clayMat(0xebe3d5, 0.72));
+memPlinth.position.y = 0.18;
+memPlinth.castShadow = true; memPlinth.receiveShadow = true;
+memGroup.add(memPlinth);
+
+// Mailbox kiosk body (back half)
+const mbBody = makeRoundedMesh(2.4, 2.15, 1.55, 0.42, clayMat(0x5a66d1, 0.54));
+mbBody.position.set(0, 1.42, -1.05);
+memGroup.add(mbBody);
+// Terracotta roof cap
+const mbCap = makeRoundedMesh(2.58, 0.44, 1.72, 0.22, clayMat(0xd46a47, 0.55));
+mbCap.position.set(0, 2.52, -1.05);
+memGroup.add(mbCap);
+// Real Memlane clay otter icon plaque mounted proudly on front of mailbox!
+const memPlaque = makeIconPlaque("memlane", 1.28, "#181a24");
+memPlaque.position.set(0, 1.45, -0.22);
+memGroup.add(memPlaque);
+
+// Queueing tray in front of mailbox
+const qTray = makeRoundedMesh(3.8, 0.24, 1.45, 0.24, clayMat(0xfaf6ee, 0.65));
+qTray.position.set(0.1, 0.48, 0.72);
+memGroup.add(qTray);
+
+// ACL green pulse ring around plinth
+const aclRing = new THREE.Mesh(
+  new THREE.TorusGeometry(2.6, 0.08, 12, 48),
+  clayMat(0x2c835d, 0.35, 0, { emissive: 0x2c835d, emissiveIntensity: 0.45, transparent: true, opacity: 0 })
+);
+aclRing.rotation.x = Math.PI / 2;
+aclRing.position.y = 0.42;
+memGroup.add(aclRing);
+
+// Helper: 3D Clay Envelope
+function makeEnvelope(colorHex, sealHex) {
+  const g = new THREE.Group();
+  const body = makeRoundedMesh(0.95, 0.66, 0.16, 0.1, clayMat(colorHex, 0.52));
+  g.add(body);
+  // Flap V-crease
+  const flap = makeRoundedMesh(0.76, 0.06, 0.08, 0.02, clayMat(sealHex, 0.45));
+  flap.position.set(0, 0.06, 0.08);
+  g.add(flap);
+  const seal = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.06, 16), clayMat(sealHex, 0.4));
+  seal.rotation.x = Math.PI / 2;
+  seal.position.set(0, 0.02, 0.09);
+  g.add(seal);
+  return g;
+}
+const envOther1 = makeEnvelope(0xe8e2d6, 0xaba294);
+const envOther2 = makeEnvelope(0xe8e2d6, 0xaba294);
+const envMine = makeEnvelope(0xfffaf4, 0xd06542);
+[envOther1, envOther2, envMine].forEach(e => { e.rotation.x = -0.35; memGroup.add(e); });
+
+// Delivery chute connecting Memlane (-5.7) to Cognee belt (-3.5)
+const chuteCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-6.4, 0.72, 0.65),
+  new THREE.Vector3(-5.0, 0.85, 0.32),
+  new THREE.Vector3(-3.4, 0.85, 0.0)
+]);
+const chuteTube = new THREE.Mesh(
+  new THREE.TubeGeometry(chuteCurve, 20, 0.11, 10, false),
+  clayMat(0xd6cab6, 0.6)
+);
+chuteTube.castShadow = true; chuteTube.receiveShadow = true;
+scene.add(chuteTube);
+
+/* ==================== 4. ZONE: COGNEE 3D FACTORY (X = -3.4 -> +7.6) ==================== */
+const factory = new THREE.Group();
+scene.add(factory);
+
+// Main factory deck
+const deck = makeRoundedMesh(12.2, 0.46, 5.4, 0.42, clayMat(0xede5d7, 0.72));
+deck.position.set(2.1, 0.23, 0.25);
+factory.add(deck);
+
+// Conveyor bed
+const beltBed = makeRoundedMesh(10.8, 0.38, 1.85, 0.18, clayMat(0x52565e, 0.72));
+beltBed.position.set(2.0, 0.64, 0);
+factory.add(beltBed);
+
+// Side safety rails
+[-0.96, 0.96].forEach(rz => {
+  const rail = makeRoundedMesh(10.7, 0.12, 0.12, 0.05, clayMat(0xd4a45a, 0.42, 0.25));
+  rail.position.set(2.0, 0.88, rz);
+  factory.add(rail);
+});
+
+// Animated conveyor slats
+const slats = [];
+const SLAT_N = 28, SLAT_MIN = -3.2, SLAT_MAX = 7.2, SLAT_SPAN = SLAT_MAX - SLAT_MIN;
+const slatGeo = roundedBoxGeo(0.22, 0.07, 1.62, 0.03);
+const slatMat = clayMat(0x6d727c, 0.68);
+for (let i = 0; i < SLAT_N; i++) {
+  const m = new THREE.Mesh(slatGeo, slatMat);
+  m.position.set(SLAT_MIN + (i / SLAT_N) * SLAT_SPAN, 0.85, 0);
+  m.receiveShadow = true;
+  factory.add(m);
+  slats.push(m);
+}
+
+// Entrance Gantry Arch + Real Cognee Icon Plaque
+const gantry = new THREE.Group();
+gantry.position.set(-3.3, 0, 0);
+factory.add(gantry);
+[-1.15, 1.15].forEach(pz => {
+  const p = makeRoundedMesh(0.36, 2.7, 0.36, 0.12, clayMat(0xfaf6ee, 0.58));
+  p.position.set(0, 1.75, pz);
+  gantry.add(p);
+});
+const gBar = makeRoundedMesh(0.42, 0.45, 2.7, 0.14, clayMat(0x282730, 0.5));
+gBar.position.set(0, 3.05, 0);
+gantry.add(gBar);
+const cogneePlaque = makeIconPlaque("cognee", 1.18, "#18171c");
+cogneePlaque.position.set(0, 3.55, 0.22);
+gantry.add(cogneePlaque);
+
+// --- STATION 1 (X = -1.9): Archive Laser Scanner Arch ---
+const st1 = new THREE.Group();
+st1.position.set(-1.9, 0, 0);
+factory.add(st1);
+[-1.15, 1.15].forEach(pz => {
+  const leg = makeRoundedMesh(0.45, 2.25, 0.42, 0.14, clayMat(0x3a6f91, 0.55));
+  leg.position.set(0, 1.55, pz);
+  st1.add(leg);
+});
+const st1Top = makeRoundedMesh(0.7, 0.42, 2.76, 0.16, clayMat(0x2a5673, 0.52));
+st1Top.position.set(0, 2.68, 0);
+st1.add(st1Top);
+const scanBeam = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.14, 1.65),
+  new THREE.MeshBasicMaterial({ color: 0x4cc4e8, transparent: true, opacity: 0.0, side: THREE.DoubleSide })
+);
+scanBeam.rotation.y = Math.PI / 2;
+scanBeam.position.set(0, 1.7, 0);
+st1.add(scanBeam);
+
+// --- STATION 2 (X = +0.85): LLM Distill Prism Dome ---
+const st2 = new THREE.Group();
+st2.position.set(0.85, 0, 0);
+factory.add(st2);
+const domeRing = new THREE.Mesh(new THREE.CylinderGeometry(1.38, 1.48, 0.35, 32), clayMat(0x7359ad, 0.52));
+domeRing.position.set(0, 0.62, 0);
+domeRing.castShadow = true; domeRing.receiveShadow = true;
+st2.add(domeRing);
+const domeGlass = new THREE.Mesh(
+  new THREE.SphereGeometry(1.32, 32, 20, 0, Math.PI * 2, 0, Math.PI * 0.58),
+  glassMat(0xa58be8, 0.32)
+);
+domeGlass.position.set(0, 0.78, 0);
+st2.add(domeGlass);
+// Orbiting neural rings inside LLM dome
+const llmHalo1 = new THREE.Mesh(new THREE.TorusGeometry(0.92, 0.055, 10, 40), clayMat(0x9b7be6, 0.3, 0.1, { emissive: 0x7b56d6, emissiveIntensity: 0.25 }));
+llmHalo1.position.set(0, 1.95, 0);
+st2.add(llmHalo1);
+const llmHalo2 = new THREE.Mesh(new THREE.TorusGeometry(0.66, 0.045, 10, 36), clayMat(0xe6a145, 0.3, 0.1, { emissive: 0xe6a145, emissiveIntensity: 0.2 }));
+llmHalo2.position.set(0, 1.95, 0);
+st2.add(llmHalo2);
+
+// --- STATION 3 (X = +3.3): Brass Guillotine Cutter + Macro 3D Tokenizer Tray ---
+const st3 = new THREE.Group();
+st3.position.set(3.25, 0, 0);
+factory.add(st3);
+[-1.12, 1.12].forEach(pz => {
+  const post = makeRoundedMesh(0.32, 2.55, 0.32, 0.1, clayMat(0xd09b48, 0.42, 0.22));
+  post.position.set(0, 1.7, pz);
+  st3.add(post);
+});
+const cutterCap = makeRoundedMesh(0.46, 0.36, 2.66, 0.14, clayMat(0xb88032, 0.45, 0.2));
+cutterCap.position.set(0, 2.95, 0);
+st3.add(cutterCap);
+// Moving guillotine blade
+const cutterBlade = new THREE.Group();
+cutterBlade.position.set(0, 2.35, 0);
+st3.add(cutterBlade);
+const bladeBody = makeRoundedMesh(0.12, 0.62, 2.02, 0.04, clayMat(0xf3eee6, 0.35, 0.35));
+cutterBlade.add(bladeBody);
+const bladeEdge = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 2.0), clayMat(0xd06542, 0.35, 0.2));
+bladeEdge.position.y = -0.32;
+cutterBlade.add(bladeEdge);
+
+// MACRO 3D TOKENIZER SHOWCASE TRAY (right in front of belt, Z = +3.1)
+const tokTray = new THREE.Group();
+tokTray.position.set(3.6, 0, 3.15);
+factory.add(tokTray);
+const tokBase = makeRoundedMesh(5.3, 0.34, 2.1, 0.32, clayMat(0xfaf6ee, 0.62));
+tokBase.position.y = 0.17;
+tokTray.add(tokBase);
+const tokRim = makeRoundedMesh(4.95, 0.08, 1.75, 0.22, clayMat(0xe8dfd0, 0.72));
+tokRim.position.y = 0.36;
+tokTray.add(tokRim);
+
+// 5 Colorful 3D Clay Lego Token Bricks (front = Chinese token, back = numeric ID!)
+const STORE_TOKENS = [
+  { word: "清理", id: "#4821", col: "#e06d53", hex: 0xe06d53 },
+  { word: "旧",   id: "#0893", col: "#de9d38", hex: 0xde9d38 },
+  { word: "文件", id: "#2104", col: "#449d74", hex: 0x449d74 },
+  { word: "误删", id: "#7732", col: "#4e7cd1", hex: 0x4e7cd1 },
+  { word: "程序", id: "#3519", col: "#8566c4", hex: 0x8566c4 }
+];
+const RECALL_TOKENS = [
+  { word: "清理", id: "#4821", col: "#3ca175", hex: 0x3ca175 },
+  { word: "旧",   id: "#0893", col: "#53b086", hex: 0x53b086 },
+  { word: "版本", id: "#6120", col: "#448cc7", hex: 0x448cc7 },
+  { word: "注意", id: "#1904", col: "#4ca697", hex: 0x4ca697 },
+  { word: "什么", id: "#0412", col: "#6b88cc", hex: 0x6b88cc }
+];
+
+function makeTokenBrickSet(defs) {
+  const group = new THREE.Group();
+  const bricks = defs.map((d, i) => {
+    const b = new THREE.Group();
+    const core = makeRoundedMesh(0.84, 0.84, 0.26, 0.16, clayMat(d.hex, 0.48));
+    b.add(core);
+    // Lego-like top stud for tactile studio clay charm!
+    const stud = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.19, 0.1, 20), clayMat(d.hex, 0.45));
+    stud.position.y = 0.45;
+    stud.castShadow = true;
+    b.add(stud);
+    // Front face: Chinese word
+    const fTex = makeCanvasLabelTex(d.word, { bg: d.col, font: d.word.length === 1 ? "700 108px -apple-system, PingFang SC, sans-serif" : "700 84px -apple-system, PingFang SC, sans-serif" });
+    const front = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.72), new THREE.MeshBasicMaterial({ map: fTex }));
+    front.position.z = 0.136;
+    b.add(front);
+    // Back face: Numeric Token ID (visible when flipped 180 deg!)
+    const bTex = makeCanvasLabelTex(d.id, { bg: "#262420", fg: "#f8f4ec", font: "700 62px ui-monospace, Menlo, monospace", sub: "Token ID" });
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.72), new THREE.MeshBasicMaterial({ map: bTex }));
+    back.position.z = -0.136;
+    back.rotation.y = Math.PI;
+    b.add(back);
+    // Tiny floating bar rising above flipped brick
+    const vBar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.55, 0.14), clayMat(d.hex, 0.35, 0, { emissive: d.hex, emissiveIntensity: 0.22 }));
+    vBar.position.set(0, 0.92, 0);
+    vBar.scale.set(1, 0.001, 1);
+    b.add(vBar);
+    b.userData = { idx: i, vBar };
+    group.add(b);
+    return b;
+  });
+  return { group, bricks };
+}
+const storeTokSet = makeTokenBrickSet(STORE_TOKENS);
+tokTray.add(storeTokSet.group);
+const recallTokSet = makeTokenBrickSet(RECALL_TOKENS);
+tokTray.add(recallTokSet.group);
+
+// --- STATION 4 (X = +6.5): Entity Extractor Ring + Embedding Lens Tower ---
+const st4 = new THREE.Group();
+st4.position.set(6.55, 0, 0);
+factory.add(st4);
+
+// Upper Entity Extractor Ring
+const extRing = new THREE.Mesh(
+  new THREE.TorusGeometry(0.98, 0.11, 14, 40),
+  clayMat(0x2f8562, 0.45, 0.05, { emissive: 0x2f8562, emissiveIntensity: 0.1 })
+);
+extRing.position.set(0, 2.35, -0.3);
+extRing.rotation.y = Math.PI / 2;
+extRing.castShadow = true;
+st4.add(extRing);
+
+// Lower Cobalt Embedding Lens (facing LanceDB + Tokenizer)
+const lensGroup = new THREE.Group();
+lensGroup.position.set(0.2, 1.45, 1.85);
+lensGroup.rotation.y = -0.45;
+st4.add(lensGroup);
+const lensStand = makeRoundedMesh(0.45, 1.0, 0.45, 0.14, clayMat(0x3a6cb0, 0.55));
+lensStand.position.y = -0.65;
+lensGroup.add(lensStand);
+const lensFrame = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.11, 14, 36), clayMat(0x3a6cb0, 0.42, 0.15));
+lensFrame.castShadow = true;
+lensGroup.add(lensFrame);
+const lensGlass = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.65, 0.14, 28), glassMat(0x74aff5, 0.52));
+lensGlass.rotation.x = Math.PI / 2;
+lensGroup.add(lensGlass);
+
+/* ==================== MOVING WORKPIECES ON BELT ==================== */
+// Raw Conversation Slab (Warm honey clay brick with subtle lines texture)
+const slabTex = makeCanvasLabelTex("Q & A 原话", { w: 384, h: 192, bg: "#e5a347", fg: "#fffaf2", font: "700 54px -apple-system, PingFang SC, sans-serif" });
+const rawSlab = makeRoundedMesh(1.45, 0.36, 0.96, 0.12, clayMat(0xe5a347, 0.52));
+const rawTop = new THREE.Mesh(new THREE.PlaneGeometry(1.22, 0.72), new THREE.MeshBasicMaterial({ map: slabTex }));
+rawTop.rotation.x = -Math.PI / 2; rawTop.position.y = 0.19;
+rawSlab.add(rawTop);
+scene.add(rawSlab);
+
+// Chunk 1 & Chunk 2 (appear right after guillotine cuts rawSlab!)
+const chunk1 = makeRoundedMesh(0.68, 0.36, 0.92, 0.11, clayMat(0xe5a347, 0.52));
+const chunk2 = makeRoundedMesh(0.68, 0.36, 0.92, 0.11, clayMat(0xd99234, 0.52));
+const c1Top = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.68), new THREE.MeshBasicMaterial({ map: makeCanvasLabelTex("段 1", { w: 192, h: 192, bg: "#e5a347", font: "700 68px -apple-system, PingFang SC, sans-serif" }) }));
+c1Top.rotation.x = -Math.PI / 2; c1Top.position.y = 0.19; chunk1.add(c1Top);
+const c2Top = new THREE.Mesh(new THREE.PlaneGeometry(0.54, 0.68), new THREE.MeshBasicMaterial({ map: makeCanvasLabelTex("段 2", { w: 192, h: 192, bg: "#d99234", font: "700 68px -apple-system, PingFang SC, sans-serif" }) }));
+c2Top.rotation.x = -Math.PI / 2; c2Top.position.y = 0.19; chunk2.add(c2Top);
+scene.add(chunk1, chunk2);
+
+// Experience Crystal (produced by Station 2 LLM Distill Furnace!)
+const expCrystal = new THREE.Mesh(
+  new THREE.OctahedronGeometry(0.54, 0),
+  clayMat(0xd95f36, 0.28, 0.08, { emissive: 0xd95f36, emissiveIntensity: 0.28 })
+);
+expCrystal.castShadow = true;
+scene.add(expCrystal);
+
+// Archival flying copies to SQLite + visible glowing dotted flight trails!
+const flyCopyRaw = makeRoundedMesh(0.75, 0.22, 0.55, 0.08, clayMat(0x52b8db, 0.35, 0, { emissive: 0x3b9ec4, emissiveIntensity: 0.3 }));
+const flyCopyExp = new THREE.Mesh(new THREE.OctahedronGeometry(0.44, 0), clayMat(0xdc6238, 0.25, 0.05, { emissive: 0xdc6238, emissiveIntensity: 0.45 }));
+scene.add(flyCopyRaw, flyCopyExp);
+
+const expToSqlCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.85, 2.0, -0.5),
+  new THREE.Vector3(5.6, 5.6, -2.5),
+  new THREE.Vector3(10.2, 4.9, -4.8),
+  new THREE.Vector3(13.2, 2.8, -6.2)
+]);
+const expTrailDots = [];
+for (let i = 0; i < 16; i++) {
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 10), clayMat(0xe0683f, 0.3, 0, { emissive: 0xe0683f, emissiveIntensity: 0.45 }));
+  dot.visible = false;
+  scene.add(dot);
+  expTrailDots.push(dot);
+}
+
+// ===== HOVERING 3D GPT LLM POD (Memlane Proxy) at (4.6, 5.3, -3.8) =====
+const LLM_POS = new THREE.Vector3(4.6, 5.3, -3.8);
+const llmPod = new THREE.Group();
+llmPod.position.copy(LLM_POS);
+scene.add(llmPod);
+
+// Floor shadow pad beneath floating GPT Pod
+const llmFloorPad = new THREE.Mesh(new THREE.CylinderGeometry(1.55, 1.65, 0.16, 32), clayMat(0xe7e1f2, 0.72));
+llmFloorPad.position.set(LLM_POS.x, 0.08, LLM_POS.z);
+llmFloorPad.receiveShadow = true;
+scene.add(llmFloorPad);
+
+// Sculpted matte studio clay housing
+const llmBodyMat = clayMat(0x6d56b5, 0.48, 0.04, { emissive: 0x5c42b0, emissiveIntensity: 0.12 });
+const llmBody = makeRoundedMesh(2.95, 1.75, 1.35, 0.48, llmBodyMat);
+llmPod.add(llmBody);
+const llmCap = makeRoundedMesh(2.4, 0.34, 1.0, 0.18, clayMat(0xfaf7f2, 0.5));
+llmCap.position.y = 0.96;
+llmPod.add(llmCap);
+
+// Real OpenAI official icon + Memlane otter proxy icon mounted on front face!
+const oaiPlaque = makeIconPlaque("openai", 1.12, "#ffffff");
+oaiPlaque.position.set(-0.55, 0.02, 0.7);
+llmPod.add(oaiPlaque);
+const proxyOtterPlaque = makeIconPlaque("memlane", 0.78, "#181a24");
+proxyOtterPlaque.position.set(0.68, -0.08, 0.7);
+llmPod.add(proxyOtterPlaque);
+
+// Twin 3D orbital neural gyro rings around the GPT Pod
+const podGyro1 = new THREE.Mesh(
+  new THREE.TorusGeometry(1.88, 0.075, 12, 48),
+  clayMat(0x9a82e8, 0.3, 0.08, { emissive: 0x7a5ee0, emissiveIntensity: 0.25 })
+);
+llmPod.add(podGyro1);
+const podGyro2 = new THREE.Mesh(
+  new THREE.TorusGeometry(1.62, 0.055, 12, 44),
+  clayMat(0xe8a848, 0.3, 0.08, { emissive: 0xe8a848, emissiveIntensity: 0.2 })
+);
+llmPod.add(podGyro2);
+
+// Memlane -> Hovering GPT Pod proxy arc
+const proxyCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-8.5, 2.55, -1.0),
+  new THREE.Vector3(-2.4, 5.4, -2.4),
+  new THREE.Vector3(LLM_POS.x - 1.35, LLM_POS.y, LLM_POS.z)
+]);
+const proxyGeo = new THREE.TubeGeometry(proxyCurve, 36, 0.075, 10, false);
+const proxyTube = new THREE.Mesh(proxyGeo, new THREE.MeshBasicMaterial({ color: 0x6f59cf, transparent: true, opacity: 0.82 }));
+scene.add(proxyTube);
+const proxyPulse = new THREE.Mesh(
+  new THREE.SphereGeometry(0.22, 16, 16),
+  clayMat(0x836cf0, 0.2, 0, { emissive: 0x836cf0, emissiveIntensity: 0.7 })
+);
+scene.add(proxyPulse);
+
+// Ch4: GPT Pod -> Distill Furnace beam
+const llmToDistillCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(LLM_POS.x - 0.6, LLM_POS.y - 0.85, LLM_POS.z + 0.5),
+  new THREE.Vector3(2.5, 3.9, -1.6),
+  new THREE.Vector3(0.85, 2.25, 0.0)
+]);
+const llmToDistillGeo = new THREE.TubeGeometry(llmToDistillCurve, 24, 0.075, 10, false);
+const llmToDistillTube = new THREE.Mesh(llmToDistillGeo, new THREE.MeshBasicMaterial({ color: 0x8d6de6, transparent: true, opacity: 0.82 }));
+scene.add(llmToDistillTube);
+
+// Ch7: Belt Chunks -> GPT Pod input beam + flying amber text packet
+const chunkToLlmCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(6.2, 1.25, 0.2),
+  new THREE.Vector3(6.2, 3.6, -1.5),
+  new THREE.Vector3(LLM_POS.x + 0.4, LLM_POS.y - 0.85, LLM_POS.z + 0.4)
+]);
+const chunkToLlmGeo = new THREE.TubeGeometry(chunkToLlmCurve, 24, 0.08, 10, false);
+const chunkToLlmTube = new THREE.Mesh(chunkToLlmGeo, new THREE.MeshBasicMaterial({ color: 0xe39b38, transparent: true, opacity: 0.88 }));
+scene.add(chunkToLlmTube);
+const chunkPacket = makeRoundedMesh(0.55, 0.24, 0.42, 0.08, clayMat(0xe8a138, 0.35, 0, { emissive: 0xe8a138, emissiveIntensity: 0.45 }));
+scene.add(chunkPacket);
+
+/* ==================== 5. ZONE: THREE REAL-ICON 3D DATABASES (X ~ +14) ==================== */
+
+// ----- 5A. SQLITE VAULT (X = 13.5, Z = -6.2) -----
+const sqlGroup = new THREE.Group();
+sqlGroup.position.set(13.5, 0, -6.2);
+scene.add(sqlGroup);
+
+const sqlBase = makeRoundedMesh(4.6, 0.38, 4.2, 0.4, clayMat(0xe5edf2, 0.68));
+sqlBase.position.y = 0.19;
+sqlGroup.add(sqlBase);
+
+// Classic 3-tier matte clay database cylinder
+for (let i = 0; i < 3; i++) {
+  const tier = new THREE.Mesh(new THREE.CylinderGeometry(1.55, 1.55, 0.62, 36), clayMat(i === 2 ? 0x265c7a : 0x357294, 0.52));
+  tier.position.set(-0.35, 0.72 + i * 0.76, -0.35);
+  tier.castShadow = true; tier.receiveShadow = true;
+  sqlGroup.add(tier);
+  const groove = new THREE.Mesh(new THREE.CylinderGeometry(1.42, 1.42, 0.12, 32), clayMat(0xdcebf2, 0.45));
+  groove.position.set(-0.35, 1.1 + i * 0.76, -0.35);
+  sqlGroup.add(groove);
+}
+// Real SQLite icon plaque
+const sqlPlaque = makeIconPlaque("sqlite", 1.12, "#ffffff");
+sqlPlaque.position.set(1.45, 1.15, 1.45);
+sqlPlaque.rotation.y = -0.35;
+sqlGroup.add(sqlPlaque);
+
+// Floating archival ledger card above SQLite (2x Retina resolution!)
+const ledgerCanvas = document.createElement("canvas");
+ledgerCanvas.width = 1024; ledgerCanvas.height = 512;
+const ledgerCtx = ledgerCanvas.getContext("2d");
+ledgerCtx.setTransform(2, 0, 0, 2, 0, 0);
+const ledgerTex = new THREE.CanvasTexture(ledgerCanvas);
+ledgerTex.encoding = THREE.sRGBEncoding;
+ledgerTex.anisotropy = maxAniso;
+const ledgerCard = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 1.75), new THREE.MeshBasicMaterial({ map: ledgerTex, transparent: true }));
+ledgerCard.position.set(-0.1, 3.85, -0.2);
+ledgerCard.rotation.y = -0.25;
+sqlGroup.add(ledgerCard);
+
+let lastLedgerState = "";
+function drawLedger(hasRaw, hasExp, ping) {
+  const sp = currentTheme === "space";
+  const k = `${currentTheme}|${hasRaw}|${hasExp}|${ping}`;
+  if (k === lastLedgerState) return;
+  lastLedgerState = k;
+  const ctx = ledgerCtx;
+  ctx.clearRect(0, 0, 512, 256);
+  ctx.fillStyle = sp
+    ? (ping ? "rgba(12, 54, 42, 0.94)" : "rgba(12, 21, 40, 0.92)")
+    : (ping ? "rgba(232, 249, 241, 0.96)" : "rgba(255, 253, 249, 0.95)");
+  ctx.strokeStyle = sp
+    ? (ping ? "#36e396" : "#3ba8ff")
+    : (ping ? "#2c835d" : "#b8ccd8");
+  ctx.lineWidth = ping ? 6 : 3;
+  ctx.beginPath(); ctx.roundRect(8, 8, 496, 240, 24); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = sp ? (ping ? "#68f7b7" : "#7ad2ff") : "#245b7a";
+  ctx.font = "700 22px -apple-system, PingFang SC, sans-serif";
+  ctx.fillText(ping ? "SQLite 登记表 · ✓ 来源已核对" : "SQLite 登记表 · 原始文档与出处", 30, 48);
+  ctx.strokeStyle = sp ? "rgba(92, 178, 255, 0.25)" : "#dce6ec"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(28, 66); ctx.lineTo(484, 66); ctx.stroke();
+  if (hasRaw) {
+    ctx.fillStyle = sp ? "rgba(240, 168, 62, 0.16)" : "#faf2e4";
+    ctx.beginPath(); ctx.roundRect(28, 84, 456, 60, 12); ctx.fill();
+    ctx.fillStyle = sp ? "#ffc266" : "#b5741f"; ctx.font = "700 20px -apple-system, PingFang SC, sans-serif";
+    ctx.fillText("📄 原话文件", 44, 122);
+    ctx.fillStyle = sp ? "#c6d7f5" : "#5f584e"; ctx.font = "600 18px ui-monospace, Menlo, monospace";
+    ctx.fillText("text_a8df.txt · 11-26", 190, 122);
+  }
+  if (hasExp) {
+    ctx.fillStyle = sp ? "rgba(255, 120, 74, 0.18)" : "#fcece6";
+    ctx.beginPath(); ctx.roundRect(28, 160, 456, 60, 12); ctx.fill();
+    ctx.fillStyle = sp ? "#ff926b" : "#c95836"; ctx.font = "700 20px -apple-system, PingFang SC, sans-serif";
+    ctx.fillText("💎 经验条目", 44, 198);
+    ctx.fillStyle = sp ? "#c6d7f5" : "#5f584e"; ctx.font = "600 18px ui-monospace, Menlo, monospace";
+    ctx.fillText("text_0538.txt · 11-26", 190, 198);
+  }
+  ledgerTex.needsUpdate = true;
+}
+drawLedger(false, false, false);
+
+// ----- 5B. LADYBUG 3D KNOWLEDGE GRAPH ARENA (X = 14.4, Z = 0.0) -----
+const graphGroup = new THREE.Group();
+graphGroup.position.set(14.4, 0, 0);
+scene.add(graphGroup);
+
+const graphStage = new THREE.Mesh(new THREE.CylinderGeometry(3.05, 3.25, 0.42, 44), clayMat(0xe4efe9, 0.68));
+graphStage.position.y = 0.21;
+graphStage.castShadow = true; graphStage.receiveShadow = true;
+graphGroup.add(graphStage);
+const graphInnerRim = new THREE.Mesh(new THREE.TorusGeometry(2.65, 0.06, 10, 48), clayMat(0x78b095, 0.55));
+graphInnerRim.rotation.x = Math.PI / 2;
+graphInnerRim.position.y = 0.44;
+graphGroup.add(graphInnerRim);
+
+// Real LadybugDB icon plaque
+const ladyPlaque = makeIconPlaque("ladybug", 1.15, "#ffffff");
+ladyPlaque.position.set(-2.35, 1.05, 2.0);
+ladyPlaque.rotation.y = -0.65;
+graphGroup.add(ladyPlaque);
+
+// 3D Graph Nodes
+const gNodesDef = [
+  { key: "gn0", name: "清理旧文件",     pos: new THREE.Vector3(-1.55, 2.55,  0.75) },
+  { key: "gn1", name: "正在运行的程序", pos: new THREE.Vector3( 1.55, 2.85, -0.55) },
+  { key: "gn2", name: "先确认没在运行", pos: new THREE.Vector3( 0.05, 1.35,  1.05) }
+];
+const gNodes = gNodesDef.map(d => {
+  const mat = clayMat(0x3a936c, 0.38, 0.04, { emissive: 0x2c835d, emissiveIntensity: 0.08 });
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.46, 28, 28), mat);
+  m.position.copy(d.pos);
+  m.castShadow = true;
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.035, 10, 32), clayMat(0x6bc49c, 0.4, 0, { transparent: true, opacity: 0.45 }));
+  m.add(halo);
+  graphGroup.add(m);
+  return { ...d, mesh: m, mat, halo };
+});
+
+// 3D Graph Edges (Curved 3D tubes + cone arrowheads)
+const gEdgesDef = [
+  { key: "ge0", label: "会误删",       from: 0, to: 1, bend: new THREE.Vector3(0.0, 0.55, -0.15) },
+  { key: "ge1", label: "保护",         from: 2, to: 1, bend: new THREE.Vector3(0.3, -0.15, 0.35) },
+  { key: "ge2", label: "清理前要先做", from: 2, to: 0, bend: new THREE.Vector3(-0.35, -0.15, 0.4) }
+];
+const gEdges = gEdgesDef.map(d => {
+  const a = gNodesDef[d.from].pos, b = gNodesDef[d.to].pos;
+  const dir = new THREE.Vector3().subVectors(b, a).normalize();
+  const start = a.clone().addScaledVector(dir, 0.56);
+  const end = b.clone().addScaledVector(dir, -0.62);
+  const mid = a.clone().lerp(b, 0.5).add(d.bend);
+  const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+  const geo = new THREE.TubeGeometry(curve, 24, 0.068, 10, false);
+  const mat = clayMat(0x7c5eb8, 0.42, 0.04, { emissive: 0x7c5eb8, emissiveIntensity: 0.1 });
+  const tube = new THREE.Mesh(geo, mat);
+  tube.castShadow = true;
+  graphGroup.add(tube);
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.4, 16), mat);
+  cone.position.copy(end);
+  const tan = curve.getTangent(1).normalize();
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan);
+  graphGroup.add(cone);
+  return { ...d, curve, mid, geo, tube, cone, mat, totalIdx: geo.index ? geo.index.count : geo.attributes.position.count };
+});
+
+// ----- 5C. LANCEDB 3D VECTOR SPACE CUBE (X = 13.8, Z = +6.4) -----
+const vecGroup = new THREE.Group();
+vecGroup.position.set(13.8, 0, 6.4);
+scene.add(vecGroup);
+
+const vecPedestal = makeRoundedMesh(4.7, 0.42, 4.7, 0.38, clayMat(0xe2ebf7, 0.68));
+vecPedestal.position.y = 0.21;
+vecGroup.add(vecPedestal);
+
+// Real LanceDB icon plaque
+const lancePlaque = makeIconPlaque("lancedb", 1.12, "#ffffff");
+lancePlaque.position.set(-2.2, 1.05, 2.25);
+lancePlaque.rotation.y = -0.55;
+vecGroup.add(lancePlaque);
+
+// Frosted glass 3D coordinate cube
+const CUBE_S = 3.9, CUBE_Y = 2.55;
+const vecCubeFrame = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.BoxGeometry(CUBE_S, CUBE_S, CUBE_S)),
+  new THREE.LineBasicMaterial({ color: 0x3f6fb3, transparent: true, opacity: 0.72 })
+);
+vecCubeFrame.position.y = CUBE_Y;
+vecGroup.add(vecCubeFrame);
+
+const vecCubeGlass = new THREE.Mesh(
+  new THREE.BoxGeometry(CUBE_S, CUBE_S, CUBE_S),
+  glassMat(0xcde2fc, 0.18)
+);
+vecCubeGlass.position.y = CUBE_Y;
+vecGroup.add(vecCubeGlass);
+
+// Internal 3D XYZ axes
+[
+  [[ -1.8, CUBE_Y, 0 ], [ 1.8, CUBE_Y, 0 ], 0xc8745e],
+  [[ 0, CUBE_Y - 1.8, 0 ], [ 0, CUBE_Y + 1.8, 0 ], 0x4b9972],
+  [[ 0, CUBE_Y, -1.8 ], [ 0, CUBE_Y, 1.8 ], 0x4c7ec2]
+].forEach(([a, b, col]) => {
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b)]);
+  vecGroup.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.4 })));
+});
+
+// Stars inside LanceDB 3D Cube (well-spaced in 3D so cluster vs distant stars read cleanly!)
+const OLD_STARS = [
+  { key: "os0", name: "页面配色",   pos: new THREE.Vector3( 1.45, CUBE_Y + 1.35, -1.35) },
+  { key: "os1", name: "登录报错",   pos: new THREE.Vector3( 1.40, CUBE_Y - 1.35,  1.35) },
+  { key: "os2", name: "接口超时",   pos: new THREE.Vector3(-1.45, CUBE_Y + 1.30, -1.25) },
+  { key: "os3", name: "数据库连接", pos: new THREE.Vector3(-1.45, CUBE_Y - 1.35,  1.35) }
+];
+const NEW_STARS = [
+  { key: "ns0", name: "经验条目",       col: 0xd95f36, pos: new THREE.Vector3( 0.05, CUBE_Y + 0.72,  0.15), near: true },
+  { key: "ns1", name: "清理旧文件",     col: 0x2d8c63, pos: new THREE.Vector3(-0.78, CUBE_Y + 0.15,  0.52), near: true },
+  { key: "ns2", name: "会误删",         col: 0x7652b8, pos: new THREE.Vector3( 0.82, CUBE_Y + 0.22, -0.35), near: true },
+  { key: "ns3", name: "原话段",         col: 0xdc9127, pos: new THREE.Vector3( 0.45, CUBE_Y - 0.68,  0.62), near: false },
+  { key: "ns4", name: "正在运行的程序", col: 0x2d8c63, pos: new THREE.Vector3( 0.88, CUBE_Y - 0.52, -0.68), near: false },
+  { key: "ns5", name: "先确认没在运行", col: 0x2d8c63, pos: new THREE.Vector3(-0.62, CUBE_Y - 0.82, -0.32), near: false }
+];
+
+OLD_STARS.forEach(s => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.14, 16, 16), clayMat(0xb6afa3, 0.7));
+  m.position.copy(s.pos);
+  vecGroup.add(m);
+  s.mesh = m;
+});
+
+NEW_STARS.forEach(s => {
+  const mat = clayMat(s.col, 0.35, 0.05, { emissive: s.col, emissiveIntensity: 0.16 });
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.21, 22, 22), mat);
+  m.position.copy(s.pos);
+  m.castShadow = true;
+  vecGroup.add(m);
+  s.mesh = m; s.mat = mat;
+});
+
+// Recall Query Comet + 3D Expanding Radar Sphere + 3 Tether Beams
+const QUERY_LOCAL = new THREE.Vector3(-0.08, CUBE_Y + 0.08, 0.16);
+const queryStar = new THREE.Mesh(
+  new THREE.SphereGeometry(0.26, 24, 24),
+  clayMat(0x28a46c, 0.25, 0.05, { emissive: 0x28a46c, emissiveIntensity: 0.55 })
+);
+queryStar.position.copy(QUERY_LOCAL);
+vecGroup.add(queryStar);
+
+const radarShell = new THREE.Mesh(
+  new THREE.SphereGeometry(1.0, 28, 22),
+  new THREE.MeshBasicMaterial({ color: 0x2ec27e, transparent: true, opacity: 0.0, wireframe: false, side: THREE.DoubleSide, depthWrite: false })
+);
+radarShell.position.copy(QUERY_LOCAL);
+vecGroup.add(radarShell);
+
+const radarRing = new THREE.Mesh(
+  new THREE.TorusGeometry(1.0, 0.025, 10, 48),
+  new THREE.MeshBasicMaterial({ color: 0x229963, transparent: true, opacity: 0.0 })
+);
+radarRing.rotation.x = Math.PI / 2;
+radarRing.position.copy(QUERY_LOCAL);
+vecGroup.add(radarRing);
+
+const tetherMeshes = NEW_STARS.filter(s => s.near).map(s => {
+  const curve = new THREE.LineCurve3(QUERY_LOCAL, s.pos);
+  const geo = new THREE.TubeGeometry(curve, 8, 0.042, 8, false);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x249e66, transparent: true, opacity: 0.9 });
+  const m = new THREE.Mesh(geo, mat);
+  vecGroup.add(m);
+  return { mesh: m, star: s };
+});
+
+/* ==================== 6. CROSS-ZONE FLYING PULSES & BEAMS ==================== */
+// Entity flying orbs (Factory -> Ladybug)
+const flyEntities = [0, 1, 2].map(i => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.28, 18, 18), clayMat(0x3a936c, 0.35, 0, { emissive: 0x3a936c, emissiveIntensity: 0.35 }));
+  scene.add(m);
+  return m;
+});
+// Vector launch sparks (Lens -> LanceDB)
+const flyVecOrbs = NEW_STARS.map(s => {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.19, 16, 16), clayMat(s.col, 0.3, 0, { emissive: s.col, emissiveIntensity: 0.45 }));
+  scene.add(m);
+  return m;
+});
+
+// Recall comet flying from Codex -> Memlane -> Tokenizer -> LanceDB
+const recallComet = new THREE.Mesh(
+  new THREE.SphereGeometry(0.32, 22, 22),
+  clayMat(0x28a46c, 0.25, 0, { emissive: 0x28a46c, emissiveIntensity: 0.65 })
+);
+scene.add(recallComet);
+
+// Recall cross-DB link beam (LanceDB -> Ladybug -> SQLite)
+const linkL2GCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(13.8, 2.7, 6.4),
+  new THREE.Vector3(13.2, 3.8, 3.2),
+  new THREE.Vector3(14.4 - 1.55, 2.55, 0.75)
+]);
+const linkL2GGeo = new THREE.TubeGeometry(linkL2GCurve, 28, 0.065, 10, false);
+const linkL2G = new THREE.Mesh(linkL2GGeo, new THREE.MeshBasicMaterial({ color: 0x2aa86f, transparent: true, opacity: 0.85 }));
+scene.add(linkL2G);
+
+const linkG2SCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(14.4 + 0.05, 1.35, 1.05),
+  new THREE.Vector3(14.2, 3.6, -2.8),
+  new THREE.Vector3(13.5, 2.8, -6.2)
+]);
+const linkG2SGeo = new THREE.TubeGeometry(linkG2SCurve, 28, 0.055, 10, false);
+const linkG2S = new THREE.Mesh(linkG2SGeo, new THREE.MeshBasicMaterial({ color: 0x2aa86f, transparent: true, opacity: 0.78 }));
+scene.add(linkG2S);
+
+// Finale emerald return ribbon arching from 3 DBs back over Memlane to Codex
+const returnCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(13.8, 3.0, 1.0),
+  new THREE.Vector3(5.5, 6.8, 0.8),
+  new THREE.Vector3(-4.0, 5.2, 0.4),
+  new THREE.Vector3(-8.5, 2.8, 0.2),
+  new THREE.Vector3(-13.2, 2.5, 0.3)
+]);
+const returnGeo = new THREE.TubeGeometry(returnCurve, 48, 0.095, 12, false);
+const returnRibbon = new THREE.Mesh(returnGeo, new THREE.MeshBasicMaterial({ color: 0x29a66c, transparent: true, opacity: 0.85 }));
+scene.add(returnRibbon);
+const returnOrb = new THREE.Mesh(
+  new THREE.SphereGeometry(0.34, 20, 20),
+  clayMat(0x28b876, 0.2, 0, { emissive: 0x28b876, emissiveIntensity: 0.7 })
+);
+scene.add(returnOrb);
+
+// Subtle curved studio guide pathways on table floor connecting zones
+[
+  [[-13.0, 0.03, 0], [-11.3, 0.03, 0]],
+  [[7.6, 0.03, -0.4], [10.8, 0.03, -6.0]],
+  [[7.6, 0.03, 0.0], [11.2, 0.03, 0.0]],
+  [[7.6, 0.03, 0.8], [11.2, 0.03, 6.2]]
+].forEach(([a, b]) => {
+  const c = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(...a),
+    new THREE.Vector3((a[0] + b[0]) / 2, 0.03, a[2] * 0.4 + b[2] * 0.6),
+    new THREE.Vector3(...b)
+  );
+  const g = new THREE.TubeGeometry(c, 20, 0.055, 6, false);
+  scene.add(new THREE.Mesh(g, clayMat(0xdcd2c1, 0.85)));
+});
+
+/* ==================== 7. 3D-PROJECTED FLOATING HTML LABELS ==================== */
+const labelLayer = document.getElementById("labels");
+const labelDefs = [];
+function addTag(key, html, cls, worldPosFn) {
+  const el = document.createElement("div");
+  el.className = "tag3d " + cls;
+  el.innerHTML = html;
+  labelLayer.appendChild(el);
+  const rec = { key, el, worldPosFn };
+  labelDefs.push(rec);
+  return rec;
+}
+
+// Product landmark tags (with real icons!)
+addTag("b-codex", `<img src="${ICONS.codex}">Codex <span class="sub">对话窗口</span>`, "brand", () => new THREE.Vector3(-15.5, 5.15, 0));
+addTag("b-mem", `<img src="${ICONS.memlane}">Memlane <span class="sub">信箱 · 权限</span>`, "brand", () => new THREE.Vector3(-8.5, 3.25, -0.8));
+addTag("b-cognee", `<img src="${ICONS.cognee}">Cognee <span class="sub">记忆加工厂</span>`, "brand", () => new THREE.Vector3(-3.3, 4.45, 0));
+addTag("b-gpt", `<img src="${ICONS.openai}"><img src="${ICONS.memlane}">GPT 大模型 <span class="sub">Memlane 代理</span>`, "brand", () => llmPod.position.clone().add(new THREE.Vector3(0, 1.85, 0)));
+addTag("b-sql", `<img src="${ICONS.sqlite}">SQLite <span class="sub">关系数据库</span>`, "brand", () => new THREE.Vector3(13.5, 4.95, -6.2));
+addTag("b-lady", `<img src="${ICONS.ladybug}">Ladybug <span class="sub">图数据库</span>`, "brand", () => new THREE.Vector3(14.4, 3.85, -1.6));
+addTag("b-lance", `<img src="${ICONS.lancedb}">LanceDB <span class="sub">向量数据库</span>`, "brand", () => new THREE.Vector3(13.8, 4.85, 6.4));
+
+// Station role micro-badges
+addTag("s-llm", `<img src="${ICONS.openai}"><img src="${ICONS.memlane}">大模型提炼炉 <span style="opacity:.92;font-weight:500">（GPT · Memlane 代理）</span>`, "pill-ai", () => new THREE.Vector3(0.85, 3.05, 0));
+addTag("s-proxy", `<img src="${ICONS.memlane}">Memlane 代理 → GPT 模型`, "pill-ai", () => new THREE.Vector3(-2.4, 5.6, -2.4));
+addTag("s-exp-main", "💎 经验晶体（继续去分词/向量库）", "star", () => expCrystal.position.clone().add(new THREE.Vector3(0, 0.72, 0)));
+addTag("s-exp-sql", "💎 经验副本 → 存进 SQLite", "star", () => flyCopyExp.position.clone().add(new THREE.Vector3(0, 0.65, 0)));
+addTag("s-ext-in", "📤 切好的段落 → 送给 GPT 读", "star", () => new THREE.Vector3(6.2, 3.3, -1.2));
+addTag("s-ext-out", `<img src="${ICONS.openai}">GPT 读出实体与关系 → 飞入 Ladybug`, "pill-ai", () => new THREE.Vector3(9.4, 4.85, -1.8));
+addTag("s-cut", "🔧 程序按规则切段 · 不用 AI", "pill-code", () => new THREE.Vector3(3.25, 3.55, 0));
+addTag("s-tok", "🧩 分词器 Tokenizer · 拆成积木翻出 ID", "pill-code", () => new THREE.Vector3(3.6, 2.65, 3.15));
+addTag("s-acl", "🔒 只查：本项目 + 通用经验", "pill-green", () => new THREE.Vector3(-8.5, 3.15, 0.8));
+
+// Graph node & edge labels
+gNodes.forEach(n => addTag(n.key, n.name, "node-g", () => n.mesh.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.62, 0))));
+gEdges.forEach(e => addTag(e.key, e.label, "edge", () => e.mid.clone().add(graphGroup.position).add(new THREE.Vector3(0, 0.25, 0))));
+
+// Vector space star labels
+OLD_STARS.forEach(s => addTag(s.key, s.name, "star muted", () => s.mesh.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.28, 0))));
+NEW_STARS.forEach(s => addTag(s.key, s.name, "star", () => s.mesh.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.34, 0))));
+addTag("q-star", "你的问题", "star hot", () => queryStar.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.42, 0)));
+
+const tagMap = Object.fromEntries(labelDefs.map(d => [d.key, d]));
+
+/* ==================== 8. CONTINUOUS SCENE EVALUATION f(t) ==================== */
+const vTmp = new THREE.Vector3();
+const vTmp2 = new THREE.Vector3();
+
+function setTubeProgress(mesh, geo, u) {
+  if (u <= 0.001) { mesh.visible = false; return; }
+  mesh.visible = true;
+  const total = geo.index ? geo.index.count : geo.attributes.position.count;
+  geo.setDrawRange(0, Math.floor(total * clamp01(u)));
+}
+
+const VIDEO_SUBS = [
+  "AI 每次新开对话都会失忆——看 Memlane × Cognee 如何把对话炼成长期记忆",
+  "排障聊出关键教训：以后清理旧文件前，必须先确认程序没在运行",
+  "对话结束，原话自动折成纸飞机飞进 Memlane 邮筒，核对权限后毫秒入队",
+  "进入 Cognee 加工厂：第一站激光扫描，把原话原封不动存档到 SQLite",
+  "紫光提炼炉经 Memlane 代理调用 GPT 炼出经验晶体：副本存 SQLite，主晶体继续前进",
+  "黄铜闸刀按标点与长度规则咔嚓切段（不用 AI），拼回去和原文一字不差",
+  "分词器把中文拆成彩色 3D 词元积木，空中翻转 180° 露出词表数字编号",
+  "段落送入上方 GPT 大模型抽出实体与关系，三颗绿球飞进 Ladybug 连成关系网",
+  "词元与经验晶体穿过蓝色向量透镜，落入 LanceDB 星图，意思越近聚得越紧",
+  "",
+  "换种说法提问：Memlane 绿盾限定范围、向量模型编码；上方 GPT 保持休眠（0 次大模型）",
+  "绿光流星在 LanceDB 炸开 3D 雷达波锁定近邻，顺着 Ladybug 摸出解法并核对 SQLite",
+  "三库结果汇成翡翠光带飞回 Codex，AI 立刻给出精准提醒，真正长了记性"
+];
+
+function updateWorldAt(t, realSec) {
+  // 0. Store -> Recall Cinematic Transition Interlude (57.0 -> 60.5)
+  const interludeEl = document.getElementById("interlude");
+  const interludeCard = document.getElementById("interlude-card");
+  const interIn = smooth(remap(t, TRANS_T + 0.15, TRANS_T + 0.85));
+  const interOut = 1 - smooth(remap(t, RECALL_T - 0.85, RECALL_T - 0.15));
+  const interOp = (t > TRANS_T && t < RECALL_T) ? interIn * interOut : 0;
+  if (interludeEl) {
+    interludeEl.style.opacity = interOp.toFixed(3);
+    interludeCard.style.transform = `translateY(${lerp(16, 0, interIn).toFixed(1)}px) scale(${lerp(0.96, 1.01, interIn * 0.8 + (1 - interOut) * 0.2).toFixed(4)})`;
+    document.getElementById("labels").style.opacity = (1 - interOp * 0.92).toFixed(3);
+  }
+  // 0B. Minimal cinema subtitle sync (purely driven by t, zero CSS transition drift!)
+  const cSub = document.getElementById("cinema-sub");
+  if (cSub && document.body.classList.contains("subs")) {
+    const chObj = getChapter(t);
+    const subTxt = VIDEO_SUBS[chObj.id] || "";
+    if (!subTxt) {
+      cSub.style.opacity = "0";
+    } else {
+      const fadeIn = smooth(remap(t, chObj.start + 0.12, chObj.start + 0.42));
+      const fadeOut = chObj.id === CHAPTERS.length - 1 ? 1 : (1 - smooth(remap(t, chObj.end - 0.35, chObj.end - 0.05)));
+      cSub.style.opacity = (fadeIn * fadeOut).toFixed(3);
+      document.body.classList.toggle("recall", t >= RECALL_T);
+      const stepEl = document.getElementById("cinema-sub-step");
+      const textEl = document.getElementById("cinema-sub-text");
+      if (stepEl.textContent !== chObj.step) stepEl.textContent = chObj.step;
+      if (textEl.textContent !== subTxt) textEl.textContent = subTxt;
+    }
+  }
+
+  // 1. Codex Screen live typing (crisp, fast typewriter!)
+  if (t < RECALL_T) {
+    if (t < 4.5) drawChatScreen("store", 1, 1);
+    else drawChatScreen("store", remap(t, 4.65, 5.45), remap(t, 5.65, 6.55));
+  } else {
+    drawChatScreen("recall", remap(t, RECALL_T + 0.25, RECALL_T + 1.05), remap(t, 75.5, 76.5));
+  }
+
+  // 2. Paper Airplane flight (t: 10.8 -> 13.8)
+  const uPlane = remap(t, 10.8, 13.8);
+  if (uPlane > 0 && uPlane < 1) {
+    airplane.visible = true;
+    const e = easeInOutCubic(uPlane);
+    const p = planeCurve.getPoint(e);
+    const ahead = planeCurve.getPoint(Math.min(1, e + 0.02));
+    airplane.position.copy(p);
+    airplane.lookAt(ahead);
+    airplane.rotateZ(-Math.sin(e * Math.PI) * 0.42);
+    const sc = uPlane < 0.12 ? easeOutBack(uPlane / 0.12) : uPlane > 0.88 ? 1 - (uPlane - 0.88) / 0.12 : 1;
+    airplane.scale.setScalar(Math.max(0.01, sc));
+    planeTrailDots.forEach((d, i) => {
+      const du = e - (i + 1) * 0.032;
+      if (du > 0 && du < 0.98) {
+        d.visible = true;
+        d.position.copy(planeCurve.getPoint(du));
+        d.scale.setScalar(1 - i / planeTrailDots.length);
+      } else d.visible = false;
+    });
+  } else {
+    airplane.visible = false;
+    planeTrailDots.forEach(d => d.visible = false);
+  }
+
+  // 3. Memlane Queue Envelopes (t: 10.5 -> 19.0)
+  const qSlide1 = smooth(remap(t, 14.0, 15.6));
+  const qSlide2 = smooth(remap(t, 15.2, 16.8));
+  const envLand = easeOutBack(remap(t, 13.5, 14.3));
+  const envGoChute = smooth(remap(t, 17.0, 18.8));
+
+  // Front two "other" envelopes exit smoothly
+  envOther1.visible = t >= 10.0 && t < 15.7;
+  envOther1.position.set(lerp(1.15, 2.8, qSlide1), 0.92 + Math.sin(qSlide1 * Math.PI) * 0.25, 0.72);
+  envOther1.scale.setScalar(1 - qSlide1);
+
+  envOther2.visible = t >= 10.0 && t < 16.9;
+  envOther2.position.set(lerp(0.05, 1.15, qSlide1) + qSlide2 * 1.6, 0.92, 0.72);
+  envOther2.scale.setScalar(1 - qSlide2);
+
+  // Our coral envelope lands in slot 3, hops to front, then glides along delivery chute!
+  if (t >= 13.5 && t < 18.9) {
+    envMine.visible = true;
+    if (envGoChute <= 0) {
+      const mx = lerp(-1.1, 1.15, qSlide2);
+      const hop = Math.sin(qSlide2 * Math.PI) * 0.4;
+      envMine.position.set(mx, 0.94 + hop, 0.72);
+      envMine.scale.setScalar(Math.max(0.01, envLand));
+      envMine.rotation.set(-0.35, 0, 0);
+    } else {
+      const wp = chuteCurve.getPoint(envGoChute);
+      envMine.position.copy(wp).sub(memGroup.position);
+      envMine.position.y += 0.28;
+      envMine.scale.setScalar(1 - envGoChute * 0.35);
+    }
+  } else {
+    envMine.visible = false;
+  }
+
+  // ACL green pulse ring on Memlane (Store pass at 15.8-17.3, Recall scope shifted by +R_OFF)
+  const aclStore = Math.sin(remap(t, 15.8, 17.3) * Math.PI);
+  const aclRecall = Math.sin(remap(t, 59.5 + R_OFF, 63.0 + R_OFF) * Math.PI);
+  const aclAmt = Math.max(aclStore, aclRecall);
+  aclRing.material.opacity = aclAmt * 0.85;
+  aclRing.scale.setScalar(0.95 + aclAmt * 0.14);
+
+  // 4. Conveyor belt slats & LLM halos continuous motion
+  const beltActive = t >= 17.0 && t <= 56.5;
+  const beltShift = ((t * 1.35) % (SLAT_SPAN / SLAT_N));
+  for (let i = 0; i < SLAT_N; i++) {
+    let x = SLAT_MIN + ((i / SLAT_N) * SLAT_SPAN + (beltActive ? beltShift : 0)) % SLAT_SPAN;
+    slats[i].position.x = x;
+  }
+  const llmSpin = (t >= 23.0 && t <= 29.8) || (t >= 43.5 && t <= 47.5);
+  llmHalo1.rotation.x = 0.55 + t * (llmSpin ? 2.4 : 0.45);
+  llmHalo1.rotation.y = t * (llmSpin ? 1.8 : 0.35);
+  llmHalo2.rotation.x = -0.65 - t * (llmSpin ? 2.8 : 0.5);
+  llmHalo2.rotation.z = t * (llmSpin ? 2.1 : 0.4);
+  llmHalo1.material.emissiveIntensity = llmSpin ? 0.65 : 0.15;
+  extRing.rotation.x = t * (t >= 43.5 && t <= 49.0 ? 2.2 : 0.35);
+
+  // 5. Raw Slab, Chunks, Experience Crystal moving down the 3D belt!
+  // Belt arrival: t=18.6 at x=-3.1 -> St1 (-1.9) at t=20.0 -> St2 (+0.85) at t=25.0 -> St3 (+3.25) at t=31.8 -> St4 (+6.3) at t=44.5
+  let beltX = -3.1;
+  if (t < 20.5) beltX = lerp(-3.1, -1.9, smooth(remap(t, 18.4, 20.4)));
+  else if (t < 25.5) beltX = lerp(-1.9, 0.85, smooth(remap(t, 22.4, 25.0)));
+  else if (t < 31.8) beltX = lerp(0.85, 3.25, smooth(remap(t, 28.5, 31.6)));
+  else beltX = lerp(3.25, 6.2, smooth(remap(t, 34.5, 44.5)));
+
+  const cutDone = remap(t, 32.3, 33.4);
+  // Raw slab visible before cut
+  rawSlab.visible = t >= 18.4 && cutDone < 0.45;
+  rawSlab.position.set(beltX, 1.07, 0);
+  rawSlab.scale.set(1, 1 - Math.sin(remap(t, 32.0, 32.5) * Math.PI) * 0.18, 1);
+
+  // Laser scan beam at Station 1 (t: 20.0 -> 22.0)
+  const scanU = remap(t, 19.8, 22.2);
+  scanBeam.material.opacity = Math.sin(scanU * Math.PI) * 0.55;
+  scanBeam.position.x = Math.sin(scanU * Math.PI * 3) * 0.45;
+
+  // Flying archival copy (Raw -> SQLite: t 20.6 -> 22.6)
+  const uCopyRaw = remap(t, 20.6, 22.7);
+  if (uCopyRaw > 0 && uCopyRaw < 1) {
+    flyCopyRaw.visible = true;
+    const e = easeInOutCubic(uCopyRaw);
+    flyCopyRaw.position.set(lerp(-1.9, 13.1, e), 1.4 + Math.sin(e * Math.PI) * 4.5, lerp(0, -6.2, e));
+    flyCopyRaw.rotation.y = e * Math.PI * 2;
+  } else flyCopyRaw.visible = false;
+
+  // Hovering 3D GPT Pod Animation (active in Ch4 Distill & Ch7 Entity Extract; smoothly powers down during Store->Recall transition!)
+  const gptBusyCh4 = t >= 23.2 && t < 27.6;
+  const gptBusyCh7 = t >= 43.5 && t < 47.4;
+  const gptActive = gptBusyCh4 || gptBusyCh7;
+  const gptSleepMix = smooth(remap(t, TRANS_T + 0.3, TRANS_T + 2.4));
+  const gptSleep = gptSleepMix > 0.5;
+  llmPod.position.y = LLM_POS.y + lerp(Math.sin(t * 2.2) * 0.14, -0.25, gptSleepMix);
+  const spinRate = gptActive ? 1.0 : (1 - gptSleepMix) * 0.2;
+  podGyro1.rotation.x = 0.55 + t * (gptActive ? 2.6 : 0.45 * (1 - gptSleepMix));
+  podGyro1.rotation.y = t * (gptActive ? 1.9 : 0.35 * (1 - gptSleepMix));
+  podGyro2.rotation.x = -0.6 - t * (gptActive ? 2.9 : 0.5 * (1 - gptSleepMix));
+  podGyro2.rotation.z = t * (gptActive ? 2.1 : 0.3 * (1 - gptSleepMix));
+  const sp = currentTheme === "space";
+  const cAwake = new THREE.Color(sp ? 0x5c46c9 : 0x6d56b5);
+  const cSleep = new THREE.Color(sp ? 0x2a3147 : 0xb4b0ba);
+  llmBodyMat.color.copy(cAwake).lerp(cSleep, gptSleepMix);
+  llmBodyMat.emissiveIntensity = gptActive ? (sp ? 0.72 : 0.48) : lerp(sp ? 0.25 : 0.1, 0.0, gptSleepMix);
+  podGyro1.material.emissiveIntensity = gptActive ? (sp ? 0.95 : 0.68) : lerp(sp ? 0.32 : 0.18, 0.0, gptSleepMix);
+  podGyro2.material.emissiveIntensity = gptActive ? (sp ? 0.85 : 0.55) : lerp(sp ? 0.26 : 0.12, 0.0, gptSleepMix);
+
+  // Memlane -> Hovering GPT Pod Proxy Arc (active during Ch4 & Ch7!)
+  const uProxyCh4 = smooth(remap(t, 23.2, 24.3)) * (1 - smooth(remap(t, 27.0, 27.9)));
+  const uProxyCh7 = smooth(remap(t, 43.5, 44.3)) * (1 - smooth(remap(t, 46.8, 47.6)));
+  setTubeProgress(proxyTube, proxyGeo, Math.max(uProxyCh4, uProxyCh7));
+  if (gptActive) {
+    proxyPulse.visible = true;
+    const pu = ((t * 0.78) % 1.0);
+    proxyPulse.position.copy(proxyCurve.getPoint(pu));
+  } else proxyPulse.visible = false;
+
+  // Ch4: GPT Pod -> Distill Furnace beam
+  setTubeProgress(llmToDistillTube, llmToDistillGeo, smooth(remap(t, 23.8, 24.8)) * (1 - smooth(remap(t, 27.0, 27.9))));
+
+  // Ch7: Cut Chunks on Belt -> UP INTO GPT Pod (t: 43.5 -> 45.8)
+  const uChunkIn = smooth(remap(t, 43.5, 44.5)) * (1 - smooth(remap(t, 46.2, 47.0)));
+  setTubeProgress(chunkToLlmTube, chunkToLlmGeo, uChunkIn);
+  const uPkt = remap(t, 43.6, 45.2);
+  if (uPkt > 0 && uPkt < 1) {
+    chunkPacket.visible = true;
+    const pe = easeInOutCubic(uPkt);
+    chunkPacket.position.copy(chunkToLlmCurve.getPoint(pe));
+    chunkPacket.rotation.y = pe * Math.PI * 3;
+    chunkPacket.scale.setScalar(1 - pe * 0.4);
+  } else chunkPacket.visible = false;
+
+  // Experience Crystal emerges from Station 2 LLM Dome (t >= 25.0) and later glides INTO Embedding Lens (50.2 -> 51.6)!
+  const cryBirth = easeOutBack(remap(t, 25.0, 26.2));
+  const cryToLens = easeInOutCubic(remap(t, 50.2, 51.6));
+  expCrystal.visible = t >= 25.0 && t < 51.65;
+  expCrystal.position.set(
+    lerp(beltX + 0.15, 6.75, cryToLens),
+    lerp(1.85 + Math.sin(t * 3.0) * 0.08, 1.45, cryToLens),
+    lerp(-0.58, 1.85, cryToLens)
+  );
+  expCrystal.rotation.y = t * 1.6;
+  expCrystal.scale.setScalar(Math.max(0.01, cryBirth * (1 - cryToLens * 0.72)));
+
+  // Flying Experience Crystal copy -> SQLite with visible dotted orange arc trail (t: 26.5 -> 29.1)
+  const uCopyExp = remap(t, 26.5, 29.1);
+  if (uCopyExp > 0 && uCopyExp < 1) {
+    flyCopyExp.visible = true;
+    const e = easeInOutCubic(uCopyExp);
+    flyCopyExp.position.copy(expToSqlCurve.getPoint(e));
+    flyCopyExp.rotation.y = e * Math.PI * 4;
+    flyCopyExp.scale.setScalar(0.95 + Math.sin(e * Math.PI) * 0.25);
+    expTrailDots.forEach((d, i) => {
+      const du = e - (i + 1) * 0.036;
+      if (du > 0 && du < 0.99) {
+        d.visible = true;
+        d.position.copy(expToSqlCurve.getPoint(du));
+        d.scale.setScalar(1 - i / expTrailDots.length);
+      } else d.visible = false;
+    });
+  } else {
+    flyCopyExp.visible = false;
+    expTrailDots.forEach(d => d.visible = false);
+  }
+
+  // SQLite Ledger state
+  drawLedger(t >= 22.4, t >= 28.8, t >= 68.4 + R_OFF && t <= 71.5 + R_OFF);
+
+  // Guillotine blade plunge at Station 3 (t: 31.6 -> 33.4)
+  const plunge = Math.sin(remap(t, 31.7, 32.7) * Math.PI);
+  cutterBlade.position.y = 2.38 - Math.pow(plunge, 0.7) * 1.15;
+
+  // Chunks 1 & 2 separate cleanly after cut!
+  const chunkVisible = cutDone >= 0.45 && t < 51.5;
+  chunk1.visible = chunkVisible;
+  chunk2.visible = chunkVisible;
+  const splitSep = easeOutCubic(remap(t, 32.3, 33.8)) * 0.46;
+  const fadeOutChunks = 1 - remap(t, 49.5, 51.2);
+  chunk1.position.set(beltX - 0.36 - splitSep, 1.07, 0.18);
+  chunk2.position.set(beltX + 0.36 + splitSep, 1.07, 0.18);
+  chunk1.scale.setScalar(Math.max(0.01, fadeOutChunks));
+  chunk2.scale.setScalar(Math.max(0.01, fadeOutChunks));
+
+  // 6. MACRO 3D TOKENIZER BRICKS (Store: t 35.8->52.0; Recall: t 60.5->64.0)
+  const uStoreTokAppear = remap(t, 35.8, 37.2);
+  const uStoreTokSplit  = easeOutBack(remap(t, 37.0, 38.8));
+  const uStoreTokFlip   = remap(t, 39.2, 41.8);
+  const uStoreTokAbsorb = easeInOutCubic(remap(t, 50.2, 52.0));
+
+  storeTokSet.group.visible = t >= 35.8 && t < 52.2;
+  if (storeTokSet.group.visible) {
+    storeTokSet.bricks.forEach((b, i) => {
+      const stag = clamp01((uStoreTokAppear * 1.5) - i * 0.12);
+      const sep = lerp(0.84, 1.04, clamp01(uStoreTokSplit));
+      const baseX = (i - 2) * sep;
+      const flipU = smooth(clamp01((uStoreTokFlip * 1.45) - i * 0.11));
+      const hop = Math.sin(flipU * Math.PI) * 0.48;
+      // Pull toward Embedding Lens at (6.75 - 3.6 = 3.15, 1.45, 1.85 - 3.15 = -1.3)
+      const px = lerp(baseX, 3.15, uStoreTokAbsorb);
+      const py = lerp(0.95 + hop + Math.sin(t * 2.5 + i) * 0.04, 1.45, uStoreTokAbsorb);
+      const pz = lerp(0, -1.3, uStoreTokAbsorb);
+      b.position.set(px, py, pz);
+      b.rotation.y = flipU * Math.PI;
+      const sc = easeOutBack(stag) * (1 - uStoreTokAbsorb * 0.85);
+      b.scale.setScalar(Math.max(0.01, sc));
+      // Numerical bar grows after flip!
+      const barU = smooth(clamp01((flipU - 0.6) / 0.4)) * (1 - uStoreTokAbsorb);
+      b.userData.vBar.scale.set(1, Math.max(0.001, barU * (0.65 + (i % 3) * 0.35)), 1);
+    });
+  }
+
+  // Recall Tokenizer bricks (brief crisp visual on the same showcase tray!)
+  const uRecTok = remap(t, 60.4 + R_OFF, 63.6 + R_OFF);
+  recallTokSet.group.visible = uRecTok > 0 && uRecTok < 1;
+  if (recallTokSet.group.visible) {
+    const uSplit = easeOutCubic(remap(t, 60.5 + R_OFF, 61.5 + R_OFF));
+    const uFlip = smooth(remap(t, 61.4 + R_OFF, 62.5 + R_OFF));
+    const uPull = easeInOutCubic(remap(t, 62.5 + R_OFF, 63.6 + R_OFF));
+    recallTokSet.bricks.forEach((b, i) => {
+      const bx = lerp((i - 2) * lerp(0.84, 1.02, uSplit), 3.15, uPull);
+      const by = lerp(0.95 + Math.sin(uFlip * Math.PI) * 0.38, 1.45, uPull);
+      const bz = lerp(0, -1.3, uPull);
+      b.position.set(bx, by, bz);
+      b.rotation.y = uFlip * Math.PI;
+      b.scale.setScalar(Math.max(0.01, (1 - uPull * 0.85) * easeOutCubic(remap(t, 60.4 + R_OFF, 60.9 + R_OFF))));
+      b.userData.vBar.scale.set(1, Math.max(0.001, uFlip * (1 - uPull)), 1);
+    });
+  }
+
+  // 7. Entity Flying Orbs burst OUT OF Hovering GPT Pod -> Ladybug 3D Graph (t: 44.6 -> 47.6)
+  gNodes.forEach((n, i) => {
+    const startT = 44.6 + i * 0.48;
+    const uFly = remap(t, startT, startT + 1.45);
+    const orb = flyEntities[i];
+    if (uFly > 0 && uFly < 1) {
+      orb.visible = true;
+      const e = easeInOutCubic(uFly);
+      const target = n.pos.clone().add(graphGroup.position);
+      orb.position.set(
+        lerp(LLM_POS.x + 1.1, target.x, e),
+        lerp(LLM_POS.y - 0.1, target.y, e) + Math.sin(e * Math.PI) * 1.45,
+        lerp(LLM_POS.z + 0.4, target.z, e)
+      );
+      orb.scale.setScalar(0.95 + Math.sin(e * Math.PI) * 0.35);
+    } else orb.visible = false;
+
+    const uPop = easeOutBack(remap(t, startT + 1.3, startT + 1.85));
+    n.mesh.visible = uPop > 0.01;
+    n.mesh.scale.setScalar(Math.max(0.01, uPop));
+    n.mesh.position.y = n.pos.y + Math.sin(t * 2.0 + i * 1.7) * 0.07;
+    n.halo.rotation.x = t * 0.8 + i;
+    n.halo.rotation.y = t * 1.1;
+
+    // Recall highlight on Ladybug nodes
+    const recHot = (i === 0 && t >= 66.6 + R_OFF) || (i === 1 && t >= 67.4 + R_OFF) || (i === 2 && t >= 68.1 + R_OFF);
+    const hotOn = recHot && t < 75.5 + R_OFF;
+    n.mat.emissive.setHex(hotOn ? 0x22c477 : 0x2c835d);
+    n.mat.emissiveIntensity = hotOn ? 0.58 : 0.08;
+  });
+
+  // Ladybug 3D Edges grow sequentially (t: 46.8 -> 50.0)
+  gEdges.forEach((e, i) => {
+    const u = smooth(remap(t, 46.8 + i * 0.75, 48.2 + i * 0.75));
+    setTubeProgress(e.tube, e.geo, u);
+    e.cone.visible = u > 0.88;
+    e.cone.scale.setScalar(clamp01((u - 0.88) / 0.12));
+    const hotOn = ((i === 0 && t >= 67.0 + R_OFF) || (i === 1 && t >= 67.8 + R_OFF)) && t < 75.5 + R_OFF;
+    e.mat.color.setHex(hotOn ? 0x24b06e : 0x7c5eb8);
+    e.mat.emissive.setHex(hotOn ? 0x24b06e : 0x7c5eb8);
+    e.mat.emissiveIntensity = hotOn ? 0.55 : 0.08;
+  });
+
+  // 8. Vector Launch Orbs -> LanceDB 3D Cube (t: 51.2 -> 56.2)
+  NEW_STARS.forEach((s, i) => {
+    const startT = 51.2 + i * 0.35;
+    const uFly = remap(t, startT, startT + 1.3);
+    const orb = flyVecOrbs[i];
+    if (uFly > 0 && uFly < 1) {
+      orb.visible = true;
+      const e = easeInOutCubic(uFly);
+      const dst = s.pos.clone().add(vecGroup.position);
+      orb.position.set(lerp(6.8, dst.x, e), lerp(1.45, dst.y, e) + Math.sin(e * Math.PI) * 1.8, lerp(1.85, dst.z, e));
+    } else orb.visible = false;
+
+    const uPop = easeOutBack(remap(t, startT + 1.15, startT + 1.7));
+    s.mesh.visible = uPop > 0.01;
+    const nearHit = s.near && t >= 65.1 + R_OFF && t < 75.5 + R_OFF;
+    const pulse = nearHit ? 1.28 + Math.sin(t * 7) * 0.12 : 1.0;
+    s.mesh.scale.setScalar(Math.max(0.01, uPop * pulse));
+    s.mat.emissiveIntensity = nearHit ? 0.75 : 0.16;
+  });
+
+  // Subtle floating of distant old stars
+  OLD_STARS.forEach((s, i) => {
+    s.mesh.position.y = s.pos.y + Math.sin(t * 1.4 + i * 1.9) * 0.06;
+  });
+
+  // 9. Recall Comet (Codex -> Memlane -> Tokenizer -> LanceDB, shifted by +R_OFF)
+  const uComet1 = remap(t, 59.0 + R_OFF, 60.4 + R_OFF); // Codex -> Memlane
+  const uComet2 = remap(t, 63.0 + R_OFF, 64.5 + R_OFF); // Lens -> LanceDB Query Star
+  if (uComet1 > 0 && uComet1 < 1) {
+    recallComet.visible = true;
+    const e = easeInOutCubic(uComet1);
+    recallComet.position.set(lerp(-12.8, -8.5, e), 2.3 + Math.sin(e * Math.PI) * 1.6, lerp(0.2, 0.4, e));
+  } else if (uComet2 > 0 && uComet2 < 1) {
+    recallComet.visible = true;
+    const e = easeInOutCubic(uComet2);
+    const dst = QUERY_LOCAL.clone().add(vecGroup.position);
+    recallComet.position.set(lerp(6.8, dst.x, e), lerp(1.45, dst.y, e) + Math.sin(e * Math.PI) * 2.1, lerp(1.85, dst.z, e));
+  } else recallComet.visible = false;
+
+  // Query Star + 3D Radar Sphere Wave + Nearest Neighbor Tethers
+  const qPop = easeOutBack(remap(t, 64.3 + R_OFF, 65.0 + R_OFF));
+  queryStar.visible = qPop > 0.01;
+  queryStar.scale.setScalar(Math.max(0.01, qPop));
+
+  const uRadar = remap(t, 64.6 + R_OFF, 66.8 + R_OFF);
+  if (uRadar > 0 && uRadar < 1) {
+    const r = lerp(0.25, 1.55, easeOutCubic(uRadar));
+    radarShell.scale.setScalar(r);
+    radarShell.material.opacity = (1 - uRadar) * 0.28;
+    radarRing.scale.setScalar(r * 1.05);
+    radarRing.material.opacity = (1 - uRadar) * 0.85;
+  } else {
+    radarShell.material.opacity = 0;
+    radarRing.material.opacity = 0;
+  }
+
+  const uTether = smooth(remap(t, 65.0 + R_OFF, 66.0 + R_OFF));
+  tetherMeshes.forEach(({ mesh }) => {
+    mesh.visible = uTether > 0.01;
+    mesh.scale.setScalar(Math.max(0.01, uTether));
+  });
+
+  // Cross-DB Recall Beams (LanceDB -> Ladybug -> SQLite)
+  setTubeProgress(linkL2G, linkL2GGeo, smooth(remap(t, 66.0 + R_OFF, 67.0 + R_OFF)) * (t < 75.5 + R_OFF ? 1 : 0));
+  setTubeProgress(linkG2S, linkG2SGeo, smooth(remap(t, 68.0 + R_OFF, 69.0 + R_OFF)) * (t < 75.5 + R_OFF ? 1 : 0));
+
+  // Finale Emerald Return Ribbon + Orb
+  const uRet = smooth(remap(t, 70.5 + R_OFF, 72.5 + R_OFF));
+  setTubeProgress(returnRibbon, returnGeo, uRet);
+  if (uRet > 0.01 && uRet < 0.99) {
+    returnOrb.visible = true;
+    returnOrb.position.copy(returnCurve.getPoint(uRet));
+  } else returnOrb.visible = false;
+
+  // 10. Context-aware 3D floating label visibility (zero screen clutter!)
+  const show = (k, cond, hot = false) => {
+    const d = tagMap[k];
+    if (!d) return;
+    d.el.classList.toggle("vis", !!cond);
+    d.el.classList.toggle("hot", !!hot);
+  };
+  const ch = getChapter(t).id;
+  show("b-codex", ch === 0 || ch === 1 || ch === 2 || ch === 10 || ch === 12);
+  show("b-mem",   ch === 0 || ch === 2 || (ch === 4 && t < 27.2) || ch === 10 || ch === 12);
+  show("b-cognee",ch === 0 || ch === 3 || ch === 4 || ch === 12);
+  const gptTag = tagMap["b-gpt"];
+  if (gptTag) {
+    const wantSleep = t >= RECALL_T;
+    if (gptTag.el.dataset.sleep !== String(wantSleep)) {
+      gptTag.el.dataset.sleep = String(wantSleep);
+      gptTag.el.innerHTML = wantSleep
+        ? `💤 GPT 大模型 <span class="sub">休眠 · 召回 0 调用</span>`
+        : `<img src="${ICONS.openai}"><img src="${ICONS.memlane}">GPT 大模型 <span class="sub">Memlane 代理</span>`;
+    }
+  }
+  show("b-gpt",   ch === 0 || ch === 4 || ch === 7 || ch === 10 || ch === 12);
+  show("b-sql",   ch === 0 || ch === 3 || ch === 4 || ch === 11 || ch === 12);
+  show("b-lady",  ch === 0 || ch === 7 || ch === 11 || ch === 12);
+  show("b-lance", ch === 0 || ch === 8 || ch === 11 || ch === 12);
+
+  show("s-llm", ch === 4);
+  show("s-proxy", ch === 4 && t >= 23.4 && t < 27.2);
+  show("s-exp-main", (ch === 4 && t >= 25.4) || ch === 5 || (t >= 50.0 && t < 51.6));
+  show("s-exp-sql", ch === 4 && flyCopyExp.visible);
+  show("s-ext-in", ch === 7 && t < 45.6);
+  show("s-ext-out", ch === 7 && t >= 44.7 && t < 47.4);
+  show("s-cut", ch === 5);
+  show("s-tok", ch === 6 || (t >= 60.4 + R_OFF && t < 63.6 + R_OFF));
+  show("s-acl", t >= 59.2 + R_OFF && t < 63.2 + R_OFF);
+
+  gNodes.forEach((n, i) => show(n.key, (ch === 7 || ch === 11) && n.mesh.visible, (i === 0 && t >= 66.6 + R_OFF) || (i === 1 && t >= 67.4 + R_OFF) || (i === 2 && t >= 68.1 + R_OFF)));
+  gEdges.forEach((e, i) => show(e.key, (ch === 7 || ch === 11) && e.tube.visible, (i === 0 && t >= 67.0 + R_OFF) || (i === 1 && t >= 67.8 + R_OFF)));
+
+  OLD_STARS.forEach(s => show(s.key, ch === 8 || ch === 11));
+  NEW_STARS.forEach(s => show(s.key, (ch === 8 || ch === 11) && s.mesh.visible, s.near && t >= 65.1 + R_OFF));
+  show("q-star", ch === 11 && queryStar.visible, true);
+}
+
+/* ==================== 9. CINEMATIC SPRING CAMERA + FREE 3D ORBIT ==================== */
+function directorCameraAt(t) {
+  let idx = 0;
+  for (let i = CHAPTERS.length - 1; i >= 0; i--) {
+    if (t >= CHAPTERS[i].start) { idx = i; break; }
+  }
+  const c0 = CHAPTERS[idx];
+  const c1 = CHAPTERS[Math.min(CHAPTERS.length - 1, idx + 1)];
+  // Inside Ch4, smoothly pull wider & pan right (26.0 -> 28.4) to track Experience Crystal flying into SQLite!
+  let basePos = new THREE.Vector3(...c0.cam.pos);
+  let baseLook = new THREE.Vector3(...c0.cam.look);
+  if (idx === 4) {
+    const panRight = smoother(remap(t, 26.0, 27.8));
+    basePos.lerp(new THREE.Vector3(4.2, 9.8, 15.8), panRight);
+    baseLook.lerp(new THREE.Vector3(7.2, 2.3, -3.0), panRight);
+  } else if (idx === 7) {
+    // First half (43.5 -> 46.8): frame Chunks + Hovering GPT Pod + Ladybug!
+    // Second half (46.8 -> 50.5): swoop smoothly into Ladybug 3D Graph as edges grow!
+    const swoopLady = smoother(remap(t, 46.6, 48.2));
+    basePos.lerp(new THREE.Vector3(11.2, 5.2, 7.6), swoopLady);
+    baseLook.lerp(new THREE.Vector3(14.3, 1.9, 0.0), swoopLady);
+  }
+  // C2-continuous blend during final 1.4s of each chapter into next (reaches exact 1.0 at c0.end -> ZERO seam jump!)
+  const blend = idx < CHAPTERS.length - 1 ? smoother(remap(t, c0.end - 1.4, c0.end)) : 0;
+  const pos = basePos.lerp(new THREE.Vector3(...c1.cam.pos), blend);
+  const look = baseLook.lerp(new THREE.Vector3(...c1.cam.look), blend);
+  // Globally continuous gentle 3D orbital drift (zero discontinuous +/- orbit flip at chapter seams!)
+  const orbit = lerp(c0.cam.orbit, c1.cam.orbit, blend);
+  const ang = Math.sin(t * 0.28) * orbit;
+  const rel = pos.clone().sub(look);
+  rel.applyAxisAngle(new THREE.Vector3(0, 1, 0), ang);
+  return { pos: look.clone().add(rel), look };
+}
+
+const camCurrPos = new THREE.Vector3(-1.5, 19.5, 29.0);
+const camCurrLook = new THREE.Vector3(0.2, 1.4, 0.2);
+let userYaw = 0, userPitch = 0, userZoom = 1.0;
+let draggingOrbit = false, prevMouseX = 0, prevMouseY = 0;
+
+wrap.addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  draggingOrbit = true; prevMouseX = e.clientX; prevMouseY = e.clientY;
+  wrap.setPointerCapture(e.pointerId);
+});
+wrap.addEventListener("pointermove", e => {
+  if (!draggingOrbit) return;
+  const dx = e.clientX - prevMouseX, dy = e.clientY - prevMouseY;
+  prevMouseX = e.clientX; prevMouseY = e.clientY;
+  userYaw -= dx * 0.0055;
+  userPitch = Math.max(-0.45, Math.min(0.55, userPitch + dy * 0.0045));
+});
+wrap.addEventListener("pointerup", () => { draggingOrbit = false; });
+wrap.addEventListener("wheel", e => {
+  e.preventDefault();
+  userZoom = Math.max(0.52, Math.min(1.65, userZoom * (e.deltaY > 0 ? 1.08 : 0.92)));
+}, { passive: false });
+
+document.getElementById("btn-reset-cam").onclick = () => { userYaw = 0; userPitch = 0; userZoom = 1.0; };
+
+/* ==================== 10. PLAYER UI & CONTINUOUS SCRUBBER ==================== */
+let curT = 0.0, playing = false, speed = 1.0;
+const SPEEDS = [0.75, 1, 1.5];
+let speedIdx = 1;
+
+const $ = id => document.getElementById(id);
+const scrubber = $("scrubber"), scrubTrack = $("scrub-track"), scrubFill = $("scrub-fill"), scrubKnob = $("scrub-knob"), scrubTip = $("scrub-tip");
+
+// Background split & chapter ticks on continuous bar
+$("scrub-store-bg").style.width = (RECALL_T / TOTAL * 100) + "%";
+$("scrub-recall-bg").style.width = ((TOTAL - RECALL_T) / TOTAL * 100) + "%";
+CHAPTERS.forEach((c, i) => {
+  if (i === 0) return;
+  const tick = document.createElement("i");
+  tick.className = "chap-tick";
+  tick.style.left = (c.start / TOTAL * 100) + "%";
+  scrubTrack.appendChild(tick);
+});
+
+const fmt = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+let lastChapId = -1;
+function syncUI() {
+  const ch = getChapter(curT);
+  const pct = (curT / TOTAL) * 100;
+  scrubFill.style.width = pct + "%";
+  scrubKnob.style.left = pct + "%";
+  $("timecode").textContent = `${fmt(curT)} / ${fmt(TOTAL)}`;
+  document.body.classList.toggle("recall", curT >= RECALL_T);
+  if (ch.id !== lastChapId) {
+    lastChapId = ch.id;
+    $("phase-badge").textContent = ch.phase;
+    $("sub-step").textContent = ch.step;
+    $("sub-title").textContent = ch.title;
+    $("sub-body").textContent = ch.body;
+    $("sub-tip").innerHTML = ch.tip;
+    $("sub-tech").textContent = "源码对应：" + ch.tech;
+  }
+  $("btn-play").textContent = playing ? "❚❚ 暂停" : (curT >= TOTAL - 0.1 ? "↻ 重播" : "▶ 播放");
+  const to2d = $("btn-to-2d");
+  if (to2d) to2d.href = `2d.html#theme=${currentTheme}&t=${curT.toFixed(1)}`;
+}
+
+function setPlay(on) {
+  playing = on;
+  if (on) {
+    // Gently reset user orbit when resuming director playback
+    userYaw *= 0.2; userPitch *= 0.2; userZoom = 1.0;
+    if (curT >= TOTAL - 0.2 || curT < 0.1) curT = CHAPTERS[1].start;
+  }
+  syncUI();
+}
+
+$("btn-play").onclick = () => setPlay(!playing);
+$("btn-prev").onclick = () => {
+  const ch = getChapter(curT);
+  const target = (curT - ch.start > 1.2) ? ch.start : CHAPTERS[Math.max(0, ch.id - 1)].start;
+  curT = target;
+  syncUI();
+};
+$("btn-next").onclick = () => {
+  const ch = getChapter(curT);
+  curT = CHAPTERS[Math.min(CHAPTERS.length - 1, ch.id + 1)].start;
+  syncUI();
+};
+$("btn-speed").onclick = () => {
+  speedIdx = (speedIdx + 1) % SPEEDS.length;
+  speed = SPEEDS[speedIdx];
+  $("btn-speed").textContent = speed + "×";
+};
+$("btn-tech").onclick = e => {
+  const on = document.body.classList.toggle("tech");
+  e.currentTarget.classList.toggle("on", on);
+};
+
+// Attach luminous additive glow sprites to key 3D heroes (active in Deep Space theme!)
+attachGlow(llmPod, 0x8d6eff, 5.2, 0.55);
+attachGlow(expCrystal, 0xff7b42, 2.2, 0.80);
+attachGlow(flyCopyExp, 0xff7b42, 1.9, 0.85);
+attachGlow(airplane, 0xff925c, 2.2, 0.65);
+attachGlow(recallComet, 0x32f09a, 2.4, 0.92);
+attachGlow(returnOrb, 0x32f09a, 2.6, 0.92);
+attachGlow(queryStar, 0x32f09a, 1.8, 0.92);
+gNodes.forEach(n => attachGlow(n.mesh, 0x38e898, 2.1, 0.62));
+NEW_STARS.forEach(s => attachGlow(s.mesh, s.col, 1.25, 0.78));
+
+function applyTheme(mode) {
+  currentTheme = mode === "space" ? "space" : "light";
+  const sp = currentTheme === "space";
+  document.body.classList.toggle("space", sp);
+  $("btn-theme").textContent = sp ? "☀️ 浅色黏土" : "🌌 深空科技";
+  $("btn-theme").classList.toggle("on", sp);
+
+  // Sky, fog, exposure, starfield & floor
+  const bg = sp ? 0x060914 : 0xf4eee4;
+  scene.background.setHex(bg);
+  scene.fog.color.setHex(bg);
+  scene.fog.density = sp ? 0.0072 : 0.0062;
+  renderer.toneMappingExposure = sp ? 1.16 : 0.93;
+  starfield.visible = sp;
+  floorMat.map = sp ? floorTexSpace : floorTexLight;
+  floorMat.roughness = sp ? 0.44 : 0.94;
+  floorMat.metalness = sp ? 0.22 : 0.0;
+  floorMat.needsUpdate = true;
+
+  // Lighting rig
+  if (sp) {
+    hemi.color.setHex(0x88b4ff); hemi.groundColor.setHex(0x10182b); hemi.intensity = 0.56;
+    keyLight.color.setHex(0xe2eeff); keyLight.intensity = 0.92;
+    rimLight.color.setHex(0x6e8eff); rimLight.intensity = 0.88;
+    warmFill.color.setHex(0x8262ff); warmFill.intensity = 0.52;
+    spaceCyanLight.intensity = 0.62;
+  } else {
+    hemi.color.setHex(0xfffcf5); hemi.groundColor.setHex(0xcabca6); hemi.intensity = 0.64;
+    keyLight.color.setHex(0xfff4e4); keyLight.intensity = 1.05;
+    rimLight.color.setHex(0xd4e2ff); rimLight.intensity = 0.44;
+    warmFill.color.setHex(0xffcfab); warmFill.intensity = 0.28;
+    spaceCyanLight.intensity = 0.0;
+  }
+
+  // Transform all registered clay materials
+  for (let i = 0; i < clayRegistry.length; i++) {
+    const rec = clayRegistry[i];
+    const m = rec.mat;
+    const L = rec.light;
+    if (sp) {
+      const mapped = SPACE_PALETTE[L.hex];
+      if (mapped) {
+        m.color.setHex(mapped[0]);
+        m.roughness = mapped[1];
+        m.metalness = mapped[2];
+        m.emissive.setHex(mapped[3]);
+        m.emissiveIntensity = mapped[4];
+      } else {
+        m.color.setHex(L.hex);
+        m.roughness = Math.max(0.24, L.rough - 0.16);
+        m.metalness = Math.min(0.35, L.metal + 0.12);
+        if (L.emissiveHex) {
+          m.emissive.setHex(L.emissiveHex);
+          m.emissiveIntensity = Math.max(L.emissiveIntensity, 0.35);
+        }
+      }
+    } else {
+      m.color.setHex(L.hex);
+      m.roughness = L.rough;
+      m.metalness = L.metal;
+      m.emissive.setHex(L.emissiveHex);
+      m.emissiveIntensity = L.emissiveIntensity;
+    }
+  }
+
+  // LanceDB holographic cube wireframe & glass
+  vecCubeFrame.material.color.setHex(sp ? 0x45bcff : 0x3f6fb3);
+  vecCubeFrame.material.opacity = sp ? 0.92 : 0.72;
+  vecCubeGlass.material.color.setHex(sp ? 0x2665b8 : 0xcde2fc);
+  vecCubeGlass.material.opacity = sp ? 0.12 : 0.18;
+
+  // Toggle additive glow sprites
+  spaceGlowSprites.forEach(s => { s.visible = sp; });
+
+  // Force redraw dynamic 3D screens & sync 2D handoff link
+  lastChatKey = "";
+  lastLedgerState = "";
+  updateWorldAt(curT, performance.now() * 0.001);
+  syncUI();
+}
+
+$("btn-theme").onclick = () => applyTheme(currentTheme === "space" ? "light" : "space");
+
+// Smooth drag scrubbing!
+let scrubbing = false;
+function scrubFromEvent(e) {
+  const r = scrubTrack.getBoundingClientRect();
+  const u = clamp01((e.clientX - r.left) / r.width);
+  const tHover = u * TOTAL;
+  const ch = getChapter(tHover);
+  scrubTip.style.left = (u * 100) + "%";
+  scrubTip.textContent = `${ch.step} · ${fmt(tHover)}`;
+  if (scrubbing) { curT = tHover; syncUI(); }
+}
+scrubber.addEventListener("pointerdown", e => {
+  scrubbing = true; scrubber.classList.add("dragging");
+  scrubber.setPointerCapture(e.pointerId);
+  scrubFromEvent(e);
+});
+scrubber.addEventListener("pointermove", scrubFromEvent);
+scrubber.addEventListener("pointerup", () => { scrubbing = false; scrubber.classList.remove("dragging"); });
+
+addEventListener("keydown", e => {
+  if (e.key === " ") { e.preventDefault(); setPlay(!playing); }
+  else if (e.key === "ArrowRight") $("btn-next").click();
+  else if (e.key === "ArrowLeft") $("btn-prev").click();
+  else if (e.key === "r" || e.key === "R") $("btn-reset-cam").click();
+});
+
+addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ==================== URL PARAMS / HASH JUMP (theme + time + chapter + clean/record) ==================== */
+let snapFirst = true;
+const qs = new URLSearchParams(location.search);
+const qsTheme = qs.get("theme");
+const hashTheme = location.hash.match(/theme=([a-z]+)/);
+const initTheme = (qsTheme || (hashTheme && hashTheme[1]) || "light").toLowerCase();
+const isClean = qs.get("clean") === "1" || /clean=1/.test(location.hash);
+const isSubs = qs.get("subs") === "1" || /subs=1/.test(location.hash);
+const isRecord = qs.get("record") === "1" || /record=1/.test(location.hash);
+if (isClean) document.body.classList.add("clean");
+if (isSubs) document.body.classList.add("subs");
+if (isRecord) document.body.classList.add("record");
+const hashT = location.hash.match(/t=([\d.]+)/);
+const hashC = location.hash.match(/c=(\d+)/);
+if (hashT) curT = Math.max(0, Math.min(TOTAL, parseFloat(hashT[1])));
+else if (hashC) {
+  const ch = CHAPTERS[Math.min(CHAPTERS.length - 1, parseInt(hashC[1], 10))];
+  curT = ch.start + (ch.end - ch.start) * 0.62;
+}
+applyTheme(initTheme === "space" ? "space" : "light");
+
+function stepAndRender(animT, starSec, dt, snapCam = false) {
+  curT = animT;
+  if (starfield.visible) starfield.rotation.y = starSec * 0.018;
+  updateWorldAt(curT, starSec);
+
+  // Director camera + interactive user orbit offset, spring-damped!
+  const dir = directorCameraAt(curT);
+  const rel = dir.pos.clone().sub(dir.look).multiplyScalar(userZoom);
+  if (Math.abs(userYaw) > 0.0001) rel.applyAxisAngle(new THREE.Vector3(0, 1, 0), userYaw);
+  if (Math.abs(userPitch) > 0.0001) {
+    const right = new THREE.Vector3().crossVectors(rel, new THREE.Vector3(0, 1, 0)).normalize();
+    rel.applyAxisAngle(right, userPitch);
+  }
+  const desiredPos = dir.look.clone().add(rel);
+  if (desiredPos.y < 1.2) desiredPos.y = 1.2;
+
+  if (snapCam || snapFirst) {
+    camCurrPos.copy(desiredPos);
+    camCurrLook.copy(dir.look);
+    snapFirst = false;
+  } else {
+    const k = 1 - Math.exp(-6.5 * dt);
+    camCurrPos.lerp(desiredPos, k);
+    camCurrLook.lerp(dir.look, k);
+  }
+  camera.position.copy(camCurrPos);
+  camera.lookAt(camCurrLook);
+
+  renderer.render(scene, camera);
+
+  // Project 3D coordinates to floating HTML tags + gentle screen-space de-overlap!
+  const W = window.innerWidth, H = window.innerHeight;
+  const activeTags = [];
+  for (let i = 0; i < labelDefs.length; i++) {
+    const d = labelDefs[i];
+    if (!d.el.classList.contains("vis")) continue;
+    const wp = d.worldPosFn();
+    vTmp.copy(wp).project(camera);
+    if (vTmp.z > 1) { d.el.style.transform = "translate(-9999px,-9999px)"; continue; }
+    const sx = (vTmp.x * 0.5 + 0.5) * W;
+    const sy = (-vTmp.y * 0.5 + 0.5) * H;
+    const w = d.el.offsetWidth || 86, h = d.el.offsetHeight || 26;
+    activeTags.push({ d, x: sx, y: sy, w, h });
+  }
+  // 2 passes of vertical relaxation so projected 3D badges never collide
+  activeTags.sort((a, b) => a.y - b.y);
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < activeTags.length; i++) {
+      for (let j = i + 1; j < activeTags.length; j++) {
+        const a = activeTags[i], b = activeTags[j];
+        const minDx = (a.w + b.w) * 0.5 + 6;
+        const minDy = Math.max(a.h, b.h) + 5;
+        if (Math.abs(a.x - b.x) < minDx && Math.abs(a.y - b.y) < minDy) {
+          const push = (minDy - Math.abs(a.y - b.y)) * 0.52;
+          a.y -= push; b.y += push;
+        }
+      }
+    }
+  }
+  for (let i = 0; i < activeTags.length; i++) {
+    const t0 = activeTags[i];
+    if (isRecord) {
+      // Exact integer left/top without GPU layer cache -> zero subpixel text blur at 4K 3x Retina!
+      t0.d.el.style.transform = "none";
+      t0.d.el.style.left = Math.round(t0.x - t0.w * 0.5) + "px";
+      t0.d.el.style.top = Math.round(t0.y - t0.h) + "px";
+    } else {
+      t0.d.el.style.transform = `translate3d(${Math.round(t0.x)}px,${Math.round(t0.y)}px,0) translate(-50%,-100%)`;
+    }
+  }
+}
+
+window.__renderVideoFrame = (animT, starSec, dt, snapCam = false) => {
+  stepAndRender(animT, starSec, dt, snapCam);
+};
+
+/* ==================== 11. 60FPS MAIN RENDER LOOP ==================== */
+let prevNow = performance.now();
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min(0.05, (now - prevNow) / 1000);
+  prevNow = now;
+
+  if (playing && !scrubbing) {
+    curT += dt * speed;
+    if (curT >= TOTAL) { curT = TOTAL; playing = false; }
+    syncUI();
+  }
+  stepAndRender(curT, now * 0.001, dt, false);
+}
+
+syncUI();
+if (!isRecord) requestAnimationFrame(animate);
+else stepAndRender(curT, 0, 1 / 60, true);
+</script>
+</body>
+</html>

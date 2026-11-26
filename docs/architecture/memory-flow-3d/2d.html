@@ -1,0 +1,1593 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memlane × Cognee · 2D 动画讲解（Canvas 60fps）</title>
+<style>
+:root {
+  --paper: #f6f1e8;
+  --glass: rgba(252, 249, 243, 0.86);
+  --glass-strong: rgba(255, 253, 249, 0.94);
+  --border: rgba(120, 104, 82, 0.16);
+  --ink: #22201d;
+  --muted: #686156;
+  --subtle: #968d7f;
+  --accent: #d06542;
+  --accent-soft: rgba(208, 101, 66, 0.12);
+  --green: #2c835d;
+  --green-soft: rgba(44, 131, 93, 0.13);
+  --serif: Georgia, "Songti SC", "Noto Serif SC", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; overflow: hidden; background: var(--paper); color: var(--ink); font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased; user-select: none; }
+
+#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+#stage:active { cursor: grabbing; }
+
+/* Top HUD */
+.hud-top {
+  position: fixed; top: 16px; left: 18px; right: 18px; z-index: 20;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  pointer-events: none;
+}
+.hud-top > * { pointer-events: auto; }
+.brand-pill {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 7px 14px 7px 9px; border-radius: 99px;
+  background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(34,26,16,0.06);
+}
+.brand-pill img { width: 24px; height: 24px; border-radius: 6px; }
+.brand-pill h1 { margin: 0; font: 600 14.5px/1 var(--serif); letter-spacing: -0.01em; }
+.phase-badge {
+  font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px;
+  background: var(--accent-soft); color: var(--accent);
+}
+body.recall .phase-badge { background: var(--green-soft); color: var(--green); }
+.nollm-badge {
+  display: none; align-items: center; gap: 5px;
+  padding: 6px 13px; border-radius: 99px;
+  background: rgba(44, 131, 93, 0.92); color: #fff;
+  font-size: 12px; font-weight: 650;
+  box-shadow: 0 8px 22px rgba(44, 131, 93, 0.24);
+}
+body.recall .nollm-badge { display: inline-flex; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+  padding: 7px 13px; border-radius: 99px;
+  background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border); color: var(--ink); font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: border-color 140ms, background 140ms, transform 140ms;
+}
+.chip-btn:hover { border-color: var(--accent); background: var(--glass-strong); }
+.chip-btn:active { transform: scale(0.96); }
+.chip-btn.on { background: var(--ink); color: #faf7f2; border-color: var(--ink); }
+.hint-pan { font-size: 11.5px; color: var(--muted); padding: 6px 11px; border-radius: 99px; background: rgba(252,249,243,0.68); border: 1px solid var(--border); }
+
+/* Bottom Cinema Deck */
+.cinema-deck {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  width: min(960px, calc(100vw - 28px)); z-index: 20;
+  background: var(--glass-strong); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border); border-radius: 22px;
+  box-shadow: 0 18px 48px rgba(34, 26, 16, 0.11), 0 2px 8px rgba(34, 26, 16, 0.05);
+  padding: 13px 18px 12px;
+}
+.sub-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.sub-title { font: 700 17px/1.3 var(--serif); color: var(--ink); }
+.sub-step { font: 700 11px/1 var(--mono); padding: 3px 8px; border-radius: 99px; background: var(--accent); color: #fff; vertical-align: 2px; }
+body.recall .sub-step { background: var(--green); }
+.sub-body { margin: 5px 0 0; font-size: 14px; line-height: 1.62; color: #3d3933; }
+.sub-tip {
+  margin-top: 6px; padding: 5px 10px; border-radius: 10px;
+  background: rgba(236, 229, 216, 0.55); font-size: 12.5px; line-height: 1.5; color: var(--muted);
+}
+.sub-tip:empty { display: none; }
+.sub-tip b { color: var(--ink); }
+.sub-tech { display: none; margin-top: 5px; font: 11.5px/1.45 var(--mono); color: var(--subtle); }
+body.tech .sub-tech { display: block; }
+
+.player-bar { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.pbtn {
+  border: 1px solid var(--border); background: #fff; color: var(--ink);
+  border-radius: 99px; height: 34px; padding: 0 13px; font-size: 13px; font-weight: 650;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  transition: transform 140ms, border-color 140ms, background 140ms;
+}
+.pbtn:hover { border-color: var(--accent); }
+.pbtn:active { transform: scale(0.95); }
+.pbtn.primary { background: var(--ink); color: #faf7f2; border-color: var(--ink); min-width: 88px; }
+.pbtn.icon { width: 34px; padding: 0; }
+
+.scrubber-wrap { flex: 1; position: relative; height: 26px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.scrubber-track { position: relative; width: 100%; height: 7px; border-radius: 99px; background: rgba(120, 104, 82, 0.16); overflow: visible; }
+.scrubber-store-bg { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 99px 0 0 99px; background: rgba(208, 101, 66, 0.14); }
+.scrubber-recall-bg { position: absolute; right: 0; top: 0; bottom: 0; border-radius: 0 99px 99px 0; background: rgba(44, 131, 93, 0.14); }
+.scrubber-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #e0815d); pointer-events: none; }
+body.recall .scrubber-fill { background: linear-gradient(90deg, var(--accent) 0%, var(--accent) 75%, var(--green) 76%, #45a378 100%); }
+.scrubber-knob { position: absolute; top: 50%; left: 0%; width: 15px; height: 15px; transform: translate(-50%, -50%); border-radius: 50%; background: #fff; border: 2.5px solid var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.2); pointer-events: none; }
+body.recall .scrubber-knob { border-color: var(--green); }
+.chap-tick { position: absolute; top: -2px; width: 2px; height: 11px; border-radius: 1px; background: rgba(255,255,255,0.85); pointer-events: none; }
+.scrub-tip { position: absolute; bottom: 26px; transform: translateX(-50%); padding: 3px 9px; border-radius: 8px; background: var(--ink); color: #faf7f2; font-size: 11.5px; font-weight: 600; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 120ms; }
+.scrubber-wrap:hover .scrub-tip, .scrubber-wrap.dragging .scrub-tip { opacity: 1; }
+.timecode { font: 600 11.5px/1 var(--mono); color: var(--muted); min-width: 72px; text-align: right; }
+
+/* Deep Space 2D Theme */
+body.space {
+  --paper: #070b17;
+  --glass: rgba(13, 19, 36, 0.82);
+  --glass-strong: rgba(14, 21, 40, 0.90);
+  --border: rgba(110, 162, 255, 0.22);
+  --ink: #eef4ff;
+  --muted: #9db0d2;
+  --subtle: #7689ae;
+  --accent: #ff7e54;
+  --accent-soft: rgba(255, 126, 84, 0.18);
+  --green: #32df92;
+  --green-soft: rgba(50, 223, 146, 0.18);
+}
+body.space .brand-pill, body.space .chip-btn, body.space .cinema-deck { box-shadow: 0 14px 40px rgba(0,0,0,0.55), inset 0 1px 0 rgba(155,198,255,0.12); }
+body.space .hint-pan { background: rgba(13, 19, 36, 0.68); }
+body.space .chip-btn.on { background: #3b82f6; color: #fff; border-color: #60a5fa; }
+body.space .sub-body { color: #d6e2f7; }
+body.space .sub-tip { background: rgba(40, 62, 112, 0.36); border: 1px solid rgba(110,162,255,0.14); }
+body.space .pbtn { background: rgba(22, 31, 56, 0.92); color: #eef4ff; }
+body.space .pbtn.primary { background: linear-gradient(135deg, #4b8bff, #6e5cff); color: #fff; border-color: transparent; }
+body.space .scrubber-track { background: rgba(130, 168, 240, 0.18); }
+body.space .scrubber-knob { background: #0e1528; border-color: #ff8e66; }
+body.space.recall .scrubber-knob { border-color: #32df92; }
+body.space .scrub-tip { background: #1d2b4e; color: #f0f6ff; border: 1px solid rgba(120,175,255,0.3); }
+body.space .nollm-badge { background: rgba(24, 178, 112, 0.92); color: #03190f; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="hud-top">
+  <div class="brand-pill">
+    <img id="hdr-memlane" alt="Memlane">
+    <h1>Memlane × Cognee · 2D 记忆工坊</h1>
+    <span class="phase-badge" id="phase-badge">全景导览</span>
+  </div>
+  <div class="nollm-badge">⚡ 召回全程 0 次大模型 · 向量模型 + 查库</div>
+  <div class="top-actions">
+    <span class="hint-pan">🖱 拖动画布 · 滚轮缩放</span>
+    <a class="chip-btn" id="btn-to-3d" href="index.html">🧊 切到 3D 版</a>
+    <button class="chip-btn" id="btn-theme">🌌 深空科技</button>
+    <button class="chip-btn" id="btn-reset-cam">视角复位</button>
+    <button class="chip-btn" id="btn-tech">源码对应</button>
+  </div>
+</div>
+
+<div class="cinema-deck">
+  <div class="sub-row">
+    <span class="sub-step" id="sub-step">开场</span>
+    <span class="sub-title" id="sub-title"></span>
+  </div>
+  <div class="sub-body" id="sub-body"></div>
+  <div class="sub-tip" id="sub-tip"></div>
+  <div class="sub-tech" id="sub-tech"></div>
+  <div class="player-bar">
+    <button class="pbtn primary" id="btn-play">▶ 播放</button>
+    <button class="pbtn icon" id="btn-prev" title="上一幕">←</button>
+    <button class="pbtn icon" id="btn-next" title="下一幕">→</button>
+    <div class="scrubber-wrap" id="scrubber">
+      <div class="scrub-tip" id="scrub-tip"></div>
+      <div class="scrubber-track" id="scrub-track">
+        <div class="scrubber-store-bg" id="scrub-store-bg"></div>
+        <div class="scrubber-recall-bg" id="scrub-recall-bg"></div>
+        <div class="scrubber-fill" id="scrub-fill"></div>
+        <div class="scrubber-knob" id="scrub-knob"></div>
+      </div>
+    </div>
+    <button class="pbtn" id="btn-speed" style="min-width:54px">1×</button>
+    <span class="timecode" id="timecode">00:00 / 01:16</span>
+  </div>
+</div>
+
+<script src="vendor/icons.js"></script>
+<script>
+"use strict";
+const ICONS = window.BRAND_ICONS || {};
+document.getElementById("hdr-memlane").src = ICONS.memlane || "";
+
+// Preload all 7 real product icons into crisp Canvas-ready Images
+const IMGS = {};
+Object.entries(ICONS).forEach(([k, src]) => {
+  const im = new Image();
+  im.src = src;
+  IMGS[k] = im;
+});
+
+/* ==================== MATH & EASING ==================== */
+const clamp01 = x => x < 0 ? 0 : x > 1 ? 1 : x;
+const remap = (t, a, b) => clamp01((t - a) / (b - a));
+const lerp = (a, b, u) => a + (b - a) * u;
+const smooth = u => u * u * (3 - 2 * u);
+const smoother = u => u * u * u * (u * (u * 6 - 15) + 10);
+const easeOutBack = u => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(u - 1, 3) + c1 * Math.pow(u - 1, 2); };
+const easeOutCubic = u => 1 - Math.pow(1 - u, 3);
+const easeInOutCubic = u => u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
+
+function quadPt(p0, p1, p2, u) {
+  const m = 1 - u;
+  return {
+    x: m * m * p0.x + 2 * m * u * p1.x + u * u * p2.x,
+    y: m * m * p0.y + 2 * m * u * p1.y + u * u * p2.y
+  };
+}
+function quadTan(p0, p1, p2, u) {
+  const dx = 2 * (1 - u) * (p1.x - p0.x) + 2 * u * (p2.x - p1.x);
+  const dy = 2 * (1 - u) * (p1.y - p0.y) + 2 * u * (p2.y - p1.y);
+  return Math.atan2(dy, dx);
+}
+
+/* ==================== TIMELINE CHAPTERS (0 -> 76s) ==================== */
+const TOTAL = 76.0;
+const RECALL_T = 57.0;
+
+// World coordinate system: 2560 x 1240 (centered around y=620)
+// Zones: Codex(260,640) | Memlane(690,640) | Cognee Factory(1000..1760,640) | GPT Pod(1380,220) | 3 DBs(2190, 240/630/1010)
+const CHAPTERS = [
+  {
+    id: 0, start: 0.0, end: 4.5, phase: "全景导览", step: "开场",
+    title: "2D 扁平厚边工坊：零 WebGL 也能 60fps 讲清 AI 记忆",
+    body: "整幅画面由单张高清 2D Canvas 连续驱动：左边 Codex 对话、中间 Memlane 邮筒与 Cognee 加工厂、上方悬浮 GPT 大模型，右边三座真实图标数据库。接下来看一段排障对话怎么存进去、又怎么想起来。",
+    tip: "💡 同样支持按住底部进度条像视频一样任意拖动倒放，也可以直接拖动画布、滚轮缩放。",
+    tech: "单张 High-DPI 2D Canvas + 唯一主时间 t + 虚拟 2D 摄像机矩阵（零 Three.js 依赖）",
+    cam: { cx: 1250, cy: 650, zoom: 0.49 }
+  },
+  {
+    id: 1, start: 4.5, end: 10.5, phase: "记下来", step: "01 对话",
+    title: "你和 Codex 聊完一次排障，得出一条教训",
+    body: "你和 Codex 一起查出“清理旧文件时把正在运行的程序也删掉了”，最后定下规矩：以后清理前先确认程序没在运行。这一问一答的原话，就是后续全部加工的原材料。",
+    tip: "💡 全程自动触发，你不需要手动复制或记笔记。",
+    tech: "Codex 会话结束触发 Hook → 打包本轮 QAEntry(question, answer)",
+    cam: { cx: 270, cy: 620, zoom: 1.44 }
+  },
+  {
+    id: 2, start: 10.5, end: 17.0, phase: "记下来", step: "02 寄信排队",
+    title: "对话折成纸飞机，飞进 Memlane 邮筒排队",
+    body: "对话结束瞬间，原话折成纸飞机划出抛物线落进 Memlane 邮筒。Memlane 核对项目权限后毫秒级放行，把信放进队列慢慢等前两封处理完——哪怕后台暂时重启，信也在本机安全留着。",
+    tip: "💡 <b>信箱</b>本质是 Memlane 本机 SQLite 里的一张收件箱表（先接住，再异步排队）。",
+    tech: "memlane hook → POST /ingest → 校验项目 ACL 与 auto_capture → memlane.sqlite3 · capture_inbox (<5ms)",
+    cam: { cx: 560, cy: 615, zoom: 1.15 }
+  },
+  {
+    id: 3, start: 17.0, end: 23.0, phase: "记下来", step: "03 原话存档",
+    title: "进入 Cognee 工厂：第一站先激光扫描存进 SQLite",
+    body: "排到它后，信封变成一块「原话砖」滑上传送带。第 1 台激光扫描门不做改写，先复印一份原话送进右上方关系数据库 SQLite 登记名称、指纹与时间，保证永远有据可查。",
+    tip: "💡 <b>关系数据库 SQLite</b>：像表格一样登记“是什么、存哪、何时存的”，就是你电脑上的一个文件。",
+    tech: "InboxWorker → remember(QAEntry) → improve · persist_session_qa → 原文落盘 + cognee_db (SQLite)",
+    cam: { cx: 1580, cy: 465, zoom: 0.76 }
+  },
+  {
+    id: 4, start: 23.0, end: 29.5, phase: "记下来", step: "04 大模型提炼",
+    title: "大模型提炼炉（GPT · Memlane 代理）：产出「经验晶体」",
+    body: "原话砖驶入紫光玻璃炉，Memlane 代理把请求发给上方悬浮的 GPT 大模型，提炼出一块橙色「经验晶体」：① 副本沿光轨飞进 SQLite 存档登记；② 主晶体留在传送带上继续切段与分词。",
+    tip: "💡 <b>Memlane 代理（GPT 模型）</b>：Cognee 经 Memlane 代理调用隔离的 Codex / GPT（防触发 Hook 死循环），也可换直连 API。",
+    tech: "improve · distill_sessions → /v1/chat/completions (Memlane agent_bridge → 隔离 Codex/GPT) → SQLite + add/cognify",
+    cam: { cx: 1170, cy: 470, zoom: 0.88 }
+  },
+  {
+    id: 5, start: 29.5, end: 35.5, phase: "记下来", step: "05 切段 Chunking",
+    title: "切段闸刀咔嚓落下：长对话按规则切成小段",
+    body: "黄铜闸刀由程序按段落和句号自动切分（不用 AI），落刀瞬间把长对话砖咔嚓切开并弹成两块独立小段，每段不超过模型一次能处理的长度上限。",
+    tip: "💡 <b>切段（Chunking）</b>只按标点与长度切，又快又稳定，拼回去和原文一字不差。",
+    tech: "TextChunker → chunk_by_paragraph / chunk_by_sentence → DocumentChunk",
+    cam: { cx: 1470, cy: 625, zoom: 1.46 }
+  },
+  {
+    id: 6, start: 35.5, end: 43.5, phase: "记下来", step: "06 分词 Tokenization",
+    title: "2D 翻牌特写：中文如何「分词」变成词表数字 ID？",
+    body: "喂给向量模型前，分词器把句子裂成 5 块彩色 2.5D 词元积木——[清理] [旧] [文件] [误删] [程序]——接着每块积木横向翻转 180°（2D 缩放翻牌），露出背面的词表编号（#4821、#0893…）与数值柱。",
+    tip: "💡 <b>2D 翻牌技法</b>：无需 3D 引擎，用横向 scaleX(cos θ) 压扁过 90° 换背面，就能做出丝滑立体翻牌。",
+    tech: "Embedding Tokenizer (BPE / WordPiece) 将文本切分为 token IDs，再送入向量模型前向编码",
+    cam: { cx: 1470, cy: 845, zoom: 1.24 }
+  },
+  {
+    id: 7, start: 43.5, end: 50.5, phase: "记下来", step: "07 大模型抽图",
+    title: "GPT 大模型（Memlane 代理）读出实体与关系，画进 Ladybug",
+    body: "切好的段落沿琥珀光束送进上方「GPT 大模型（Memlane 代理）」，它逐段读出实体与关系，3 颗立体绿球随即从 GPT 舱飞进 Ladybug 图舞台，拉出有向箭头连线构成关系网。",
+    tip: "💡 <b>图数据库 Ladybug</b> 专门存“点和线”，最擅长沿着箭头顺藤摸瓜找来龙去脉。",
+    tech: "extract_graph_from_data → Memlane agent_bridge (隔离 Codex/GPT) → add_nodes() + add_edges() 写入 Ladybug",
+    cam: { cx: 1800, cy: 485, zoom: 0.78 }
+  },
+  {
+    id: 8, start: 50.5, end: 57.0, phase: "记下来", step: "08 向量库 LanceDB",
+    title: "分词积木与经验晶体进向量透镜 → 落位 LanceDB 视差星图",
+    body: "数字积木与经验晶体被蓝色向量透镜压缩成坐标，射进 LanceDB 向量星图。意思越像的点离得越近——“经验条目、清理旧文件、会误删”聚在中央，远景的“页面配色、登录报错”在角落慢速漂浮。",
+    tip: "💡 <b>2D 景深视差</b>：远景旧记忆透明度低且移动幅度更慢，纯 2D 也能看出层次分明的语义空间。",
+    tech: "index_data_points() → DocumentChunk_text / Entity_name / EdgeType_relationship_name 写入 LanceDB",
+    cam: { cx: 2195, cy: 1015, zoom: 1.28 }
+  },
+  {
+    id: 9, start: 57.0, end: 63.5, phase: "想起来", step: "09 新提问变流星",
+    title: "几天后换种说法提问：同样分词→向量，GPT 舱保持休眠",
+    body: "新对话问：“我想清理旧版本，要注意什么？”Memlane 绿盾限定只查本项目 + 通用经验，同款向量模型把问题翻牌成向量流星——注意上方 GPT 大模型舱灰暗休眠，召回全程 0 次大模型。",
+    tip: "💡 <b>为什么召回不用大模型？</b> 你面前的 Codex 本身就是大模型，Memlane 只需飞快翻出资料交给它。",
+    tech: "POST /recall → ACL 作用域过滤 → 同款向量模型编码 query (only_context=True，0 LLM)",
+    cam: { cx: 880, cy: 560, zoom: 0.72 }
+  },
+  {
+    id: 10, start: 63.5, end: 70.5, phase: "想起来", step: "10 雷达波 + 顺藤摸瓜",
+    title: "雷达圆波锁定高相似度近邻，联动图库顺线摸出解法",
+    body: "绿光流星落入 LanceDB 星图，三圈雷达波扩散开来，拉出虚线标出相似度（0.94 / 0.91 / 0.88）锁定近邻；光束随即向上穿透 Ladybug 顺线点亮「先确认没在运行」，并闪过 SQLite 核对出处。",
+    tip: "💡 向量库解决“换种说法也能找到入口”，图数据库解决“顺着关系补全前因后果”。",
+    tech: "Cognee 混合检索 (HYBRID_COMPLETION + only_context=True)：LanceDB 向量近邻 + Ladybug 图扩展 + 来源核对",
+    cam: { cx: 2195, cy: 1015, zoom: 1.28 }
+  },
+  {
+    id: 11, start: 70.5, end: 76.0, phase: "想起来", step: "11 闭环回答",
+    title: "三库汇成翡翠光带飞回 Codex，AI 带着上次经验回答你",
+    body: "找到的经验、关联关系与出处打包成参考资料，沿着绿色光带飞越工坊回到 Codex。Codex 立刻打出准确提醒：“清理前先确认程序没在运行——上次就因为这个误删过。”",
+    tip: "💡 你可以点右上角「🧊 切到 3D 版」直接对比 2D Canvas 与 3D WebGL 两种技术动画的手感与表现力。",
+    tech: "/recall 返回精炼上下文注入宿主 → Codex 结合记忆作答",
+    cam: { cx: 1250, cy: 650, zoom: 0.49 }
+  }
+];
+
+function getChapter(t) {
+  for (let i = CHAPTERS.length - 1; i >= 0; i--) {
+    if (t >= CHAPTERS[i].start) return CHAPTERS[i];
+  }
+  return CHAPTERS[0];
+}
+
+/* ==================== PALETTE (LIGHT KURZGESAGT CLAY vs DEEP SPACE) ==================== */
+let currentTheme = "light";
+const P = () => currentTheme === "space" ? {
+  bg: "#070b17", dot: "rgba(92,162,255,0.22)", grid: "rgba(68,136,255,0.11)",
+  card: "#131c33", cardSide: "#0a1020", cardBorder: "rgba(116,170,255,0.28)",
+  soft: "#192440", ink: "#eef4ff", muted: "#94a8cd", subtle: "#687ba3",
+  shadow: "rgba(0,0,0,0.45)",
+  belt: "#10172b", beltSide: "#070b16", slat: "#1f2e52", rail: "#f0a642",
+  conduit: "rgba(74,138,255,0.34)",
+  accent: "#ff7e54", accentSide: "#c44d2a",
+  amber: "#f0a83e", amberSide: "#b57416",
+  green: "#32df92", greenSide: "#178f5c",
+  blue: "#48a6ff", blueSide: "#1d60b5",
+  violet: "#9678ff", violetSide: "#583cb8",
+  cyan: "#44d9ff",
+  screenBg: "#0c1222", screenBar: "#141f38", userBub: "#1d2a4a", aiBub: "#121b33",
+  ansBub: "rgba(24,104,74,0.42)", ansInk: "#e8fff4",
+  sqlBg: "#12233d", sqlSide: "#0a1528", sqlCyl: "#1f6f9e", sqlCylTop: "#3494c7", sqlRing: "#5ce2ff",
+  ladyBg: "#0e2623", ladySide: "#071614", ladyRim: "#32e092",
+  vecBg: "#0e1b36", vecSide: "#081024", vecBorder: "#45bcff"
+} : {
+  bg: "#f5efe6", dot: "rgba(130,114,92,0.18)", grid: "rgba(150,134,110,0.08)",
+  card: "#fffdf9", cardSide: "#dfd6c6", cardBorder: "rgba(128,112,88,0.20)",
+  soft: "#f2ece1", ink: "#22201d", muted: "#6b6458", subtle: "#9b9283",
+  shadow: "rgba(42,32,18,0.11)",
+  belt: "#545963", beltSide: "#383c44", slat: "#707682", rail: "#d49c48",
+  conduit: "rgba(175,160,138,0.52)",
+  accent: "#d46540", accentSide: "#a34322",
+  amber: "#e39b38", amberSide: "#b37218",
+  green: "#2f8a62", greenSide: "#1d6143",
+  blue: "#3c72b8", blueSide: "#254e87",
+  violet: "#7558b8", violetSide: "#50398a",
+  cyan: "#3ab2d6",
+  screenBg: "#faf7f2", screenBar: "#efe9de", userBub: "#ece4d6", aiBub: "#ffffff",
+  ansBub: "#e4f5ec", ansInk: "#173326",
+  sqlBg: "#eaf1f5", sqlSide: "#cad8e0", sqlCyl: "#326f91", sqlCylTop: "#498cb0", sqlRing: "#d8ebf5",
+  ladyBg: "#e8f2ec", ladySide: "#c5dbce", ladyRim: "#6fb393",
+  vecBg: "#e9f0fa", vecSide: "#c8d7ed", vecBorder: "#4e7ec2"
+};
+
+/* ==================== 2.5D CANVAS DRAWING PRIMITIVES ==================== */
+const canvas = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+
+function roundRectPath(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// Kurzgesagt 2.5D Thick-Edged Block (drop shadow + dark extruded side + crisp main face + top highlight)
+function block25D(x, y, w, h, r, topCol, sideCol, depth = 10, strokeCol = null) {
+  const pal = P();
+  // Grounded soft shadow
+  ctx.save();
+  ctx.fillStyle = pal.shadow;
+  roundRectPath(x + 3, y + depth + 6, w, h, r);
+  ctx.fill();
+  // Extruded bottom thickness
+  ctx.fillStyle = sideCol;
+  roundRectPath(x, y + depth, w, h, r);
+  ctx.fill();
+  // Main top face
+  ctx.fillStyle = topCol;
+  roundRectPath(x, y, w, h, r);
+  ctx.fill();
+  if (strokeCol) {
+    ctx.strokeStyle = strokeCol;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  // Subtle upper bevel highlight
+  ctx.strokeStyle = currentTheme === "space" ? "rgba(180,215,255,0.16)" : "rgba(255,255,255,0.65)";
+  ctx.lineWidth = 1.5;
+  roundRectPath(x + 1, y + 1, w - 2, h - 2, Math.max(2, r - 1));
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawGlow(x, y, r, rgbaCenter) {
+  const g = ctx.createRadialGradient(x, y, 2, x, y, r);
+  g.addColorStop(0, rgbaCenter);
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawIconBadge(key, cx, cy, size, bg = "#ffffff") {
+  const r = size * 0.24;
+  const x = cx - size / 2, y = cy - size / 2;
+  block25D(x, y, size, size, r, bg, currentTheme === "space" ? "#0c1324" : "#d8d0c0", 5, currentTheme === "space" ? "rgba(140,185,255,0.35)" : "rgba(120,104,82,0.18)");
+  const im = IMGS[key];
+  if (im && im.complete && im.naturalWidth > 0) {
+    ctx.save();
+    const pad = (key === "memlane" || key === "cognee" || key === "codex") ? size * 0.08 : size * 0.14;
+    roundRectPath(x + pad, y + pad, size - pad * 2, size - pad * 2, r * 0.72);
+    ctx.clip();
+    ctx.drawImage(im, x + pad, y + pad, size - pad * 2, size - pad * 2);
+    ctx.restore();
+  }
+}
+
+function drawPill(cx, cy, text, { bg, fg, border, icon = null, icon2 = null, font = "650 16px -apple-system, PingFang SC, sans-serif", padX = 14, h = 34 } = {}) {
+  ctx.save();
+  ctx.font = font;
+  const tw = ctx.measureText(text).width;
+  const icW = (icon ? 24 : 0) + (icon2 ? 22 : 0);
+  const w = tw + padX * 2 + icW;
+  const x = cx - w / 2, y = cy - h / 2;
+  ctx.fillStyle = P().shadow;
+  roundRectPath(x, y + 3, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = bg || P().card;
+  roundRectPath(x, y, w, h, h / 2);
+  ctx.fill();
+  if (border) { ctx.strokeStyle = border; ctx.lineWidth = 1.5; ctx.stroke(); }
+  let tx = x + padX;
+  if (icon && IMGS[icon] && IMGS[icon].complete) {
+    ctx.save(); roundRectPath(tx, cy - 10, 20, 20, 5); ctx.clip();
+    ctx.drawImage(IMGS[icon], tx, cy - 10, 20, 20); ctx.restore();
+    tx += 24;
+  }
+  if (icon2 && IMGS[icon2] && IMGS[icon2].complete) {
+    ctx.save(); roundRectPath(tx, cy - 10, 20, 20, 5); ctx.clip();
+    ctx.drawImage(IMGS[icon2], tx, cy - 10, 20, 20); ctx.restore();
+    tx += 22;
+  }
+  ctx.fillStyle = fg || P().ink;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText(text, tx, cy + 0.5);
+  ctx.restore();
+}
+
+function drawCrystal(cx, cy, r, rot, col1, col2) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (currentTheme === "space") drawGlow(0, 0, r * 2.4, "rgba(255,126,76,0.45)");
+  ctx.rotate(Math.sin(rot) * 0.14);
+  // Left facet
+  ctx.beginPath();
+  ctx.moveTo(0, -r); ctx.lineTo(-r * 0.78, 0); ctx.lineTo(0, r); ctx.closePath();
+  ctx.fillStyle = col1; ctx.fill();
+  // Right facet
+  ctx.beginPath();
+  ctx.moveTo(0, -r); ctx.lineTo(r * 0.78, 0); ctx.lineTo(0, r); ctx.closePath();
+  ctx.fillStyle = col2; ctx.fill();
+  // Upper highlight facet
+  ctx.beginPath();
+  ctx.moveTo(0, -r); ctx.lineTo(-r * 0.35, -r * 0.1); ctx.lineTo(0, r * 0.15); ctx.lineTo(r * 0.35, -r * 0.1); ctx.closePath();
+  ctx.fillStyle = "rgba(255,255,255,0.34)"; ctx.fill();
+  ctx.restore();
+}
+
+function drawArrowCurve(p0, p1, p2, progress, color, width = 5, dashed = false) {
+  if (progress <= 0.01) return;
+  const steps = Math.max(4, Math.floor(32 * clamp01(progress)));
+  ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const u = (i / steps) * clamp01(progress);
+    const pt = quadPt(p0, p1, p2, u);
+    if (i === 0) ctx.moveTo(pt.x, pt.y); else ctx.lineTo(pt.x, pt.y);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  if (dashed) ctx.setLineDash([10, 9]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // Arrowhead
+  if (progress > 0.18) {
+    const uEnd = clamp01(progress);
+    const tip = quadPt(p0, p1, p2, uEnd);
+    const ang = quadTan(p0, p1, p2, uEnd);
+    ctx.translate(tip.x, tip.y);
+    ctx.rotate(ang);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(6, 0); ctx.lineTo(-12, -8); ctx.lineTo(-8, 0); ctx.lineTo(-12, 8); ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawDottedArc(p0, p1, p2, headU, color, count = 14) {
+  ctx.save();
+  for (let i = 1; i <= count; i++) {
+    const du = headU - i * 0.036;
+    if (du <= 0 || du >= 1) continue;
+    const pt = quadPt(p0, p1, p2, du);
+    const rad = lerp(6.5, 2.2, i / count);
+    ctx.fillStyle = color;
+    ctx.globalAlpha = lerp(0.95, 0.15, i / count);
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, rad, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawGear(cx, cy, r, teeth, angle, fillCol, strokeCol) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  for (let i = 0; i < teeth * 2; i++) {
+    const a = (i / (teeth * 2)) * Math.PI * 2;
+    const rad = i % 2 === 0 ? r : r * 0.78;
+    const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = fillCol; ctx.fill();
+  if (strokeCol) { ctx.strokeStyle = strokeCol; ctx.lineWidth = 2; ctx.stroke(); }
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.36, 0, Math.PI * 2);
+  ctx.fillStyle = P().card; ctx.fill();
+  ctx.restore();
+}
+
+function wrapCanvasText(txt, x, y, maxW, lh) {
+  let line = "", cy = y;
+  for (const ch of txt) {
+    if (ctx.measureText(line + ch).width > maxW) {
+      ctx.fillText(line, x, cy); line = ch; cy += lh;
+    } else line += ch;
+  }
+  if (line) ctx.fillText(line, x, cy);
+}
+
+/* ==================== BACKGROUND STARFIELD (DEEP SPACE 2D) ==================== */
+const BG_STARS = Array.from({ length: 130 }, (_, i) => ({
+  x: (i * 227) % 2800 - 120,
+  y: (i * 151) % 1400 - 80,
+  r: 1 + (i % 3) * 0.85,
+  p: 0.15 + (i % 4) * 0.08,
+  col: ["#e8f2ff", "#7cc8ff", "#b69cff", "#6ff5c8"][i % 4]
+}));
+
+/* ==================== TOKENIZER DATA ==================== */
+const STORE_TOKENS = [
+  { w: "清理", id: "#4821", top: "#e27055", side: "#b14930" },
+  { w: "旧",   id: "#0893", top: "#e39f38", side: "#b37317" },
+  { w: "文件", id: "#2104", top: "#42a176", side: "#24734f" },
+  { w: "误删", id: "#7732", top: "#4f7fd6", side: "#2d57a6" },
+  { w: "程序", id: "#3519", top: "#8766c9", side: "#5c4099" }
+];
+const RECALL_TOKENS = [
+  { w: "清理", id: "#4821", top: "#38a678", side: "#1e7550" },
+  { w: "旧",   id: "#0893", top: "#4eb588", side: "#28805a" },
+  { w: "版本", id: "#6120", top: "#448cc7", side: "#256094" },
+  { w: "注意", id: "#1904", top: "#48a69a", side: "#257369" },
+  { w: "什么", id: "#0412", top: "#6b88cc", side: "#435c99" }
+];
+
+/* ==================== GRAPH & VECTOR DATA ==================== */
+const G_NODES = [
+  { name: "清理旧文件",     x: 2050, y: 585 },
+  { name: "正在运行的程序", x: 2330, y: 585 },
+  { name: "先确认没在运行", x: 2190, y: 745 }
+];
+const G_EDGES = [
+  { from: 0, to: 1, label: "会误删",       bend: { x: 0, y: -56 } },
+  { from: 2, to: 1, label: "保护",         bend: { x: 52, y: 24 } },
+  { from: 2, to: 0, label: "清理前要先做", bend: { x: -56, y: 24 } }
+];
+
+const OLD_STARS = [
+  { name: "接口超时",   x: 2036, y: 970 },
+  { name: "页面配色",   x: 2358, y: 970 },
+  { name: "数据库连接", x: 2036, y: 1142 },
+  { name: "登录报错",   x: 2358, y: 1142 }
+];
+const NEW_STARS = [
+  { name: "经验条目",       x: 2212, y: 978,  col: "#e06840", near: true, sim: "0.94" },
+  { name: "清理旧文件",     x: 2108, y: 1022, col: "#36a173", near: true, sim: "0.91" },
+  { name: "会误删",         x: 2302, y: 1030, col: "#8562cc", near: true, sim: "0.88" },
+  { name: "原话段",         x: 2210, y: 1104, col: "#e39f38", near: false },
+  { name: "正在运行的程序", x: 2318, y: 1098, col: "#36a173", near: false },
+  { name: "先确认没在运行", x: 2102, y: 1118, col: "#36a173", near: false }
+];
+const QUERY_STAR = { x: 2195, y: 1040 };
+
+/* ==================== 2D WORLD RENDERER drawWorld(t) ==================== */
+function drawWorld(t, cam) {
+  const pal = P();
+  const sp = currentTheme === "space";
+  const W = canvas.width / dpr, H = canvas.height / dpr;
+
+  // 1. Background fill
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = pal.bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle parallax cosmos stars (space mode) or warm radial paper vignette (light mode)
+  if (sp) {
+    BG_STARS.forEach((s, i) => {
+      const sx = ((s.x - cam.cx * s.p) % (W + 120) + (W + 120)) % (W + 120) - 60;
+      const sy = ((s.y - cam.cy * s.p) % (H + 120) + (H + 120)) % (H + 120) - 60;
+      ctx.fillStyle = s.col;
+      ctx.globalAlpha = 0.42 + Math.sin(t * 2.2 + i) * 0.25;
+      ctx.beginPath(); ctx.arc(sx, sy, s.r, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+  }
+
+  // 2. Apply single virtual 2D camera transform (centered in the unobstructed viewport ABOVE the bottom cinema deck!)
+  const stageCenterY = Math.max(H * 0.38, (H - 178) * 0.5 + 26);
+  ctx.translate(W / 2, stageCenterY);
+  ctx.scale(cam.zoom, cam.zoom);
+  ctx.translate(-cam.cx, -cam.cy);
+
+  // 3. Subtle World Grid / Studio Dots
+  if (sp) {
+    ctx.strokeStyle = pal.grid;
+    ctx.lineWidth = 1.5;
+    for (let x = -200; x <= 2800; x += 80) {
+      ctx.beginPath(); ctx.moveTo(x, -200); ctx.lineTo(x, 1500); ctx.stroke();
+    }
+    for (let y = -200; y <= 1500; y += 80) {
+      ctx.beginPath(); ctx.moveTo(-200, y); ctx.lineTo(2800, y); ctx.stroke();
+    }
+  } else {
+    ctx.fillStyle = pal.dot;
+    for (let x = -120; x <= 2700; x += 48) {
+      for (let y = -80; y <= 1400; y += 48) {
+        ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+
+  // 4. Floor Conduit Pathways connecting zones
+  ctx.save();
+  ctx.strokeStyle = pal.conduit;
+  ctx.lineWidth = 6;
+  ctx.lineCap = "round";
+  // Codex -> Memlane -> Cognee
+  ctx.beginPath(); ctx.moveTo(470, 645); ctx.lineTo(960, 645); ctx.stroke();
+  // Cognee -> 3 DBs
+  [
+    [{ x: 1760, y: 610 }, { x: 1870, y: 400 }, { x: 1965, y: 260 }],
+    [{ x: 1760, y: 645 }, { x: 1870, y: 645 }, { x: 1965, y: 645 }],
+    [{ x: 1760, y: 680 }, { x: 1870, y: 900 }, { x: 1965, y: 1015 }]
+  ].forEach(([a, b, c]) => {
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(b.x, b.y, c.x, c.y); ctx.stroke();
+  });
+  ctx.restore();
+
+  // ==================== ZONE 1: CODEX 2.5D MONITOR (x=60..470, y=475..815) ====================
+  block25D(60, 475, 410, 340, 26, pal.card, pal.cardSide, 14, pal.cardBorder);
+  drawIconBadge("codex", 265, 452, 64, "#ffffff");
+  drawPill(265, 402, "Codex · 对话窗口", { bg: pal.card, fg: pal.ink, border: pal.cardBorder });
+
+  // Inner chat screen
+  const sx = 82, sy = 502, sw = 366, sh = 288;
+  roundRectPath(sx, sy, sw, sh, 16);
+  ctx.fillStyle = pal.screenBg; ctx.fill();
+  ctx.save(); roundRectPath(sx, sy, sw, sh, 16); ctx.clip();
+  ctx.fillStyle = pal.screenBar; ctx.fillRect(sx, sy, sw, 36);
+  ["#e87a6a", "#e8b954", "#63b77d"].forEach((col, i) => {
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(sx + 20 + i * 16, sy + 18, 5, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = pal.muted; ctx.font = "600 13px -apple-system, PingFang SC, sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(t < RECALL_T ? "Codex · 排障对话" : "Codex · 几天后的新对话", sx + 74, sy + 18);
+
+  if (t < RECALL_T) {
+    const u1 = t < 4.5 ? 1 : remap(t, 4.8, 7.2);
+    const u2 = t < 4.5 ? 1 : remap(t, 7.5, 10.0);
+    const qFull = "清理旧文件的时候，把正在运行的程序也删掉了……";
+    const aFull = "找到原因了。以后清理前，要先确认程序没在运行。";
+    const q = qFull.slice(0, Math.round(qFull.length * u1));
+    const a = aFull.slice(0, Math.round(aFull.length * u2));
+    if (q) {
+      roundRectPath(sx + 48, sy + 50, 300, 74, 14);
+      ctx.fillStyle = pal.userBub; ctx.fill();
+      ctx.fillStyle = pal.muted; ctx.font = "700 11px -apple-system, sans-serif";
+      ctx.fillText("你", sx + 62, sy + 66);
+      ctx.fillStyle = pal.ink; ctx.font = "500 14.5px -apple-system, PingFang SC, sans-serif";
+      wrapCanvasText(q + (u1 > 0 && u1 < 1 ? "▍" : ""), sx + 62, sy + 88, 274, 21);
+    }
+    if (a) {
+      roundRectPath(sx + 18, sy + 138, 304, 80, 14);
+      ctx.fillStyle = pal.aiBub; ctx.fill();
+      ctx.strokeStyle = pal.cardBorder; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = sp ? "#889eff" : "#5865d6"; ctx.font = "700 11px -apple-system, sans-serif";
+      ctx.fillText("Codex", sx + 32, sy + 155);
+      ctx.fillStyle = pal.ink; ctx.font = "500 14.5px -apple-system, PingFang SC, sans-serif";
+      wrapCanvasText(a + (u2 > 0 && u2 < 1 ? "▍" : ""), sx + 32, sy + 178, 276, 21);
+    }
+    if (u2 >= 0.99) {
+      roundRectPath(sx + 18, sy + 234, 232, 32, 16);
+      ctx.fillStyle = sp ? "rgba(255,126,84,0.22)" : "rgba(208,101,66,0.13)"; ctx.fill();
+      ctx.fillStyle = pal.accent; ctx.font = "700 12px -apple-system, sans-serif";
+      ctx.fillText("✈ 对话结束 · 自动触发 Hook", sx + 32, sy + 250);
+    }
+  } else {
+    const u1 = remap(t, 57.3, 60.0);
+    const u2 = remap(t, 72.2, 74.6);
+    const qFull = "我想清理一下电脑上的旧版本，要注意什么？";
+    const aFull = "清理前先确认程序没在运行——上次就因为这个，误删过正在用的程序。";
+    const q = qFull.slice(0, Math.round(qFull.length * u1));
+    const a = aFull.slice(0, Math.round(aFull.length * u2));
+    if (q) {
+      roundRectPath(sx + 48, sy + 50, 300, 72, 14);
+      ctx.fillStyle = pal.userBub; ctx.fill();
+      ctx.fillStyle = pal.muted; ctx.font = "700 11px -apple-system, sans-serif";
+      ctx.fillText("你 · 新提问", sx + 62, sy + 66);
+      ctx.fillStyle = pal.ink; ctx.font = "500 14.5px -apple-system, PingFang SC, sans-serif";
+      wrapCanvasText(q + (u1 > 0 && u1 < 1 ? "▍" : ""), sx + 62, sy + 88, 274, 21);
+    }
+    if (a) {
+      roundRectPath(sx + 18, sy + 138, 328, 120, 14);
+      ctx.fillStyle = pal.ansBub; ctx.fill();
+      ctx.strokeStyle = pal.green; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = pal.green; ctx.font = "700 12px -apple-system, sans-serif";
+      ctx.fillText("⚡ Codex · 已自动想起上次的经验", sx + 32, sy + 158);
+      ctx.fillStyle = pal.ansInk; ctx.font = "600 14.5px -apple-system, PingFang SC, sans-serif";
+      wrapCanvasText(a + (u2 > 0 && u2 < 1 ? "▍" : ""), sx + 32, sy + 184, 300, 22);
+    }
+  }
+  ctx.restore();
+
+  // ==================== ZONE 2: MEMLANE 2.5D MAILBOX & QUEUE (x=545..835, y=475..815) ====================
+  // ACL pulse ring
+  const aclAmt = Math.max(Math.sin(remap(t, 15.8, 17.3) * Math.PI), Math.sin(remap(t, 59.5, 63.0) * Math.PI));
+  if (aclAmt > 0.01) {
+    ctx.save();
+    ctx.strokeStyle = pal.green;
+    ctx.globalAlpha = aclAmt * 0.78;
+    ctx.lineWidth = 6;
+    roundRectPath(545 - aclAmt * 16, 475 - aclAmt * 16, 290 + aclAmt * 32, 340 + aclAmt * 32, 34);
+    ctx.stroke();
+    ctx.restore();
+  }
+  block25D(545, 475, 290, 340, 26, pal.card, pal.cardSide, 14, pal.cardBorder);
+  // Mailbox terracotta roof + indigo kiosk
+  block25D(622, 498, 136, 128, 20, sp ? "#4b5ef0" : "#5a67d6", sp ? "#2d3aa6" : "#3d48a8", 9);
+  block25D(612, 488, 156, 32, 12, pal.accent, pal.accentSide, 6);
+  drawIconBadge("memlane", 690, 566, 68, "#181a24");
+  drawPill(690, 444, "Memlane · 信箱与权限", { bg: pal.card, fg: pal.ink, border: pal.cardBorder, icon: "memlane" });
+
+  // Queue tray
+  roundRectPath(568, 650, 244, 142, 16);
+  ctx.fillStyle = pal.soft; ctx.fill();
+  ctx.strokeStyle = pal.cardBorder; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = pal.muted; ctx.font = "600 12px -apple-system, sans-serif";
+  ctx.textAlign = "left"; ctx.fillText("收件箱队列（本机 SQLite）", 582, 672);
+
+  function drawEnv(cx, cy, mine, sc = 1) {
+    if (sc <= 0.02) return;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(sc, sc);
+    block25D(-32, -22, 64, 44, 9, mine ? (sp ? "#2a2038" : "#fffaf4") : pal.card, mine ? pal.accentSide : pal.cardSide, 5, mine ? pal.accent : pal.cardBorder);
+    ctx.strokeStyle = mine ? pal.accent : pal.subtle;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(-26, -16); ctx.lineTo(0, 3); ctx.lineTo(26, -16); ctx.stroke();
+    ctx.fillStyle = mine ? pal.accent : pal.subtle;
+    ctx.beginPath(); ctx.arc(0, 4, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  const qSlide1 = smooth(remap(t, 14.0, 15.6));
+  const qSlide2 = smooth(remap(t, 15.2, 16.8));
+  const envLand = easeOutBack(remap(t, 13.5, 14.3));
+  const envExit = smooth(remap(t, 17.0, 18.8));
+  if (t >= 10.0 && t < 15.7) drawEnv(lerp(768, 860, qSlide1), 728, false, 1 - qSlide1);
+  if (t >= 10.0 && t < 16.9) drawEnv(lerp(690, 768, qSlide1) + qSlide2 * 88, 728, false, 1 - qSlide2);
+  if (t >= 13.5 && t < 18.9) {
+    if (envExit <= 0) {
+      const mx = lerp(612, 768, qSlide2);
+      const hop = Math.sin(qSlide2 * Math.PI) * 26;
+      drawEnv(mx, 728 - hop, true, Math.max(0.01, envLand));
+    } else {
+      const ex = lerp(768, 990, envExit);
+      const ey = lerp(728, 645, envExit) - Math.sin(envExit * Math.PI) * 30;
+      drawEnv(ex, ey, true, 1 - envExit * 0.25);
+    }
+  }
+  if (t >= 59.2 && t < 63.4) {
+    drawPill(690, 728, "🔒 只查：本项目 + 通用经验", { bg: pal.green, fg: sp ? "#03190f" : "#fff" });
+  }
+
+  // ==================== ZONE 3: HOVERING GPT LLM POD (cx=1380, cy=220) ====================
+  const gptBusy4 = t >= 23.2 && t < 27.6;
+  const gptBusy7 = t >= 43.5 && t < 47.4;
+  const gptActive = gptBusy4 || gptBusy7;
+  const gptSleep = t >= RECALL_T;
+  const podY = 220 + (gptSleep ? 10 : Math.sin(t * 2.3) * 8);
+
+  ctx.save();
+  ctx.translate(1380, podY);
+  if (gptActive || (sp && !gptSleep)) {
+    drawGlow(0, 0, gptActive ? 165 : 115, gptActive ? "rgba(138,104,255,0.42)" : "rgba(116,90,230,0.22)");
+  }
+  // Rotating dashed orbital neural rings
+  const ringSpeed = gptActive ? 2.4 : gptSleep ? 0 : 0.4;
+  ctx.save();
+  ctx.rotate(t * ringSpeed);
+  ctx.strokeStyle = gptSleep ? pal.subtle : pal.violet;
+  ctx.globalAlpha = gptActive ? 0.95 : gptSleep ? 0.35 : 0.6;
+  ctx.lineWidth = gptActive ? 4 : 2.5;
+  ctx.setLineDash([18, 12]);
+  ctx.beginPath(); ctx.ellipse(0, 0, 122, 62, 0.22, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(-t * ringSpeed * 1.2);
+  ctx.strokeStyle = gptSleep ? pal.subtle : pal.amber;
+  ctx.globalAlpha = gptActive ? 0.85 : gptSleep ? 0.28 : 0.45;
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([12, 14]);
+  ctx.beginPath(); ctx.ellipse(0, 0, 114, 54, -0.25, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+
+  // Pod chassis + real OpenAI + Memlane otter badges
+  block25D(-96, -50, 192, 100, 30, gptSleep ? (sp ? "#21283c" : "#ccc7d4") : pal.violet, gptSleep ? (sp ? "#121726" : "#aba4b8") : pal.violetSide, 10, gptActive ? "#d4c4ff" : null);
+  drawIconBadge("openai", -38, 0, 62, "#ffffff");
+  drawIconBadge("memlane", 44, 0, 50, "#181a24");
+  ctx.restore();
+  drawPill(1380, podY - 76, gptSleep ? "💤 GPT 大模型（召回不调用）" : "GPT 大模型 · Memlane 代理", {
+    bg: gptSleep ? pal.soft : pal.violet,
+    fg: gptSleep ? pal.muted : "#fff",
+    border: gptSleep ? pal.cardBorder : null,
+    icon: gptSleep ? null : "openai",
+    icon2: gptSleep ? null : "memlane"
+  });
+
+  // Memlane -> GPT Pod proxy arc (Ch4 & Ch7)
+  const uProxy = Math.max(
+    smooth(remap(t, 23.2, 24.3)) * (1 - smooth(remap(t, 27.0, 27.9))),
+    smooth(remap(t, 43.5, 44.3)) * (1 - smooth(remap(t, 46.8, 47.6)))
+  );
+  if (uProxy > 0.01) {
+    const pA = { x: 690, y: 488 }, pB = { x: 960, y: 200 }, pC = { x: 1278, y: podY };
+    drawArrowCurve(pA, pB, pC, uProxy, pal.violet, 5, true);
+    if (gptActive) {
+      const pu = (t * 0.78) % 1.0;
+      const pt = quadPt(pA, pB, pC, pu);
+      ctx.fillStyle = "#b8a3ff"; ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, Math.PI * 2); ctx.fill();
+    }
+    if (t >= 23.4 && t < 27.2) {
+      drawPill(980, 276, "Memlane 代理 → GPT 模型", { bg: pal.violet, fg: "#fff", icon: "memlane" });
+    }
+  }
+
+  // ==================== ZONE 4: COGNEE 2D FACTORY (x=960..1770, y=475..815) ====================
+  block25D(960, 475, 810, 340, 28, pal.card, pal.cardSide, 14, pal.cardBorder);
+  drawIconBadge("cognee", 1006, 462, 60, "#18171c");
+  drawPill(1148, 444, "Cognee · 记忆加工厂", { bg: pal.card, fg: pal.ink, border: pal.cardBorder });
+
+  // Conveyor belt body + moving slats + spinning end gears
+  const beltActive = t >= 17.0 && t <= 56.5;
+  block25D(995, 622, 740, 56, 26, pal.belt, pal.beltSide, 10);
+  ctx.save();
+  roundRectPath(1002, 628, 726, 44, 20);
+  ctx.clip();
+  const slatShift = beltActive ? ((t * 95) % 34) : 0;
+  ctx.fillStyle = pal.slat;
+  for (let x = 980; x < 1760; x += 34) {
+    roundRectPath(x + slatShift, 634, 14, 32, 4);
+    ctx.fill();
+  }
+  ctx.restore();
+  // Brass rails + spinning gear wheels
+  ctx.fillStyle = pal.rail;
+  ctx.fillRect(1010, 618, 710, 5);
+  ctx.fillRect(1010, 676, 710, 5);
+  const gearAng = beltActive ? t * 2.8 : 0;
+  drawGear(1022, 650, 22, 8, gearAng, pal.rail, pal.beltSide);
+  drawGear(1708, 650, 22, 8, gearAng, pal.rail, pal.beltSide);
+
+  // Station 1 (x=1085): Cyan Archive Scanner Arch
+  block25D(1055, 520, 60, 102, 14, pal.blue, pal.blueSide, 7);
+  const scanU = remap(t, 19.8, 22.2);
+  if (scanU > 0 && scanU < 1) {
+    ctx.save();
+    ctx.fillStyle = pal.cyan;
+    ctx.globalAlpha = Math.sin(scanU * Math.PI) * 0.42;
+    ctx.fillRect(1062, 618, 46, 58);
+    ctx.strokeStyle = pal.cyan; ctx.lineWidth = 3;
+    const lx = 1085 + Math.sin(scanU * Math.PI * 4) * 18;
+    ctx.beginPath(); ctx.moveTo(lx, 616); ctx.lineTo(lx, 678); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle = pal.muted; ctx.font = "650 12px -apple-system, sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("① 存档机", 1085, 508);
+
+  // Station 2 (x=1270): Violet LLM Distill Dome
+  ctx.save();
+  ctx.beginPath(); ctx.arc(1270, 622, 68, Math.PI, 0); ctx.closePath();
+  ctx.fillStyle = sp ? "rgba(130,96,240,0.22)" : "rgba(130,96,240,0.14)"; ctx.fill();
+  ctx.strokeStyle = pal.violet; ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+  block25D(1216, 514, 108, 28, 12, pal.violet, pal.violetSide, 5);
+  ctx.fillStyle = "#fff"; ctx.font = "700 12px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("② 提炼炉", 1270, 528);
+
+  // Beam from GPT Pod down to Station 2 Distill Furnace (Ch4)
+  const uDistBeam = smooth(remap(t, 23.8, 24.8)) * (1 - smooth(remap(t, 27.0, 27.9)));
+  if (uDistBeam > 0.01) {
+    drawArrowCurve({ x: 1350, y: podY + 56 }, { x: 1300, y: 400 }, { x: 1270, y: 514 }, uDistBeam, pal.violet, 5, true);
+  }
+
+  // Station 3 (x=1470): Brass Guillotine Chunker Header (blade drawn AFTER belt workpieces so it slices in front!)
+  block25D(1442, 512, 56, 26, 10, pal.amber, pal.amberSide, 5);
+  const plunge = Math.sin(remap(t, 31.7, 32.7) * Math.PI);
+  const bladeY = 542 + Math.pow(plunge, 0.65) * 76;
+  ctx.fillStyle = pal.muted; ctx.font = "650 12px -apple-system, sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("③ 切段闸刀（不用 AI）", 1470, 502);
+
+  // Station 4 (x=1715): Cobalt Vector Embedding Lens
+  ctx.save();
+  ctx.translate(1715, 748);
+  if (sp) drawGlow(0, 0, 54, "rgba(72,166,255,0.35)");
+  ctx.beginPath(); ctx.arc(0, 0, 34, 0, Math.PI * 2);
+  ctx.fillStyle = sp ? "rgba(72,166,255,0.22)" : "rgba(60,114,184,0.16)"; ctx.fill();
+  ctx.lineWidth = 8; ctx.strokeStyle = pal.blue; ctx.stroke();
+  ctx.fillStyle = pal.blue; ctx.font = "700 11.5px -apple-system, sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("向量透镜", 0, 50);
+  ctx.restore();
+
+  // ==================== MOVING WORKPIECES ON BELT ====================
+  let beltX = 1015;
+  if (t < 20.5) beltX = lerp(1015, 1085, smooth(remap(t, 18.4, 20.4)));
+  else if (t < 25.5) beltX = lerp(1085, 1270, smooth(remap(t, 22.4, 25.0)));
+  else if (t < 31.8) beltX = lerp(1270, 1470, smooth(remap(t, 28.5, 31.6)));
+  else beltX = lerp(1470, 1650, smooth(remap(t, 34.5, 44.5)));
+
+  const cutDone = remap(t, 32.3, 33.4);
+  // Raw slab before cut (with squash at impact!)
+  if (t >= 18.4 && cutDone < 0.45) {
+    const sq = Math.sin(remap(t, 31.9, 32.4) * Math.PI);
+    ctx.save();
+    ctx.translate(beltX, 626);
+    ctx.scale(1 + sq * 0.14, 1 - sq * 0.22);
+    block25D(-44, -22, 88, 36, 9, pal.amber, pal.amberSide, 6);
+    ctx.fillStyle = "#fffaf2"; ctx.font = "700 13px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("Q&A 原话", 0, -4);
+    ctx.restore();
+  }
+  // Cut chunks 1 & 2 after guillotine!
+  if (cutDone >= 0.45 && t < 51.5) {
+    const sep = easeOutBack(remap(t, 32.3, 33.8)) * 28;
+    const fade = 1 - remap(t, 49.5, 51.2);
+    ctx.save(); ctx.globalAlpha = fade;
+    block25D(beltX - 42 - sep, 604, 42, 34, 8, pal.amber, pal.amberSide, 5);
+    block25D(beltX + sep, 604, 42, 34, 8, pal.amberSide, "#8f5910", 5);
+    ctx.fillStyle = "#fff"; ctx.font = "700 12px -apple-system, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("段1", beltX - 21 - sep, 621);
+    ctx.fillText("段2", beltX + 21 + sep, 621);
+    ctx.restore();
+  }
+
+  // Guillotine blade + impact sparks drawn IN FRONT of the brick!
+  block25D(1456, bladeY, 28, 34, 6, sp ? "#d8e6ff" : "#f6f2eb", pal.cardSide, 4);
+  ctx.fillStyle = pal.accent; ctx.fillRect(1456, bladeY + 30, 28, 6);
+  if (plunge > 0.72) {
+    ctx.save();
+    ctx.strokeStyle = pal.accent; ctx.lineWidth = 3.5; ctx.lineCap = "round";
+    for (let k = -2; k <= 2; k++) {
+      const a = -Math.PI / 2 + k * 0.55;
+      ctx.beginPath();
+      ctx.moveTo(1470 + Math.cos(a) * 18, 634 + Math.sin(a) * 18);
+      ctx.lineTo(1470 + Math.cos(a) * 38, 634 + Math.sin(a) * 38);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Experience Crystal (forged at Station 2 -> rides alongside chunks -> glides INTO blue Vector Lens at 50.2->51.6!)
+  const cryBirth = easeOutBack(remap(t, 25.0, 26.2));
+  const cryToLens = easeInOutCubic(remap(t, 50.2, 51.6));
+  if (t >= 25.0 && t < 51.65) {
+    const cryOffset = t >= 29.5 && t < 35.5 ? 74 : 12;
+    const cx = lerp(beltX + cryOffset, 1715, cryToLens);
+    const cy = lerp(572 + Math.sin(t * 3.0) * 5, 748, cryToLens);
+    const rad = Math.max(1, 24 * cryBirth * (1 - cryToLens * 0.65));
+    drawCrystal(cx, cy, rad, t * 2, "#ff875c", "#c84a22");
+    if ((t >= 25.5 && t < 29.6) || (t >= 50.0 && t < 51.6)) {
+      drawPill(cx, 712, "💎 经验晶体（继续去分词/向量库）", { bg: pal.card, fg: pal.ink, border: pal.accent, font: "650 12.5px -apple-system, sans-serif", h: 27, padX: 11 });
+    }
+  }
+
+  // ==================== MACRO 2D FLIP-CARD TOKENIZER STAGE (x=1215..1720, y=818..1004) ====================
+  block25D(1215, 818, 505, 186, 22, pal.soft, pal.cardSide, 9, pal.cardBorder);
+  ctx.fillStyle = pal.muted; ctx.font = "650 13px -apple-system, sans-serif"; ctx.textAlign = "left";
+  ctx.fillText("🧩 分词器 Tokenizer · 拆成积木 → 2D 翻转露出 Token ID", 1236, 842);
+
+  function drawFlipTokenBricks(list, uAppear, uSplit, uFlip, uAbsorb) {
+    list.forEach((tk, i) => {
+      const stag = clamp01(uAppear * 1.5 - i * 0.12);
+      if (stag <= 0.01) return;
+      const sep = lerp(74, 92, clamp01(uSplit));
+      const baseX = 1468 + (i - 2) * sep;
+      const flipU = smooth(clamp01(uFlip * 1.45 - i * 0.11));
+      const hop = Math.sin(flipU * Math.PI) * 26;
+      const px = lerp(baseX, 1715, uAbsorb);
+      const py = lerp(946 - hop, 748, uAbsorb);
+      const sc = easeOutBack(stag) * (1 - uAbsorb * 0.78);
+      const cosA = Math.cos(flipU * Math.PI);
+      const back = cosA < 0;
+      const sxFlip = Math.max(0.06, Math.abs(cosA));
+
+      // Numerical bar rising cleanly between brick stud and card header!
+      const barU = smooth(clamp01((flipU - 0.55) / 0.45)) * (1 - uAbsorb);
+      if (barU > 0.02) {
+        const bh = (20 + (i % 3) * 11) * barU;
+        ctx.fillStyle = tk.top;
+        roundRectPath(px - 8, py - 46 - bh, 16, bh, 5);
+        ctx.fill();
+      }
+
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.scale(sc * sxFlip, sc);
+      // Lego top stud
+      ctx.fillStyle = back ? "#353945" : tk.top;
+      roundRectPath(-16, -42, 32, 10, 4); ctx.fill();
+      // Main thick-edge brick
+      block25D(-38, -34, 76, 68, 14, back ? "#1e222e" : tk.top, back ? "#0d1018" : tk.side, 7, back ? tk.top : null);
+      ctx.fillStyle = "#ffffff";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      if (!back) {
+        ctx.font = tk.w.length === 1 ? "700 32px -apple-system, PingFang SC, sans-serif" : "700 26px -apple-system, PingFang SC, sans-serif";
+        ctx.fillText(tk.w, 0, 0);
+      } else {
+        ctx.font = "700 19px ui-monospace, Menlo, monospace";
+        ctx.fillText(tk.id, 0, -6);
+        ctx.fillStyle = "rgba(255,255,255,0.65)";
+        ctx.font = "600 10.5px ui-monospace, Menlo, monospace";
+        ctx.fillText("Token ID", 0, 16);
+      }
+      ctx.restore();
+    });
+  }
+
+  if (t >= 35.8 && t < 52.2) {
+    drawFlipTokenBricks(STORE_TOKENS, remap(t, 35.8, 37.2), easeOutBack(remap(t, 37.0, 38.8)), remap(t, 39.2, 41.8), easeInOutCubic(remap(t, 50.2, 52.0)));
+  }
+  const uRecTok = remap(t, 60.4, 63.6);
+  if (uRecTok > 0 && uRecTok < 1) {
+    drawFlipTokenBricks(RECALL_TOKENS, remap(t, 60.4, 61.0), easeOutCubic(remap(t, 60.5, 61.5)), remap(t, 61.4, 62.5), easeInOutCubic(remap(t, 62.5, 63.6)));
+  }
+
+  // ==================== ZONE 5A: SQLITE 2.5D VAULT (x=1965..2430, y=105..400) ====================
+  const sqlPing = t >= 68.4 && t <= 71.5;
+  block25D(1965, 105, 465, 295, 26, pal.sqlBg, pal.sqlSide, 12, sqlPing ? pal.green : pal.cardBorder);
+  drawIconBadge("sqlite", 2018, 158, 56, "#ffffff");
+  ctx.fillStyle = pal.ink; ctx.font = "700 20px Georgia, Songti SC, serif"; ctx.textAlign = "left";
+  ctx.fillText("关系数据库 SQLite", 2060, 152);
+  ctx.fillStyle = pal.muted; ctx.font = "500 12.5px -apple-system, sans-serif";
+  ctx.fillText("登记原话、经验条目与出处日期", 2060, 174);
+
+  // Iconic 2.5D 3-tier database cylinder on left
+  for (let i = 2; i >= 0; i--) {
+    const cy = 328 - i * 36;
+    ctx.fillStyle = pal.sqlCyl;
+    ctx.beginPath(); ctx.ellipse(2042, cy + 16, 46, 15, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(1996, cy - 10, 92, 26);
+    ctx.fillStyle = pal.sqlCylTop;
+    ctx.beginPath(); ctx.ellipse(2042, cy - 10, 46, 15, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = pal.sqlRing; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // Live Ledger rows on right
+  roundRectPath(2110, 206, 300, 172, 14);
+  ctx.fillStyle = sqlPing ? (sp ? "rgba(18,76,56,0.9)" : "#e5f8ee") : pal.card;
+  ctx.fill();
+  ctx.strokeStyle = sqlPing ? pal.green : pal.cardBorder; ctx.lineWidth = sqlPing ? 2.5 : 1.5; ctx.stroke();
+  ctx.fillStyle = sqlPing ? pal.green : pal.blue; ctx.font = "700 13px -apple-system, sans-serif";
+  ctx.fillText(sqlPing ? "✓ 来源已核对 · 11-26" : "📋 登记表（SQLite）", 2126, 232);
+  if (t >= 22.4) {
+    roundRectPath(2124, 248, 272, 50, 10);
+    ctx.fillStyle = sp ? "rgba(240,168,62,0.16)" : "#faf2e4"; ctx.fill();
+    ctx.fillStyle = pal.amber; ctx.font = "700 13.5px -apple-system, sans-serif"; ctx.fillText("📄 原话文件", 2136, 270);
+    ctx.fillStyle = pal.muted; ctx.font = "600 12px ui-monospace, Menlo, monospace"; ctx.fillText("text_a8df.txt · 11-26", 2136, 288);
+  }
+  if (t >= 28.8) {
+    roundRectPath(2124, 310, 272, 50, 10);
+    ctx.fillStyle = sp ? "rgba(255,126,84,0.18)" : "#fcece6"; ctx.fill();
+    ctx.fillStyle = pal.accent; ctx.font = "700 13.5px -apple-system, sans-serif"; ctx.fillText("💎 经验条目", 2136, 332);
+    ctx.fillStyle = pal.muted; ctx.font = "600 12px ui-monospace, Menlo, monospace"; ctx.fillText("text_0538.txt · 11-26", 2136, 350);
+  }
+
+  // ==================== ZONE 5B: LADYBUG 2.5D GRAPH ARENA (x=1965..2430, y=450..815) ====================
+  block25D(1965, 450, 465, 365, 26, pal.ladyBg, pal.ladySide, 12, pal.cardBorder);
+  drawIconBadge("ladybug", 2018, 502, 56, "#ffffff");
+  ctx.fillStyle = pal.ink; ctx.font = "700 20px Georgia, Songti SC, serif"; ctx.textAlign = "left";
+  ctx.fillText("图数据库 Ladybug", 2060, 496);
+  ctx.fillStyle = pal.muted; ctx.font = "500 12.5px -apple-system, sans-serif";
+  ctx.fillText("实体是点，关系是线，擅长顺藤摸瓜", 2060, 518);
+
+  // Subtle circular stage ring inside Ladybug card
+  ctx.strokeStyle = pal.ladyRim; ctx.lineWidth = 2; ctx.globalAlpha = 0.45;
+  ctx.beginPath(); ctx.ellipse(2190, 665, 195, 118, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Edges grow sequentially (46.8 -> 50.0)
+  G_EDGES.forEach((e, i) => {
+    const u = smooth(remap(t, 46.8 + i * 0.75, 48.2 + i * 0.75));
+    if (u <= 0.01) return;
+    const a = G_NODES[e.from], b = G_NODES[e.to];
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const p0 = { x: a.x + Math.cos(ang) * 30, y: a.y + Math.sin(ang) * 30 };
+    const p2 = { x: b.x - Math.cos(ang) * 34, y: b.y - Math.sin(ang) * 34 };
+    const p1 = { x: (a.x + b.x) / 2 + e.bend.x, y: (a.y + b.y) / 2 + e.bend.y };
+    const hot = ((i === 0 && t >= 67.0) || (i === 1 && t >= 67.8)) && t < 75.5;
+    drawArrowCurve(p0, p1, p2, u, hot ? pal.green : pal.violet, hot ? 7 : 4.5, false);
+    if (u > 0.55) {
+      const mid = quadPt(p0, p1, p2, 0.5);
+      drawPill(mid.x, mid.y - 12, e.label, {
+        bg: hot ? pal.green : (sp ? "#2a1d4f" : "#f4efff"),
+        fg: hot ? (sp ? "#03190f" : "#fff") : (sp ? "#d4c0ff" : "#5e43a0"),
+        border: hot ? pal.green : pal.violet,
+        font: "700 12px -apple-system, sans-serif", h: 24, padX: 9
+      });
+    }
+  });
+
+  // Nodes pop in (45.8 -> 48.0)
+  G_NODES.forEach((n, i) => {
+    const uPop = easeOutBack(remap(t, 45.8 + i * 0.48, 46.5 + i * 0.48));
+    if (uPop <= 0.02) return;
+    const hot = ((i === 0 && t >= 66.6) || (i === 1 && t >= 67.4) || (i === 2 && t >= 68.1)) && t < 75.5;
+    const ny = n.y + Math.sin(t * 2.2 + i * 1.6) * 4;
+    ctx.save();
+    ctx.translate(n.x, ny);
+    ctx.scale(uPop, uPop);
+    if (sp || hot) drawGlow(0, 0, hot ? 58 : 42, hot ? "rgba(50,223,146,0.55)" : "rgba(50,223,146,0.28)");
+    ctx.fillStyle = pal.greenSide; ctx.beginPath(); ctx.arc(0, 5, 25, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = hot ? "#34e89a" : pal.green; ctx.beginPath(); ctx.arc(0, 0, 25, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,0.32)"; ctx.beginPath(); ctx.arc(-7, -8, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    drawPill(n.x, ny + 38, n.name, {
+      bg: hot ? pal.green : pal.card,
+      fg: hot ? (sp ? "#03190f" : "#fff") : pal.ink,
+      border: hot ? pal.green : pal.green,
+      font: "700 12.5px -apple-system, sans-serif", h: 26, padX: 10
+    });
+  });
+
+  // ==================== ZONE 5C: LANCEDB 2D PARALLAX VECTOR SPACE (x=1965..2430, y=855..1185) ====================
+  block25D(1965, 855, 465, 330, 26, pal.vecBg, pal.vecSide, 12, pal.vecBorder);
+  drawIconBadge("lancedb", 2018, 902, 52, "#ffffff");
+  ctx.fillStyle = pal.ink; ctx.font = "700 19px Georgia, Songti SC, serif"; ctx.textAlign = "left";
+  ctx.fillText("向量数据库 LanceDB", 2056, 896);
+  ctx.fillStyle = pal.muted; ctx.font = "500 12px -apple-system, sans-serif";
+  ctx.fillText("意思越接近，坐标点离得越近", 2056, 916);
+
+  // Subtle clamped parallax + clip inside LanceDB starfield viewport so stars never overlap the title/icon or escape the box!
+  const pxFar = Math.max(-18, Math.min(18, (cam.cx - 2195) * 0.03));
+  const pyFar = Math.max(-12, Math.min(12, (cam.cy - 1040) * 0.03));
+  ctx.save();
+  roundRectPath(1974, 938, 447, 240, 18);
+  ctx.clip();
+
+  // Coordinate axes inside LanceDB
+  ctx.save();
+  ctx.strokeStyle = pal.vecBorder; ctx.globalAlpha = 0.25; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(1995, 1040); ctx.lineTo(2405, 1040); ctx.moveTo(2195, 946); ctx.lineTo(2195, 1170); ctx.stroke();
+  ctx.restore();
+
+  // Distant old stars (far parallax layer)
+  OLD_STARS.forEach((s, i) => {
+    const sx = s.x + pxFar, sy = s.y + pyFar + Math.sin(t * 1.4 + i) * 2.5;
+    ctx.fillStyle = pal.subtle; ctx.globalAlpha = 0.58;
+    ctx.beginPath(); ctx.arc(sx, sy, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.font = "600 11.5px -apple-system, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(s.name, sx, sy + 18);
+    ctx.globalAlpha = 1;
+  });
+
+  // Expanding 2D Concentric Radar Waves during Recall (64.6 -> 67.2)
+  const uRadar = remap(t, 64.6, 67.2);
+  if (uRadar > 0 && uRadar < 1) {
+    for (let ring = 0; ring < 3; ring++) {
+      const ru = clamp01(uRadar * 1.35 - ring * 0.18);
+      if (ru <= 0 || ru >= 1) continue;
+      ctx.save();
+      ctx.strokeStyle = pal.green;
+      ctx.globalAlpha = (1 - ru) * 0.78;
+      ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(QUERY_STAR.x, QUERY_STAR.y, lerp(14, 155, easeOutCubic(ru)), 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Cosine Similarity Tether Lines during Recall (65.0 -> 75.5)
+  const uTether = smooth(remap(t, 65.0, 66.0));
+  if (uTether > 0.01 && t < 75.5) {
+    NEW_STARS.filter(s => s.near).forEach(s => {
+      const ex = lerp(QUERY_STAR.x, s.x, uTether), ey = lerp(QUERY_STAR.y, s.y, uTether);
+      ctx.save();
+      ctx.strokeStyle = pal.green; ctx.lineWidth = 3; ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.moveTo(QUERY_STAR.x, QUERY_STAR.y); ctx.lineTo(ex, ey); ctx.stroke();
+      ctx.restore();
+      if (uTether > 0.8) {
+        const mx = (QUERY_STAR.x + s.x) / 2, my = (QUERY_STAR.y + s.y) / 2;
+        drawPill(mx, my - 2, s.sim, { bg: sp ? "#0c2b21" : "#e8f8f0", fg: pal.green, border: pal.green, font: "700 11px ui-monospace, Menlo, monospace", h: 20, padX: 6 });
+      }
+    });
+  }
+
+  // New Semantic Cluster Stars (pop in at 52.3 -> 55.8)
+  NEW_STARS.forEach((s, i) => {
+    const uPop = easeOutBack(remap(t, 52.3 + i * 0.35, 53.0 + i * 0.35));
+    if (uPop <= 0.02) return;
+    const hit = s.near && t >= 65.1 && t < 75.5;
+    const rad = 11 * uPop * (hit ? 1.25 + Math.sin(t * 7) * 0.1 : 1);
+    if (sp || hit) drawGlow(s.x, s.y, hit ? 38 : 26, hit ? "rgba(50,223,146,0.52)" : "rgba(120,175,255,0.28)");
+    ctx.fillStyle = s.col;
+    ctx.beginPath(); ctx.arc(s.x, s.y, rad, 0, Math.PI * 2); ctx.fill();
+    if (hit) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; ctx.stroke(); }
+    ctx.fillStyle = hit ? pal.green : pal.ink;
+    ctx.font = hit ? "700 12.5px -apple-system, sans-serif" : "600 11.5px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(s.name, s.x, s.y - rad - 6);
+  });
+
+  // Recall Query Star inside LanceDB
+  const qPop = easeOutBack(remap(t, 64.3, 65.0));
+  if (qPop > 0.02) {
+    drawGlow(QUERY_STAR.x, QUERY_STAR.y, 44, "rgba(50,223,146,0.62)");
+    ctx.fillStyle = pal.green;
+    ctx.beginPath(); ctx.arc(QUERY_STAR.x, QUERY_STAR.y, 13 * qPop, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 3; ctx.stroke();
+    drawPill(QUERY_STAR.x, QUERY_STAR.y + 28, "你的问题", { bg: pal.green, fg: sp ? "#03190f" : "#fff", font: "700 11.5px -apple-system, sans-serif", h: 22, padX: 8 });
+  }
+  ctx.restore();
+
+  // ==================== CROSS-ZONE FLYING PARTICLES & ARCS ====================
+  // A. Paper Airplane (Codex -> Memlane: 10.8 -> 13.8)
+  const uPlane = remap(t, 10.8, 13.8);
+  if (uPlane > 0 && uPlane < 1) {
+    const e = easeInOutCubic(uPlane);
+    const p0 = { x: 420, y: 635 }, p1 = { x: 540, y: 405 }, p2 = { x: 642, y: 696 };
+    drawDottedArc(p0, p1, p2, e, pal.accent, 14);
+    const pt = quadPt(p0, p1, p2, e);
+    const ang = quadTan(p0, p1, p2, e);
+    const sc = uPlane < 0.12 ? easeOutBack(uPlane / 0.12) : uPlane > 0.88 ? 1 - (uPlane - 0.88) / 0.12 : 1;
+    ctx.save();
+    ctx.translate(pt.x, pt.y);
+    ctx.rotate(ang);
+    ctx.scale(sc, sc);
+    if (sp) drawGlow(0, 0, 44, "rgba(255,140,86,0.5)");
+    // Crisp 2D origami paper airplane
+    ctx.fillStyle = "#ffffff"; ctx.strokeStyle = pal.accent; ctx.lineWidth = 2.5; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(28, 0); ctx.lineTo(-20, -18); ctx.lineTo(-10, 0); ctx.lineTo(-20, 18); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = pal.accent;
+    ctx.beginPath(); ctx.moveTo(28, 0); ctx.lineTo(-10, 0); ctx.lineTo(-16, 10); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  // B. Archival Copy Raw -> SQLite (20.6 -> 22.7)
+  const uCopyRaw = remap(t, 20.6, 22.7);
+  if (uCopyRaw > 0 && uCopyRaw < 1) {
+    const e = easeInOutCubic(uCopyRaw);
+    const p0 = { x: 1085, y: 600 }, p1 = { x: 1480, y: 240 }, p2 = { x: 2042, y: 270 };
+    drawDottedArc(p0, p1, p2, e, pal.cyan, 14);
+    const pt = quadPt(p0, p1, p2, e);
+    block25D(pt.x - 24, pt.y - 14, 48, 28, 7, pal.cyan, pal.blueSide, 4);
+  }
+
+  // C. Experience Crystal Copy -> SQLite (26.5 -> 29.1)
+  const uCopyExp = remap(t, 26.5, 29.1);
+  if (uCopyExp > 0 && uCopyExp < 1) {
+    const e = easeInOutCubic(uCopyExp);
+    const p0 = { x: 1270, y: 565 }, p1 = { x: 1650, y: 220 }, p2 = { x: 2150, y: 325 };
+    drawDottedArc(p0, p1, p2, e, pal.accent, 14);
+    const pt = quadPt(p0, p1, p2, e);
+    drawCrystal(pt.x, pt.y, 20, e * 10, "#ff875c", "#c84a22");
+    drawPill(pt.x, pt.y - 32, "💎 经验副本 → SQLite", { bg: pal.card, fg: pal.ink, border: pal.accent, font: "700 12px -apple-system, sans-serif", h: 25, padX: 9 });
+  }
+
+  // D. Ch7: Cut Chunks -> UP INTO GPT Pod (43.5 -> 46.4)
+  const uChunkIn = smooth(remap(t, 43.5, 44.5)) * (1 - smooth(remap(t, 46.2, 47.0)));
+  if (uChunkIn > 0.01) {
+    const p0 = { x: 1640, y: 602 }, p1 = { x: 1610, y: 380 }, p2 = { x: 1455, y: podY + 54 };
+    drawArrowCurve(p0, p1, p2, uChunkIn, pal.amber, 5, true);
+    const up = remap(t, 43.6, 45.2);
+    if (up > 0 && up < 1) {
+      const pt = quadPt(p0, p1, p2, easeInOutCubic(up));
+      block25D(pt.x - 18, pt.y - 12, 36, 24, 6, pal.amber, pal.amberSide, 4);
+    }
+    if (t < 46.2) drawPill(1540, 446, "📤 段落送给 GPT 读", { bg: pal.card, fg: pal.ink, border: pal.amber, font: "700 12px -apple-system, sans-serif", h: 26, padX: 10 });
+  }
+
+  // E. Ch7: 3 Emerald Entity Orbs burst OUT OF GPT Pod -> Ladybug (44.6 -> 47.6)
+  G_NODES.forEach((n, i) => {
+    const uFly = remap(t, 44.6 + i * 0.48, 46.05 + i * 0.48);
+    if (uFly > 0 && uFly < 1) {
+      const e = easeInOutCubic(uFly);
+      const p0 = { x: 1482, y: podY + 12 }, p1 = { x: 1840, y: 260 + i * 70 }, p2 = { x: n.x, y: n.y };
+      drawDottedArc(p0, p1, p2, e, pal.green, 10);
+      const pt = quadPt(p0, p1, p2, e);
+      if (sp) drawGlow(pt.x, pt.y, 32, "rgba(50,223,146,0.55)");
+      ctx.fillStyle = pal.green; ctx.beginPath(); ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  if (t >= 44.7 && t < 47.4) {
+    drawPill(1770, 355, "GPT 读出实体与关系 → 飞入 Ladybug", { bg: pal.violet, fg: "#fff", icon: "openai", font: "700 12.5px -apple-system, sans-serif", h: 28, padX: 11 });
+  }
+
+  // F. Ch8: Vector Orbs launch from Vector Lens -> LanceDB (51.2 -> 56.2)
+  NEW_STARS.forEach((s, i) => {
+    const uFly = remap(t, 51.2 + i * 0.35, 52.5 + i * 0.35);
+    if (uFly > 0 && uFly < 1) {
+      const e = easeInOutCubic(uFly);
+      const p0 = { x: 1715, y: 748 }, p1 = { x: 1930, y: 840 + i * 25 }, p2 = { x: s.x, y: s.y };
+      drawDottedArc(p0, p1, p2, e, s.col, 9);
+      const pt = quadPt(p0, p1, p2, e);
+      ctx.fillStyle = s.col; ctx.beginPath(); ctx.arc(pt.x, pt.y, 9, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+
+  // G. Recall Comet: Codex -> Memlane -> Vector Lens -> LanceDB (59.0 -> 64.5)
+  const uC1 = remap(t, 59.0, 60.4), uC2 = remap(t, 63.0, 64.5);
+  if (uC1 > 0 && uC1 < 1) {
+    const p0 = { x: 450, y: 630 }, p1 = { x: 560, y: 540 }, p2 = { x: 690, y: 640 };
+    const e = easeInOutCubic(uC1);
+    drawDottedArc(p0, p1, p2, e, pal.green, 12);
+    const pt = quadPt(p0, p1, p2, e);
+    drawGlow(pt.x, pt.y, 38, "rgba(50,223,146,0.65)");
+    ctx.fillStyle = pal.green; ctx.beginPath(); ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2); ctx.fill();
+  }
+  if (uC2 > 0 && uC2 < 1) {
+    const p0 = { x: 1715, y: 748 }, p1 = { x: 1960, y: 860 }, p2 = { x: QUERY_STAR.x, y: QUERY_STAR.y };
+    const e = easeInOutCubic(uC2);
+    drawDottedArc(p0, p1, p2, e, pal.green, 14);
+    const pt = quadPt(p0, p1, p2, e);
+    drawGlow(pt.x, pt.y, 40, "rgba(50,223,146,0.65)");
+    ctx.fillStyle = pal.green; ctx.beginPath(); ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // H. Recall Cross-DB Signal: LanceDB -> Ladybug -> SQLite
+  if (t >= 66.0 && t < 75.5) {
+    drawArrowCurve({ x: 2115, y: 980 }, { x: 1985, y: 800 }, { x: 2048, y: 618 }, smooth(remap(t, 66.0, 67.0)), pal.green, 5, false);
+  }
+  if (t >= 68.0 && t < 75.5) {
+    drawArrowCurve({ x: 2210, y: 560 }, { x: 2260, y: 455 }, { x: 2210, y: 382 }, smooth(remap(t, 68.0, 69.0)), pal.green, 4.5, false);
+  }
+
+  // I. Finale Emerald Return Ribbon back over the entire factory to Codex (70.5 -> 76.0)
+  const uRet = smooth(remap(t, 70.5, 72.5));
+  if (uRet > 0.01) {
+    const p0 = { x: 1965, y: 645 }, p1 = { x: 1210, y: 260 }, p2 = { x: 470, y: 640 };
+    drawArrowCurve(p0, p1, p2, uRet, pal.green, 7, false);
+    if (uRet < 0.99) {
+      const pt = quadPt(p0, p1, p2, uRet);
+      drawGlow(pt.x, pt.y, 46, "rgba(50,223,146,0.7)");
+      ctx.fillStyle = pal.green; ctx.beginPath(); ctx.arc(pt.x, pt.y, 15, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+/* ==================== VIRTUAL 2D CAMERA + PAN/ZOOM + TIMELINE ==================== */
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(window.innerWidth * dpr);
+  canvas.height = Math.round(window.innerHeight * dpr);
+}
+resize();
+addEventListener("resize", resize);
+
+function directorCamAt(t) {
+  let idx = 0;
+  for (let i = CHAPTERS.length - 1; i >= 0; i--) {
+    if (t >= CHAPTERS[i].start) { idx = i; break; }
+  }
+  const c0 = CHAPTERS[idx], c1 = CHAPTERS[Math.min(CHAPTERS.length - 1, idx + 1)];
+  let cx = c0.cam.cx, cy = c0.cam.cy, zoom = c0.cam.zoom;
+  // Two-stage tracking inside Ch4 (follow crystal to SQLite), Ch7 (swoop into Ladybug) & Ch10 (radar closeup -> 3-DB chain + sleeping GPT)
+  if (idx === 4) {
+    const u = smoother(remap(t, 26.0, 27.8));
+    cx = lerp(cx, 1740, u); cy = lerp(cy, 430, u); zoom = lerp(zoom, 0.74, u);
+  } else if (idx === 7) {
+    const u = smoother(remap(t, 46.6, 48.2));
+    cx = lerp(cx, 2195, u); cy = lerp(cy, 635, u); zoom = lerp(zoom, 1.25, u);
+  } else if (idx === 10) {
+    const u = smoother(remap(t, 66.2, 67.6));
+    cx = lerp(cx, 1980, u); cy = lerp(cy, 625, u); zoom = lerp(zoom, 0.61, u);
+  }
+  const blend = idx < CHAPTERS.length - 1 ? smoother(remap(t, c0.end - 1.25, c0.end + 0.15)) : 0;
+  // Auto-fit base scale to viewport width (baseline 1440px)
+  const fit = Math.min(window.innerWidth / 1440, (window.innerHeight - 160) / 720);
+  return {
+    cx: lerp(cx, c1.cam.cx, blend),
+    cy: lerp(cy, c1.cam.cy, blend),
+    zoom: lerp(zoom, c1.cam.zoom, blend) * Math.max(0.65, fit)
+  };
+}
+
+const camCurr = { cx: 1250, cy: 620, zoom: 0.52 };
+let panX = 0, panY = 0, userZoom = 1.0, dragging = false, prevX = 0, prevY = 0;
+
+canvas.addEventListener("pointerdown", e => {
+  if (e.button !== 0) return;
+  dragging = true; prevX = e.clientX; prevY = e.clientY;
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", e => {
+  if (!dragging) return;
+  panX -= (e.clientX - prevX) / camCurr.zoom;
+  panY -= (e.clientY - prevY) / camCurr.zoom;
+  prevX = e.clientX; prevY = e.clientY;
+});
+canvas.addEventListener("pointerup", () => { dragging = false; });
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  userZoom = Math.max(0.55, Math.min(2.2, userZoom * (e.deltaY > 0 ? 0.92 : 1.08)));
+}, { passive: false });
+
+/* ==================== PLAYER UI ==================== */
+const $ = id => document.getElementById(id);
+let curT = 0.0, playing = false, speed = 1.0, speedIdx = 1, lastChapId = -1;
+const SPEEDS = [0.75, 1, 1.5];
+
+$("scrub-store-bg").style.width = (RECALL_T / TOTAL * 100) + "%";
+$("scrub-recall-bg").style.width = ((TOTAL - RECALL_T) / TOTAL * 100) + "%";
+CHAPTERS.forEach((c, i) => {
+  if (i === 0) return;
+  const tick = document.createElement("i");
+  tick.className = "chap-tick";
+  tick.style.left = (c.start / TOTAL * 100) + "%";
+  $("scrub-track").appendChild(tick);
+});
+
+const fmt = s => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+function syncUI() {
+  const ch = getChapter(curT);
+  const pct = (curT / TOTAL) * 100;
+  $("scrub-fill").style.width = pct + "%";
+  $("scrub-knob").style.left = pct + "%";
+  $("timecode").textContent = `${fmt(curT)} / ${fmt(TOTAL)}`;
+  document.body.classList.toggle("recall", curT >= RECALL_T);
+  if (ch.id !== lastChapId) {
+    lastChapId = ch.id;
+    $("phase-badge").textContent = ch.phase;
+    $("sub-step").textContent = ch.step;
+    $("sub-title").textContent = ch.title;
+    $("sub-body").textContent = ch.body;
+    $("sub-tip").innerHTML = ch.tip;
+    $("sub-tech").textContent = "源码对应：" + ch.tech;
+  }
+  $("btn-play").textContent = playing ? "❚❚ 暂停" : (curT >= TOTAL - 0.1 ? "↻ 重播" : "▶ 播放");
+  $("btn-to-3d").href = `index.html#theme=${currentTheme}&t=${curT.toFixed(1)}`;
+}
+
+function setPlay(on) {
+  playing = on;
+  if (on) {
+    panX *= 0.2; panY *= 0.2; userZoom = 1.0;
+    if (curT >= TOTAL - 0.2 || curT < 0.1) curT = CHAPTERS[1].start;
+  }
+  syncUI();
+}
+function applyTheme(mode) {
+  currentTheme = mode === "space" ? "space" : "light";
+  const sp = currentTheme === "space";
+  document.body.classList.toggle("space", sp);
+  $("btn-theme").textContent = sp ? "☀️ 浅色插画" : "🌌 深空科技";
+  $("btn-theme").classList.toggle("on", sp);
+  syncUI();
+}
+
+$("btn-play").onclick = () => setPlay(!playing);
+$("btn-prev").onclick = () => {
+  const ch = getChapter(curT);
+  curT = (curT - ch.start > 1.2) ? ch.start : CHAPTERS[Math.max(0, ch.id - 1)].start;
+  syncUI();
+};
+$("btn-next").onclick = () => {
+  const ch = getChapter(curT);
+  curT = CHAPTERS[Math.min(CHAPTERS.length - 1, ch.id + 1)].start;
+  syncUI();
+};
+$("btn-speed").onclick = () => { speedIdx = (speedIdx + 1) % SPEEDS.length; speed = SPEEDS[speedIdx]; $("btn-speed").textContent = speed + "×"; };
+$("btn-tech").onclick = e => { const on = document.body.classList.toggle("tech"); e.currentTarget.classList.toggle("on", on); };
+$("btn-theme").onclick = () => applyTheme(currentTheme === "space" ? "light" : "space");
+$("btn-reset-cam").onclick = () => { panX = 0; panY = 0; userZoom = 1.0; };
+
+let scrubbing = false;
+function scrubFromEvent(e) {
+  const r = $("scrub-track").getBoundingClientRect();
+  const u = clamp01((e.clientX - r.left) / r.width);
+  const tH = u * TOTAL, ch = getChapter(tH);
+  $("scrub-tip").style.left = (u * 100) + "%";
+  $("scrub-tip").textContent = `${ch.step} · ${fmt(tH)}`;
+  if (scrubbing) { curT = tH; syncUI(); }
+}
+$("scrubber").addEventListener("pointerdown", e => { scrubbing = true; $("scrubber").classList.add("dragging"); $("scrubber").setPointerCapture(e.pointerId); scrubFromEvent(e); });
+$("scrubber").addEventListener("pointermove", scrubFromEvent);
+$("scrubber").addEventListener("pointerup", () => { scrubbing = false; $("scrubber").classList.remove("dragging"); });
+
+addEventListener("keydown", e => {
+  if (e.key === " ") { e.preventDefault(); setPlay(!playing); }
+  else if (e.key === "ArrowRight") $("btn-next").click();
+  else if (e.key === "ArrowLeft") $("btn-prev").click();
+  else if (e.key === "r" || e.key === "R") $("btn-reset-cam").click();
+});
+
+// Init from URL params / hash
+let snapFirst = true;
+const qsTheme = new URLSearchParams(location.search).get("theme");
+const hashTheme = location.hash.match(/theme=([a-z]+)/);
+const hashT = location.hash.match(/t=([\d.]+)/);
+const hashC = location.hash.match(/c=(\d+)/);
+if (hashT) curT = Math.max(0, Math.min(TOTAL, parseFloat(hashT[1])));
+else if (hashC) {
+  const ch = CHAPTERS[Math.min(CHAPTERS.length - 1, parseInt(hashC[1], 10))];
+  curT = ch.start + (ch.end - ch.start) * 0.62;
+}
+applyTheme((qsTheme || (hashTheme && hashTheme[1]) || "light").toLowerCase());
+
+let prevNow = performance.now();
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.05, (now - prevNow) / 1000);
+  prevNow = now;
+  if (playing && !scrubbing) {
+    curT += dt * speed;
+    if (curT >= TOTAL) { curT = TOTAL; playing = false; }
+    syncUI();
+  }
+  const d = directorCamAt(curT);
+  const targetCx = d.cx + panX, targetCy = d.cy + panY, targetZ = d.zoom * userZoom;
+  if (snapFirst) {
+    camCurr.cx = targetCx; camCurr.cy = targetCy; camCurr.zoom = targetZ;
+    snapFirst = false;
+  } else {
+    const k = 1 - Math.exp(-7.0 * dt);
+    camCurr.cx = lerp(camCurr.cx, targetCx, k);
+    camCurr.cy = lerp(camCurr.cy, targetCy, k);
+    camCurr.zoom = lerp(camCurr.zoom, targetZ, k);
+  }
+  drawWorld(curT, camCurr);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
