@@ -178,7 +178,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 			return fmt.Errorf("completion token: %w", err)
 		}
 	} else {
-		dir, tempErr := os.MkdirTemp("", "memlane-completion-")
+		dir, tempErr := canonicalTempDir("memlane-completion-")
 		if tempErr != nil {
 			return tempErr
 		}
@@ -206,7 +206,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		cfg.EngineWorkDir = resources
 	}
 	if cfg.EngineWorkDir == "" && (!attach || cfg.Python != "") {
-		folder, tempErr := os.MkdirTemp("", "memlane-engine-code-")
+		folder, tempErr := canonicalTempDir("memlane-engine-code-")
 		if tempErr != nil {
 			return tempErr
 		}
@@ -381,7 +381,7 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		}
 		cfg.EngineTokenFile = path
 	}
-	folder, err := os.MkdirTemp("", "memlane-engine-")
+	folder, err := canonicalTempDir("memlane-engine-")
 	if err != nil {
 		return spec, cleanup, err
 	}
@@ -470,4 +470,16 @@ func importLegacyStore(cfg runtimeConfig, dbPath string) error {
 		}
 	}
 	return nil
+}
+
+func canonicalTempDir(pattern string) (string, error) {
+	dir, err := os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", errors.Join(err, os.RemoveAll(dir))
+	}
+	return resolved, nil
 }
