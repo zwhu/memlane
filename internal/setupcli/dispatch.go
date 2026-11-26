@@ -70,7 +70,7 @@ func commandManifest() *manifest {
 	return m
 }
 
-var repairTargets = []string{"stale-daemon", "pending-ops", "trae-hooks", "stale-owner"}
+var repairTargets = []string{"stale-daemon", "pending-ops", "trae-hooks", "stale-owner", "upgrade"}
 var componentIDs = setup.ComponentIDs()
 
 func flagsFor(command string) commandSpec {
@@ -184,7 +184,7 @@ func (o *options) valid(command string) bool {
 			return !o.has("apply") || o.has("owner-fingerprint")
 		case "pending-ops":
 			return !o.has("apply") || o.has("operation-id")
-		case "trae-hooks":
+		case "trae-hooks", "upgrade":
 			return !o.has("apply") || o.has("reviewed-sha")
 		}
 	case "verify":

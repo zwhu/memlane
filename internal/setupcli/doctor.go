@@ -57,6 +57,9 @@ func (s *session) doctor() {
 	if ok && s.Environment.StoreMode != "external_readonly" && (!(active || retryableFailure) || owner.State != "stopped") {
 		s.ownerAdvice(owner)
 	}
+	if ok && !owner.DeveloperCheckout && !active {
+		s.inspectUpgradeCleanup(owner)
+	}
 	ops, opsOK := s.pendingOperations()
 	client := s.liveClient(owner)
 	if s.firstInstall() {
@@ -169,6 +172,16 @@ func (s *session) gatewayGeneration(client *controlplane.Client) bool {
 	}
 	slices.Sort(s.Generation.AvailableBridges)
 	return true
+}
+
+func (s *session) inspectUpgradeCleanup(owner bootstrap.OwnerRuntimeStatus) {
+	plan, err := s.PlanUpgradeCleanupFn(s.upgradeCleanupOptions(owner))
+	if err != nil || !plan.NeedsCleanup {
+		return
+	}
+	s.Artifacts.UpgradeCleanup = upgradeCleanupSummaryFromPlan(plan)
+	s.block(ExitActionRequired, "legacy_upgrade_artifacts_present")
+	s.action(readOnly, "repair", "upgrade", "--dry-run")
 }
 
 func (s *session) inspectHostConflicts(hosts []agents.DetectedHost) {

@@ -38,6 +38,8 @@ type Runner struct {
 	LaunchWorkerFn             func(context.Context, string, []string, bootstrap.InstallWorkerConfig) (bootstrap.InstallWorkerState, error)
 	RunWorkerFn                func(context.Context, *bootstrap.Environment, fs.FS, bootstrap.InstallWorkerConfig) error
 	PrepareRuntimeForUpgradeFn func(*bootstrap.Environment, context.Context, string, fs.FS) (bootstrap.FirstRuntime, error)
+	PlanUpgradeCleanupFn       func(bootstrap.UpgradeCleanupOptions) (bootstrap.UpgradeCleanupPlan, error)
+	ApplyUpgradeCleanupFn      func(context.Context, bootstrap.UpgradeCleanupOptions, string) (bootstrap.UpgradeCleanupResult, error)
 	RestartStaleOwnerFn        func(context.Context, bootstrap.FirstRuntime, string, fs.FS) error
 	RecoverStaleOwnerFn        func(context.Context, string) (supervisor.RecoverResult, error)
 	StopOwnerBoundFn           func(context.Context, supervisor.StopOwnerOptions, int, string) error
@@ -120,6 +122,12 @@ func (r *Runner) defaults() {
 	}
 	if r.PrepareRuntimeForUpgradeFn == nil {
 		r.PrepareRuntimeForUpgradeFn = (*bootstrap.Environment).PrepareFirstRuntimeForUpgrade
+	}
+	if r.PlanUpgradeCleanupFn == nil {
+		r.PlanUpgradeCleanupFn = bootstrap.PlanUpgradeCleanup
+	}
+	if r.ApplyUpgradeCleanupFn == nil {
+		r.ApplyUpgradeCleanupFn = bootstrap.ApplyUpgradeCleanup
 	}
 	if r.RestartStaleOwnerFn == nil {
 		r.RestartStaleOwnerFn = bootstrap.RestartStaleRuntimeOwnerDetached

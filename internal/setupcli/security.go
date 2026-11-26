@@ -21,6 +21,8 @@ func secretInput(args []string, environ func(string) string) bool {
 type runtimeConfig struct {
 	First          *bootstrap.FirstInstallation `json:"first_install"`
 	Root           string                       `json:"official_data"`
+	OfficialSource string                       `json:"official_source"`
+	GraphAssets    string                       `json:"graph_assets"`
 	ServiceCommit  string                       `json:"service_commit"`
 	ServiceURL     string                       `json:"service_url"`
 	CompletionURL  string                       `json:"completion_url"`

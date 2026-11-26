@@ -616,11 +616,17 @@ func (e *Environment) prepareFirstRuntime(ctx context.Context, configPath string
 	}
 	var resources string
 	if existing {
-		if _, err := readFirstStoreInput(root, config.receipt); err != nil {
+		input, err := readFirstStoreInput(root, config.receipt)
+		if err != nil {
 			return prepared, err
 		}
 		if config.GenerationFile != filepath.Join(root, "generation.json") {
 			return prepared, errors.New("首次运行的提炼配置位置不同")
+		}
+		if upgrade && input.Source != "" {
+			if _, _, err := CleanCogneeSourceBytecode(input.Source); err != nil {
+				return prepared, err
+			}
 		}
 		resources, err = PrepareRuntimeResources(ctx, e.Installer().Root, assets)
 		if err != nil {

@@ -47,13 +47,19 @@ xattr -dr com.apple.quarantine /Applications/Memlane.app
 3. 严禁读取或输出任何 token/密钥/.local/聊天内容，严禁执行 xattr 或手动修改 hooks.json/Cognee 源码。若返回退出码 11 或同一问题重试 3 次仍失败，立刻停止并把 human_steps 交给我。
 ```
 
-**模板 B · `beta.2` 升级卡死自救**
+**模板 B · 旧版升级、残留清理与卡死自救**
+
+> 覆盖替换 `/Applications/Memlane.app` 并完成 macOS 放行后，粘贴给本机 Coding Agent 执行。所有写入与清理均由 `Memlane` 内置 CLI 按路径白名单执行（`O_NOFOLLOW` + `.service-owner` 锁 + `--dry-run` 预览确认），严禁 Agent 手工执行 `rm` 或直接改配置文件。
 
 ```text
-帮我安全恢复升级后卡住的 Memlane（旧版后台 / 409 待核对 / TRAE CN hooks 报错）：
+帮我安全升级或恢复本机 Memlane（保留原记忆库与已下载组件，零手工删文件）：
+【本次要更新/安装】：仅使用已替换的新版 /Applications/Memlane.app、刷新内嵌运行资源 runtime-<新hash> 与方案 C 宿主 Hook（零重新下载已有 Python/Cognee/向量模型）。
+【本次要安全清理】：仅通过内置命令清理受管 Cognee 源码目录残留 .pyc/.pyo 与已停用旧版 runtime-*，以及旧版 Memlane 宿主条目。
+【严禁清理或修改】：个人记忆库（library/、official-store/、memlane.sqlite3）、migration-backup-* 备份、已下载运行依赖、模型凭据与各宿主原有第三方插件/Hooks/MCP。
+执行步骤：
 1. 先只读运行：/Applications/Memlane.app/Contents/MacOS/Memlane doctor --json
-2. 严格按 blockers 先运行对应 repair 的 --dry-run --json 给我确认（保留原记忆库、已下载组件和未知回执，不手工改文件、不读凭据）；确认后执行 --apply，并用 verify --stage setup --expect-zero-downloads --expect-runtime-current --json 复验。
-3. 若返回退出码 11 或 40（需人工核对）或重试 3 次失败，立刻停止交给我处理。
+2. 严格按 blockers 与 next_actions 顺序，先运行对应 repair（如 repair upgrade / repair stale-daemon / repair trae-hooks）与 connect 的 --dry-run --json 给我确认（保留原记忆库、已下载组件和未知回执，严禁手工 rm、不手工改文件、不读凭据）；经我确认后带对应 reviewed-sha / owner-fingerprint 执行 --apply。
+3. 完成后运行 /Applications/Memlane.app/Contents/MacOS/Memlane verify --stage setup --expect-zero-downloads --expect-runtime-current --json 复验；若返回退出码 11 或 40（需人工核对）或重试 3 次失败，立刻停止并把 human_steps 交给我处理。
 ```
 
 **模板 C · Agent 连接 / 自动采集排障**

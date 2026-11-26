@@ -19,7 +19,101 @@ func (s *session) repair() {
 		s.repairPending()
 	case "trae-hooks":
 		s.repairHooks()
+	case "upgrade":
+		s.repairUpgrade()
 	}
+}
+
+func (s *session) upgradeCleanupOptions(owner bootstrap.OwnerRuntimeStatus) bootstrap.UpgradeCleanupOptions {
+	keep := []string{}
+	for _, h := range []string{s.App.BundledRuntimeHash, owner.RunningRuntimeHash} {
+		if h != "" && !slices.Contains(keep, h) {
+			keep = append(keep, h)
+		}
+	}
+	if s.config.GraphAssets != "" {
+		if hash, ok := bootstrap.RuntimeHashFromDir(s.config.GraphAssets); ok && !slices.Contains(keep, hash) {
+			keep = append(keep, hash)
+		}
+	}
+	return bootstrap.UpgradeCleanupOptions{
+		ComponentRoot:     s.root,
+		StoreRoot:         s.config.Root,
+		CogneeSourceDir:   s.config.OfficialSource,
+		KeepRuntimeHashes: keep,
+	}
+}
+
+func upgradeCleanupSummaryFromPlan(plan bootstrap.UpgradeCleanupPlan) *upgradeCleanupSummary {
+	return &upgradeCleanupSummary{
+		NeedsCleanup:       plan.NeedsCleanup,
+		LegacyPycCount:     plan.LegacyPycCount,
+		LegacyPycacheDirs:  plan.LegacyPycacheDirs,
+		RetiredRuntimeDirs: slices.Clone(plan.RetiredRuntimeDirs),
+		InstallItems:       slices.Clone(plan.InstallItems),
+		CleanupItems:       slices.Clone(plan.CleanupItems),
+		PreservedItems:     slices.Clone(plan.PreservedItems),
+	}
+}
+
+func (s *session) repairUpgrade() {
+	owner, ok := s.inspectOwner()
+	if !ok {
+		return
+	}
+	switch {
+	case owner.DeveloperCheckout:
+		s.block(ExitFatal, "developer_checkout")
+		return
+	case owner.OwnerPhase == "starting" || owner.State == "starting":
+		s.installBusy("daemon_starting")
+		return
+	case owner.State == "mismatch":
+		s.block(ExitNeedsReview, "owner_mismatch")
+		return
+	}
+	opts := s.upgradeCleanupOptions(owner)
+	plan, err := s.PlanUpgradeCleanupFn(opts)
+	if err != nil {
+		s.block(ExitFatal, "upgrade_cleanup_inspection_failed")
+		return
+	}
+	s.Artifacts.ReviewedSHA = plan.PlanSHA
+	s.Artifacts.UpgradeCleanup = upgradeCleanupSummaryFromPlan(plan)
+	if !s.has("apply") {
+		if plan.NeedsCleanup {
+			s.block(ExitActionRequired, "legacy_upgrade_artifacts_present")
+			if s.Environment.StoreMode != "external_readonly" {
+				s.action(confirmation, "repair", "upgrade", "--reviewed-sha", plan.PlanSHA, "--apply")
+			}
+		}
+		return
+	}
+	if s.get("reviewed-sha") != plan.PlanSHA {
+		s.block(ExitPreflightBlocked, "reviewed_sha_mismatch")
+		return
+	}
+	if !plan.NeedsCleanup {
+		s.Artifacts.UpgradeCleanup.Applied = true
+		return
+	}
+	res, err := s.ApplyUpgradeCleanupFn(s.ctx, opts, s.get("reviewed-sha"))
+	switch {
+	case errors.Is(err, bootstrap.ErrUpgradeCleanupPlanChanged):
+		s.block(ExitPreflightBlocked, "reviewed_sha_mismatch")
+		return
+	case errors.Is(err, supervisor.ErrUpgradeLocked), errors.Is(err, supervisor.ErrOwnerBusy), errors.Is(err, supervisor.ErrOwnerLocked):
+		s.installBusy("owner_busy")
+		return
+	case err != nil:
+		s.block(ExitFatal, "upgrade_cleanup_failed")
+		return
+	}
+	s.Artifacts.UpgradeCleanup.Applied = res.Applied
+	s.Artifacts.UpgradeCleanup.NeedsCleanup = false
+	s.Artifacts.UpgradeCleanup.RemovedPycCount = res.RemovedPycCount
+	s.Artifacts.UpgradeCleanup.RemovedPycacheDirs = res.RemovedPycacheDirs
+	s.Artifacts.UpgradeCleanup.RemovedRuntimeDirs = slices.Clone(res.RemovedRuntimeDirs)
 }
 
 func (s *session) repairStaleDaemon() {

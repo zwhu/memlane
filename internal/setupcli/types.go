@@ -161,13 +161,28 @@ type blocker = cli.Blocker
 type nextAction = cli.NextAction
 
 type artifacts struct {
-	PlanDigest          string             `json:"plan_digest"`
-	ReviewedSHA         string             `json:"reviewed_sha"`
-	OwnerFingerprint    string             `json:"owner_fingerprint"`
-	OperationID         string             `json:"operation_id"`
-	LogTail             []string           `json:"log_tail,omitempty"`
-	ConnectionOperation *operationSummary  `json:"connection_operation,omitempty"`
-	HookRepair          *hookRepairSummary `json:"hook_repair,omitempty"`
+	PlanDigest          string                 `json:"plan_digest"`
+	ReviewedSHA         string                 `json:"reviewed_sha"`
+	OwnerFingerprint    string                 `json:"owner_fingerprint"`
+	OperationID         string                 `json:"operation_id"`
+	LogTail             []string               `json:"log_tail,omitempty"`
+	ConnectionOperation *operationSummary      `json:"connection_operation,omitempty"`
+	HookRepair          *hookRepairSummary     `json:"hook_repair,omitempty"`
+	UpgradeCleanup      *upgradeCleanupSummary `json:"upgrade_cleanup,omitempty"`
+}
+
+type upgradeCleanupSummary struct {
+	NeedsCleanup       bool     `json:"needs_cleanup"`
+	Applied            bool     `json:"applied"`
+	LegacyPycCount     int      `json:"legacy_pyc_count"`
+	LegacyPycacheDirs  int      `json:"legacy_pycache_dirs"`
+	RetiredRuntimeDirs []string `json:"retired_runtime_dirs"`
+	RemovedPycCount    int      `json:"removed_pyc_count,omitempty"`
+	RemovedPycacheDirs int      `json:"removed_pycache_dirs,omitempty"`
+	RemovedRuntimeDirs []string `json:"removed_runtime_dirs,omitempty"`
+	InstallItems       []string `json:"install_items,omitempty"`
+	CleanupItems       []string `json:"cleanup_items,omitempty"`
+	PreservedItems     []string `json:"preserved_items,omitempty"`
 }
 
 type hookRepairSummary struct {
