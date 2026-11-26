@@ -178,7 +178,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 			return fmt.Errorf("completion token: %w", err)
 		}
 	} else {
-		dir, tempErr := canonicalTempDir("memlane-completion-")
+		dir, tempErr := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-completion-")
 		if tempErr != nil {
 			return tempErr
 		}
@@ -206,7 +206,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		cfg.EngineWorkDir = resources
 	}
 	if cfg.EngineWorkDir == "" && (!attach || cfg.Python != "") {
-		folder, tempErr := canonicalTempDir("memlane-engine-code-")
+		folder, tempErr := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-engine-code-")
 		if tempErr != nil {
 			return tempErr
 		}
@@ -381,7 +381,7 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		}
 		cfg.EngineTokenFile = path
 	}
-	folder, err := canonicalTempDir("memlane-engine-")
+	folder, err := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-engine-")
 	if err != nil {
 		return spec, cleanup, err
 	}
@@ -472,14 +472,26 @@ func importLegacyStore(cfg runtimeConfig, dbPath string) error {
 	return nil
 }
 
-func canonicalTempDir(pattern string) (string, error) {
-	dir, err := os.MkdirTemp("", pattern)
+// canonicalStoreRuntimeDir creates a symlink-free private directory under
+// storeRoot so detached daemons survive ephemeral wrapper TMPDIR cleanup.
+func canonicalStoreRuntimeDir(storeRoot, pattern string) (string, error) {
+	base := filepath.Join(storeRoot, "cache", "daemon-run")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(base, 0o700); err != nil {
+		return "", err
+	}
+	resolvedBase, err := filepath.EvalSymlinks(base)
 	if err != nil {
 		return "", err
 	}
-	resolved, err := filepath.EvalSymlinks(dir)
+	dir, err := os.MkdirTemp(resolvedBase, pattern)
 	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return "", errors.Join(err, os.RemoveAll(dir))
 	}
-	return resolved, nil
+	return dir, nil
 }

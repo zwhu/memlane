@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -179,12 +183,17 @@ func launchDetached(cfg runtimeConfig, command string, args ...string) (*exec.Cm
 	if err != nil {
 		return nil, err
 	}
+	executable, err = resolveDetachedExecutable(cfg.StoreRoot, executable)
+	if err != nil {
+		return nil, err
+	}
 	logPath := filepath.Join(cfg.StoreRoot, "logs", command+".log")
 	log, err := daemon.OpenPrivateLog(logPath)
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(executable, append([]string{command}, args...)...)
+	cmd.Env = detachedEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdout, cmd.Stderr = log, log
 	startErr := cmd.Start()
@@ -196,4 +205,172 @@ func launchDetached(cfg runtimeConfig, command string, args ...string) (*exec.Cm
 		return nil, errors.Join(closeErr, cmd.Process.Kill(), cmd.Wait())
 	}
 	return cmd, nil
+}
+
+const devAppInfoPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>Memlane</string>
+	<key>CFBundleExecutable</key>
+	<string>Memlane</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.memlane.desktop.dev</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Memlane</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
+`
+
+func resolveDetachedExecutable(storeRoot, executable string) (string, error) {
+	if !isEphemeralExecutable(executable) {
+		return executable, nil
+	}
+	return stageDevExecutable(storeRoot, executable)
+}
+
+func isEphemeralExecutable(executable string) bool {
+	cleaned := filepath.Clean(executable)
+	parts := strings.Split(cleaned, string(filepath.Separator))
+	for _, part := range parts {
+		if strings.HasPrefix(part, "go-build") || strings.HasPrefix(part, "memlane-task-") {
+			return true
+		}
+	}
+	tmp := filepath.Clean(os.TempDir())
+	if tmp != "" && strings.HasPrefix(cleaned, tmp+string(filepath.Separator)) {
+		return true
+	}
+	if resolvedTmp, err := filepath.EvalSymlinks(tmp); err == nil {
+		resolvedTmp = filepath.Clean(resolvedTmp)
+		if resolvedExe, err := filepath.EvalSymlinks(cleaned); err == nil {
+			if strings.HasPrefix(filepath.Clean(resolvedExe), resolvedTmp+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stageDevExecutable(storeRoot, sourcePath string) (string, error) {
+	baseDir := filepath.Join(storeRoot, "cache", "dev-bin")
+	target := filepath.Join(baseDir, "memlane")
+	if runtime.GOOS == "darwin" {
+		contentsDir := filepath.Join(baseDir, "Memlane.app", "Contents")
+		macOSDir := filepath.Join(contentsDir, "MacOS")
+		if err := os.MkdirAll(macOSDir, 0o700); err != nil {
+			return "", err
+		}
+		if err := ensureDevBundleFile(filepath.Join(contentsDir, "PkgInfo"), []byte("APPL????")); err != nil {
+			return "", err
+		}
+		if err := ensureDevBundleFile(filepath.Join(contentsDir, "Info.plist"), []byte(devAppInfoPlist)); err != nil {
+			return "", err
+		}
+		target = filepath.Join(macOSDir, "Memlane")
+	} else if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return "", err
+	}
+
+	srcHash, err := fileSHA256(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if dstHash, err := fileSHA256(target); err == nil && dstHash == srcHash {
+		return target, nil
+	}
+
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".memlane-stage-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := io.Copy(tmp, src); err != nil {
+		return "", errors.Join(err, tmp.Close())
+	}
+	if err := tmp.Chmod(0o700); err != nil {
+		return "", errors.Join(err, tmp.Close())
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		return "", err
+	}
+	cleanupTmp = false
+	return target, nil
+}
+
+func ensureDevBundleFile(path string, content []byte) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.WriteFile(path, content, 0o600)
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// detachedEnv removes ephemeral scripts/task.py scratch paths so long-lived
+// daemon and desktop children never inherit a TMPDIR that will be deleted on exit.
+func detachedEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		key, val, ok := strings.Cut(entry, "=")
+		if !ok {
+			out = append(out, entry)
+			continue
+		}
+		if key == "MEMLANE_DISK_TASK" || key == "MEMLANE_TASK_OWNER_PID" {
+			continue
+		}
+		if key == "TMPDIR" || key == "TMP" || key == "TEMP" {
+			cleaned := filepath.Clean(val)
+			if strings.HasPrefix(filepath.Base(cleaned), "memlane-task-") {
+				parent := filepath.Dir(cleaned)
+				if key == "TMPDIR" && parent != "" && parent != "." {
+					out = append(out, key+"="+parent+string(filepath.Separator))
+				}
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
