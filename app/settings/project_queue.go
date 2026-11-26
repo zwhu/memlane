@@ -113,9 +113,14 @@ func (a *Controller) projectQueueStateFor(p AccessProject) *ProjectQueueState {
 	return a.ProjectQueue(p)
 }
 
+const (
+	projectQueueIdleInterval   = 30 * time.Second
+	projectQueueActiveInterval = 5 * time.Second
+)
+
 func (a *Controller) projectQueue(p AccessProject) *ProjectQueueState {
 	q := a.ProjectQueue(p)
-	if !q.Loading && !a.access.Busy && (!q.Loaded || time.Now().After(q.Next)) && a.canDispatch() {
+	if !q.Loading && !a.access.Busy && (!q.Loaded || !time.Now().Before(q.Next)) && a.canDispatch() {
 		a.LoadProjectQueue(q, p)
 	}
 	return q
@@ -161,9 +166,9 @@ func (a *Controller) LoadProjectQueue(q *ProjectQueueState, p AccessProject) {
 	q.Loading = true
 	q.Request++
 	request, authEpoch := q.Request, a.authEpoch()
-	q.Next = time.Now().Add(30 * time.Second)
-	if q.Backlog.active() {
-		q.Next = time.Now().Add(5 * time.Second)
+	q.Next = time.Now().Add(projectQueueIdleInterval)
+	if q.InboxPending > 0 || q.Backlog.active() {
+		q.Next = time.Now().Add(projectQueueActiveInterval)
 	}
 	baseIdentity := a.cachedBaseReadingIdentity()
 	var control *ProjectControlConfig

@@ -376,3 +376,43 @@ func TestVirtualizedMarkdownAndTrace(t *testing.T) {
 		t.Fatal("rendering another frame did not reuse the cached chunks")
 	}
 }
+
+func TestGroupedRowMultilineDescAndNoBorder(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		tok := TokensFor(dark)
+		selected := 0
+		desc := "使用本机已登录的 Codex、pi、TRAE CLI、Gemini 等 CLI 提炼记忆，无需 API Key"
+		tt := mygoui.NewTester(func(c *mygoui.Context) {
+			mygoui.Column(c).Fill().Background(tok.Bg).Padding(Sp4).Children(func() {
+				GroupWrap(c, func() {
+					Group(c, tok, "提炼方式", "", nil, func() {
+						Row(c, tok, RowOptions{
+							Key:      "source-row",
+							Label:    "source-row",
+							Title:    "提炼来源",
+							Desc:     desc,
+							NoBorder: true,
+							Control: func() {
+								Segmented(c, tok, "gen-src", "提炼来源", &selected, []string{"用本机 Agent CLI 提炼", "直接调用模型 API"}, nil)
+							},
+						})
+					})
+				})
+			})
+		}, 1200, 300)
+		rowBox, ok := tt.Find("source-row")
+		if !ok {
+			t.Fatalf("dark=%v missing source-row", dark)
+		}
+		descBox, ok := tt.Find(desc)
+		if !ok {
+			t.Fatalf("dark=%v missing wrapped description text", dark)
+		}
+		if rowBox.H <= 52 {
+			t.Fatalf("dark=%v multiline row did not expand beyond 52px: row=%+v desc=%+v", dark, rowBox, descBox)
+		}
+		if descBox.Y+descBox.H > rowBox.Y+rowBox.H-8 {
+			t.Fatalf("dark=%v multiline description crowded row bottom: row=%+v desc=%+v", dark, rowBox, descBox)
+		}
+	}
+}

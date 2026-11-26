@@ -123,6 +123,18 @@ func (a *App) refreshServiceMonitorIfDue(now time.Time) {
 	a.settingsController.RefreshServiceMonitorIfDue(now)
 }
 
+func (a *App) RefreshVisibleStatus(now time.Time) {
+	if a.windowHidden || a.windowInactive || a.settingsController.InitialSetup() || a.Config.GenerationSetupOnly {
+		return
+	}
+	if a.isExternalManagedStoreStopped() {
+		return
+	}
+	a.syncSettingsTransport()
+	a.settingsController.RefreshVisibleStatus(now)
+	a.refreshOverviewIfDue(now)
+}
+
 func (a *App) refreshSidebarQueueIfDue(now time.Time) {
 	a.syncSettingsTransport()
 	a.settingsController.RefreshSidebarQueueIfDue(now)

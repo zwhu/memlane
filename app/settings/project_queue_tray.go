@@ -45,7 +45,7 @@ func (a *Controller) RefreshSidebarQueueForTray(now time.Time) {
 		index := (start + offset) % len(projects)
 		p := projects[index]
 		q := a.ProjectQueue(p)
-		if !q.Loading && (!q.Loaded || now.After(q.Next)) {
+		if !q.Loading && (!q.Loaded || !now.Before(q.Next)) {
 			a.LoadProjectQueue(q, p)
 			if q.Loading {
 				active++

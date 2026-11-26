@@ -195,6 +195,12 @@ func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProje
 
 		}
 	}
+	if q.InboxPending > 0 || q.Backlog.active() {
+		activeNext := time.Now().Add(projectQueueActiveInterval)
+		if q.Next.IsZero() || q.Next.After(activeNext) {
+			q.Next = activeNext
+		}
+	}
 	q.StateVersion++
 	if prevCatalogVersion != "" && q.KnowledgeCatalogVersion != "" && prevCatalogVersion != q.KnowledgeCatalogVersion {
 		a.handleKnowledgeCatalogVersionChanged(p.ID, p.Dataset, q.KnowledgeCatalogVersion)

@@ -74,7 +74,7 @@ func resolveAgentExecutable(kind string, names ...string) string {
 func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnection) {
 	var workers sync.WaitGroup
 	for n := range rows {
-		if !rows[n].Detected {
+		if !rows[n].Detected || strings.TrimSpace(rows[n].HostVersion) != "" {
 			continue
 		}
 		executable := config.AgentHosts[rows[n].Kind].Executable
@@ -83,7 +83,9 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 			go func(n int, executable string) {
 				defer workers.Done()
 				if ctx.Err() == nil {
-					rows[n].HostVersion = readTraeBundleVersion(executable)
+					if v := readTraeBundleVersion(executable); v != "" {
+						rows[n].HostVersion = v
+					}
 				}
 			}(n, executable)
 			continue
@@ -106,7 +108,9 @@ func loadAgentVersions(ctx context.Context, config Config, rows []AgentConnectio
 			command.WaitDelay = 250 * time.Millisecond
 			output, err := command.Output()
 			if err == nil && len(output) <= 4096 {
-				rows[n].HostVersion = agentVersionPattern.FindString(strings.TrimSpace(string(output)))
+				if v := agentVersionPattern.FindString(strings.TrimSpace(string(output))); v != "" {
+					rows[n].HostVersion = v
+				}
 			}
 		}(n, executable)
 	}

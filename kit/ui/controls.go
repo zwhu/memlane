@@ -116,14 +116,16 @@ func StatusDot(c *mygoui.Context, tok *Tokens, state string) mygoui.Element {
 	return mygoui.Box(c).Size(6, 6).Radius(3).Background(col).Shrink(0)
 }
 
-// Badge renders a compact 20px V4 status pill ("ok"/"accent", "warn", "danger", or neutral).
+// Badge renders a compact 20px V4 status pill ("ok", "accent", "warn", "danger", or neutral).
 func Badge(c *mygoui.Context, tok *Tokens, label, tone string) mygoui.Element {
 	bg, fg := tok.Fill2, tok.Text2
 	switch tone {
-	case "ok", "accent":
+	case "ok":
+		bg, fg = tok.OK.Alpha(0.14), tok.OK
+	case "accent":
 		bg, fg = tok.AccentSoft, tok.Accent
 	case "warn":
-		bg, fg = tok.Fill2, tok.Warning
+		bg, fg = tok.Warning.Alpha(0.14), tok.Warning
 	case "danger":
 		bg, fg = tok.Danger.Alpha(0.12), tok.Danger
 	}

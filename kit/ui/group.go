@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	mygoui "github.com/egoist/mygo/ui"
 )
 
@@ -54,6 +56,7 @@ type RowOptions struct {
 	Chevron     bool
 	HideChevron bool
 	Disabled    bool
+	NoBorder    bool
 	Label       string
 	Tooltip     string
 	OnClick     func()
@@ -68,9 +71,14 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 	double := opts.Desc != "" || opts.DescExtra != nil || opts.Error != ""
 	minH := RowHeight1
 	padV := Sp2
+	colGap := float32(2)
 	if double {
 		minH = 52
 		padV = 10
+		colGap = 3
+		if (opts.Desc != "" && (len([]rune(opts.Desc)) > 20 || strings.Contains(opts.Desc, "\n"))) || opts.Error != "" {
+			padV = Sp3
+		}
 	}
 	showChevron := (opts.Clickable || opts.Chevron) && !opts.HideChevron
 
@@ -78,7 +86,7 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 		if opts.Leading != nil {
 			mygoui.Row(c).Shrink(0).AlignItems(mygoui.Center).Justify(mygoui.Center).Children(opts.Leading)
 		}
-		mygoui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+		mygoui.Column(c).Grow(1).MinWidth(0).Gap(colGap).Children(func() {
 			if opts.Title != "" || opts.TitleExtra != nil {
 				mygoui.Row(c).FillWidth().AlignItems(mygoui.Center).Gap(Sp2).Children(func() {
 					if opts.Title != "" {
@@ -90,7 +98,7 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 				})
 			}
 			if opts.Desc != "" {
-				t := mygoui.Text(c, opts.Desc).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text3).LineHeight(1.45)
+				t := mygoui.Text(c, opts.Desc).FillWidth().MinWidth(0).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text3).LineHeight(1.45)
 				if opts.DescMono {
 					t.Font("ui-monospace").FontSize(FSCaption).FontFeatures("tnum")
 				} else {
@@ -101,7 +109,7 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 				opts.DescExtra()
 			}
 			if opts.Error != "" {
-				mygoui.Text(c, opts.Error).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.4)
+				mygoui.Text(c, opts.Error).FillWidth().MinWidth(0).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.4)
 			}
 		})
 		if opts.Value != "" || opts.Control != nil || showChevron {
@@ -145,11 +153,13 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 			btn.Tooltip(opts.Tooltip)
 		}
 		hovered := btn.Hovered()
-		borderCol := tok.Border
-		if hovered {
-			borderCol = mygoui.Transparent
+		if !opts.NoBorder {
+			borderCol := tok.Border
+			if hovered {
+				borderCol = mygoui.Transparent
+			}
+			btn.BorderWidth(0, 0, 1, 0).BorderColor(borderCol)
 		}
-		btn.BorderWidth(0, 0, 1, 0).BorderColor(borderCol)
 		btn.Background(HoverColor(btn, "v4-row-bg", mygoui.Transparent, tok.Hover))
 		ButtonPress(btn, 0.995)
 		btn.Children(func() { buildContent(hovered) })
@@ -160,7 +170,10 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 	}
 
 	row := mygoui.Row(ctx).FillWidth().MinHeight(minH).Padding(padV, Sp1).Gap(Sp3).
-		AlignItems(mygoui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
+		AlignItems(mygoui.Center)
+	if !opts.NoBorder {
+		row.BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
+	}
 	if opts.Label != "" {
 		row.Label(opts.Label)
 	}

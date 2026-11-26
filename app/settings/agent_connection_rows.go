@@ -2,6 +2,7 @@ package settings
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -9,6 +10,118 @@ import (
 	"github.com/zwhu/memlane/internal/controlplane"
 	kitui "github.com/zwhu/memlane/kit/ui"
 )
+
+func compactHomePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if path == home {
+			return "~"
+		}
+		if strings.HasPrefix(path, home+"/") {
+			return "~" + path[len(home):]
+		}
+	}
+	return path
+}
+
+func agentConnectionBadgeTone(row AgentConnection, pending *generationUIOperation, busy, repair, review bool) string {
+	if pending != nil {
+		if busy {
+			return "accent"
+		}
+		return "warn"
+	}
+	if repair {
+		return "warn"
+	}
+	if captureVerifiedHealthy(row) {
+		return "ok"
+	}
+	if (row.Capture != nil && row.Capture.State == "check_failed") || row.Status == "check_failed" {
+		return "danger"
+	}
+	if review {
+		return "warn"
+	}
+	switch row.Status {
+	case "environment_receipt_unconfirmed", "verification_environment", "environment_ambiguous",
+		"environment_missing", "environment_unavailable", "staging_not_complete":
+		return "warn"
+	}
+	if row.Capture != nil {
+		switch row.Capture.State {
+		case "needs_permission", "project_disabled", "project_write_denied", "project_pending":
+			return "warn"
+		}
+	}
+	return ""
+}
+
+func agentConnectionDesc(row AgentConnection, pending *generationUIOperation, repair, review bool) (string, bool) {
+	compactProfile := compactHomePath(row.Profile)
+	if row.Capture != nil && row.Capture.LastSavedAt > 0 {
+		saved := "最近采集：" + formatUnixTimeLocal(row.Capture.LastSavedAt)
+		if compactProfile != "" {
+			return compactProfile + " · " + saved, false
+		}
+		return saved, false
+	}
+	if compactProfile != "" {
+		return compactProfile, true
+	}
+	if pending != nil {
+		return "上一次连接操作结果尚未确认", false
+	}
+	if repair {
+		return "检测到 Hooks 配置异常，修复后可恢复采集", false
+	}
+	if review {
+		return "连接配置存在变更，请核对当前状态", false
+	}
+	if row.Status == "registered" {
+		if !row.Detected {
+			return "已在 Memlane 登记 · 未检测到本机程序", false
+		}
+		switch row.Kind {
+		case "codex", "pi", "traex", "antigravity":
+			return "已在 Memlane 登记 · 支持自动采集、召回与提炼", false
+		default:
+			return "已在 Memlane 登记 · 支持自动采集与记忆召回", false
+		}
+	}
+	if captureVerifiedHealthy(row) {
+		return "已验证自动采集与记忆召回", false
+	}
+	if captureConnection(row) {
+		if row.Capture != nil {
+			switch row.Capture.State {
+			case "needs_permission":
+				return "允许后将自动采集已授权项目的会话", false
+			case "deferred":
+				return "可随时开启自动采集", false
+			case "check_failed":
+				return "暂时无法读取采集状态，请重新检测", false
+			case "awaiting_generation_activation":
+				return "启用记忆提炼后将自动验证保存", false
+			case "project_disabled", "project_write_denied", "project_pending":
+				return "请检查最近会话所属项目的采集与权限设置", false
+			}
+		}
+		return "新建会话发送消息后将自动验证采集", false
+	}
+	switch row.Status {
+	case "prepared":
+		return "已生成接入预览，确认后写入配置", false
+	case "integration_pending":
+		return "当前版本暂未开放该宿主接入", false
+	}
+	if !row.Detected {
+		return "未检测到本机程序", false
+	}
+	return "检测到本机程序，连接后可自动采集与召回", false
+}
 
 func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 	tok := a.tokens()
@@ -32,13 +145,6 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 		version = "—"
 	}
 	status := connectionStatus(row)
-	color := tok.Text3
-	if captureVerifiedHealthy(row) {
-		color = tok.OK
-	}
-	if repair {
-		color = tok.Warning
-	}
 	if pending != nil {
 		status = "连接结果待确认"
 		if pending.Kind == "connection_allow_capture" || pending.Kind == "connection_defer_capture" {
@@ -51,18 +157,20 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			}
 		}
 	}
+	badgeTone := agentConnectionBadgeTone(row, pending, s.Busy, repair, review)
+	desc, descMono := agentConnectionDesc(row, pending, repair, review)
+	savedTip := captureSavedTip(row)
 	ui.Column(c.Key("agent-connection-" + row.ID)).FillWidth().Gap(0).Children(func() {
 		kitui.Row(c, tok, kitui.RowOptions{
-			Key:   "agent-row-" + row.ID,
-			Title: name,
+			Key:      "agent-row-" + row.ID,
+			Title:    name,
+			Desc:     desc,
+			DescMono: descMono,
 			TitleExtra: func() {
 				ui.Text(c, version).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).Label(name + " 版本：" + version).SingleLine()
 				if slices.Contains(s.PinnedAgentKinds, row.Kind) {
 					kitui.Badge(c, tok, "已选", "")
 				}
-			},
-			DescExtra: func() {
-				kitui.Text(c, tok, status, kitui.RoleMeta).TextColor(color).Tooltip(captureSavedTip(row))
 			},
 			Leading: func() {
 				ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
@@ -70,6 +178,10 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 				})
 			},
 			Control: func() {
+				badge := kitui.Badge(c, tok, status, badgeTone)
+				if savedTip != "" {
+					badge.Tooltip(savedTip)
+				}
 				if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
 					label := "配置目录"
 					if s.EnvironmentOpen[row.ID] {

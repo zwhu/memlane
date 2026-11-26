@@ -239,7 +239,7 @@ func (a *Controller) emptyProcessingCLIGuide(c *ui.Context) {
 	} else if a.initialSetup {
 		desc += "也可以点击「暂不配置提炼，先进入 Memlane」，稍后再配置。"
 	}
-	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Padding(sp3).Gap(sp2).
+	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Margin(sp2, 0, sp2, 0).Padding(sp3).Gap(sp2).
 		Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
 		kitui.Text(c, tok, heading, kitui.RoleHeading)
 		kitui.Text(c, tok, desc, kitui.RoleMeta).LineHeight(1.5)

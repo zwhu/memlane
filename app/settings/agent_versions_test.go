@@ -176,3 +176,15 @@ func TestTraeVersionReadsBundleWithoutLaunchingExecutable(t *testing.T) {
 		t.Fatalf("TRAE executable was launched: %v", err)
 	}
 }
+
+func TestLoadAgentVersionsPreservesServerHostVersion(t *testing.T) {
+	dir := t.TempDir()
+	agy := filepath.Join(dir, "agy")
+	writeWarmDesktopScript(t, agy, `[ "$1" = --version ] || exit 7`+"\n"+`printf '1.5.18\n'`)
+	t.Setenv("PATH", dir)
+	rows := []AgentConnection{{Kind: "antigravity", Detected: true, HostVersion: "1.150.1.1579"}}
+	loadAgentVersions(context.Background(), Config{}, rows)
+	if rows[0].HostVersion != "1.150.1.1579" {
+		t.Fatalf("expected server HostVersion 1.150.1.1579 to be preserved, got %q", rows[0].HostVersion)
+	}
+}

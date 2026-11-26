@@ -277,6 +277,63 @@ func TestHostExecutableChangedShowsClearReviewNoticeAndStatus(t *testing.T) {
 	}
 }
 
+func TestAgentConnectionRowRegisteredAndHealthyShowBalancedBadges(t *testing.T) {
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.SettingsSection = "Agent 与模型"
+	a.integrations = IntegrationState{
+		Loaded: true,
+		Connections: ConnectionsDirectory{Connections: []AgentConnection{
+			{ID: "codex", Kind: "codex", Detected: true, Status: "registered", HostVersion: "0.114.0"},
+			{ID: "antigravity", Kind: "antigravity", Detected: true, Status: "registered", HostVersion: "1.150.1.1579"},
+			{ID: "pi", Kind: "pi", Detected: true, Status: "configured_pending_new_session", HostVersion: "0.84.1",
+				Capture: &AgentCaptureState{State: "healthy", LastSavedAt: 1794931200}},
+		}},
+	}
+	tt := ui.NewTester(a.View, 1200, 820)
+	for _, want := range []string{"Codex", "0.114.0", "已登记", "已在 Memlane 登记", "Gemini App", "1.150.1.1579", "自动采集正常", "最近采集"} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing expected connection row text %q in %v", want, tt.Texts())
+		}
+	}
+	titleBox, tOK := tt.Find("Codex")
+	badgeBox, bOK := tt.Find("已登记")
+	if !tOK || !bOK || badgeBox.X <= titleBox.X+200 {
+		t.Fatalf("expected registered status badge in right control column: title=%+v badge=%+v", titleBox, badgeBox)
+	}
+}
+
+func TestGenerationSourceEmptyGuideHasSpacingWithoutOverlap(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		a := settingsFixture()
+		if dark {
+			a.appearance = "dark"
+		} else {
+			a.appearance = "light"
+		}
+		applyAppearance(dark)
+		t.Cleanup(func() { applyAppearance(false) })
+		a.page = "设置"
+		a.access.SettingsSection = "记忆提炼"
+		a.integrations = IntegrationState{
+			Loaded:           true,
+			GenerationLoaded: true,
+			Editor:           true,
+			DraftMode:        "agent_bridge",
+			Generation:       GenerationDirectory{},
+		}
+		tt := ui.NewTester(a.View, 1200, 820)
+		titleBox, tOK := tt.Find("提炼来源")
+		guideBox, gOK := tt.Find("未检测到可用于记忆提炼的本地 CLI 工具")
+		if !tOK || !gOK {
+			t.Fatalf("dark=%v missing source row or empty guide: %v", dark, tt.Texts())
+		}
+		if guideBox.Y <= titleBox.Y+titleBox.H+20 {
+			t.Fatalf("dark=%v empty guide too close to source row: title=%+v guide=%+v", dark, titleBox, guideBox)
+		}
+	}
+}
+
 func TestAgentRefreshUsesForceAndKeepsLayoutStableWhileSpinning(t *testing.T) {
 	root := t.TempDir()
 	token := filepath.Join(root, "manager.token")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/api"
 )
 
 func TestProjectQueueUsesOfficialPendingDocumentsAndPreservesSummaryErrors(t *testing.T) {
@@ -282,4 +283,56 @@ func TestProjectInboxShowsFailureAndRetriesThroughGateway(t *testing.T) {
 		q.InboxRetryError != "" || tt.HasText(reason) || tt.HasText("一键重试") {
 		t.Fatalf("successful retry did not refresh the failure row: pending=%d failed=%d texts=%v", q.InboxPending, q.InboxFailed, tt.Texts())
 	}
+}
+
+func TestProjectQueueActiveInboxTightensNextIntervalAndVisibleStatusRefreshesOpenProject(t *testing.T) {
+	a := newTestHost(Config{}, nil)
+	p := AccessProject{ID: "p-active", Name: "Active", Dataset: "ds-active"}
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.access.Directory.Projects = []AccessProject{
+		{ID: "p-0", Dataset: "ds-0"},
+		{ID: "p-1", Dataset: "ds-1"},
+		{ID: "p-2", Dataset: "ds-2"},
+		{ID: "p-3", Dataset: "ds-3"},
+		p,
+	}
+	a.access.OpenProject = p.ID
+	a.client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})}
+	updates := make(chan func(), 16)
+	a.dispatch = func(fn func()) { updates <- fn }
+
+	// Idle queue gets 30s Next; transitioning 0 -> >0 in applyProjectQueueResult tightens Next to <= 5s.
+	q := a.ProjectQueue(p)
+	q.Loaded = true
+	q.Next = time.Now().Add(30 * time.Second)
+	q.Loading = true
+	q.Request = 1
+	meta := projectQueueApplyMeta{request: 1, baseIdentity: a.cachedBaseReadingIdentity()}
+	snap := projectQueueSnapshot{gateway: true, inbox: &api.ProjectView{ID: p.ID, InboxPending: 2}}
+	a.applyProjectQueueResult(q, p, meta, snap, reconcileProjectQueueState(p, snap))
+	if q.InboxPending != 2 {
+		t.Fatalf("expected InboxPending=2, got %d", q.InboxPending)
+	}
+	if until := time.Until(q.Next); until <= 0 || until > projectQueueActiveInterval+time.Second {
+		t.Fatalf("applyProjectQueueResult did not tighten Next for pending inbox: %v", until)
+	}
+
+	// Mark the first 4 projects fresh; only the open project is due.
+	for i := 0; i < 4; i++ {
+		other := a.ProjectQueue(a.access.Directory.Projects[i])
+		other.Loaded = true
+		other.Next = time.Now().Add(time.Hour)
+	}
+	q.Next = time.Now().Add(-time.Second)
+	a.RefreshVisibleStatus(time.Now())
+	if !q.Loading {
+		t.Fatal("RefreshVisibleStatus did not refresh the due currently-open project queue")
+	}
+	if until := time.Until(q.Next); until <= 0 || until > projectQueueActiveInterval+time.Second {
+		t.Fatalf("LoadProjectQueue with InboxPending>0 did not use 5s interval: %v", until)
+	}
+	drainReading(t, updates, func() bool { return !q.Loading })
 }

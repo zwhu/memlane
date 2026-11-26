@@ -386,14 +386,55 @@ func (a *Controller) EnableServicePolling(enabled bool) { a.monitor.PollEnabled 
 
 // RefreshVisibleStatus advances time-based reads from the window's refresh cadence.
 func (a *Controller) RefreshVisibleStatus(now time.Time) {
-	if a.windowIsHidden() || a.initialSetup || a.UseFirstGenerationView() {
+	if a.windowIsHidden() || a.windowIsInactive() || a.initialSetup || a.UseFirstGenerationView() {
 		return
 	}
 	if !now.Before(a.access.Next) {
 		a.RefreshProjectDirectory()
 	}
+	a.refreshCurrentProjectQueueIfDue(now)
 	a.RefreshSidebarQueueIfDue(now)
 	a.RefreshServiceMonitorIfDue(now)
+}
+
+func (a *Controller) refreshCurrentProjectQueueIfDue(now time.Time) {
+	if a.windowIsInactive() || a.windowIsHidden() || a.coldStartOverviewPending() || !a.canDispatch() || !a.access.Loaded || a.access.Busy {
+		return
+	}
+	p, ok := a.activeAccessProject()
+	if !ok {
+		return
+	}
+	q := a.ProjectQueue(p)
+	if !q.Loading && !a.access.Busy && (!q.Loaded || !now.Before(q.Next)) {
+		a.LoadProjectQueue(q, p)
+	}
+}
+
+func (a *Controller) activeAccessProject() (AccessProject, bool) {
+	targetID := a.access.OpenProject
+	targetDataset := ""
+	if targetID == "" {
+		if p, ok := a.currentProject(); ok {
+			targetID, targetDataset = p.ID, p.Dataset
+		}
+	}
+	if targetID == "" && targetDataset == "" {
+		return AccessProject{}, false
+	}
+	for _, p := range a.access.Directory.Projects {
+		if targetID != "" && p.ID == targetID {
+			return p, true
+		}
+	}
+	if targetDataset != "" {
+		for _, p := range a.access.Directory.Projects {
+			if p.Dataset == targetDataset {
+				return p, true
+			}
+		}
+	}
+	return AccessProject{}, false
 }
 
 func (a *Controller) RefreshTrayStatus(now time.Time) {

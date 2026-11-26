@@ -88,7 +88,9 @@ func (a *Controller) RefreshIntegrations() {
 					s.HostVersions = map[string]string{}
 				}
 				for _, row := range connections.Connections {
-					s.HostVersions[row.Kind] = row.HostVersion
+					if row.HostVersion != "" {
+						s.HostVersions[row.Kind] = row.HostVersion
+					}
 				}
 			}
 			if genErr == nil || connectionsLoaded {

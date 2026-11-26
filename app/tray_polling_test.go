@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -190,4 +191,111 @@ func TestTrayClickRefreshesDueQueuesWithBoundedConcurrency(t *testing.T) {
 		t.Fatalf("tray did not continue from the next due project: fanout=%d", loading())
 	}
 	drainReading(t, updates, func() bool { return loading() == 0 })
+}
+
+func TestForegroundPollingRefreshesActiveInboxAndStopsCleanly(t *testing.T) {
+	setForegroundPollInterval(15 * time.Millisecond)
+	t.Cleanup(func() { setForegroundPollInterval(0) })
+
+	a := settingsFixture()
+	a.page = "设置"
+	a.access.OpenProject = "p"
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.monitor.PollEnabled = false
+
+	var projectCalls atomic.Int32
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			fmt.Fprint(w, `{"reading_contract":"catalog-cursor-v1","features":{"async_capture":true}}`)
+		case "/api/reading-state":
+			fmt.Fprint(w, `{"projects":[{"project_id":"p","dataset_id":"ds","unread_count":1,"state_rev":1}]}`)
+		case "/api/projects/p":
+			n := projectCalls.Add(1)
+			pending := 2
+			if n >= 2 {
+				pending = 1
+			}
+			fmt.Fprintf(w, `{"id":"p","dataset_id":"ds","inbox_pending":%d,"inbox_failed":0}`, pending)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	a.Config.ProjectControl = readingControlConfig(t, "http://127.0.0.1:16531")
+	a.Client.Config = a.Config
+	a.Client.HTTP = &http.Client{Transport: transport}
+	a.syncSettingsTransport()
+
+	p := a.access.Directory.Projects[0]
+	q := a.projectQueueStateFor(p)
+	q.Loaded = true
+	q.InboxPending = 2
+	q.Next = time.Now().Add(-time.Second)
+
+	updates := make(chan func(), 32)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(a.StopForegroundPolling)
+
+	a.StartForegroundPolling()
+	stop := a.foregroundPoll.stop
+	done := a.foregroundPoll.done
+	a.StartForegroundPolling()
+	if stop != a.foregroundPoll.stop {
+		t.Fatal("starting foreground polling twice replaced the active poller")
+	}
+
+	// Visible & active: next tick must refresh the due project queue and keep 5s cadence.
+	receiveTrayUpdate(t, updates)()
+	drainReading(t, updates, func() bool { return !q.Loading && projectCalls.Load() >= 1 })
+	if got := time.Until(q.Next); got <= 0 || got > 6*time.Second {
+		t.Fatalf("active inbox queue Next=%v, want <= 5s cadence", got)
+	}
+
+	// Hidden window: completely silent, zero UI wakeups and zero queue requests.
+	a.SetWindowHidden(true)
+	q.Next = time.Now().Add(-time.Second)
+	beforeHidden := projectCalls.Load()
+	// Drain any already-enqueued tick before measuring silence.
+	for len(updates) > 0 {
+		(<-updates)()
+	}
+	select {
+	case fn := <-updates:
+		fn()
+		t.Fatalf("hidden window woke UI thread for foreground polling")
+	case <-time.After(45 * time.Millisecond):
+	}
+	if projectCalls.Load() != beforeHidden {
+		t.Fatalf("hidden window triggered project queue refresh: %d -> %d", beforeHidden, projectCalls.Load())
+	}
+
+	// Visible but inactive (blurred): also completely silent.
+	a.SetWindowHidden(false)
+	a.SetWindowActive(false)
+	// Let the unhide directory revalidation finish before asserting silence.
+	drainReading(t, updates, func() bool { return !a.access.Loading })
+	q.Next = time.Now().Add(-time.Second)
+	for len(updates) > 0 {
+		(<-updates)()
+	}
+	beforeInactive := projectCalls.Load()
+	select {
+	case fn := <-updates:
+		fn()
+		t.Fatalf("inactive window woke UI thread for foreground polling")
+	case <-time.After(45 * time.Millisecond):
+	}
+	if projectCalls.Load() != beforeInactive {
+		t.Fatalf("inactive window triggered project queue refresh: %d -> %d", beforeInactive, projectCalls.Load())
+	}
+
+	// StopForegroundPolling must be idempotent and exit the goroutine cleanly.
+	a.StopForegroundPolling()
+	a.StopForegroundPolling()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("foreground poller goroutine did not exit after StopForegroundPolling")
+	}
 }

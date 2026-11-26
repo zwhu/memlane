@@ -38,10 +38,12 @@ func (a *App) SetWindowActive(active bool) {
 	if !active {
 		a.windowActivation++
 		a.windowInactive = true
+		a.foregroundSilent.Store(true)
 		return
 	}
 	wasInactive, wasHidden := a.windowInactive, a.windowHidden
 	a.windowInactive, a.windowHidden = false, false
+	a.foregroundSilent.Store(false)
 	a.refreshWindowProjectDirectory(wasHidden)
 	update := a.Update
 	if (!wasInactive && !wasHidden) || update == nil {
@@ -72,6 +74,7 @@ func (a *App) SetWindowHidden(hidden bool) {
 	a.windowActivation++
 	a.windowHidden = hidden
 	a.windowInactive = hidden
+	a.foregroundSilent.Store(hidden)
 	if hidden {
 		return
 	}

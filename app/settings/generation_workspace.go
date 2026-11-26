@@ -244,10 +244,11 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 	if s.DraftMode == "provider" {
 		selected = 1
 	}
-	sourceDesc := "让 Codex、pi、TRAE CLI、Gemini 等本机已登录 CLI 提炼记忆，无需填写 API Key，也不依赖先完成采集接入"
+	sourceDesc := "使用本机已登录的 Codex、pi、TRAE CLI、Gemini 等 CLI 提炼记忆，无需 API Key"
 	if s.DraftMode == "provider" {
 		sourceDesc = "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用"
 	}
+	showingEmptyGuide := s.DraftMode == "agent_bridge" && !s.hasAvailableProcessingBridge()
 
 	kitui.Group(c, tok, title, desc, nil, func() {
 		if enable && s.Handoff.Handoff != nil {
@@ -256,9 +257,10 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 			})
 		}
 		kitui.Row(c, tok, kitui.RowOptions{
-			Key:   "generation-source-row",
-			Title: "提炼来源",
-			Desc:  sourceDesc,
+			Key:      "generation-source-row",
+			Title:    "提炼来源",
+			Desc:     sourceDesc,
+			NoBorder: showingEmptyGuide,
 			Control: func() {
 				kitui.Segmented(c, tok, "generation-source", "提炼来源", &selected, []string{"用本机 Agent CLI 提炼", "直接调用模型 API"}, func() {
 					if s.Busy {

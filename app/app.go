@@ -121,6 +121,8 @@ type App struct {
 	monitor                 *settings.ServiceMonitorState
 	servicePopover          servicePopoverState
 	trayPoll                *trayBackgroundPoller
+	foregroundPoll          *foregroundPoller
+	foregroundSilent        atomic.Bool
 	settingsController      *settings.Controller
 	settingsCodeBusy        bool
 	trayCache               trayFlyoutCache
