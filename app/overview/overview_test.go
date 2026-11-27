@@ -189,6 +189,9 @@ func TestDayClickPaginationAndInvalidCursor(t *testing.T) {
 	applyNext(t, queued)
 	tester := ui.NewTester(c.RenderHome, 1040, 820)
 	tester.Advance(time.Second)
+	// Paint-only repose() settles ColdStartPageEnter (Y: +6 -> 0) without rebuilding
+	// tester labels; rebuild once so Find() reads settled hit coordinates on Saturdays.
+	tester.Frame()
 	if err := tester.Click(day + " · 新增 390 条记忆"); err != nil {
 		t.Fatal(err)
 	}
