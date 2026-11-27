@@ -58,12 +58,17 @@ type Supervisor struct {
 	canonicalCfg  string
 	phase         string
 	state         ServiceState
-	order         []*ManagedProcess
-	byRole        map[string]*ManagedProcess
-	descendants   map[int]string
-	monitorCancel context.CancelFunc
-	startDone     chan struct{}
-	stopped       bool
+	order            []*ManagedProcess
+	byRole           map[string]*ManagedProcess
+	failedSpecs      map[string]ServiceStatus
+	descendants      map[int]string
+	monitorCancel    context.CancelFunc
+	asyncCancel      context.CancelFunc
+	onEvent          func(ServiceStatus)
+	startDone        chan struct{}
+	ownerOnlyStarted bool
+	servicesStarted  bool
+	stopped          bool
 
 	wg       sync.WaitGroup
 	exitedCh chan ServiceStatus
@@ -98,6 +103,7 @@ func New(cfg Config) *Supervisor {
 		cfg:         cfg,
 		state:       StatePending,
 		byRole:      make(map[string]*ManagedProcess),
+		failedSpecs: make(map[string]ServiceStatus),
 		descendants: make(map[int]string),
 		exitedCh:    make(chan ServiceStatus, 16),
 	}
@@ -160,13 +166,13 @@ func (s *Supervisor) buildOwnerRecord(phase string, procs []*ManagedProcess) Own
 }
 
 func (s *Supervisor) refreshDescendants(ctx context.Context, procs []*ManagedProcess, persistOwner bool) {
-	roots := make([]int, 0, len(procs))
+	liveProcs := make([]*ManagedProcess, 0, len(procs))
 	for _, proc := range procs {
-		if pid := proc.PID(); pid > 1 {
-			roots = append(roots, pid)
+		if !proc.Exited() && proc.PID() > 1 {
+			liveProcs = append(liveProcs, proc)
 		}
 	}
-	if len(roots) == 0 {
+	if len(liveProcs) == 0 {
 		return
 	}
 	if ctx == nil {
@@ -176,6 +182,24 @@ func (s *Supervisor) refreshDescendants(ctx context.Context, procs []*ManagedPro
 	table, err := ProcessTable(probeCtx)
 	cancel()
 	if err != nil {
+		return
+	}
+	roots := make([]int, 0, len(liveProcs))
+	for _, proc := range liveProcs {
+		if proc.Exited() {
+			continue
+		}
+		pid := proc.PID()
+		info, ok := table[pid]
+		if !ok {
+			continue
+		}
+		if expected := proc.StartIdentity(); expected != "" && info.Started != expected {
+			continue
+		}
+		roots = append(roots, pid)
+	}
+	if len(roots) == 0 {
 		return
 	}
 	s.mu.Lock()
@@ -307,6 +331,425 @@ func validateSupervisorInputs(cfg Config, specs []ServiceSpec) error {
 	return nil
 }
 
+// StartOwner synchronously acquires the canonical .service-owner flock (unless
+// Config.ExternalOwner is set) and persists the initial "starting" owner record
+// without launching child processes yet. Call StartServicesAsync afterwards to
+// launch and monitor services asynchronously while keeping the owner alive.
+func (s *Supervisor) StartOwner(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateSupervisorInputs(s.cfg, nil); err != nil {
+		return err
+	}
+	canonicalConfig, err := canonicalPathMaybeMissing(s.cfg.ConfigPath)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("supervisor stopped during start")
+	}
+	if s.ownerOnlyStarted || s.servicesStarted || s.owner != nil || len(s.order) > 0 || s.state == StateStarting || s.state == StateReady {
+		s.mu.Unlock()
+		return errors.New("supervisor already active")
+	}
+	s.state = StateStarting
+	s.stopped = false
+	s.canonicalCfg = canonicalConfig
+	s.mu.Unlock()
+
+	resetFailedPreLock := func() {
+		s.mu.Lock()
+		s.state = StateStopped
+		s.stopped = true
+		s.mu.Unlock()
+	}
+
+	var lock *OwnerLock
+	var ownerPID int
+	var ownerStarted string
+	if !s.cfg.ExternalOwner {
+		lock, err = s.cfg.LockConfig.AcquireOwner(s.cfg.StoreRoot)
+		if err != nil {
+			resetFailedPreLock()
+			return err
+		}
+		ownerPID = os.Getpid()
+		ownerStarted, err = ProcessStartTime(ctx, ownerPID)
+		if err != nil {
+			_ = lock.Release()
+			resetFailedPreLock()
+			return err
+		}
+	}
+
+	s.stopMu.Lock()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		if lock != nil {
+			_ = lock.Release()
+		}
+		s.stopMu.Unlock()
+		return errors.New("supervisor stopped during start")
+	}
+	s.owner = lock
+	s.ownerPID = ownerPID
+	s.ownerStarted = ownerStarted
+	s.phase = "starting"
+	s.order = nil
+	s.byRole = make(map[string]*ManagedProcess)
+	s.failedSpecs = make(map[string]ServiceStatus)
+	s.descendants = make(map[int]string)
+	var initialRec OwnerRecord
+	if lock != nil {
+		initialRec = s.buildOwnerRecord("starting", nil)
+	}
+	s.mu.Unlock()
+
+	if lock != nil {
+		if err := lock.WriteRecord(initialRec); err != nil {
+			_ = lock.RemoveRecord()
+			_ = lock.Release()
+			s.mu.Lock()
+			s.owner = nil
+			s.ownerPID = 0
+			s.order = nil
+			s.byRole = make(map[string]*ManagedProcess)
+			s.failedSpecs = make(map[string]ServiceStatus)
+			s.state = StateStopped
+			s.stopped = true
+			s.mu.Unlock()
+			s.stopMu.Unlock()
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.ownerOnlyStarted = true
+	s.mu.Unlock()
+	s.stopMu.Unlock()
+	return nil
+}
+
+// UpdateOwnerMetadata updates the owner receipt metadata after StartOwner has
+// acquired the store lock (for example once runtime resources are staged).
+func (s *Supervisor) UpdateOwnerMetadata(metadata json.RawMessage) error {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return errors.New("supervisor stopped")
+	}
+	s.cfg.OwnerMetadata = slices.Clone(metadata)
+	lock := s.owner
+	var rec OwnerRecord
+	if lock != nil {
+		rec = s.buildOwnerRecord(s.phase, s.order)
+	}
+	s.mu.Unlock()
+
+	if lock != nil {
+		return lock.WriteRecord(rec)
+	}
+	return nil
+}
+
+// StartServicesAsync launches specs in the background after StartOwner has
+// acquired the owner lock. Child startup failure, readiness timeout, or crash
+// never triggers an automatic restart and never releases the owner lock so the
+// gateway can stay alive; Stop(ctx) cleanly terminates any in-flight or active
+// child process groups and tracked descendants.
+func (s *Supervisor) StartServicesAsync(ctx context.Context, specs []ServiceSpec, onEvent func(ServiceStatus)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateSupervisorInputs(s.cfg, specs); err != nil {
+		return err
+	}
+
+	s.stopMu.Lock()
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		s.stopMu.Unlock()
+		return errors.New("supervisor stopped during start")
+	}
+	if !s.ownerOnlyStarted {
+		s.mu.Unlock()
+		s.stopMu.Unlock()
+		return errors.New("StartServicesAsync requires prior StartOwner")
+	}
+	if s.servicesStarted || s.asyncCancel != nil || s.monitorCancel != nil {
+		s.mu.Unlock()
+		s.stopMu.Unlock()
+		return errors.New("supervisor services already started")
+	}
+	if !s.cfg.ExternalOwner && s.owner == nil {
+		s.mu.Unlock()
+		s.stopMu.Unlock()
+		return errors.New("supervisor owner lock not acquired")
+	}
+	s.onEvent = onEvent
+	lock := s.owner
+
+	if len(specs) == 0 {
+		var readyRec OwnerRecord
+		if lock != nil {
+			readyRec = s.buildOwnerRecord(s.cfg.PhaseOnReady, s.order)
+		}
+		s.mu.Unlock()
+		if lock != nil {
+			if err := lock.WriteRecord(readyRec); err != nil {
+				s.stopMu.Unlock()
+				return err
+			}
+		}
+		monitorCtx, monitorCancel := context.WithCancel(context.Background())
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			monitorCancel()
+			s.stopMu.Unlock()
+			return errors.New("supervisor stopped during start")
+		}
+		s.servicesStarted = true
+		s.phase = s.cfg.PhaseOnReady
+		s.state = StateReady
+		s.monitorCancel = monitorCancel
+		s.wg.Add(1)
+		s.mu.Unlock()
+		s.stopMu.Unlock()
+		go s.runMonitor(monitorCtx)
+		return nil
+	}
+
+	asyncCtx, asyncCancel := context.WithCancel(ctx)
+	s.servicesStarted = true
+	s.asyncCancel = asyncCancel
+	startDone := make(chan struct{})
+	s.startDone = startDone
+	s.wg.Add(1)
+	s.mu.Unlock()
+	s.stopMu.Unlock()
+
+	specCopies := slices.Clone(specs)
+	go s.runAsyncStartup(asyncCtx, specCopies, startDone)
+	return nil
+}
+
+func (s *Supervisor) emitEvent(status ServiceStatus) {
+	s.mu.Lock()
+	cb := s.onEvent
+	stopped := s.stopped
+	s.mu.Unlock()
+	if !stopped && cb != nil {
+		cb(status)
+	}
+}
+
+func (s *Supervisor) recordFailedSpec(spec ServiceSpec, err error) ServiceStatus {
+	now := time.Now().UTC()
+	msg := ""
+	if err != nil {
+		msg = RedactLogLine(err.Error())
+	}
+	status := ServiceStatus{
+		Role:      spec.Role,
+		State:     StateExited,
+		StartedAt: now,
+		ExitedAt:  &now,
+		LastError: msg,
+	}
+	s.mu.Lock()
+	if s.failedSpecs == nil {
+		s.failedSpecs = make(map[string]ServiceStatus)
+	}
+	s.failedSpecs[spec.Role] = status
+	if !s.stopped {
+		s.state = StateExited
+	}
+	s.mu.Unlock()
+	return status
+}
+
+func (s *Supervisor) runAsyncStartup(ctx context.Context, specs []ServiceSpec, startDone chan struct{}) {
+	defer func() {
+		s.mu.Lock()
+		if s.startDone == startDone {
+			s.startDone = nil
+		}
+		s.mu.Unlock()
+		close(startDone)
+		s.wg.Done()
+	}()
+
+	allReady := true
+	anyStarted := false
+	for _, rawSpec := range specs {
+		if ctx.Err() != nil {
+			return
+		}
+		s.mu.Lock()
+		stopped := s.stopped
+		s.mu.Unlock()
+		if stopped {
+			return
+		}
+
+		spec := rawSpec
+		if spec.LogRedactor == nil {
+			spec.LogRedactor = s.cfg.LogRedactor
+		}
+		if spec.LogLimitBytes <= 0 {
+			spec.LogLimitBytes = s.cfg.LogLimitBytes
+		}
+		if spec.BindURL != "" {
+			if err := CheckPortFree(spec.BindURL); err != nil {
+				allReady = false
+				st := s.recordFailedSpec(spec, fmt.Errorf("service %s bind check failed: %w", spec.Role, err))
+				s.emitEvent(st)
+				continue
+			}
+		}
+		proc, err := StartManagedProcess(spec, s.handleUnexpectedExit)
+		if err != nil {
+			allReady = false
+			st := s.recordFailedSpec(spec, fmt.Errorf("start %s: %w", spec.Role, err))
+			s.emitEvent(st)
+			continue
+		}
+
+		s.mu.Lock()
+		delete(s.failedSpecs, spec.Role)
+		s.order = append(s.order, proc)
+		s.byRole[spec.Role] = proc
+		if s.owner == nil && s.ownerPID == 0 {
+			s.ownerPID = proc.PID()
+		}
+		if s.stopped || ctx.Err() != nil {
+			// Register proc before returning so Stop(ctx) tears down the
+			// process group and tracked descendants and evaluates allStopped.
+			s.mu.Unlock()
+			return
+		}
+		lock := s.owner
+		var rec OwnerRecord
+		if lock != nil {
+			rec = s.buildOwnerRecord(s.phase, s.order)
+		}
+		s.mu.Unlock()
+		if lock != nil {
+			if writeErr := lock.WriteRecord(rec); writeErr != nil {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				stopErr := proc.StopGroup(stopCtx, proc.Spec().StopGrace, proc.Spec().KillWait)
+				stopCancel()
+				if stopErr == nil {
+					s.mu.Lock()
+					for i, p := range s.order {
+						if p == proc {
+							s.order = append(s.order[:i], s.order[i+1:]...)
+							break
+						}
+					}
+					if s.byRole[spec.Role] == proc {
+						delete(s.byRole, spec.Role)
+					}
+					s.mu.Unlock()
+				}
+				allReady = false
+				st := s.recordFailedSpec(spec, fmt.Errorf("write owner record for %s: %w", spec.Role, writeErr))
+				s.emitEvent(st)
+				continue
+			}
+		}
+
+		anyStarted = true
+		s.emitEvent(proc.Status())
+
+		var waitErr error
+		if spec.ReadyCheck != nil {
+			waitErr = WaitReady(ctx, proc, spec.ReadyCheck, spec.ReadyTimeout, s.cfg.ReadyPollInterval, spec.AllowCleanExit)
+		} else if spec.HealthURL != "" {
+			waitErr = WaitHTTPReady(ctx, proc, spec.HealthURL, spec.HealthHeaders, spec.ReadyTimeout)
+		}
+		if waitErr != nil {
+			s.mu.Lock()
+			stopped := s.stopped
+			s.mu.Unlock()
+			if stopped || ctx.Err() != nil {
+				return
+			}
+			allReady = false
+			if proc.Exited() {
+				s.mu.Lock()
+				if !s.stopped {
+					s.state = StateExited
+				}
+				s.mu.Unlock()
+				s.emitEvent(proc.Status())
+			} else {
+				proc.SetLastError(RedactLogLine(waitErr.Error()))
+				proc.SetHealthState(StateDegraded)
+				s.mu.Lock()
+				if !s.stopped && s.state != StateExited {
+					s.state = StateDegraded
+				}
+				s.mu.Unlock()
+				s.emitEvent(proc.Status())
+			}
+			continue
+		}
+		proc.SetHealthState(StateReady)
+		s.emitEvent(proc.Status())
+	}
+
+	s.mu.Lock()
+	if s.stopped || ctx.Err() != nil {
+		s.mu.Unlock()
+		return
+	}
+	var readyRec OwnerRecord
+	lock := s.owner
+	if allReady && lock != nil {
+		readyRec = s.buildOwnerRecord(s.cfg.PhaseOnReady, s.order)
+	}
+	s.mu.Unlock()
+
+	readyPersisted := allReady
+	if allReady && lock != nil {
+		if writeErr := lock.WriteRecord(readyRec); writeErr != nil {
+			readyPersisted = false
+		}
+	}
+
+	s.mu.Lock()
+	if s.stopped || ctx.Err() != nil {
+		s.mu.Unlock()
+		return
+	}
+	if readyPersisted {
+		s.phase = s.cfg.PhaseOnReady
+		s.state = StateReady
+	}
+	var monitorCtx context.Context
+	if anyStarted && s.monitorCancel == nil {
+		var cancel context.CancelFunc
+		monitorCtx, cancel = context.WithCancel(context.Background())
+		s.monitorCancel = cancel
+		s.wg.Add(1)
+	}
+	s.mu.Unlock()
+
+	if monitorCtx != nil {
+		go s.runMonitor(monitorCtx)
+	}
+}
+
 // Start acquires the canonical owner lock (unless Config.ExternalOwner is set),
 // launches each spec sequentially, writes ownership
 // metadata when owning the lock, and begins background monitoring.
@@ -324,10 +767,11 @@ func (s *Supervisor) Start(ctx context.Context, specs []ServiceSpec) error {
 		s.mu.Unlock()
 		return errors.New("supervisor stopped during start")
 	}
-	if s.owner != nil || len(s.order) > 0 || s.state == StateStarting || s.state == StateReady {
+	if s.ownerOnlyStarted || s.servicesStarted || s.owner != nil || len(s.order) > 0 || s.state == StateStarting || s.state == StateReady {
 		s.mu.Unlock()
 		return errors.New("supervisor already active")
 	}
+	s.servicesStarted = true
 	s.state = StateStarting
 	s.stopped = false
 	s.canonicalCfg = canonicalConfig
@@ -596,6 +1040,7 @@ func (s *Supervisor) handleUnexpectedExit(status ServiceStatus) {
 	s.mu.Lock()
 	stopped := s.stopped
 	onCrash := s.cfg.OnCrash
+	onEvent := s.onEvent
 	if !stopped && (s.state == StateStarting || s.state == StateReady || s.state == StateDegraded) {
 		s.state = StateExited
 	}
@@ -607,6 +1052,9 @@ func (s *Supervisor) handleUnexpectedExit(status ServiceStatus) {
 	select {
 	case s.exitedCh <- status:
 	default:
+	}
+	if onEvent != nil {
+		onEvent(status)
 	}
 	if onCrash != nil {
 		onCrash(status)
@@ -693,25 +1141,46 @@ func (s *Supervisor) runMonitor(ctx context.Context) {
 				continue
 			}
 			if probeErr == nil {
+				prevState := proc.Status().State
 				failures[spec.Role] = 0
 				proc.SetHealthState(StateReady)
+				if prevState != StateReady {
+					s.emitEvent(proc.Status())
+				}
 				continue
 			}
 			allReady = false
 			failures[spec.Role]++
 			if failures[spec.Role] >= s.cfg.HealthFailureMax {
-				proc.SetLastError(probeErr.Error())
+				prevState := proc.Status().State
+				proc.SetLastError(RedactLogLine(probeErr.Error()))
 				proc.SetHealthState(StateDegraded)
+				if prevState != StateDegraded {
+					s.emitEvent(proc.Status())
+				}
 			}
 		}
 
 		if allReady {
 			s.mu.Lock()
-			if !s.stopped && s.state == StateStarting {
-				s.state = StateReady
-				s.phase = s.cfg.PhaseOnReady
+			var lock *OwnerLock
+			var readyRec OwnerRecord
+			shouldPromote := !s.stopped && (s.state == StateStarting || s.state == StateDegraded)
+			if shouldPromote && s.owner != nil {
+				lock = s.owner
+				readyRec = s.buildOwnerRecord(s.cfg.PhaseOnReady, s.order)
 			}
 			s.mu.Unlock()
+			if shouldPromote {
+				if lock == nil || lock.WriteRecord(readyRec) == nil {
+					s.mu.Lock()
+					if !s.stopped && (s.state == StateStarting || s.state == StateDegraded) {
+						s.state = StateReady
+						s.phase = s.cfg.PhaseOnReady
+					}
+					s.mu.Unlock()
+				}
+			}
 		}
 	}
 }
@@ -757,25 +1226,36 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		s.mu.Lock()
 		cancel := s.monitorCancel
 		s.monitorCancel = nil
-		procs := slices.Clone(s.order)
-		lock := s.owner
+		asyncCancel := s.asyncCancel
+		s.asyncCancel = nil
 		startDone = s.startDone
-		s.order = nil
-		s.byRole = make(map[string]*ManagedProcess)
-		s.owner = nil
-		s.phase = ""
 		s.stopped = true
-		if cancel == nil && lock == nil && len(procs) == 0 {
+		if cancel == nil && asyncCancel == nil && s.owner == nil && len(s.order) == 0 {
 			s.state = StateStopped
 			s.mu.Unlock()
 			return nil
 		}
 		s.mu.Unlock()
 
+		if asyncCancel != nil {
+			asyncCancel()
+		}
 		if cancel != nil {
 			cancel()
 		}
 		s.wg.Wait()
+
+		// Snapshot s.order and s.owner only after all async/monitor goroutines
+		// have exited so no child started concurrently escapes teardown.
+		s.mu.Lock()
+		procs := slices.Clone(s.order)
+		lock := s.owner
+		s.order = nil
+		s.byRole = make(map[string]*ManagedProcess)
+		s.failedSpecs = make(map[string]ServiceStatus)
+		s.owner = nil
+		s.phase = ""
+		s.mu.Unlock()
 
 		allStopped, stopErrs := s.teardownProcesses(ctx, procs, "stop")
 
@@ -820,14 +1300,24 @@ func (s *Supervisor) Snapshot() SupervisorSnapshot {
 	ownerPID := s.ownerPID
 	phase := s.phase
 	procs := slices.Clone(s.order)
+	failed := maps.Clone(s.failedSpecs)
 	s.mu.Unlock()
 
-	statuses := make([]ServiceStatus, 0, len(procs))
+	statuses := make([]ServiceStatus, 0, len(procs)+len(failed))
 	aggState := baseState
 	anyDegraded := false
 	anyExited := false
 	for _, proc := range procs {
 		st := proc.Status()
+		statuses = append(statuses, st)
+		switch st.State {
+		case StateExited:
+			anyExited = true
+		case StateDegraded:
+			anyDegraded = true
+		}
+	}
+	for _, st := range failed {
 		statuses = append(statuses, st)
 		switch st.State {
 		case StateExited:

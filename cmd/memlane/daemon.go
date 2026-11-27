@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -208,7 +209,43 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		if err != nil {
 			return fmt.Errorf("completion token: %w", err)
 		}
-	} else {
+	}
+	if resources := os.Getenv("MEMLANE_RUNTIME_RESOURCES"); resources != "" {
+		if !filepath.IsAbs(resources) {
+			return errors.New("runtime resource directory must be absolute")
+		}
+		if _, ok := bootstrap.RuntimeHashFromDir(resources); !ok {
+			return errors.New("runtime resource directory must be a managed generation")
+		}
+		cfg.EngineWorkDir = resources
+	}
+	if !attach && cfg.Python == "" {
+		return errors.New("managed Python executable is required")
+	}
+
+	endpoints := []string{cfg.GatewayURL}
+	if !attach {
+		endpoints = append(endpoints, cfg.EngineURL)
+	}
+	daemonConfig, err := daemonOwnerConfig(cfg, endpoints)
+	if err != nil {
+		return err
+	}
+	supervisor := daemon.New(daemonConfig)
+	if err := supervisor.StartOwner(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		stop, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		err = errors.Join(err, supervisor.Stop(stop))
+	}()
+
+	// P0 + P2 #1: sweep stale daemon-run directories only after holding the
+	// exclusive .service-owner flock, and before staging this run's directories.
+	cleanupStaleDaemonRunDirs(cfg.StoreRoot)
+
+	if cfg.CompletionTokenFile == "" {
 		dir, tempErr := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-completion-")
 		if tempErr != nil {
 			return tempErr
@@ -231,15 +268,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 	stackCfg := StackConfig{ManagementToken: management, CompletionToken: completionToken,
 		BridgeTokenFile: cfg.CompletionTokenFile, OutputLanguage: cfg.OutputLanguage,
 		BridgeEndpoint: strings.TrimRight(cfg.GatewayURL, "/") + "/v1", ProbeRuntime: probeRuntime}
-	if resources := os.Getenv("MEMLANE_RUNTIME_RESOURCES"); resources != "" {
-		if !filepath.IsAbs(resources) {
-			return errors.New("runtime resource directory must be absolute")
-		}
-		if _, ok := bootstrap.RuntimeHashFromDir(resources); !ok {
-			return errors.New("runtime resource directory must be a managed generation")
-		}
-		cfg.EngineWorkDir = resources
-	}
+
 	if cfg.EngineWorkDir == "" && (!attach || cfg.Python != "") {
 		folder, tempErr := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-engine-code-")
 		if tempErr != nil {
@@ -250,13 +279,17 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		if err != nil {
 			return err
 		}
+		if updatedConfig, cfgErr := daemonOwnerConfig(cfg, endpoints); cfgErr != nil {
+			return cfgErr
+		} else if len(updatedConfig.OwnerMetadata) > 0 {
+			if metaErr := supervisor.UpdateOwnerMetadata(updatedConfig.OwnerMetadata); metaErr != nil {
+				return metaErr
+			}
+		}
 	}
 	var specs []daemon.ServiceSpec
 	if !attach {
-		if cfg.Python == "" {
-			return errors.New("managed Python executable is required")
-		}
-		spec, cleanup, prepareErr := engineService(&cfg)
+		spec, _, cleanup, prepareErr := engineService(&cfg)
 		if prepareErr != nil {
 			return prepareErr
 		}
@@ -265,23 +298,7 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 	}
 	stackCfg.Engine = cognee.Config{Endpoint: cfg.EngineURL, TokenFile: cfg.EngineTokenFile,
 		StorePath: firstNonempty(cfg.OfficialData, cfg.StoreRoot), PythonBin: cfg.Python, WorkDir: cfg.EngineWorkDir}
-	endpoints := []string{cfg.GatewayURL}
-	if !attach {
-		endpoints = append(endpoints, cfg.EngineURL)
-	}
-	daemonConfig, err := daemonOwnerConfig(cfg, endpoints)
-	if err != nil {
-		return err
-	}
-	supervisor := daemon.New(daemonConfig)
-	if err := supervisor.Start(ctx, specs); err != nil {
-		return err
-	}
-	defer func() {
-		stop, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cancel()
-		err = errors.Join(err, supervisor.Stop(stop))
-	}()
+
 	stackCfg.DaemonStatus = func(context.Context) map[string]any {
 		s := supervisor.Snapshot()
 		return map[string]any{"owner_pid": s.OwnerPID, "phase": s.Phase, "state": s.State, "services": s.Services}
@@ -305,18 +322,160 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		defer cancel()
 		err = errors.Join(err, stack.Gateway.Shutdown(stop), stack.Profiles.Close(stop))
 	}()
-	if err := prepareGatewayStartup(ctx, stack.Gateway); err != nil {
-		return err
-	}
+
+	// P1 #7: gate InboxWorker consumption until the target engine is verified
+	// ready and startup preparation completes so new captures stay pending.
+	stack.Gateway.SetManagedEngineGate(false)
 
 	address, err := loopbackAddress(cfg.GatewayURL)
 	if err != nil {
 		return err
 	}
+	if _, err := stack.Gateway.StartLoopback(address); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(stdout, "Memlane gateway listening on %s\n", address); err != nil {
 		return err
 	}
-	return stack.Gateway.ListenAndServeLoopback(ctx, address)
+
+	// P1 #6 + R2 #2: pre-register a single persistent background preparation
+	// worker before starting async services. Track engine readiness and generation
+	// under prepMu so degraded->ready re-opens the inbox gate, engine exit during
+	// prepareGatewayStartup never opens the gate, and attach retries until reachable.
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	readyCh := make(chan struct{}, 1)
+	notifyPrep := func() {
+		select {
+		case readyCh <- struct{}{}:
+		default:
+		}
+	}
+	var prepMu sync.Mutex
+	var engineReady bool
+	var engineGen uint64
+	var prepared bool
+	var startupWG sync.WaitGroup
+	startupWG.Add(1)
+	defer func() {
+		cancelStartup()
+		startupWG.Wait()
+	}()
+	go func() {
+		defer startupWG.Done()
+		if attach {
+			retryTicker := time.NewTicker(2 * time.Second)
+			defer retryTicker.Stop()
+			for {
+				if startupCtx.Err() != nil {
+					return
+				}
+				if !stack.Gateway.VerifyEngineReachable(startupCtx) {
+					if startupCtx.Err() == nil {
+						stack.Gateway.RecordStartupEngineFailure(startupCtx, errors.New("attached engine is unreachable"))
+					}
+				} else if prepErr := prepareGatewayStartup(startupCtx, stack.Gateway); prepErr != nil {
+					if startupCtx.Err() == nil {
+						log.Printf("gateway startup preparation failed: %v", prepErr)
+						stack.Gateway.RecordStartupPrepareFailure(startupCtx, prepErr)
+					}
+				} else {
+					stack.Gateway.ClearStartupPrepareFailure()
+					stack.Gateway.SetManagedEngineGate(true)
+					stack.Gateway.NotifyEngineStatus(true, "")
+					stack.Gateway.Inbox().Notify()
+					return
+				}
+				select {
+				case <-startupCtx.Done():
+					return
+				case <-retryTicker.C:
+				}
+			}
+		}
+
+		for {
+			select {
+			case <-startupCtx.Done():
+				return
+			case <-readyCh:
+			}
+			prepMu.Lock()
+			gen := engineGen
+			isReady := engineReady
+			isPrepared := prepared
+			prepMu.Unlock()
+			if !isReady {
+				continue
+			}
+			if !isPrepared {
+				if prepErr := prepareGatewayStartup(startupCtx, stack.Gateway); prepErr != nil {
+					if startupCtx.Err() == nil {
+						log.Printf("gateway startup preparation failed: %v", prepErr)
+						stack.Gateway.RecordStartupPrepareFailure(startupCtx, prepErr)
+					}
+					continue
+				}
+				prepMu.Lock()
+				stillReady := engineGen == gen && engineReady
+				if stillReady {
+					prepared = true
+				}
+				prepMu.Unlock()
+				if !stillReady {
+					continue
+				}
+				stack.Gateway.ClearStartupPrepareFailure()
+				stack.Gateway.SetManagedEngineGate(true)
+				stack.Gateway.NotifyEngineStatus(true, "")
+				stack.Gateway.Inbox().Notify()
+				continue
+			}
+			prepMu.Lock()
+			stillReady := engineGen == gen && engineReady
+			prepMu.Unlock()
+			if stillReady {
+				stack.Gateway.SetManagedEngineGate(true)
+				stack.Gateway.NotifyEngineStatus(true, "")
+				stack.Gateway.Inbox().Notify()
+			}
+		}
+	}()
+
+	if attach {
+		if err := supervisor.StartServicesAsync(startupCtx, nil, nil); err != nil {
+			return err
+		}
+	} else {
+		err = supervisor.StartServicesAsync(startupCtx, specs, func(st daemon.ServiceStatus) {
+			if st.Role != "cognee-engine" {
+				return
+			}
+			switch st.State {
+			case daemon.StateReady:
+				prepMu.Lock()
+				engineGen++
+				engineReady = true
+				prepMu.Unlock()
+				notifyPrep()
+			case daemon.StateExited, daemon.StateDegraded:
+				prepMu.Lock()
+				engineGen++
+				engineReady = false
+				prepMu.Unlock()
+				stack.Gateway.SetManagedEngineGate(false)
+				msg := strings.TrimSpace(st.LastError)
+				if msg == "" {
+					msg = fmt.Sprintf("cognee-engine %s", st.State)
+				}
+				stack.Gateway.RecordStartupEngineFailure(startupCtx, errors.New(msg))
+			}
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	return stack.Gateway.WaitLoopback(ctx)
 }
 
 func prepareGatewayStartup(ctx context.Context, server *gateway.Server) error {
@@ -337,6 +496,8 @@ func prepareGatewayStartup(ctx context.Context, server *gateway.Server) error {
 }
 
 // daemonOwnerConfig keeps first-install owners visible to bootstrap across process boundaries.
+// Daily/dev stores (first_install == nil) use .daemon-owner.json; first-install stores
+// (first_install != nil) use .memlane-dev-owner.json via the unified owners.OwnerCodec.
 func daemonOwnerConfig(cfg runtimeConfig, endpoints []string) (daemon.Config, error) {
 	config := daemon.Config{StoreRoot: cfg.StoreRoot, ConfigPath: cfg.Path, Endpoints: endpoints, LogDir: filepath.Join(cfg.StoreRoot, "logs")}
 	var first struct {
@@ -356,25 +517,14 @@ func daemonOwnerConfig(cfg runtimeConfig, endpoints []string) (daemon.Config, er
 		config.PhaseOnReady = "first_install_setup"
 	}
 	config.Endpoints = []string{cfg.EngineURL, first.CompletionURL, cfg.GatewayURL}
-	config.LockConfig = daemon.LockConfig{
-		OwnerReceiptFilename: ".memlane-dev-owner.json", RecoveredReceiptPrefix: ".memlane-dev-owner-recovered-",
-		UpgradeLockFilename: ".memlane-upgrade.lock", ActivationLockFilename: "first-install-activation.lock",
-		Codec: daemon.ReceiptCodec{
-			Marshal: func(rec daemon.OwnerRecord) ([]byte, error) {
-				return json.Marshal(owners.OwnerRecord{PID: rec.PID, Started: rec.Started, Phase: rec.Phase, Config: rec.ConfigPath,
-					OfficialData: rec.StoreRoot, ServiceURL: cfg.EngineURL, CompletionURL: first.CompletionURL, ProjectControlURL: cfg.GatewayURL,
-					ResourcesDir: cfg.EngineWorkDir, ResourcesHash: hash, GenerationMode: first.GenerationMode, GenerationReference: first.GenerationReference,
-					Children: rec.Children, ServiceChildren: rec.ServiceChildren, ChildStartTimes: rec.ChildStartTimes, ObservedDescendants: rec.ObservedDescendants})
-			},
-			Unmarshal: func(raw []byte) (daemon.OwnerRecord, error) {
-				var rec owners.OwnerRecord
-				err := json.Unmarshal(raw, &rec)
-				return daemon.OwnerRecord{PID: rec.PID, Started: rec.Started, Phase: rec.Phase, ConfigPath: rec.Config, StoreRoot: rec.OfficialData,
-					Endpoints: []string{rec.ServiceURL, rec.CompletionURL, rec.ProjectControlURL},
-					Children:  rec.Children, ServiceChildren: rec.ServiceChildren, ChildStartTimes: rec.ChildStartTimes, ObservedDescendants: rec.ObservedDescendants}, err
-			},
-		},
-	}
+	config.OwnerMetadata = owners.OwnerMetadata{
+		ResourcesDir:        cfg.EngineWorkDir,
+		ResourcesHash:       hash,
+		RuntimeConfig:       cfg.Path,
+		GenerationMode:      first.GenerationMode,
+		GenerationReference: first.GenerationReference,
+	}.Encode()
+	config.LockConfig = owners.FirstInstallLockConfig()
 	return config, nil
 }
 
@@ -430,7 +580,7 @@ func buildProbeRuntime(cfg runtimeConfig) (map[string]any, error) {
 	return out, nil
 }
 
-func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error) {
+func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, string, func() error, error) {
 	var spec daemon.ServiceSpec
 	cleanup := func() error { return nil }
 	var raw map[string]json.RawMessage
@@ -439,19 +589,19 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		var err error
 		data, err = os.ReadFile(cfg.EngineConfig)
 		if err != nil {
-			return spec, cleanup, err
+			return spec, "", cleanup, err
 		}
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return spec, cleanup, err
+		return spec, "", cleanup, err
 	}
 	if raw == nil {
-		return spec, cleanup, errors.New("invalid engine configuration")
+		return spec, "", cleanup, errors.New("invalid engine configuration")
 	}
 	if cfg.EngineTokenFile == "" && cfg.EngineConfig != "" {
 		var path string
 		if err := json.Unmarshal(raw["internal_token_file"], &path); err != nil {
-			return spec, cleanup, err
+			return spec, "", cleanup, err
 		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(cfg.EngineConfig), path)
@@ -460,11 +610,11 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 	}
 	folder, err := canonicalStoreRuntimeDir(cfg.StoreRoot, "memlane-engine-")
 	if err != nil {
-		return spec, cleanup, err
+		return spec, "", cleanup, err
 	}
 	cleanup = func() error { return os.RemoveAll(folder) }
-	fail := func(err error) (daemon.ServiceSpec, func() error, error) {
-		return spec, cleanup, errors.Join(err, cleanup())
+	fail := func(err error) (daemon.ServiceSpec, string, func() error, error) {
+		return spec, "", cleanup, errors.Join(err, cleanup())
 	}
 	if cfg.EngineTokenFile == "" {
 		cfg.EngineTokenFile = filepath.Join(folder, "internal.token")
@@ -518,7 +668,7 @@ func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error)
 		Dir: cfg.EngineWorkDir, BindURL: cfg.EngineURL, HealthURL: cfg.EngineURL + "/internal/v1/health",
 		HealthHeaders: map[string]string{"Authorization": "Bearer " + token}, LogPath: filepath.Join(cfg.StoreRoot, "logs", "cognee-engine.log"),
 		ReadyTimeout: 90 * time.Second, StopGrace: 16 * time.Second, KillWait: 2 * time.Second,
-	}, cleanup, nil
+	}, folder, cleanup, nil
 }
 
 func importLegacyStore(cfg runtimeConfig, dbPath string) error {
@@ -549,26 +699,160 @@ func importLegacyStore(cfg runtimeConfig, dbPath string) error {
 	return nil
 }
 
+var managedDaemonRunPrefixes = []string{
+	"memlane-completion-",
+	"memlane-engine-code-",
+	"memlane-engine-",
+}
+
+func isManagedDaemonRunEntry(name string) bool {
+	for _, prefix := range managedDaemonRunPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// openSafeDaemonRunRoot anchors storeRoot -> cache -> daemon-run via fd-backed
+// os.OpenRoot handles so directory creation and cleanup are immune to symlink
+// swaps and path re-resolution TOCTOU.
+func openSafeDaemonRunRoot(storeRoot string, create bool) (*os.Root, string, error) {
+	resolvedStore, err := filepath.EvalSymlinks(storeRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	canonicalStore, err := filepath.Abs(resolvedStore)
+	if err != nil {
+		return nil, "", err
+	}
+	storeInfo, err := os.Stat(canonicalStore)
+	if err != nil {
+		return nil, "", err
+	}
+	if !storeInfo.IsDir() {
+		return nil, "", errors.New("store root must be a directory")
+	}
+	storeRootFS, err := os.OpenRoot(canonicalStore)
+	if err != nil {
+		return nil, "", err
+	}
+	defer storeRootFS.Close()
+
+	if create {
+		if mkErr := storeRootFS.Mkdir("cache", 0o700); mkErr != nil && !errors.Is(mkErr, os.ErrExist) {
+			return nil, "", mkErr
+		}
+	}
+	cacheInfo, err := storeRootFS.Lstat("cache")
+	if err != nil {
+		return nil, "", err
+	}
+	if cacheInfo.Mode()&os.ModeSymlink != 0 || !cacheInfo.IsDir() {
+		return nil, "", errors.New("managed runtime cache directory must be a non-symlink directory")
+	}
+	cacheRoot, err := storeRootFS.OpenRoot("cache")
+	if err != nil {
+		return nil, "", err
+	}
+	defer cacheRoot.Close()
+
+	if create {
+		if mkErr := cacheRoot.Mkdir("daemon-run", 0o700); mkErr != nil && !errors.Is(mkErr, os.ErrExist) {
+			return nil, "", mkErr
+		}
+	}
+	runInfo, err := cacheRoot.Lstat("daemon-run")
+	if err != nil {
+		return nil, "", err
+	}
+	if runInfo.Mode()&os.ModeSymlink != 0 || !runInfo.IsDir() {
+		return nil, "", errors.New("managed runtime daemon-run directory must be a non-symlink directory")
+	}
+	runRoot, err := cacheRoot.OpenRoot("daemon-run")
+	if err != nil {
+		return nil, "", err
+	}
+	return runRoot, filepath.Clean(filepath.Join(canonicalStore, "cache", "daemon-run")), nil
+}
+
 // canonicalStoreRuntimeDir creates a symlink-free private directory under
-// storeRoot so detached daemons survive ephemeral wrapper TMPDIR cleanup.
+// storeRoot using fd-anchored os.OpenRoot so detached daemons survive ephemeral
+// wrapper TMPDIR cleanup without path re-resolution TOCTOU.
 func canonicalStoreRuntimeDir(storeRoot, pattern string) (string, error) {
-	base := filepath.Join(storeRoot, "cache", "daemon-run")
-	if err := os.MkdirAll(base, 0o700); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(base, 0o700); err != nil {
-		return "", err
-	}
-	resolvedBase, err := filepath.EvalSymlinks(base)
+	runRoot, basePath, err := openSafeDaemonRunRoot(storeRoot, true)
 	if err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(resolvedBase, pattern)
+	defer runRoot.Close()
+
+	for range 8 {
+		var suffix [8]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			return "", err
+		}
+		name := pattern + hex.EncodeToString(suffix[:])
+		if err := runRoot.Mkdir(name, 0o700); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return "", err
+		}
+		return filepath.Join(basePath, name), nil
+	}
+	return "", errors.New("failed to allocate unique managed runtime directory")
+}
+
+// cleanupStaleDaemonRunDirs sweeps leftover managed runtime directories under
+// <storeRoot>/cache/daemon-run via fd-anchored os.Root after the exclusive
+// .service-owner lock is held, refusing symlinks and preserving active dirs.
+func cleanupStaleDaemonRunDirs(storeRoot string, keepDirs ...string) {
+	runRoot, basePath, err := openSafeDaemonRunRoot(storeRoot, false)
 	if err != nil {
-		return "", err
+		if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("daemon-run cleanup skipped: %v", err)
+		}
+		return
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return "", errors.Join(err, os.RemoveAll(dir))
+	defer runRoot.Close()
+
+	keep := make(map[string]struct{}, len(keepDirs))
+	for _, dir := range keepDirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		keep[filepath.Clean(dir)] = struct{}{}
 	}
-	return dir, nil
+	dirFile, err := runRoot.Open(".")
+	if err != nil {
+		log.Printf("daemon-run cleanup open dir failed: %v", err)
+		return
+	}
+	entries, err := dirFile.ReadDir(-1)
+	_ = dirFile.Close()
+	if err != nil {
+		log.Printf("daemon-run cleanup read dir failed: %v", err)
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !isManagedDaemonRunEntry(name) {
+			continue
+		}
+		candidate := filepath.Clean(filepath.Join(basePath, name))
+		if _, protected := keep[candidate]; protected {
+			continue
+		}
+		info, statErr := runRoot.Lstat(name)
+		if statErr != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			log.Printf("daemon-run cleanup skipped non-directory or symlink entry %s", name)
+			continue
+		}
+		if rmErr := runRoot.RemoveAll(name); rmErr != nil {
+			log.Printf("daemon-run cleanup remove %s failed: %v", name, rmErr)
+		}
+	}
 }

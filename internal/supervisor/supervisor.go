@@ -15,6 +15,8 @@ type Config struct {
 	ServiceURL              string
 	CompletionURL           string
 	ControlURL              string
+	ResourcesDir            string
+	ResourcesHash           string
 	RuntimeConfig           string
 	GenerationMode          string
 	GenerationReference     *GenerationReference
@@ -41,11 +43,13 @@ func New(cfg Config) *Supervisor {
 		ConfigPath:   cfg.ConfigPath,
 		PhaseOnReady: cfg.PhaseOnReady,
 		Endpoints:    []string{cfg.ServiceURL, cfg.CompletionURL, cfg.ControlURL},
-		OwnerMetadata: ownerMetadata{
+		OwnerMetadata: OwnerMetadata{
+			ResourcesDir:        cfg.ResourcesDir,
+			ResourcesHash:       cfg.ResourcesHash,
 			RuntimeConfig:       cfg.RuntimeConfig,
 			GenerationMode:      cfg.GenerationMode,
 			GenerationReference: cfg.GenerationReference,
-		}.encode(),
+		}.Encode(),
 		LockConfig:              ownerLocks,
 		LogRedactor:             serviceLogRedactor,
 		LogDir:                  cfg.LogDir,

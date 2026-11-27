@@ -387,6 +387,9 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, pubErr
 	}
 
+	if w.server != nil && !w.server.managedEngineGateOpen() {
+		return false, nil
+	}
 	if w.inExtractBackoff() {
 		return false, nil
 	}

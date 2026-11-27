@@ -28,7 +28,21 @@ var ownerLocks = daemon.LockConfig{
 	RecoveredReceiptPrefix: ".memlane-dev-owner-recovered-",
 	UpgradeLockFilename:    ".memlane-upgrade.lock",
 	ActivationLockFilename: "first-install-activation.lock",
-	Codec:                  daemon.ReceiptCodec{Marshal: marshalOwnerRecord, Unmarshal: unmarshalOwnerRecord},
+	Codec:                  OwnerCodec(),
+}
+
+// OwnerCodec returns the unified lossless receipt codec for .memlane-dev-owner.json.
+func OwnerCodec() daemon.ReceiptCodec {
+	return daemon.ReceiptCodec{
+		Marshal:   marshalOwnerRecord,
+		Unmarshal: unmarshalOwnerRecord,
+	}
+}
+
+// FirstInstallLockConfig returns the canonical LockConfig for first-install stores
+// (.memlane-dev-owner.json) backed by the unified OwnerCodec.
+func FirstInstallLockConfig() daemon.LockConfig {
+	return ownerLocks
 }
 
 // GenerationReference identifies a selected generation profile and its revision.
@@ -58,8 +72,8 @@ type OwnerRecord struct {
 	ObservedDescendants map[string]string    `json:"observed_descendants,omitempty"`
 }
 
-// ownerMetadata carries product-specific fields across the generic receipt codec.
-type ownerMetadata struct {
+// OwnerMetadata carries product-specific fields across the generic receipt codec.
+type OwnerMetadata struct {
 	ResourcesDir        string
 	ResourcesHash       string
 	RuntimeConfig       string
@@ -67,10 +81,21 @@ type ownerMetadata struct {
 	GenerationReference *GenerationReference
 }
 
-func (meta ownerMetadata) encode() json.RawMessage {
+// Encode serializes product-specific owner metadata for daemon.Config.OwnerMetadata.
+func (meta OwnerMetadata) Encode() json.RawMessage {
 	// All fields have fixed JSON-compatible types.
 	raw, _ := json.Marshal(meta)
 	return raw
+}
+
+// DecodeOwnerMetadata decodes product-specific owner metadata from daemon.OwnerRecord.Metadata.
+func DecodeOwnerMetadata(raw json.RawMessage) (OwnerMetadata, error) {
+	var meta OwnerMetadata
+	if len(raw) == 0 {
+		return meta, nil
+	}
+	err := json.Unmarshal(raw, &meta)
+	return meta, err
 }
 
 func (rec OwnerRecord) daemonRecord() daemon.OwnerRecord {
@@ -85,22 +110,20 @@ func (rec OwnerRecord) daemonRecord() daemon.OwnerRecord {
 		ServiceChildren:     rec.ServiceChildren,
 		ChildStartTimes:     rec.ChildStartTimes,
 		ObservedDescendants: rec.ObservedDescendants,
-		Metadata: ownerMetadata{
+		Metadata: OwnerMetadata{
 			ResourcesDir:        rec.ResourcesDir,
 			ResourcesHash:       rec.ResourcesHash,
 			RuntimeConfig:       rec.RuntimeConfig,
 			GenerationMode:      rec.GenerationMode,
 			GenerationReference: rec.GenerationReference,
-		}.encode(),
+		}.Encode(),
 	}
 }
 
 func ownerRecordFromDaemon(rec daemon.OwnerRecord) (OwnerRecord, error) {
-	var meta ownerMetadata
-	if len(rec.Metadata) > 0 {
-		if err := json.Unmarshal(rec.Metadata, &meta); err != nil {
-			return OwnerRecord{}, err
-		}
+	meta, err := DecodeOwnerMetadata(rec.Metadata)
+	if err != nil {
+		return OwnerRecord{}, err
 	}
 	var endpoints [3]string
 	copy(endpoints[:], rec.Endpoints)

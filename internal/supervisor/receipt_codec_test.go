@@ -1,11 +1,13 @@
 package supervisor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestLegacyOwnerReceiptRoundTrip(t *testing.T) {
@@ -63,5 +65,43 @@ func TestLegacyOwnerReceiptRoundTrip(t *testing.T) {
 	read, _, err := ReadOwnerRecord(store)
 	if err != nil || !reflect.DeepEqual(record, read) {
 		t.Fatalf("receipt round trip = %+v, %v", read, err)
+	}
+}
+
+func TestSupervisorNewPreservesResourcesAndMetadata(t *testing.T) {
+	store := t.TempDir()
+	cfgPath := filepath.Join(store, "runtime.json")
+	ref := &GenerationReference{ID: "profile-a", Revision: 7}
+	sup := New(Config{
+		StoreRoot:           store,
+		ConfigPath:          cfgPath,
+		PhaseOnReady:        "ready",
+		ServiceURL:          "http://127.0.0.1:4101",
+		CompletionURL:       "http://127.0.0.1:4102",
+		ControlURL:          "http://127.0.0.1:4103",
+		ResourcesDir:        "/opt/memlane/runtime-abc123",
+		ResourcesHash:       "abc123",
+		RuntimeConfig:       cfgPath,
+		GenerationMode:      "agent_bridge",
+		GenerationReference: ref,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := sup.Start(ctx, nil); err != nil {
+		t.Fatalf("supervisor start: %v", err)
+	}
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	rec, _, err := ReadOwnerRecord(store)
+	if err != nil {
+		t.Fatalf("read owner record: %v", err)
+	}
+	if rec.ResourcesDir != "/opt/memlane/runtime-abc123" ||
+		rec.ResourcesHash != "abc123" ||
+		rec.RuntimeConfig != cfgPath ||
+		rec.GenerationMode != "agent_bridge" ||
+		rec.GenerationReference == nil ||
+		*rec.GenerationReference != *ref {
+		t.Fatalf("metadata lost in supervisor owner record: %+v", rec)
 	}
 }

@@ -896,12 +896,33 @@ func FirstRuntimeReady(ctx context.Context, configPath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if owner.Phase != "first_install_setup" && owner.Phase != "ready" {
+	if owner.Phase != "starting" && owner.Phase != "first_install_setup" && owner.Phase != "ready" {
 		return false, nil
 	}
 	health, err := loopbackJSON(ctx, config.Control.URL, "/api/health", config.Control.TokenFile, "Authorization", "Bearer ")
 	if err == nil {
-		return health["ok"] == true && health["engine_ok"] == true, nil
+		var healthOwnerPID int
+		if rawPID, ok := health["owner_pid"].(float64); ok && rawPID > 0 {
+			healthOwnerPID = int(rawPID)
+		}
+		if healthOwnerPID == 0 {
+			if mon, monErr := loopbackJSON(ctx, config.Control.URL, "/v1/runtime/monitor", config.Control.TokenFile, "Authorization", "Bearer "); monErr == nil {
+				if rawPID, ok := mon["owner_pid"].(float64); ok && rawPID > 0 {
+					healthOwnerPID = int(rawPID)
+				}
+			}
+		}
+		if healthOwnerPID != owner.PID {
+			return false, nil
+		}
+		return health["gateway_ok"] == true || (health["ok"] == true && health["engine_ok"] == true), nil
+	}
+	if owner.Phase == "starting" {
+		var fatal fatalFirstRuntimeReadiness
+		if errors.As(err, &fatal) {
+			return false, err
+		}
+		return false, nil
 	}
 	var statusErr *supervisor.HTTPStatusError
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != 404 {

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"io"
@@ -10,13 +12,215 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane/app"
 	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/kit/daemon"
 )
+
+const appInstanceLockFilename = ".app-instance.lock"
+
+type appInstanceLock struct {
+	mu    sync.Mutex
+	files []*os.File
+}
+
+func lockSingleInstanceFile(lockPath string) (*os.File, bool, error) {
+	if linfo, statErr := os.Lstat(lockPath); statErr == nil {
+		if linfo.Mode()&os.ModeSymlink != 0 || !linfo.Mode().IsRegular() {
+			return nil, false, errors.New("app instance lock must be a regular file")
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, false, statErr
+	}
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, false, err
+	}
+	if err := daemon.Flock(file, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return file, true, nil
+}
+
+func canonicalPathForLockKey(path string) string {
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		if abs, absErr := filepath.Abs(resolved); absErr == nil {
+			return filepath.Clean(abs)
+		}
+		return filepath.Clean(resolved)
+	}
+	parent := filepath.Dir(cleaned)
+	if parent != cleaned {
+		if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil {
+			joined := filepath.Join(resolvedParent, filepath.Base(cleaned))
+			if abs, absErr := filepath.Abs(joined); absErr == nil {
+				return filepath.Clean(abs)
+			}
+			return filepath.Clean(joined)
+		}
+	}
+	if abs, err := filepath.Abs(cleaned); err == nil {
+		return filepath.Clean(abs)
+	}
+	return cleaned
+}
+
+// acquireAppInstanceLock acquires dual-anchor non-blocking locks for a store:
+//  1. <configDir>/.app-instance-<sha256(storeRoot)[:16]>.lock (always acquired,
+//     even before first-install creates library/), and
+//  2. <storeRoot>/.app-instance.lock (acquired whenever storeRoot already exists).
+//
+// Different stores remain completely isolated while .app and --config targeting
+// the same store share the same anchor before and after first-install setup.
+func acquireAppInstanceLock(configuration, storeRoot string) (*appInstanceLock, bool, error) {
+	storeRoot = strings.TrimSpace(storeRoot)
+	configuration = strings.TrimSpace(configuration)
+	if storeRoot == "" && configuration == "" {
+		return nil, true, nil
+	}
+	lock := &appInstanceLock{}
+	rollback := func() { _ = lock.Release() }
+
+	if configuration != "" && storeRoot != "" {
+		configDir := filepath.Dir(configuration)
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
+			return nil, false, err
+		}
+		resolvedConfigDir, err := filepath.EvalSymlinks(configDir)
+		if err != nil {
+			return nil, false, err
+		}
+		key := canonicalPathForLockKey(storeRoot)
+		sum := sha256.Sum256([]byte(key))
+		anchorPath := filepath.Join(resolvedConfigDir, ".app-instance-"+hex.EncodeToString(sum[:8])+".lock")
+		f, acquired, err := lockSingleInstanceFile(anchorPath)
+		if err != nil {
+			return nil, false, err
+		}
+		if !acquired {
+			return nil, false, nil
+		}
+		lock.files = append(lock.files, f)
+	}
+
+	if storeRoot != "" {
+		resolved, err := filepath.EvalSymlinks(storeRoot)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if len(lock.files) == 0 {
+					return nil, true, nil
+				}
+				return lock, true, nil
+			}
+			rollback()
+			return nil, false, err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				if len(lock.files) == 0 {
+					return nil, true, nil
+				}
+				return lock, true, nil
+			}
+			rollback()
+			return nil, false, err
+		}
+		if !info.IsDir() {
+			rollback()
+			return nil, false, errors.New("app instance lock store root must be a directory")
+		}
+		f, acquired, err := lockSingleInstanceFile(filepath.Join(resolved, appInstanceLockFilename))
+		if err != nil {
+			rollback()
+			return nil, false, err
+		}
+		if !acquired {
+			rollback()
+			return nil, false, nil
+		}
+		lock.files = append(lock.files, f)
+	}
+
+	if len(lock.files) == 0 {
+		return nil, true, nil
+	}
+	return lock, true, nil
+}
+
+func (l *appInstanceLock) Release() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var errs []error
+	for i := len(l.files) - 1; i >= 0; i-- {
+		f := l.files[i]
+		if f == nil {
+			continue
+		}
+		errs = append(errs, daemon.Flock(f, syscall.LOCK_UN), f.Close())
+	}
+	l.files = nil
+	return errors.Join(errs...)
+}
+
+func resolveAppStoreRoot(configuration, runtimeStoreRoot, officialData string, firstDefault bool) string {
+	if strings.TrimSpace(runtimeStoreRoot) != "" {
+		return runtimeStoreRoot
+	}
+	if strings.TrimSpace(officialData) != "" {
+		return officialData
+	}
+	if strings.TrimSpace(configuration) != "" {
+		if rt, err := readRuntime(configuration); err == nil && strings.TrimSpace(rt.StoreRoot) != "" {
+			return rt.StoreRoot
+		}
+		if firstDefault {
+			// Match internal/bootstrap/first_runtime.go:579 deterministic default library root.
+			return filepath.Join(filepath.Dir(configuration), "library")
+		}
+		return filepath.Dir(configuration)
+	}
+	return ""
+}
+
+func shutdownAppRuntimeOnQuit(
+	ctx context.Context,
+	ownsInstance bool,
+	explicitConfig bool,
+	configuration string,
+	shutdownFirstRuntimes func(context.Context) error,
+	stopExplicitOwner func(context.Context, string) error,
+	shutdownExternal func(context.Context, string) error,
+) error {
+	if !ownsInstance {
+		return nil
+	}
+	err := shutdownFirstRuntimes(ctx)
+	if explicitConfig {
+		err = errors.Join(err, stopExplicitOwner(ctx, configuration))
+	} else if configuration != "" {
+		err = errors.Join(err, shutdownExternal(ctx, configuration))
+	}
+	return err
+}
 
 func runApp(args []string, stderr io.Writer) int {
 	flags := flag.NewFlagSet("app", flag.ContinueOnError)
@@ -35,6 +239,7 @@ func runApp(args []string, stderr io.Writer) int {
 	if pathError != nil {
 		err = pathError
 	}
+	var runtimeStoreRoot string
 	if *config != "" {
 		runtime, loadErr := readRuntime(configuration)
 		if loadErr != nil {
@@ -43,6 +248,7 @@ func runApp(args []string, stderr io.Writer) int {
 		if validateErr := runtime.validateStore(); validateErr != nil {
 			return reportError(stderr, validateErr)
 		}
+		runtimeStoreRoot = runtime.StoreRoot
 		if cfg.ProjectControl == nil {
 			cfg.ProjectControl = &app.ProjectControlConfig{}
 		}
@@ -52,6 +258,27 @@ func runApp(args []string, stderr io.Writer) int {
 			cfg.ServiceURL = runtime.EngineURL
 			err = nil
 		}
+	}
+	// P1 #8: all UI entrypoints targeting the same store share the canonical
+	// <storeRoot>/.app-instance.lock so .app and --config launches cannot both
+	// open or kill each other's daemon. firstDefault also keeps native macOS
+	// single-instance wake-up via RequestSingleInstanceLock + OnSecondInstance.
+	if firstDefault {
+		if !mygo.App.RequestSingleInstanceLock() {
+			return 0
+		}
+	}
+	storeRoot := resolveAppStoreRoot(configuration, runtimeStoreRoot, cfg.OfficialData, firstDefault)
+	instanceLock, acquired, lockErr := acquireAppInstanceLock(configuration, storeRoot)
+	if lockErr != nil {
+		return reportError(stderr, lockErr)
+	}
+	if !acquired {
+		return 0
+	}
+	ownsInstance := instanceLock != nil
+	if instanceLock != nil {
+		defer func() { _ = instanceLock.Release() }()
 	}
 	cfg.FirstInstallDefault = firstDefault
 	// Each UI process verifies and loads the current official graph asset bundle.
@@ -83,19 +310,21 @@ func runApp(args []string, stderr io.Writer) int {
 				if flushErr := desktop.FlushPendingState(2 * time.Second); flushErr != nil {
 					log.Printf("退出前保存客户端状态未完成：%v", flushErr)
 				}
-				err := bootstrap.ShutdownAllFirstRuntimes(ctx)
-				if *config != "" {
-					runtime, loadErr := readRuntime(configuration)
-					if loadErr == nil {
-						loadErr = stopOwner(ctx, runtime)
-					}
-					err = errors.Join(err, loadErr)
-				} else if configuration != "" {
-					if extErr := bootstrap.ShutdownExternalRuntime(ctx, configuration); extErr != nil {
-						err = errors.Join(err, extErr)
-					}
-				}
-				return err
+				return shutdownAppRuntimeOnQuit(
+					ctx,
+					ownsInstance,
+					*config != "",
+					configuration,
+					bootstrap.ShutdownAllFirstRuntimes,
+					func(stopCtx context.Context, cfgPath string) error {
+						rt, loadErr := readRuntime(cfgPath)
+						if loadErr != nil {
+							return loadErr
+						}
+						return stopOwner(stopCtx, rt)
+					},
+					bootstrap.ShutdownExternalRuntime,
+				)
 			},
 			mygo.App.Quit,
 			defaultShutdownTimeout,
@@ -310,6 +539,11 @@ func runApp(args []string, stderr io.Writer) int {
 				desktop.ShowMainWindowFn()
 			}
 		})
+		if firstDefault {
+			mygo.App.OnSecondInstance(func(_ []string, _ string) {
+				desktop.ShowMainWindowFn()
+			})
+		}
 
 		if shouldStartHiddenAtLogin(mygo.App.WasOpenedAtLogin(), wasOpenedAtLoginAtReady()) {
 			desktop.SetWindowHidden(true)

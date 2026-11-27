@@ -154,10 +154,11 @@ type ManagedProcess struct {
 	startIdentity string
 	done          chan struct{}
 
-	mu       sync.Mutex
-	stopping bool
-	exited   bool
-	status   ServiceStatus
+	mu           sync.Mutex
+	stopping     bool
+	exited       bool
+	groupCleared bool
+	status       ServiceStatus
 }
 
 // StartManagedProcess launches spec inside its own macOS session/process group
@@ -249,6 +250,9 @@ func StartManagedProcess(spec ServiceSpec, onUnexpectedExit func(ServiceStatus))
 		proc.status.ExitCode = exitCodePtr
 		proc.status.Signal = signalName
 		proc.status.TailLines = tail
+		if !ProcessGroupExists(proc.pid) {
+			proc.groupCleared = true
+		}
 		snapshot := cloneServiceStatus(proc.status)
 		proc.mu.Unlock()
 
@@ -353,10 +357,45 @@ func (p *ManagedProcess) StopGroup(ctx context.Context, grace, killWait time.Dur
 	if p.exited {
 		p.status.State = StateStopped
 	}
+	groupCleared := p.groupCleared
 	p.mu.Unlock()
 
-	if isChannelClosed(p.done) && !ProcessGroupExists(p.pid) {
-		return nil
+	if isChannelClosed(p.done) {
+		if groupCleared {
+			return nil
+		}
+		if !ProcessGroupExists(p.pid) {
+			p.mu.Lock()
+			p.groupCleared = true
+			p.mu.Unlock()
+			return nil
+		}
+		// Guard against signalling an unrelated process group if p.pid was
+		// recycled after our child exited.
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		table, err := ProcessTable(probeCtx)
+		cancel()
+		if err == nil {
+			if info, exists := table[p.pid]; exists && p.startIdentity != "" && info.Started != p.startIdentity {
+				p.mu.Lock()
+				p.groupCleared = true
+				p.mu.Unlock()
+				return nil
+			}
+			hasGroupMember := false
+			for _, info := range table {
+				if info.PGID == p.pid {
+					hasGroupMember = true
+					break
+				}
+			}
+			if !hasGroupMember {
+				p.mu.Lock()
+				p.groupCleared = true
+				p.mu.Unlock()
+				return nil
+			}
+		}
 	}
 
 	effGrace, effKill := partitionStopBudget(ctx, grace, killWait)

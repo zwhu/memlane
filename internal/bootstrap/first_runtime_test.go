@@ -114,6 +114,109 @@ func TestFirstRuntimeReadinessRequiresLiveOwnerAndBothAuthenticatedAPIs(t *testi
 	}
 }
 
+func TestFirstRuntimeReadyGatewayFirstDecoupled(t *testing.T) {
+	t.Parallel()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(parent, "library")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var healthOwnerPID atomic.Int64
+	var monitorOwnerPID atomic.Int64
+	healthOwnerPID.Store(int64(os.Getpid()))
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer synthetic-management-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/health":
+			resp := map[string]any{
+				"ok":            false,
+				"gateway_ok":    true,
+				"gateway_ready": true,
+				"engine_ok":     false,
+				"engine_ready":  false,
+				"status":        "starting",
+			}
+			if pid := healthOwnerPID.Load(); pid > 0 {
+				resp["owner_pid"] = pid
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/v1/runtime/monitor":
+			pid := monitorOwnerPID.Load()
+			if pid <= 0 {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"owner_pid": pid})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	token := filepath.Join(root, "owner.token")
+	management := filepath.Join(root, "management.token")
+	for name, value := range map[string]string{token: "synthetic-owner-token", management: "synthetic-management-token"} {
+		if err := os.WriteFile(name, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON := func(name string, value any) {
+		t.Helper()
+		b, _ := json.Marshal(value)
+		if err := os.WriteFile(name, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(filepath.Join(root, "store-identity.json"), StoreReceipt{Schema: 1, StoreID: strings.Repeat("b", 32), SourceCommit: "fixed", OwnerID: "synthetic-owner", KeyID: "synthetic-key", StorageInitialized: true})
+	configPath := filepath.Join(parent, "runtime.json")
+	writeJSON(configPath, map[string]any{
+		"first_install":   FirstInstallation{Schema: 1, StoreID: strings.Repeat("b", 32), Setup: true},
+		"official_data":   root,
+		"service_commit":  "fixed",
+		"token_file":      token,
+		"service_url":     "http://127.0.0.1:1",
+		"project_control": map[string]string{"url": control.URL, "management_token_file": management},
+	})
+	started, err := exec.Command("/bin/ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPath := filepath.Join(root, ".memlane-dev-owner.json")
+	for _, phase := range []string{"starting", "first_install_setup", "ready"} {
+		writeJSON(ownerPath, map[string]any{
+			"pid":           os.Getpid(),
+			"started":       strings.TrimSpace(string(started)),
+			"config":        configPath,
+			"official_data": root,
+			"phase":         phase,
+		})
+		if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || !ready {
+			t.Fatalf("phase=%s: expected FirstRuntimeReady=true when gateway_ok=true, got ready=%v err=%v", phase, ready, err)
+		}
+	}
+	// Mismatched owner_pid in /api/health must be rejected so a stale gateway on the same port cannot pass readiness.
+	healthOwnerPID.Store(int64(os.Getpid() + 99999))
+	if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || ready {
+		t.Fatalf("expected FirstRuntimeReady=false on mismatched owner_pid, got ready=%v err=%v", ready, err)
+	}
+	// Legacy /api/health omitting owner_pid must fall back to /v1/runtime/monitor and reject if missing.
+	healthOwnerPID.Store(0)
+	monitorOwnerPID.Store(0)
+	if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || ready {
+		t.Fatalf("expected FirstRuntimeReady=false when both health and monitor lack owner_pid, got ready=%v err=%v", ready, err)
+	}
+	monitorOwnerPID.Store(int64(os.Getpid()))
+	if ready, err := FirstRuntimeReady(context.Background(), configPath); err != nil || !ready {
+		t.Fatalf("expected FirstRuntimeReady=true when fallback monitor owner_pid matches, got ready=%v err=%v", ready, err)
+	}
+}
+
 func TestFirstRuntimeDoesNotReplaceExistingOrBrokenConfigurations(t *testing.T) {
 	t.Parallel()
 	parent, err := filepath.EvalSymlinks(t.TempDir())

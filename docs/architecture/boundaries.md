@@ -14,7 +14,8 @@
 ## 1. 五项核心边界决策
 
 1. **进程与语言边界（Go 单一主二进制，Python 退回无状态引擎薄壳）**
-   - Go 收口为单一多模式二进制入口（`cmd/memlane`）：`memlane app`（桌面端）| `memlane daemon`（M1 保活后台与接入网关）| `memlane hook`（宿主事件薄转发）| `memlane setup`（安装自举、诊断修复）| `memlane dev`（开发启停），已彻底退役旧 `scripts/dev.py` 与 `engine/python/` 业务双轨。
+   - Go 收口为单一多模式二进制入口（`cmd/memlane`）：`memlane app`（桌面端，具备生产态 `RequestSingleInstanceLock` 与开发态按库隔离 `.app-instance.lock` 单实例保护）| `memlane daemon`（M1 保活后台与 Gateway-First 接入网关：先拿 `.service-owner` 锁并清理过期 `cache/daemon-run`、先监网关、后异步拉起 `cognee-engine`；通过统一 `OwnerCodec` 兼容 `.daemon-owner.json` 与 `.memlane-dev-owner.json` 双文件名协议）| `memlane hook`（宿主事件薄转发）| `memlane setup`（安装自举、诊断修复）| `memlane dev`（开发启停），已彻底退役旧 `scripts/dev.py` 与 `engine/python/` 业务双轨。
+   - **双态运行模型**：网关（`gateway_ok`）与记忆引擎（`engine_ok`）解耦；`/api/health` 区分 `ready` / `starting` / `degraded` / `exited`，`/v1/capabilities` 非阻塞返回缓存快照并随引擎就绪递增 `capabilities_epoch`，`/v1/runtime/monitor` 透出 `engine_phase`、`startup_error` 与完整收件箱积压/暂停状态；引擎启动失败或退出不静默自启，网关保持存活继续提供只读浏览与采集入队。
    - **Python 唯一存在理由**：仅限 `engines/cognee/` 下直接 `import cognee / litellm / ladybug` 的无状态引擎胶水代码（现行 ~3.2k 非测 LOC，硬上限 ≤3,500，由 `ML023` 守卫，禁导 `sqlite3`/`aiosqlite`/`engine`）；其余全部控制面、网关、SQLite 存储、Agent 模型代理、宿主适配与开发运维统一归 Go。
 2. **宿主接入负边界（方案 C：统一 Go `memlane hook` + 极简扩展 + 标准 MCP）**
    - 宿主侧彻底与 Cognee 官方插件及跨代旧插件兼容脱钩，不再向宿主分发 Python Hook 脚本、本地补采队列或运行时补丁。
@@ -55,7 +56,7 @@
   cmd/memlane       单一 Go 二进制入口（app | daemon | hook | setup | dev）
 
 =========================== 隔离外部引擎与画布层 (非 Go 最小区) ===========================
-  engines/cognee    无状态 Python Runner（~2.6k LOC，仅 Cognee / LiteLLM / Ladybug 适配，零业务状态）
+  engines/cognee    无状态 Python Runner（~3.2k LOC，仅 Cognee / LiteLLM / Ladybug 适配，零业务状态）
   engine/agents/pi  pi 宿主极薄无状态 TypeScript 事件转发扩展（~130 LOC）
   web/official-graph 沙箱图谱 WebView（仅消费标准 {nodes, edges}，无凭据、无直连网络）
 ```
@@ -117,8 +118,8 @@
 
 | 分层 | 重构前基线 (`b1a82e0`) | Wave 4 后实测 (非测) | 长期目标上限 | 现状与持续收敛重点 |
 | --- | ---: | ---: | ---: | --- |
-| **Python 引擎壳** (`engines/cognee`) | 41,945 *(原 Python 生产)* | **2,670** | **≤ 3,500** | 已达标；由 `ML023` 与 `DG005` 硬守护 |
-| **Go 底座 + 领域 + 入口** (`kit/*` + `core/*` + `cmd/` + 存量 `internal/`) | 16,635 *(原底座)* | 42,425 *(含 `internal/` 11,040)* | **≤ 18,000** *(远期瘦身)* | 已接管原 4 万行 Python 全部控制面/网关/存储/代理；后续继续收拢 `internal/*` 残留并精简冗余代码 |
+| **Python 引擎壳** (`engines/cognee`) | 41,945 *(原 Python 生产)* | **3,229** | **≤ 3,500** | 已达标；由 `ML023` 与 `DG005` 硬守护 |
+| **Go 底座 + 领域 + 入口** (`kit/*` + `core/*` + `cmd/` + 存量 `internal/`) | 16,635 *(原底座)* | 42,425 *(含 `internal/` 11,040)* | **≤ 18,000** *(远期瘦身)* | 已接管原 4 万行 Python 全部控制面/网关/存储/代理，并收敛统一 `OwnerCodec` 与 Gateway-First 守护；后续继续收拢 `internal/*` 残留并精简冗余代码 |
 | **Go 原生桌面 UI** (`app/`) | 41,404 *(`simpledesktop`)* | 41,399 | **≤ 22,000** *(远期瘦身)* | 已完成 6 个无环子包拆分与 `arch_guard_test.go` 隔离；后续持续收敛大文件与旧 UI 样板 |
 | **图谱画布 + 极薄宿主扩展** (`web/official-graph/src` + `engine/agents/pi`) | 7,469 *(含 vendor 5,487)* | **239** *(自研源码)* | **≤ 4,000** *(自研)* | 已达标；已淘汰 OpenCode 厚插件与历史补丁 |
 | **工程脚手架** (`scripts/`) | 14,967 | **2,339** | **≤ 2,500** | 已达标；`scripts/dev.py` 等已退役收归 Go |

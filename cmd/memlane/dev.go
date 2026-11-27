@@ -61,16 +61,37 @@ func runDev(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		var inspection daemon.OwnerInspection
 		inspection, err = ownerConfig.LockConfig.InspectOwnerReadOnly(cfg.StoreRoot)
 		if err == nil {
-			ready := inspection.Locked && gatewayReady(ctx, cfg)
+			var gatewayOK, engineOK bool
+			var healthStatus string
+			var healthOwnerPID int
+			if inspection.Locked {
+				gatewayOK, engineOK, healthStatus, healthOwnerPID = gatewayHealth(ctx, cfg)
+				if inspection.HasReceipt && inspection.Record.PID > 0 && healthOwnerPID != inspection.Record.PID {
+					gatewayOK = false
+					engineOK = false
+					healthStatus = ""
+				}
+			}
+			ready := inspection.Locked && gatewayOK
 			status := "stopped"
 			if ready {
-				status = "ready"
+				if healthStatus != "" {
+					status = healthStatus
+				} else {
+					status = "ready"
+				}
 			} else if inspection.Locked {
 				status = "unavailable"
 			} else if inspection.HasReceipt {
 				status = "stale"
 			}
-			return printResult(stdout, stderr, *jsonOut, status, map[string]any{"status": status, "healthy": ready, "owner_locked": inspection.Locked})
+			return printResult(stdout, stderr, *jsonOut, status, map[string]any{
+				"status":       status,
+				"healthy":      ready,
+				"gateway_ok":   gatewayOK,
+				"engine_ok":    engineOK,
+				"owner_locked": inspection.Locked,
+			})
 		}
 	case "open":
 		err = openDev(cfg)
@@ -112,17 +133,52 @@ func printResult(stdout, stderr io.Writer, jsonOut bool, label string, result an
 	return reportError(stderr, err)
 }
 
-func gatewayReady(ctx context.Context, cfg runtimeConfig) bool {
+func gatewayHealth(ctx context.Context, cfg runtimeConfig) (gatewayOK, engineOK bool, status string, ownerPID int) {
 	token, err := hooks.ReadPrivateKey(cfg.ManagementTokenFile)
 	if err != nil {
-		return false
+		return false, false, "", 0
 	}
 	addr, err := loopbackAddress(cfg.GatewayURL)
 	if err != nil {
-		return false
+		return false, false, "", 0
 	}
 	state, err := daemon.LoopbackGetJSON(ctx, "http://"+addr, "/api/health", map[string]string{"Authorization": "Bearer " + token}, time.Second)
-	return err == nil && state["ok"] == true
+	if err != nil {
+		return false, false, "", 0
+	}
+	gatewayOK = state["gateway_ok"] == true || state["ok"] == true
+	if rawEngineOK, exists := state["engine_ok"]; exists {
+		engineOK = rawEngineOK == true
+	} else {
+		engineOK = state["ok"] == true
+	}
+	status, _ = state["status"].(string)
+	if rawPID, ok := state["owner_pid"].(float64); ok && rawPID > 0 {
+		ownerPID = int(rawPID)
+	}
+	if gatewayOK && ownerPID == 0 {
+		if mon, monErr := daemon.LoopbackGetJSON(ctx, "http://"+addr, "/v1/runtime/monitor", map[string]string{"Authorization": "Bearer " + token}, time.Second); monErr == nil {
+			if rawPID, ok := mon["owner_pid"].(float64); ok && rawPID > 0 {
+				ownerPID = int(rawPID)
+			}
+		}
+	}
+	return gatewayOK, engineOK, status, ownerPID
+}
+
+func gatewayReadyForOwner(ctx context.Context, cfg runtimeConfig, expectedOwnerPID int) bool {
+	gatewayOK, _, _, ownerPID := gatewayHealth(ctx, cfg)
+	if !gatewayOK {
+		return false
+	}
+	if expectedOwnerPID > 0 && ownerPID != expectedOwnerPID {
+		return false
+	}
+	return true
+}
+
+func gatewayReady(ctx context.Context, cfg runtimeConfig) bool {
+	return gatewayReadyForOwner(ctx, cfg, 0)
 }
 
 func startDev(ctx context.Context, cfg runtimeConfig, lockConfig daemon.LockConfig, noUI bool) error {
@@ -131,10 +187,11 @@ func startDev(ctx context.Context, cfg runtimeConfig, lockConfig daemon.LockConf
 		return err
 	}
 	if inspection.Locked {
-		if _, err := lockConfig.VerifyOwnerRecord(ctx, cfg.StoreRoot, cfg.Path); err != nil {
+		owner, err := lockConfig.VerifyOwnerRecord(ctx, cfg.StoreRoot, cfg.Path)
+		if err != nil {
 			return err
 		}
-		if !gatewayReady(ctx, cfg) {
+		if !gatewayReadyForOwner(ctx, cfg, owner.PID) {
 			return errors.New("store owner is running but gateway is unhealthy")
 		}
 	} else {
@@ -163,7 +220,7 @@ func startDev(ctx context.Context, cfg runtimeConfig, lockConfig daemon.LockConf
 				}
 				return errors.Join(wait.Err(), signalErr)
 			case <-ticker.C:
-				if owner, err := lockConfig.VerifyOwnerRecord(wait, cfg.StoreRoot, cfg.Path); err == nil && owner.PID == cmd.Process.Pid && gatewayReady(wait, cfg) {
+				if owner, err := lockConfig.VerifyOwnerRecord(wait, cfg.StoreRoot, cfg.Path); err == nil && owner.PID == cmd.Process.Pid && gatewayReadyForOwner(wait, cfg, owner.PID) {
 					break ready
 				}
 			}

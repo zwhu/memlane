@@ -202,8 +202,15 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	db, err := domain.OpenStore(filepath.Join(storage, "memlane.sqlite3"))
 	require(t, err)
 	defer func() { require(t, db.Close()) }()
-	state, err := db.GetGenerationState(ctx)
-	require(t, err)
+	var state domain.GenerationState
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		state, err = db.GetGenerationState(ctx)
+		require(t, err)
+		if state.ActiveProfileID == "bridge" && state.StartupError == "" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	model := internal("GET", "/health", nil, 200)
 	digest, _ := model["model_digest"].(string)
 	if state.ActiveProfileID != "bridge" || state.StartupError != "" || model["mode"] != "ready" ||
@@ -220,7 +227,7 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	health := func() {
 		t.Helper()
 		h := manage("GET", "/api/health", nil, 200)
-		if h["ok"] != true || h["engine_ok"] != true || h["status"] != "ready" {
+		if h["ok"] != true || h["gateway_ok"] != true || h["engine_ok"] != true || h["status"] != "ready" {
 			t.Fatal(h)
 		}
 		monitor := manage("GET", "/api/runtime/monitor", nil, 200)
@@ -230,7 +237,14 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		}
 	}
 	health()
-	initial := manage("GET", "/api/overview/bootstrap", nil, 200)
+	var initial map[string]any
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		initial = manage("GET", "/api/overview/bootstrap", nil, 200)
+		if initial["total_knowledge_count"] == float64(1) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	projected := asObject(t, initial["projects"].([]any)[0])
 	if initial["total_knowledge_count"] != float64(1) || projected["knowledge_count"] != float64(1) || projected["session_count"] != float64(1) {
 		t.Fatal(initial)
