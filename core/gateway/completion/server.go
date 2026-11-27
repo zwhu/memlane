@@ -24,9 +24,10 @@ import (
 const MaxBridgeConcurrencyLimit = 32
 
 type ActiveProfile struct {
-	Mode, BridgeKind, BridgeProvider, Model, Executable, AuthHome, ExpectedFingerprint string
-	Defaults                                                                           *agents.ModelDefaults
-	ExtensionBytes                                                                     []byte
+	Mode, BridgeKind, BridgeProvider, Model, RouteModel, Executable, AuthHome, ExpectedFingerprint string
+	FollowAgentDefaults                                                                            bool
+	Defaults                                                                                       *agents.ModelDefaults
+	ExtensionBytes                                                                                 []byte
 }
 
 type ActiveProfileGate interface {
@@ -139,7 +140,7 @@ func checkProfile(input *ActiveProfile) (*ActiveProfile, string, error) {
 	if active.BridgeKind == "pi" && active.ExtensionBytes == nil {
 		active.ExtensionBytes = bridge.PiExtensionSource()
 	}
-	if active.Model == "" {
+	if !active.FollowAgentDefaults && active.Model == "" {
 		return nil, "", gatewayError("bridge_profile_mismatch", 409)
 	}
 	opts := agents.ModelDefaultsOptions{}
@@ -160,7 +161,12 @@ func checkProfile(input *ActiveProfile) (*ActiveProfile, string, error) {
 	} else {
 		defaults = *active.Defaults
 	}
-	if defaults.Model != active.Model {
+	if defaults.Model == "" {
+		return nil, "", gatewayError("bridge_profile_mismatch", 409)
+	}
+	if active.FollowAgentDefaults {
+		active.Model = defaults.Model
+	} else if defaults.Model != active.Model {
 		return nil, "", gatewayError("bridge_profile_mismatch", 409)
 	}
 	provider := map[string]string{"codex": "openai", "traex": "trae", "antigravity": "google"}[active.BridgeKind]
@@ -170,7 +176,10 @@ func checkProfile(input *ActiveProfile) (*ActiveProfile, string, error) {
 			return nil, "", gatewayError("bridge_profile_mismatch", 409)
 		}
 	}
-	if defaults.Provider != "" && defaults.Provider != provider || active.BridgeProvider != "" && active.BridgeProvider != provider {
+	if defaults.Provider != "" && defaults.Provider != provider {
+		return nil, "", gatewayError("bridge_profile_mismatch", 409)
+	}
+	if !active.FollowAgentDefaults && active.BridgeProvider != "" && active.BridgeProvider != provider {
 		return nil, "", gatewayError("bridge_profile_mismatch", 409)
 	}
 	active.Executable, active.AuthHome, active.BridgeProvider = runtime.Executable, runtime.Home, provider
@@ -272,7 +281,16 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	req, err := bridge.ParseChatRequest(raw, active.Model, s.cfg.MaxBodyBytes)
+	expectedModel := active.Model
+	if active.FollowAgentDefaults && active.RouteModel != "" && active.RouteModel != active.Model {
+		var envelope struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Model == active.RouteModel {
+			expectedModel = active.RouteModel
+		}
+	}
+	req, err := bridge.ParseChatRequest(raw, expectedModel, s.cfg.MaxBodyBytes)
 	if err != nil {
 		writeFailure(w, err)
 		return
@@ -293,15 +311,23 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, err)
 		return
 	}
-	if active.BridgeKind != queued.BridgeKind || active.BridgeProvider != queued.BridgeProvider ||
-		active.Model != queued.Model || active.AuthHome != queued.AuthHome || active.Executable != queued.Executable ||
-		active.ExpectedFingerprint != queued.ExpectedFingerprint {
+	if active.BridgeKind != queued.BridgeKind || active.AuthHome != queued.AuthHome ||
+		active.Executable != queued.Executable || active.ExpectedFingerprint != queued.ExpectedFingerprint {
 		writeError(w, "bridge_profile_mismatch", 409)
 		return
 	}
-	if stamp != queuedStamp {
-		writeError(w, "generation_bridge_changed_revalidate", 409)
-		return
+	if active.FollowAgentDefaults {
+		// Freeze the live Agent model snapshot upon entering the execution slot.
+		active = queued
+	} else {
+		if active.BridgeProvider != queued.BridgeProvider || active.Model != queued.Model {
+			writeError(w, "bridge_profile_mismatch", 409)
+			return
+		}
+		if stamp != queuedStamp {
+			writeError(w, "generation_bridge_changed_revalidate", 409)
+			return
+		}
 	}
 	id := randomID()
 	opts := bridge.ExecOptions{RequestID: id, BridgeKind: active.BridgeKind, Executable: active.Executable, AuthHome: active.AuthHome,

@@ -255,7 +255,14 @@ func (a *Controller) ServiceChannelComponent() ServiceComponentView {
 	case setupOnly:
 		compactParts = append(compactParts, "尚未配置提炼模型")
 	case dot == "warn":
-		compactParts = append(compactParts, "连接状态待核对")
+		switch m.CompletionErrorCode {
+		case "bridge_profile_mismatch":
+			compactParts = append(compactParts, "未读取到 CLI 默认模型，请检查登录与配置")
+		case "generation_bridge_changed_revalidate":
+			compactParts = append(compactParts, "CLI 配置已变更，请重新检查")
+		default:
+			compactParts = append(compactParts, "连接状态待核对")
+		}
 	}
 
 	detailParts := append([]string(nil), compactParts...)

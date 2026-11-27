@@ -175,7 +175,7 @@ func (a *Controller) agentBridgeMatchesActive() bool {
 		return false
 	}
 	draft := s.draftProfile()
-	return row.Profile.BridgeKind == draft.BridgeKind && row.Profile.Model == draft.Model && row.Profile.BridgeProvider == draft.BridgeProvider
+	return row.Profile.BridgeKind == draft.BridgeKind
 }
 
 func (a *Controller) generationCandidateStatus(c *ui.Context) {

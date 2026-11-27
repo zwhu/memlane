@@ -87,6 +87,7 @@ type ServiceMonitorSnapshot struct {
 type ServiceMonitorState struct {
 	EngineStatus, CompletionStatus string
 	CompletionEndpoint             string
+	CompletionErrorCode            string
 	CompletionProvider             string
 	CompletionModel                string
 	CompletionAgentDefault         bool
@@ -157,6 +158,7 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 
 		completion := "未配置"
 		completionEndpoint := ""
+		completionErrorCode := ""
 		var completionPayload struct {
 			Provider     string          `json:"provider"`
 			Model        string          `json:"model"`
@@ -210,6 +212,10 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			default:
 				completion = controlplane.RedactSecretText(err.Error())
 				completionEndpoint = controlClient.Config.URL
+				var ctrlErr *ControlResponseError
+				if errors.As(err, &ctrlErr) && ctrlErr != nil {
+					completionErrorCode = ctrlErr.Code
+				}
 			}
 		} else if completionURL != "" {
 			probeStandaloneCompletion()
@@ -239,6 +245,7 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 				return
 			}
 			a.monitor.CompletionEndpoint = completionEndpoint
+			a.monitor.CompletionErrorCode = completionErrorCode
 			if strings.HasPrefix(completion, "端点已连接") {
 				a.monitor.CompletionProvider = strings.TrimSpace(completionPayload.Provider)
 				a.monitor.CompletionModel = strings.TrimSpace(completionPayload.Model)

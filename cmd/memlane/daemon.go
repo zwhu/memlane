@@ -77,10 +77,11 @@ func (g activeProfileGate) ResolveActive(ctx context.Context) (*completion.Activ
 		return nil, nil
 	}
 	profile := &completion.ActiveProfile{
-		Mode:           p.Mode,
-		BridgeKind:     p.BridgeKind,
-		BridgeProvider: p.BridgeProvider,
-		Model:          p.Model,
+		Mode:                p.Mode,
+		BridgeKind:          p.BridgeKind,
+		BridgeProvider:      p.BridgeProvider,
+		RouteModel:          p.Model,
+		FollowAgentDefaults: true,
 	}
 	if p.BridgeKind != "" {
 		opts := g.discovery
