@@ -31,17 +31,20 @@ func TestKnowledgeRecallOfficialIdentityAndDisplay(t *testing.T) {
 	}
 	i.RecallStats = stats
 	tt := ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if !tt.HasText("已记录检索命中 7 次") {
+	if !tt.HasText("命中 7") {
 		t.Fatal("count absent")
+	}
+	if _, tip := knowledgeCardRecall(i); tip == "" || tip == "命中 7" {
+		t.Fatalf("full tooltip absent: %q", tip)
 	}
 	i.RecallStats = nil
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if !tt.HasText("已记录检索命中 —") {
+	if !tt.HasText("命中 —") {
 		t.Fatal("unknown count displayed as zero")
 	}
 	i.Kind = "原始记录"
 	tt = ui.NewTester(func(c *ui.Context) { knowledgeRecallLabel(c, i) }, 500, 100)
-	if tt.HasText("已记录检索命中 —") {
+	if tt.HasText("命中 —") {
 		t.Fatal("raw records counted as knowledge")
 	}
 }

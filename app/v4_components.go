@@ -76,11 +76,11 @@ func stripInlineBackticks(s string) string {
 	return kitui.StripInlineBackticks(s)
 }
 
-func v4RecallChip(c *ui.Context, i Item) {
+func v4RecallChip(c *ui.Context, i Item) ui.Element {
 	label, tip := knowledgeCardRecall(i)
 	count := 0
 	if i.RecallStats != nil {
 		count = int(i.RecallStats.Count)
 	}
-	kitui.RecallChip(c, &tok.Tokens, label, tip, count)
+	return kitui.RecallChip(c, &tok.Tokens, label, tip, count)
 }

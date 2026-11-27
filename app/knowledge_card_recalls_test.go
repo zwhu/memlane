@@ -7,9 +7,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/egoist/mygo/ui"
 )
 
 func TestKnowledgeCardRecallsUseExistingReceiptsAndDistinguishUnknown(t *testing.T) {
@@ -44,10 +47,17 @@ func TestKnowledgeCardRecallsUseExistingReceiptsAndDistinguishUnknown(t *testing
 	s.Items = []Item{{ID: "hit", Dataset: "ds", Kind: "知识"}, {ID: "zero", Dataset: "ds", Kind: "知识"}, {ID: "failed", Dataset: "ds", Kind: "知识"}}
 	a.loadKnowledgeCardRecalls(s)
 	drainReading(t, updates, func() bool { return s.Knowledge.RecallPending == 0 })
-	for n, want := range []string{"已记录检索命中 7 次", "已记录检索命中 0 次", "已记录检索命中 —"} {
+	for n, want := range []string{"命中 7", "命中 0", "命中 —"} {
 		label, tip := knowledgeCardRecall(s.Items[n])
-		if n == 2 && tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
-			t.Fatal("missing default-value explanation")
+		if n == 2 {
+			if tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
+				t.Fatal("missing default-value explanation")
+			}
+		} else {
+			wantTip := "已记录的检索命中次数（仅统计已落账的 Agent 检索命中，人工阅读不计入；统计写入失败不阻断召回）。自 " + displayDate("2026-11-14T02:00:00Z") + " 起记录，旧历史不补算。"
+			if tip != wantTip {
+				t.Fatalf("card %d: tooltip lost full specification: got %q want %q", n, tip, wantTip)
+			}
 		}
 		if label != want {
 			t.Fatalf("card %d: %s, want %s", n, label, want)
@@ -197,5 +207,180 @@ func TestLeavingOverviewBeforeDirectoryCallbackCannotStartStats(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if stats.Load() != 0 {
 		t.Fatal("late overview callback started stats after leaving", stats.Load())
+	}
+}
+
+func TestKnowledgeCardRecallShortLabelAndFullTooltip(t *testing.T) {
+	item := Item{
+		ID:      "k1",
+		Dataset: "ds",
+		Kind:    "知识",
+		RecallStats: &KnowledgeRecallStats{
+			Count:          4,
+			StartedAt:      "2026-11-14T02:00:00Z",
+			LastRecalledAt: "2026-11-21T08:30:00Z",
+		},
+	}
+	label, tip := knowledgeCardRecall(item)
+	if label != "命中 4" {
+		t.Fatalf("got label %q, want %q", label, "命中 4")
+	}
+	for _, want := range []string{
+		"已记录的检索命中次数",
+		"仅统计已落账的 Agent 检索命中",
+		"人工阅读不计入",
+		"自 " + displayDate("2026-11-14T02:00:00Z") + " 起记录",
+		"最近命中：" + displayDate("2026-11-21T08:30:00Z"),
+	} {
+		if !strings.Contains(tip, want) {
+			t.Fatalf("tooltip %q missing %q", tip, want)
+		}
+	}
+	item.RecallStats = &KnowledgeRecallStats{Count: 0, StartedAt: "2026-11-14T02:00:00Z"}
+	if label, tip := knowledgeCardRecall(item); label != "命中 0" || !strings.Contains(tip, "已记录的检索命中次数") {
+		t.Fatalf("zero count got label=%q tip=%q", label, tip)
+	}
+	item.RecallStats = nil
+	if label, tip := knowledgeCardRecall(item); label != "命中 —" || tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
+		t.Fatalf("nil stats got label=%q tip=%q", label, tip)
+	}
+}
+
+func TestKnowledgeCardMetadataRowFitsNarrowAndDefaultPane(t *testing.T) {
+	makeApp := func(listWidth float32) *App {
+		a := projectUIFixture()
+		a.layout.ProjectListWidth = listWidth
+		a.page, a.kind = "知识", "知识"
+		docHit := Document{
+			ID:      "hit-location",
+			Dataset: "ds",
+			Name:    "定位召回与分类渲染",
+			Created: "2026-11-21T09:15:00Z",
+			Metadata: map[string]any{
+				"node_set":    []any{"session_learnings"},
+				"session_id":  "codex:s1",
+				"lesson_type": "location",
+			},
+		}
+		docZero := Document{
+			ID:      "zero-long-cat",
+			Dataset: "ds",
+			Name:    "超长自定义分类不挤出日期",
+			Created: "2026-11-20T10:00:00Z",
+			Metadata: map[string]any{
+				"node_set":    []any{"session_learnings"},
+				"session_id":  "codex:s2",
+				"lesson_type": "very_long_unrecognized_category_identifier_name",
+			},
+		}
+		docMissing := Document{
+			ID:      "missing-pitfall",
+			Dataset: "ds",
+			Name:    "缺失召回统计态",
+			Created: "2026-11-19T10:00:00Z",
+			Metadata: map[string]any{
+				"node_set":    []any{"session_learnings"},
+				"session_id":  "pi:s3",
+				"lesson_type": "pitfall",
+			},
+		}
+		items := []Item{
+			{
+				ID: docHit.ID, Dataset: "ds", Kind: "知识",
+				Title: docHit.Name, Date: docHit.Created, Document: &docHit,
+				BodyLoaded: true, Body: "左侧卡片在窄栏下保持紧凑召回标签、分类标签与日期完整显示，不被裁切。",
+				ServerUnread: true, ServerUnreadKnown: true,
+				RecallStats: &KnowledgeRecallStats{Count: 4, StartedAt: "2026-11-14T00:00:00Z", LastRecalledAt: "2026-11-21T09:15:00Z"},
+			},
+			{
+				ID: docZero.ID, Dataset: "ds", Kind: "知识",
+				Title: docZero.Name, Date: docZero.Created, Document: &docZero,
+				BodyLoaded: true, Body: "即使出现极长分类标签，分类胶囊也会在左半区内优雅省略，绝不把右侧日期挤出边界。",
+				ServerUnread: true, ServerUnreadKnown: true,
+				RecallStats: &KnowledgeRecallStats{Count: 0, StartedAt: "2026-11-14T00:00:00Z"},
+			},
+			{
+				ID: docMissing.ID, Dataset: "ds", Kind: "知识",
+				Title: docMissing.Name, Date: docMissing.Created, Document: &docMissing,
+				BodyLoaded: true, Body: "统计尚未读取完成时显示简洁占位，不撑宽卡片底部元数据行。",
+			},
+		}
+		s := a.state()
+		s.Loaded = true
+		s.Knowledge.Initialized = true
+		s.Knowledge.CountsLoaded = true
+		s.Knowledge.SortByRecalls = true
+		s.Knowledge.Catalog = items
+		s.Items = items
+		s.Selected = &items[0]
+		return a
+	}
+
+	for _, listW := range []float32{360, 300} {
+		t.Run(fmt.Sprintf("pane_%0.0f", listW), func(t *testing.T) {
+			a := makeApp(listW)
+			tt := ui.NewTester(a.View, 1200, 820)
+			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
+			tt.Advance(time.Second)
+			tt.Frame()
+
+			paneRect, ok := tt.Find("项目列表头部")
+			if !ok {
+				t.Fatal("list pane header missing")
+			}
+			paneRight := paneRect.X + paneRect.W
+
+			recallRect, ok := tt.Find("命中 4")
+			if !ok {
+				t.Fatal("compact recall label '命中 4' missing")
+			}
+			dateHitRect, ok := tt.Find("2026-11-21")
+			if !ok {
+				t.Fatal("date '2026-11-21' missing")
+			}
+			dateLongRect, ok := tt.Find("2026-11-20")
+			if !ok {
+				t.Fatal("date '2026-11-20' missing for extra-long category card")
+			}
+			catRect, ok := tt.Find("代码位置与关联")
+			if !ok {
+				t.Fatal("category chip '代码位置与关联' missing")
+			}
+			sortRect, ok := tt.Find("按命中次数")
+			if !ok {
+				t.Fatal("short sort label '按命中次数' missing")
+			}
+
+			if dateHitRect.W < 55 {
+				t.Fatalf("date '2026-11-21' unexpectedly narrow/truncated: %+v", dateHitRect)
+			}
+			if dateHitRect.X+dateHitRect.W > paneRight+0.5 {
+				t.Fatalf("date '2026-11-21' overflowed list pane right edge %.1f: %+v", paneRight, dateHitRect)
+			}
+			if dateLongRect.W < 55 || dateLongRect.X+dateLongRect.W > paneRight+0.5 {
+				t.Fatalf("date '2026-11-20' clipped or overflowed with long category (paneRight=%.1f): %+v", paneRight, dateLongRect)
+			}
+			if recallRect.X+recallRect.W > dateHitRect.X-4 {
+				t.Fatalf("recall chip %+v squeezed/overlapped date %+v", recallRect, dateHitRect)
+			}
+			if catRect.X+catRect.W > dateHitRect.X-4 {
+				t.Fatalf("category chip %+v squeezed/overlapped date %+v", catRect, dateHitRect)
+			}
+			if sortRect.X+sortRect.W > paneRight+0.5 {
+				t.Fatalf("sort dropdown %+v overflowed list pane right edge %.1f", sortRect, paneRight)
+			}
+
+			// Verify filter toolbar still keeps sort trigger inside pane even with longest category selected.
+			a.state().Knowledge.CategoryFilter = "代码位置与关联"
+			a.reorderKnowledge(a.state())
+			tt.Frame()
+			sortBtnRect, ok := tt.Find("记忆排序")
+			if !ok {
+				t.Fatal("sort dropdown button missing after selecting long category")
+			}
+			if sortBtnRect.X+sortBtnRect.W > paneRight+0.5 {
+				t.Fatalf("sort dropdown button %+v overflowed paneRight %.1f with long category filter", sortBtnRect, paneRight)
+			}
+		})
 	}
 }

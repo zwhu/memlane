@@ -253,7 +253,7 @@ func renderSearchMetadata(c *ui.Context, i Item) {
 	if strings.Contains(i.Kind, "知识") {
 		v4RecallChip(c, i)
 		if fields := knowledgeBasisFields(i); len(fields) > 0 {
-			v4CategoryChip(c, fields[0].Value)
+			v4CategoryChip(c, fields[0].Value).Shrink(1).MinWidth(0)
 		}
 		return
 	}

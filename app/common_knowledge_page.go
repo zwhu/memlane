@@ -334,10 +334,11 @@ func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected
 			v4InlineMarkdown(c, preview, fsFootnote, 400, 1.55, colText).MaxLines(knowledgePreviewLines)
 		}
 		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
-			agentLogo(c, recentAgentIcon(i), 16).Tooltip("来源 Agent：" + sourceAgentName(i))
-			v4CategoryChip(c, commonCategoryLabel(i.CommonCategory))
-			v4RecallChip(c, i)
-			ui.Spacer(c)
+			ui.Row(c).Grow(1).MinWidth(0).Clip().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				agentLogo(c, recentAgentIcon(i), 16).Shrink(0).Tooltip("来源 Agent：" + sourceAgentName(i))
+				v4CategoryChip(c, commonCategoryLabel(i.CommonCategory)).Shrink(1).MinWidth(0)
+				v4RecallChip(c, i)
+			})
 			ui.Text(c, displayDate(i.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 		})
 	})

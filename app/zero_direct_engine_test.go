@@ -687,7 +687,7 @@ func TestR1ReviewRegressionFixes(t *testing.T) {
 			t.Fatalf("empty recall ledger should succeed: counts=%+v err=%v", counts, err)
 		}
 		label, tip := knowledgeCardRecall(Item{ID: "k1", Dataset: "ds", Kind: "知识", RecallStats: &KnowledgeRecallStats{Count: 0, StartedAt: ""}})
-		if label != "已记录检索命中 0 次" || strings.Contains(tip, "自 ") {
+		if label != "命中 0" || strings.Contains(tip, "自 ") || !strings.Contains(tip, "已记录的检索命中次数") {
 			t.Fatalf("empty StartedAt recall label/tip unexpected: label=%q tip=%q", label, tip)
 		}
 	})
@@ -860,8 +860,8 @@ func TestR3ReviewConvergenceFixes(t *testing.T) {
 		if s.Selected == nil || s.Selected.RecallStats == nil || s.Selected.RecallStats.Count != 0 {
 			t.Fatalf("expected valid zero RecallStats on empty ledger, got %+v", s.Selected)
 		}
-		if label, _ := knowledgeCardRecall(*s.Selected); label != "已记录检索命中 0 次" {
-			t.Fatalf("unexpected recall label on empty ledger: %q", label)
+		if label, tip := knowledgeCardRecall(*s.Selected); label != "命中 0" || !strings.Contains(tip, "已记录的检索命中次数") {
+			t.Fatalf("unexpected recall label/tip on empty ledger: label=%q tip=%q", label, tip)
 		}
 	})
 }

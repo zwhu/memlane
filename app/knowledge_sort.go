@@ -137,45 +137,45 @@ func (a *App) reorderKnowledgeRange(s *pane, limit int, resetScroll bool) {
 // with counts + unread-only switch + sort dropdown) and optional recall filter bar.
 func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 	ui.Column(c).FillWidth().Padding(sp3, sp4, sp2, sp4).Gap(sp2).Shrink(0).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-			catValue := s.Knowledge.CategoryFilter
-			if catValue == "" {
-				catValue = "全部"
-			}
-			total, counts := a.knowledgeCategoryCounts(s)
-			v4DropdownButton(c, "knowledge-category-btn", "记忆分类筛选", "分类", catValue, s.Knowledge.CategoryFilter != "").PopoverMenuButton(func(m *ui.Menu) {
-				allLabel := fmt.Sprintf("全部 (%d)", total)
-				if s.Knowledge.CategoryFilter == "" {
-					allLabel = "✓ " + allLabel
+		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+			ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
+				catValue := s.Knowledge.CategoryFilter
+				if catValue == "" {
+					catValue = "全部"
 				}
-				if m.Item(allLabel).Chosen() {
-					s.Knowledge.CategoryFilter = ""
-					a.reorderKnowledge(s)
-				}
-				m.Separator()
-				for _, cat := range v4KnowledgeCategories {
-					label := fmt.Sprintf("%s (%d)", cat, counts[cat])
-					if s.Knowledge.CategoryFilter == cat {
-						label = "✓ " + label
+				total, counts := a.knowledgeCategoryCounts(s)
+				v4DropdownButton(c, "knowledge-category-btn", "记忆分类筛选", "分类", catValue, s.Knowledge.CategoryFilter != "").Shrink(1).MinWidth(0).PopoverMenuButton(func(m *ui.Menu) {
+					allLabel := fmt.Sprintf("全部 (%d)", total)
+					if s.Knowledge.CategoryFilter == "" {
+						allLabel = "✓ " + allLabel
 					}
-					if m.Item(label).Chosen() {
-						s.Knowledge.CategoryFilter = cat
+					if m.Item(allLabel).Chosen() {
+						s.Knowledge.CategoryFilter = ""
 						a.reorderKnowledge(s)
 					}
-				}
-			})
+					m.Separator()
+					for _, cat := range v4KnowledgeCategories {
+						label := fmt.Sprintf("%s (%d)", cat, counts[cat])
+						if s.Knowledge.CategoryFilter == cat {
+							label = "✓ " + label
+						}
+						if m.Item(label).Chosen() {
+							s.Knowledge.CategoryFilter = cat
+							a.reorderKnowledge(s)
+						}
+					}
+				})
 
-			v4Switch(c, "knowledge-unread-sw", &s.Knowledge.UnreadOnly, "仅未读", func() {
-				a.reorderKnowledge(s)
+				v4Switch(c, "knowledge-unread-sw", &s.Knowledge.UnreadOnly, "仅未读", func() {
+					a.reorderKnowledge(s)
+				})
 			})
-
-			ui.Spacer(c)
 
 			sortLabel := "按时间"
 			if s.Knowledge.SortByRecalls {
-				sortLabel = "按已记录检索命中"
+				sortLabel = "按命中次数"
 			}
-			v4DropdownButton(c, "knowledge-sort-btn", "记忆排序", "", sortLabel, false).PopoverMenuButton(func(m *ui.Menu) {
+			v4DropdownButton(c, "knowledge-sort-btn", "记忆排序", "", sortLabel, false).Tooltip("按时间或已记录的检索命中次数排序").PopoverMenuButton(func(m *ui.Menu) {
 				timeLabel := "按时间"
 				if !s.Knowledge.SortByRecalls {
 					timeLabel = "✓ " + timeLabel
@@ -184,7 +184,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 					s.Knowledge.SortByRecalls = false
 					a.reorderKnowledge(s)
 				}
-				recallLabel := "按已记录检索命中"
+				recallLabel := "按命中次数"
 				if s.Knowledge.SortByRecalls {
 					recallLabel = "✓ " + recallLabel
 				}

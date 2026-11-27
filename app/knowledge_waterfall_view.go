@@ -207,15 +207,16 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 			v4InlineMarkdown(c, body, fsFootnote, 400, 1.55, tok.Text1).MaxLines(knowledgePreviewLines)
 		}
 		ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
-			if a.itemIsUnread(i) {
-				v4UnreadDot(c)
-			}
-			agentLogo(c, recentAgentIcon(i), 16).Tooltip("来源 Agent：" + sourceAgentName(i))
-			v4RecallChip(c, i)
-			if fields := knowledgeBasisFields(i); len(fields) > 0 {
-				v4CategoryChip(c, fields[0].Value)
-			}
-			ui.Spacer(c)
+			ui.Row(c).Grow(1).MinWidth(0).Clip().AlignItems(ui.Center).Gap(sp2).Children(func() {
+				if a.itemIsUnread(i) {
+					v4UnreadDot(c)
+				}
+				agentLogo(c, recentAgentIcon(i), 16).Shrink(0).Tooltip("来源 Agent：" + sourceAgentName(i))
+				v4RecallChip(c, i)
+				if fields := knowledgeBasisFields(i); len(fields) > 0 {
+					v4CategoryChip(c, fields[0].Value).Shrink(1).MinWidth(0)
+				}
+			})
 			ui.Text(c, knowledgeDateLabel(i)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 		})
 	})
