@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -17,17 +18,67 @@ import (
 const ProtocolVersion = "2025-03-26"
 const requestLimit = 1 << 20
 
+type RememberRequest struct {
+	Agent          domain.Agent
+	Project        domain.Project
+	UserID         string
+	ReceiptUser    string
+	Kind           engine.IngestKind
+	Content        any
+	RawContent     any
+	SessionID      string
+	MessageID      string
+	IdempotencyKey string
+	ContextDate    string
+	Metadata       map[string]any
+}
+
+type RememberResult struct {
+	OK             bool   `json:"ok"`
+	Status         string `json:"status"`
+	Saved          bool   `json:"saved"`
+	TaskID         string `json:"task_id,omitempty"`
+	EntryID        string `json:"entry_id,omitempty"`
+	DocumentID     string `json:"document_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key"`
+	DatasetID      string `json:"dataset_id"`
+	Deduplicated   bool   `json:"deduplicated"`
+	Message        string `json:"message,omitempty"`
+}
+
+type TaskStatusResult struct {
+	OK             bool   `json:"ok"`
+	TaskID         string `json:"task_id"`
+	ProjectID      string `json:"project_id"`
+	DatasetID      string `json:"dataset_id"`
+	Status         string `json:"status"`
+	Saved          bool   `json:"saved"`
+	EntryID        string `json:"entry_id,omitempty"`
+	DocumentID     string `json:"document_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
+}
+
+type RememberService interface {
+	Remember(ctx context.Context, req RememberRequest) (RememberResult, error)
+	LookupTask(ctx context.Context, agent domain.Agent, taskID string) (TaskStatusResult, error)
+}
+
 type Config struct {
-	Store         *domain.Store
-	Engine        engine.MemoryEngine
-	SearchTimeout time.Duration
-	SecretReader  func(path string) ([]byte, error)
-	OnRecall      func(RecallObservation)
+	Store           *domain.Store
+	Engine          engine.MemoryEngine
+	RememberService RememberService
+	SearchTimeout   time.Duration
+	SecretReader    func(path string) ([]byte, error)
+	OnRecall        func(RecallObservation)
 }
 
 type Server struct {
-	cfg   Config
-	tools []tool
+	cfg         Config
+	tools       []tool
+	rememberMu  sync.RWMutex
+	rememberSvc RememberService
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -40,9 +91,22 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.SecretReader == nil {
 		cfg.SecretReader = readSecret
 	}
-	s := &Server{cfg: cfg}
+	s := &Server{cfg: cfg, rememberSvc: cfg.RememberService}
 	s.tools = s.memoryTools()
 	return s, nil
+}
+
+func (s *Server) SetRememberService(svc RememberService) {
+	s.rememberMu.Lock()
+	s.rememberSvc = svc
+	s.rememberMu.Unlock()
+}
+
+func (s *Server) rememberService() RememberService {
+	s.rememberMu.RLock()
+	svc := s.rememberSvc
+	s.rememberMu.RUnlock()
+	return svc
 }
 
 type rpcRequest struct {
@@ -229,7 +293,8 @@ func (s *Server) dispatch(ctx context.Context, agent domain.Agent, req rpcReques
 		for _, t := range s.tools {
 			if t.Name == call.Name {
 				result, err := t.call(ctx, agent, call.Arguments)
-				if errors.Is(err, domain.ErrInvalidArgument) {
+				if errors.Is(err, domain.ErrInvalidArgument) || errors.Is(err, engine.ErrInvalidArgument) ||
+					errors.Is(err, engine.ErrNotUTF8Text) || errors.Is(err, engine.ErrContentTooLarge) {
 					return nil, invalid
 				}
 				if err != nil {

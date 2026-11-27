@@ -70,7 +70,11 @@ func (a *App) selectReadingItem(s *pane, i Item, human bool) {
 			}
 			s.Reading = false
 			if err != nil {
-				s.Error = err.Error()
+				if i.Session != nil && !readingAuthDenied(err) {
+					s.Error = "原文暂时无法读取：" + err.Error()
+				} else {
+					s.Error = err.Error()
+				}
 				a.handleReadingFailure(i, err)
 				return
 			}
@@ -158,7 +162,11 @@ func (a *App) source(s *pane) {
 			s.Reading = false
 			s.ReadingSource = false
 			if err != nil {
-				s.Error = err.Error()
+				if !readingAuthDenied(err) && original.Source != "" {
+					s.Error = "原文暂时无法读取：" + err.Error()
+				} else {
+					s.Error = err.Error()
+				}
 				if i.ID != "" {
 					a.handleReadingFailure(i, err)
 				} else if status, ok := httpStatusCode(err); ok && status == 401 {

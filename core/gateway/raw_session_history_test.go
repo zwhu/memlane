@@ -3,6 +3,9 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/zwhu/memlane/core/domain"
@@ -11,8 +14,11 @@ import (
 
 type fakeSessionHistoryEngine struct {
 	*fakeEngine
-	cache   map[engine.SessionRef]engine.SessionCacheInfo
-	history engine.SessionHistoryResult
+	cache      map[engine.SessionRef]engine.SessionCacheInfo
+	history    engine.SessionHistoryResult
+	historyErr map[string]error
+	histories  map[string]engine.SessionHistoryResult
+	readCalls  []string
 }
 
 func (f *fakeSessionHistoryEngine) HydrateSessionsFromCache(_ context.Context, refs []engine.SessionRef) (map[engine.SessionRef]engine.SessionCacheInfo, error) {
@@ -24,7 +30,14 @@ func (f *fakeSessionHistoryEngine) HydrateSessionsFromCache(_ context.Context, r
 }
 
 func (f *fakeSessionHistoryEngine) ReadSessionHistory(_ context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	f.readCalls = append(f.readCalls, req.SessionID)
+	if err, ok := f.historyErr[req.SessionID]; ok {
+		return engine.SessionHistoryResult{}, err
+	}
 	out := f.history
+	if h, ok := f.histories[req.SessionID]; ok {
+		out = h
+	}
 	qaEnd := min(len(out.QAs), req.QAOffset+req.Limit)
 	traceEnd := min(len(out.Traces), req.TraceOffset+req.Limit)
 	if req.QAOffset < len(out.QAs) {
@@ -255,5 +268,75 @@ func TestRawRecordsChildrenPreviewAndSubagentHistory(t *testing.T) {
 		"/v1/projects/p/raw-records/sessions/shared-parent/children?user_id=u1&limit=10", "", 200))
 	if len(disambiguated.Items) != 1 || disambiguated.Items[0].SessionID != "shared-child-u1" {
 		t.Fatalf("shared-parent disambiguation failed: %+v", disambiguated.Items)
+	}
+}
+
+func TestRawSessionHistoryMissingExpiredVsRealReadError(t *testing.T) {
+	ctx := context.Background()
+	var histEng *fakeSessionHistoryEngine
+	s, store, _ := testServer(t, func(c *Config) {
+		base := c.Engine.(*fakeEngine)
+		histEng = &fakeSessionHistoryEngine{
+			fakeEngine: base,
+			histories: map[string]engine.SessionHistoryResult{
+				"codex_expired-rows": {QAs: []engine.SessionQA{}, Traces: []engine.SessionTrace{}},
+			},
+			historyErr: map[string]error{
+				"codex_missing-cache":  os.ErrNotExist,
+				"codex_pruned-catalog": errors.New("must never call unscoped ReadSessionHistory"),
+				"codex_io-failure":     errors.New("sqlite disk I/O error"),
+			},
+		}
+		c.Engine = histEng
+	})
+
+	for _, row := range []domain.CatalogSession{
+		{DatasetID: "ds", SessionID: "codex_missing-cache", UserID: "u1", AgentID: "codex-1", IsTopLevel: true, SortTSDescKey: -30},
+		{DatasetID: "ds", SessionID: "codex_expired-rows", UserID: "u1", AgentID: "codex-1", IsTopLevel: true, SortTSDescKey: -20},
+		{DatasetID: "ds", SessionID: "codex_io-failure", UserID: "u1", AgentID: "codex-1", IsTopLevel: true, SortTSDescKey: -10},
+	} {
+		must(t, store.UpsertCatalogSession(ctx, row))
+	}
+	// Pruned session is absent from catalog_sessions, but inbox still remembers its agent_id.
+	_, err := store.EnqueueInboxItem(ctx, domain.CaptureInboxItem{
+		ID: "pruned-inbox-1", ProjectID: "p", DatasetID: "ds", AgentID: "codex-1",
+		SessionID: "codex_pruned-catalog", MessageID: "m1", Kind: "capture_qa", PayloadJSON: `{"content":"x"}`,
+	})
+	must(t, err)
+
+	// 1. Missing cache file (os.ErrNotExist) -> 200 degraded with history_available=false.
+	missingCache := decodeResponse[map[string]any](t, manage(t, s, "GET",
+		"/v1/raw-records/session-history?dataset_id=ds&session_id=codex_missing-cache&user_id=u1", "", 200))
+	if missingCache["history_available"] != false || missingCache["history_missing_reason"] != "expired_or_missing" ||
+		missingCache["session_id"] != "codex_missing-cache" || missingCache["agent_id"] != "codex-1" {
+		t.Fatalf("missing cache response mismatch: %+v", missingCache)
+	}
+
+	// 2. Cache present but 0 QAs and 0 Traces (expired rows) -> 200 degraded with history_available=false.
+	expiredRows := decodeResponse[map[string]any](t, manage(t, s, "GET",
+		"/v1/raw-records/session-history?dataset_id=ds&session_id=codex_expired-rows&user_id=u1", "", 200))
+	if expiredRows["history_available"] != false || expiredRows["history_missing_reason"] != "expired_or_missing" ||
+		expiredRows["session_id"] != "codex_expired-rows" || expiredRows["agent_id"] != "codex-1" {
+		t.Fatalf("expired rows response mismatch: %+v", expiredRows)
+	}
+
+	// 3. Session absent from catalog_sessions -> 200 degraded with session_id and fallback agent_id, WITHOUT calling ReadSessionHistory.
+	pruned := decodeResponse[map[string]any](t, manage(t, s, "GET",
+		"/api/raw-records/session-history?dataset_id=ds&session_id=codex_pruned-catalog", "", 200))
+	if pruned["history_available"] != false || pruned["history_missing_reason"] != "expired_or_missing" ||
+		pruned["session_id"] != "codex_pruned-catalog" || pruned["agent_id"] != "codex-1" {
+		t.Fatalf("pruned catalog session mismatch: %+v", pruned)
+	}
+	for _, called := range histEng.readCalls {
+		if called == "codex_pruned-catalog" {
+			t.Fatal("ReadSessionHistory must not be called when catalog_sessions row is missing")
+		}
+	}
+
+	// 4. Real I/O or DB read failure -> 502 error, NOT silently masked as 0 rows.
+	ioFail := manage(t, s, "GET",
+		"/v1/raw-records/session-history?dataset_id=ds&session_id=codex_io-failure&user_id=u1", "", 502)
+	if !strings.Contains(ioFail.Body.String(), "engine_error") {
+		t.Fatalf("expected engine_error 502 body, got %s", ioFail.Body.String())
 	}
 }

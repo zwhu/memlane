@@ -148,6 +148,18 @@ func (c *Client) GetSession(ctx context.Context, ds, sessionID, userID string) (
 	return requestValue[RawItem](ctx, c, http.MethodGet, path, queryStrings("user_id", userID), nil)
 }
 
+func (c *Client) RawSessionHistory(ctx context.Context, opts SessionHistoryOptions) (SessionHistoryResponse, error) {
+	q := queryStrings("dataset_id", opts.DatasetID, "session_id", opts.SessionID, "user_id", opts.UserID)
+	if opts.QAOffset > 0 {
+		q.Set("qa_offset", strconv.Itoa(opts.QAOffset))
+	}
+	if opts.TraceOffset > 0 {
+		q.Set("trace_offset", strconv.Itoa(opts.TraceOffset))
+	}
+	setPositive(q, "limit", opts.Limit)
+	return requestValue[SessionHistoryResponse](ctx, c, http.MethodGet, "/api/raw-records/session-history", q, nil)
+}
+
 func (c *Client) ListCommonMemory(ctx context.Context, opts KnowledgePageOptions) (KnowledgePage, error) {
 	return requestValue[KnowledgePage](ctx, c, http.MethodGet, "/api/common", opts.query(), nil)
 }

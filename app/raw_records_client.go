@@ -96,7 +96,7 @@ func shouldFallbackFromRawControlError(ctx context.Context, err error) bool {
 		return false
 	}
 	var ce *ControlResponseError
-	if errors.As(err, &ce) && (ce.Status == 401 || ce.Status == 403) {
+	if errors.As(err, &ce) && (ce.Status == 401 || ce.Status == 403 || ce.Status >= 500) {
 		return false
 	}
 	return true

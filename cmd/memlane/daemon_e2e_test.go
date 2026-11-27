@@ -329,16 +329,31 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	if rpc("initialize", nil)["protocolVersion"] != "2025-03-26" {
 		t.Fatal("invalid initialize result")
 	}
-	if list, ok := rpc("tools/list", nil)["tools"].([]any); !ok || len(list) != 3 {
+	if list, ok := rpc("tools/list", nil)["tools"].([]any); !ok || len(list) != 4 {
 		t.Fatal(list)
 	} else {
+		seenTools := map[string]bool{}
 		for _, raw := range list {
-			if asObject(t, raw)["name"] == "forget" {
+			name := fmt.Sprint(asObject(t, raw)["name"])
+			if name == "forget" {
 				t.Fatalf("MCP must not expose forget tool: %v", list)
+			}
+			seenTools[name] = true
+		}
+		for _, want := range []string{"remember", "recall", "health", "remember_status"} {
+			if !seenTools[want] {
+				t.Fatalf("MCP tools/list missing %q: %v", want, list)
 			}
 		}
 	}
 	remembered := tool("remember", map[string]any{"project_path": workspace, "content": "live MCP persisted document"})
+	if remembered["status"] != "saved" || remembered["saved"] != true || fmt.Sprint(remembered["task_id"]) == "" {
+		t.Fatalf("expected fast-path saved remember result: %v", remembered)
+	}
+	taskStatus := tool("remember_status", map[string]any{"task_id": remembered["task_id"]})
+	if taskStatus["status"] != "succeeded" || taskStatus["saved"] != true || taskStatus["document_id"] != remembered["document_id"] {
+		t.Fatalf("unexpected remember_status result: %v", taskStatus)
+	}
 	memory := tool("recall", map[string]any{"project_path": workspace, "query": "live MCP persisted document"})
 	found, ok := memory["hits"].([]any)
 	if !ok || len(found) != 1 || asObject(t, found[0])["document_id"] != remembered["document_id"] {

@@ -189,12 +189,19 @@ func TestJSONRPCProtocol(t *testing.T) {
 	reply = rpc(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 	var list struct{ Tools []toolDefinition }
 	requireOK(t, json.Unmarshal(reply.Result, &list))
-	if len(list.Tools) != 3 {
-		t.Fatalf("wrong tool list (expected 3 without forget): %+v", list)
+	if len(list.Tools) != 4 {
+		t.Fatalf("wrong tool list (expected 4 without forget): %+v", list)
 	}
+	names := make(map[string]bool, len(list.Tools))
 	for _, tool := range list.Tools {
 		if tool.Name == "forget" {
 			t.Fatalf("forget tool must not be exposed via MCP: %+v", list.Tools)
+		}
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"remember", "recall", "health", "remember_status"} {
+		if !names[want] {
+			t.Fatalf("missing expected MCP tool %q: %+v", want, list.Tools)
 		}
 	}
 }

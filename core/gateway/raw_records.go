@@ -342,18 +342,43 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 		query += " AND x.user_id=?"
 		args = append(args, user)
 	}
+	var sess rawItem
+	catalogFound := true
 	row, err := scanRaw(s.cfg.Store.DB().QueryRowContext(ctx, query+" ORDER BY x.user_id LIMIT 1", args...))
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		catalogFound = false
+		sess = rawItem{
+			DatasetID: ds,
+			SessionID: sid,
+			UserID:    user,
+		}
+		var fallbackAgent string
+		agentErr := s.cfg.Store.DB().QueryRowContext(ctx,
+			`SELECT agent_id FROM capture_inbox WHERE dataset_id=? AND session_id=? AND agent_id<>'' ORDER BY updated_at DESC LIMIT 1`,
+			ds, sid).Scan(&fallbackAgent)
+		if agentErr != nil && !errors.Is(agentErr, sql.ErrNoRows) {
+			writeDomainError(w, agentErr)
+			return
+		}
+		if agentErr == nil {
+			sess.AgentID = fallbackAgent
+		}
+	} else if err != nil {
 		writeDomainError(w, err)
 		return
+	} else {
+		sess = row.item
 	}
-	sess := row.item
 	history := engine.SessionHistoryResult{
 		QAs:    []engine.SessionQA{},
 		Traces: []engine.SessionTrace{},
 	}
+	historyAvailable := false
+	historyMissingReason := "expired_or_missing"
 	reader := s.sessionHistoryReader()
-	if reader != nil {
+	// Never query cache.db without a verified catalog_sessions row: an empty
+	// UserID would scan globally across datasets/users in cache.db.
+	if catalogFound && reader != nil {
 		readResult, readErr := reader.ReadSessionHistory(ctx, engine.SessionHistoryRequest{
 			UserID:      sess.UserID,
 			SessionID:   sess.SessionID,
@@ -367,6 +392,10 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if readErr == nil {
 			history = readResult
+			if history.MsgCount > 0 || history.ToolCalls > 0 || len(history.QAs) > 0 || len(history.Traces) > 0 {
+				historyAvailable = true
+				historyMissingReason = ""
+			}
 		}
 	}
 
@@ -400,7 +429,7 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]any{
+	resp := map[string]any{
 		"session_id":        sess.SessionID,
 		"dataset_id":        sess.DatasetID,
 		"user_id":           sess.UserID,
@@ -417,6 +446,7 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 		"traces":            history.Traces,
 		"msg_count":         history.MsgCount,
 		"tool_calls":        history.ToolCalls,
+		"history_available": historyAvailable,
 		"history_paging":    true,
 		"qa_offset":         qaOffset,
 		"trace_offset":      traceOffset,
@@ -425,7 +455,11 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 		"trace_more":        traceOffset+len(history.Traces) < history.ToolCalls,
 		"parent_label":      parentLabel,
 		"subagents":         subagents,
-	})
+	}
+	if !historyAvailable && historyMissingReason != "" {
+		resp["history_missing_reason"] = historyMissingReason
+	}
+	writeJSON(w, 200, resp)
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {

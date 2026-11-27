@@ -464,3 +464,137 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 		t.Fatalf("expected empty filtered graph_context to be omitted: %s", data)
 	}
 }
+
+func TestRememberDeterministicIdempotencyKeyWithoutSessionOrMessage(t *testing.T) {
+	store, eng := fixture(t)
+	configureScopes(t, store)
+	var keys []string
+	eng.ingest = func(_ context.Context, req engine.IngestRequest) (engine.IngestResult, error) {
+		keys = append(keys, req.IdempotencyKey)
+		return engine.IngestResult{OK: true, DocumentID: "doc-det"}, nil
+	}
+	h := newTestServer(t, Config{Store: store, Engine: eng})
+
+	first, msg := callTool(t, h, "remember", `{"project_id":"write","content":"retry safe note","context_date":"2026-11-27","metadata":{"b":2,"a":1}}`)
+	if msg != "" {
+		t.Fatalf("first remember failed: %s", msg)
+	}
+	second, msg := callTool(t, h, "remember", `{"project_id":"write","content":"retry safe note","context_date":"2026-11-27","metadata":{"a":1,"b":2}}`)
+	if msg != "" {
+		t.Fatalf("second remember failed: %s", msg)
+	}
+	var out1, out2 map[string]any
+	requireOK(t, json.Unmarshal(first, &out1))
+	requireOK(t, json.Unmarshal(second, &out2))
+	if out1["idempotency_key"] != out2["idempotency_key"] || !strings.HasPrefix(fmt.Sprint(out1["idempotency_key"]), "mcp:") {
+		t.Fatalf("expected identical deterministic mcp key, got %v vs %v", out1["idempotency_key"], out2["idempotency_key"])
+	}
+	if out2["deduplicated"] != true || len(keys) != 1 {
+		t.Fatalf("expected deduplicated replay with 1 ingest, got out2=%+v keys=%v", out2, keys)
+	}
+
+	third, msg := callTool(t, h, "remember", `{"project_id":"write","content":"different note","context_date":"2026-11-27","metadata":{"a":1,"b":2}}`)
+	if msg != "" {
+		t.Fatalf("third remember failed: %s", msg)
+	}
+	var out3 map[string]any
+	requireOK(t, json.Unmarshal(third, &out3))
+	if out3["idempotency_key"] == out1["idempotency_key"] || len(keys) != 2 {
+		t.Fatalf("different content must produce distinct key: %v vs %v", out3["idempotency_key"], out1["idempotency_key"])
+	}
+}
+
+func TestRememberStatusToolDirectACL(t *testing.T) {
+	store, eng := fixture(t)
+	configureScopes(t, store)
+	addAgent(t, store, domain.Agent{ID: "other", Name: "Other", DefaultAccess: domain.AccessMaintain}, "other-secret", 0o600)
+	ctx := t.Context()
+	item, err := store.EnqueueInboxItem(ctx, domain.CaptureInboxItem{
+		ID:          "task-direct-1",
+		ProjectID:   "write",
+		DatasetID:   "write-dataset",
+		AgentID:     "active",
+		SessionID:   "sess-1",
+		MessageID:   "msg-1",
+		CaptureKey:  "key-direct-1",
+		Kind:        string(engine.IngestKindDocument),
+		PayloadJSON: `{"content":"hello"}`,
+	})
+	requireOK(t, err)
+	h := newTestServer(t, Config{Store: store, Engine: eng})
+
+	// Empty task_id -> JSON-RPC Invalid params (-32602).
+	bad := rpc(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remember_status","arguments":{"task_id":"  "}}}`)
+	if bad.Error == nil || bad.Error.Code != -32602 {
+		t.Fatalf("expected -32602 for blank task_id, got %+v", bad)
+	}
+	// Owner with maintain access succeeds.
+	data, msg := callTool(t, h, "remember_status", fmt.Sprintf(`{"task_id":%q}`, item.ID))
+	if msg != "" {
+		t.Fatalf("remember_status owner failed: %s", msg)
+	}
+	var statusOut TaskStatusResult
+	requireOK(t, json.Unmarshal(data, &statusOut))
+	if !statusOut.OK || statusOut.TaskID != item.ID || statusOut.Status != "pending" || statusOut.Saved {
+		t.Fatalf("unexpected statusOut: %+v", statusOut)
+	}
+	// Another agent cannot read active's task even with maintain access.
+	otherRec := request(h, http.MethodPost, "/", "X-Api-Key", "other-secret",
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"remember_status","arguments":{"task_id":%q}}}`, item.ID))
+	status(t, otherRec, 200)
+	if !strings.Contains(otherRec.Body.String(), "Access denied") {
+		t.Fatalf("other agent should be denied: %s", otherRec.Body.String())
+	}
+	// Revoking active's project access denies status lookup.
+	allow(t, store, "project", "write", domain.AccessNone)
+	if _, msg := callTool(t, h, "remember_status", fmt.Sprintf(`{"task_id":%q}`, item.ID)); msg != "Access denied" {
+		t.Fatalf("revoked agent should be denied, got %q", msg)
+	}
+}
+
+func TestRememberR1SingleSidedSessionAndCanonicalJSON(t *testing.T) {
+	store, eng := fixture(t)
+	configureScopes(t, store)
+	var seen []engine.IngestRequest
+	eng.ingest = func(_ context.Context, req engine.IngestRequest) (engine.IngestResult, error) {
+		if req.IdempotencyKey == "engine-invalid" {
+			return engine.IngestResult{}, engine.ErrInvalidArgument
+		}
+		seen = append(seen, req)
+		return engine.IngestResult{OK: true, EntryID: fmt.Sprintf("e-%d", len(seen))}, nil
+	}
+	h := newTestServer(t, Config{Store: store, Engine: eng})
+
+	// 1. Single-sided session_id (no message_id) produces distinct keys across different sessions.
+	d1, msg1 := callTool(t, h, "remember", `{"project_id":"write","content":"same body","session_id":"sess-A"}`)
+	d2, msg2 := callTool(t, h, "remember", `{"project_id":"write","content":"same body","session_id":"sess-B"}`)
+	if msg1 != "" || msg2 != "" || len(seen) != 2 {
+		t.Fatalf("single-sided session_id should not collide: %q / %q / len=%d", msg1, msg2, len(seen))
+	}
+	var out1, out2 map[string]any
+	requireOK(t, json.Unmarshal(d1, &out1))
+	requireOK(t, json.Unmarshal(d2, &out2))
+	if out1["idempotency_key"] == out2["idempotency_key"] {
+		t.Fatalf("distinct session_ids produced identical key: %v", out1["idempotency_key"])
+	}
+
+	// 2. JSON object content with different key orders produces identical key & canonical payload (no ErrConflict).
+	beforeJSON := len(seen)
+	qa1, m1 := callTool(t, h, "remember", `{"project_id":"write","kind":"capture_qa","content":"{\"b\":2,\"a\":1}"}`)
+	qa2, m2 := callTool(t, h, "remember", `{"project_id":"write","kind":"capture_qa","content":"{\"a\":1,\"b\":2}"}`)
+	if m1 != "" || m2 != "" || len(seen) != beforeJSON+1 {
+		t.Fatalf("reordered JSON content should deduplicate cleanly: m1=%q m2=%q calls=%d", m1, m2, len(seen)-beforeJSON)
+	}
+	var qOut1, qOut2 map[string]any
+	requireOK(t, json.Unmarshal(qa1, &qOut1))
+	requireOK(t, json.Unmarshal(qa2, &qOut2))
+	if qOut1["idempotency_key"] != qOut2["idempotency_key"] || qOut2["deduplicated"] != true {
+		t.Fatalf("expected deduplicated canonical JSON replay: %+v vs %+v", qOut1, qOut2)
+	}
+
+	// 3. Engine invalid argument maps to JSON-RPC -32602 (Invalid params), not -32603.
+	bad := rpc(t, h, `{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":"remember","arguments":{"project_id":"write","content":"bad","idempotency_key":"engine-invalid"}}}`)
+	if bad.Error == nil || bad.Error.Code != -32602 {
+		t.Fatalf("engine.ErrInvalidArgument should map to -32602, got %+v", bad)
+	}
+}

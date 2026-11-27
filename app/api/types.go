@@ -355,6 +355,27 @@ type RawRecordsPage struct {
 	HasPrev    bool      `json:"has_prev"`
 }
 
+type SessionHistoryOptions struct {
+	DatasetID   string
+	SessionID   string
+	UserID      string
+	QAOffset    int
+	TraceOffset int
+	Limit       int
+}
+
+type SessionHistoryResponse struct {
+	SessionDetail
+	Paging      bool      `json:"history_paging"`
+	QAOffset    int       `json:"qa_offset"`
+	TraceOffset int       `json:"trace_offset"`
+	Limit       int       `json:"page_limit"`
+	QAMore      bool      `json:"qa_more"`
+	TraceMore   bool      `json:"trace_more"`
+	ParentLabel string    `json:"parent_label,omitempty"`
+	Subagents   []RawItem `json:"subagents,omitempty"`
+}
+
 type SaveCommonMemoryRequest struct {
 	Category *string `json:"common_category,omitempty"`
 	Title    *string `json:"title,omitempty"`

@@ -308,7 +308,8 @@ func TestGatewayWireParity(t *testing.T) {
 // core/engine/cognee from app/).
 type wireSessionEngine struct {
 	wireEngine
-	histories map[engine.SessionRef]engine.SessionHistoryResult
+	histories  map[engine.SessionRef]engine.SessionHistoryResult
+	historyErr map[string]error
 }
 
 var _ engine.SessionHistoryReader = (*wireSessionEngine)(nil)
@@ -327,6 +328,9 @@ func (e *wireSessionEngine) HydrateSessionsFromCache(_ context.Context, refs []e
 }
 
 func (e *wireSessionEngine) ReadSessionHistory(_ context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
+	if err, ok := e.historyErr[req.SessionID]; ok {
+		return engine.SessionHistoryResult{}, err
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -1539,4 +1543,172 @@ func TestGatewayWireParityGenerationActiveHandoffAndStartupError(t *testing.T) {
 		settingsGen.ActiveHandoff.Reference.ID != p2.ProfileID || settingsGen.ActiveHandoff.Reference.Revision != int64(p2.Revision) {
 		t.Fatalf("settings.GenerationDirectory active_handoff mismatch: %+v", settingsGen.ActiveHandoff)
 	}
+}
+
+func TestGatewayWireParityMissingSessionHistoryDegradation(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const (
+		token      = "wire-parity-missing-history-mgmt-token"
+		projectID  = "memlane"
+		datasetID  = "memlane-ds"
+		missingSID = "codex_expired-session-20261101"
+		prunedSID  = "antigravity-pruned-session-20261015"
+		brokenSID  = "codex_broken-cache-session"
+	)
+	tokenFile := filepath.Join(dir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(token), 0o600))
+
+	check(store.UpsertProject(ctx, domain.Project{
+		ID: projectID, Name: "memlane", DatasetID: datasetID, DatasetName: "memlane",
+		Aliases: []string{filepath.Join(dir, "memlane")}, Status: "verified", DesiredRevision: 1, AutoCapture: true,
+	}))
+	now := time.Now()
+	check(store.UpsertCatalogDoc(ctx, domain.CatalogDoc{
+		DatasetID: datasetID, DocID: "mem-1", Kind: "knowledge", DocName: "mem-1.md", DocLabel: "保留来源会话的记忆",
+		IsKnowledge: true, EffectiveDate: now.Format(time.DateOnly),
+		CreatedAtNS: domain.FormatUTCNS(now), CreatedAtRaw: domain.FormatUTCNS(now), ContentHash: "mem-1-hash",
+	}))
+	check(store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: datasetID, UserID: "owner-1", AgentID: "codex-agent", SessionID: missingSID,
+		Status: "active", IsTopLevel: true, SortTSDescKey: -100,
+	}))
+	check(store.UpsertCatalogSession(ctx, domain.CatalogSession{
+		DatasetID: datasetID, UserID: "owner-1", AgentID: "codex-agent", SessionID: brokenSID,
+		Status: "active", IsTopLevel: true, SortTSDescKey: -90,
+	}))
+	_, err = store.EnqueueInboxItem(ctx, domain.CaptureInboxItem{
+		ID: "pruned-source-task", ProjectID: projectID, DatasetID: datasetID, AgentID: "antigravity-agent",
+		SessionID: prunedSID, MessageID: "m-pruned", Kind: "capture_qa", PayloadJSON: `{"content":"x"}`,
+	})
+	check(err)
+
+	eng := &wireSessionEngine{
+		histories: map[engine.SessionRef]engine.SessionHistoryResult{},
+		historyErr: map[string]error{
+			missingSID: os.ErrNotExist,
+			prunedSID:  os.ErrNotExist,
+			brokenSID:  errors.New("sqlite read error"),
+		},
+	}
+	server, err := gateway.NewServer(gateway.Config{
+		Store: store, Engine: eng, ManagementToken: token,
+	})
+	check(err)
+
+	const gatewayURL = "http://127.0.0.1:61261"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	apiClient, err := api.NewClient(api.Config{BaseURL: gatewayURL, ManagementToken: token, HTTPClient: httpClient})
+	check(err)
+	control := ProjectControlClient{
+		Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		HTTP:   httpClient,
+	}
+
+	// 1. Direct app/api client decodes history_available=false, history_missing_reason, session_id, agent_id.
+	apiMissing, err := apiClient.RawSessionHistory(ctx, api.SessionHistoryOptions{
+		DatasetID: datasetID, SessionID: missingSID, UserID: "owner-1", Limit: 20,
+	})
+	check(err)
+	if apiMissing.HistoryAvailable == nil || *apiMissing.HistoryAvailable ||
+		apiMissing.HistoryMissingReason != "expired_or_missing" ||
+		apiMissing.ID != missingSID || apiMissing.Agent != "codex-agent" {
+		t.Fatalf("api.RawSessionHistory missing session mismatch: %+v", apiMissing)
+	}
+
+	apiPruned, err := apiClient.RawSessionHistory(ctx, api.SessionHistoryOptions{
+		DatasetID: datasetID, SessionID: prunedSID, Limit: 20,
+	})
+	check(err)
+	if apiPruned.HistoryAvailable == nil || *apiPruned.HistoryAvailable ||
+		apiPruned.HistoryMissingReason != "expired_or_missing" ||
+		apiPruned.ID != prunedSID || apiPruned.Agent != "antigravity-agent" {
+		t.Fatalf("api.RawSessionHistory pruned session mismatch: %+v", apiPruned)
+	}
+
+	// 2. Real read error returns HTTP 502, NOT masked as empty.
+	if _, err := apiClient.RawSessionHistory(ctx, api.SessionHistoryOptions{
+		DatasetID: datasetID, SessionID: brokenSID, UserID: "owner-1", Limit: 20,
+	}); err == nil {
+		t.Fatal("expected 502 error for broken session cache, got nil")
+	}
+
+	// 3. Desktop UI: jumping from a memory to a missing/pruned source session shows degraded card + session_id + Agent + return button.
+	a := New(Config{
+		ServiceURL:     gatewayURL,
+		ProjectControl: &ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		Projects:       []Project{{ID: projectID, Name: "memlane", Path: filepath.Join(dir, "memlane"), Dataset: datasetID}},
+	}, nil)
+	a.Client.HTTP = httpClient
+	a.syncSettingsTransport()
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.readingIdentity, _ = readingIdentity(a.Client)
+	a.page, a.kind = "知识", "知识"
+	updates := make(chan func(), 64)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(func() { a.cancelAndResetPanes() })
+
+	s := a.state()
+	mem := Item{
+		ID: "mem-1", Dataset: datasetID, Kind: "知识", Title: "保留来源会话的记忆",
+		Body: "记忆正文内容", BodyLoaded: true, Source: prunedSID,
+	}
+	s.Items = []Item{mem}
+	s.Loaded = true
+	s.Selected = &mem
+	s.Knowledge.Detail = true
+
+	a.source(s)
+	drainReading(t, updates, func() bool { return !s.Reading })
+	if s.Error != "" || s.Selected == nil || s.Selected.ID != prunedSID {
+		t.Fatalf("opening pruned source session failed: err=%q selected=%+v", s.Error, s.Selected)
+	}
+	tt := ui.NewTester(a.View, 1200, 820)
+	tt.Frame()
+
+	for _, want := range []string{
+		"未找到对应原始会话原文（可能已过期或未留存）",
+		"历史会话 ID",
+		prunedSID,
+		"来源 Agent",
+		"Agy",
+		"返回来源记忆",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("missing degraded session text %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("此会话尚无已保存的问答") || tt.HasText("问答 · 已加载 0 / 0") {
+		t.Fatalf("degraded session must not pretend to be an empty 0-record session: %v", tt.Texts())
+	}
+
+	// Returning to memory works cleanly.
+	clickProjectUI(t, tt, "返回来源记忆")
+	drainReading(t, updates, func() bool { return !s.Reading })
+	if s.Selected == nil || s.Selected.ID != "mem-1" || len(s.History) != 0 {
+		t.Fatalf("returnFromSource failed: selected=%+v history=%d", s.Selected, len(s.History))
+	}
+
+	// 4. Real 502 read failure on source session shows explicit "原文暂时无法读取" and preserves memory + source.
+	memBroken := mem
+	memBroken.Source = brokenSID
+	s.Selected = &memBroken
+	a.source(s)
+	drainReading(t, updates, func() bool { return !s.Reading })
+	if !strings.Contains(s.Error, "原文暂时无法读取") || s.Selected == nil || s.Selected.ID != "mem-1" {
+		t.Fatalf("expected explicit read failure keeping memory selected, got err=%q selected=%+v", s.Error, s.Selected)
+	}
+	_ = control
 }

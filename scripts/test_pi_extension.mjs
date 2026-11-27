@@ -101,6 +101,13 @@ try {
     assert.equal(calls.at(-1).params.name, name);
     assert.equal(calls.at(-1).params.arguments.project_path, root);
   }
+  const rememberEntry = extension.tools.get('cognee_remember');
+  const firstRemember = calls.find(c => c.path === '/mcp' && c.params?.name === 'remember');
+  assert.ok(typeof firstRemember.params.arguments.idempotency_key === 'string' && firstRemember.params.arguments.idempotency_key.startsWith('pi:'));
+  await (rememberEntry.definition ?? rememberEntry).execute('call-retry', { data: 'note' }, undefined, undefined, ctx);
+  assert.equal(calls.at(-1).params.arguments.idempotency_key, firstRemember.params.arguments.idempotency_key);
+  await (rememberEntry.definition ?? rememberEntry).execute('call-explicit', { data: 'note', idempotency_key: 'explicit-pi-key' }, undefined, undefined, ctx);
+  assert.equal(calls.at(-1).params.arguments.idempotency_key, 'explicit-pi-key');
   assert.ok(calls.every(c => c.token === 'synthetic-key'));
   const requests = calls.length;
   process.env.MEMLANE_PROCESSING_SESSION = '1';

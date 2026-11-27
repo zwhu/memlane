@@ -142,6 +142,7 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 	if err != nil {
 		return nil, errors.Join(err, profileService.Close(context.Background()))
 	}
+	mcpServer.SetRememberService(server.MCPRememberService())
 	return &GatewayStack{Gateway: server, Profiles: profileService}, nil
 }
 

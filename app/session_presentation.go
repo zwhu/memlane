@@ -108,3 +108,20 @@ func sessionReadableParentTitle(i Item) string {
 	}
 	return sessionIdentity(i.ID)
 }
+
+func sessionHistoryMissing(i Item) bool {
+	return i.Detail != nil && i.Detail.HistoryAvailable != nil && !*i.Detail.HistoryAvailable
+}
+
+func sessionSourceAgentDisplay(i Item) string {
+	name := sourceAgentName(i)
+	if name != "Agent 未记录" {
+		return name
+	}
+	if i.Session != nil {
+		if agent := strings.TrimSpace(i.Session.Agent); agent != "" {
+			return agent
+		}
+	}
+	return name
+}

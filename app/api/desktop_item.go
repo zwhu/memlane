@@ -44,11 +44,13 @@ type Trace struct {
 }
 type SessionDetail struct {
 	Session
-	Label     string  `json:"label"`
-	QAs       []QA    `json:"qas"`
-	Traces    []Trace `json:"traces"`
-	Count     int     `json:"msg_count"`
-	ToolCount int     `json:"tool_calls"`
+	Label                string  `json:"label"`
+	QAs                  []QA    `json:"qas"`
+	Traces               []Trace `json:"traces"`
+	Count                int     `json:"msg_count"`
+	ToolCount            int     `json:"tool_calls"`
+	HistoryAvailable     *bool   `json:"history_available,omitempty"`
+	HistoryMissingReason string  `json:"history_missing_reason,omitempty"`
 }
 type Item struct {
 	RecallStats                                                           *KnowledgeRecallStats

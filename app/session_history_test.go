@@ -7,6 +7,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -442,5 +444,85 @@ func TestSessionDetailStationaryPanelTabSwitchAndVirtualization(t *testing.T) {
 			tt.SetPreferences(ui.Preferences{ReduceMotion: true})
 			tt.Frame()
 		})
+	}
+}
+
+func TestSessionPaginationHandlesExpiredHistoryWithoutLegacyFallback(t *testing.T) {
+	legacyHit := false
+	legacyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		legacyHit = true
+		w.WriteHeader(500)
+	}))
+	defer legacyServer.Close()
+
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/raw-records/session-history" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session_id":             "codex_expiring-session",
+				"dataset_id":             "ds",
+				"user_id":                "owner",
+				"agent_id":               "codex-1",
+				"history_paging":         true,
+				"history_available":      false,
+				"history_missing_reason": "expired_or_missing",
+				"msg_count":              0,
+				"tool_calls":             0,
+				"qa_offset":              20,
+				"trace_offset":           0,
+				"page_limit":             20,
+				"qa_more":                false,
+				"trace_more":             false,
+				"qas":                    []any{},
+				"traces":                 []any{},
+			})
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer controlServer.Close()
+
+	tokenFile := filepath.Join(t.TempDir(), "mgmt.token")
+	if err := os.WriteFile(tokenFile, []byte("test-pagination-management-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(Config{
+		ServiceURL:     legacyServer.URL,
+		ProjectControl: &ProjectControlConfig{URL: controlServer.URL, ManagementTokenFile: tokenFile},
+	}, nil)
+	a.readingIdentity, _ = readingIdentity(a.Client)
+	updates := make(chan func(), 8)
+	a.Update = func(fn func()) { updates <- fn }
+
+	avail := true
+	prevPage := &SessionHistoryPage{
+		Paging: true,
+		Limit:  20,
+		QAMore: true,
+		SessionDetail: SessionDetail{
+			Session:          Session{ID: "codex_expiring-session", Dataset: "ds", User: "owner"},
+			Count:            40,
+			QAs:              []QA{{ID: "q0", Question: "stale question", Answer: "stale answer"}},
+			HistoryAvailable: &avail,
+		},
+	}
+	item := Item{
+		ID:      "codex_expiring-session",
+		Dataset: "ds",
+		Kind:    "会话",
+		Session: &Session{ID: "codex_expiring-session", Dataset: "ds", User: "owner"},
+		Detail:  &prevPage.SessionDetail,
+	}
+	s := &pane{Selected: &item, SourcePage: prevPage}
+	a.readSessionBatch(s, 20, 0, true)
+	drainReading(t, updates, func() bool { return !s.Reading })
+
+	if legacyHit {
+		t.Fatal("pagination on expired session must not fall back to legacy /api/v1/sessions route")
+	}
+	if s.Error != "" || s.Selected == nil || !sessionHistoryMissing(*s.Selected) {
+		t.Fatalf("expected clean missing-history transition, got err=%q selected=%+v", s.Error, s.Selected)
+	}
+	if len(s.Selected.Detail.QAs) != 0 || s.Selected.SessionSummary != "原始会话原文已过期或未留存" {
+		t.Fatalf("stale QAs or summary not cleared: qas=%d summary=%q", len(s.Selected.Detail.QAs), s.Selected.SessionSummary)
 	}
 }

@@ -117,6 +117,8 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 						v4SkeletonGroup(c, 3, 2, false, false)
 					})
 				})
+			case sessionHistoryMissing(*i) && !(paged && s.SessionSubagents && len(i.Subagents) > 0):
+				a.renderMissingSessionHistory(c, s, *i, scrollKey, scroll)
 			case i.Detail != nil:
 				rows := buildSessionDetailRows(a, s, *i, paged)
 				a.renderDetailRowList(c, s, *i, scrollKey, scroll, rows)
@@ -139,7 +141,7 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			}
 		})
 
-		_, canCopy := reading.CopyBody(i.Body, i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != ""), i.ReadingState == "unavailable")
+		_, canCopy := reading.CopyBody(i.Body, !sessionHistoryMissing(*i) && (i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != "")), i.ReadingState == "unavailable")
 		appFooter(c, "项目阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
 			if i.Kind == "知识" {
 				homeText(c, "Cognee 提供", homeMeta)
@@ -268,7 +270,7 @@ func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
 	ui.Row(c).Label("项目内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		agentLogo(c, recentAgentIcon(*i), 18)
-		status := sourceAgentName(*i)
+		status := sessionSourceAgentDisplay(*i)
 		if p, ok := a.current(); ok && p.Name != "" {
 			status += " · " + p.Name
 		}
@@ -328,9 +330,35 @@ func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
 	if s.Error != "" {
 		homeText(c, "内容未刷新 · "+s.Error, homeMeta)
 	}
-	if paged {
+	if paged && (!sessionHistoryMissing(*i) || len(i.Subagents) > 0) {
 		a.sessionHistoryControls(c, s, *i)
 	}
+}
+
+func (a *App) renderMissingSessionHistory(c *ui.Context, s *pane, i Item, scrollKey string, scroll *ui.ScrollState) {
+	agentLabel := sessionSourceAgentDisplay(i)
+	ui.Scroll(c.Key("project-detail-scroll-"+scrollKey)).Grow(1).MinHeight(0).FillWidth().TrackScroll(scroll).Padding(sp4, sp10, sp8, sp10).Children(func() {
+		ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp4).Children(func() {
+			ui.Column(c).FillWidth().Padding(sp4).Gap(sp3).Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
+				ui.Text(c, "未找到对应原始会话原文（可能已过期或未留存）").Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).LineHeight(1.5)
+				ui.Column(c).FillWidth().Gap(sp2).Children(func() {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						homeText(c, "历史会话 ID", homeMeta).Shrink(0)
+						row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
+						row.Children(func() {
+							ui.Text(c, i.ID).Font("ui-monospace").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().MinWidth(0).Tooltip(i.ID)
+							hoverCopyAction(c, row, "复制历史会话 ID", func() { c.WriteClipboard(i.ID); a.copyFeedback("历史会话 ID") })
+						})
+					})
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						homeText(c, "来源 Agent", homeMeta).Shrink(0)
+						ui.Text(c, agentLabel).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine()
+					})
+				})
+			})
+			a.projectDetailTail(c, s, &i)
+		})
+	})
 }
 
 func (a *App) projectDetailTail(c *ui.Context, s *pane, i *Item) {

@@ -45,8 +45,16 @@ func sessionCopyBody(s *pane, item Item) string {
 }
 
 func validateSessionHistoryPage(page SessionHistoryPage, dataset, sessionID, user string, qa, trace int) error {
-	if page.ID != sessionID || page.Dataset != dataset || (user != "" && page.User != user) || !page.Paging ||
-		page.QAOffset != qa || page.TraceOffset != trace || page.Limit != 20 ||
+	if page.ID != sessionID || page.Dataset != dataset || (user != "" && page.User != user) || !page.Paging {
+		return fmt.Errorf("来源会话身份或分页结果已变化")
+	}
+	if page.HistoryAvailable != nil && !*page.HistoryAvailable {
+		if page.Count != 0 || page.ToolCount != 0 || len(page.QAs) != 0 || len(page.Traces) != 0 || page.QAMore || page.TraceMore {
+			return fmt.Errorf("来源会话身份或分页结果已变化")
+		}
+		return nil
+	}
+	if page.QAOffset != qa || page.TraceOffset != trace || page.Limit != 20 ||
 		page.Count < qa || page.ToolCount < trace ||
 		len(page.QAs) != min(20, page.Count-qa) || len(page.Traces) != min(20, page.ToolCount-trace) ||
 		page.QAMore != (qa+len(page.QAs) < page.Count) || page.TraceMore != (trace+len(page.Traces) < page.ToolCount) {
@@ -70,6 +78,9 @@ func mergeSessionHistoryMeta(item *Item, page SessionHistoryPage, refreshChildre
 		}
 		if sess.NestingDepth == 0 && prevSess != nil {
 			sess.NestingDepth = prevSess.NestingDepth
+		}
+		if sess.Agent == "" && prevSess != nil {
+			sess.Agent = prevSess.Agent
 		}
 		item.Session = &sess
 	}
@@ -96,7 +107,11 @@ func sessionItemFromHistoryPage(item Item, page SessionHistoryPage) (Item, *Sess
 	}
 	mergeSessionHistoryMeta(&item, page, true)
 	item.Detail, item.Body = &page.SessionDetail, sessionPageBody(page.SessionDetail)
-	item.SessionSummary = sessionCoverage(page.SessionDetail)
+	if page.HistoryAvailable != nil && !*page.HistoryAvailable {
+		item.SessionSummary = "原始会话原文已过期或未留存"
+	} else {
+		item.SessionSummary = sessionCoverage(page.SessionDetail)
+	}
 	item.ReadingState = "ready"
 	if page.Label != "" {
 		item.Title = sessionTitle(page.Label)
@@ -205,6 +220,17 @@ func (a *App) readSessionBatch(s *pane, qa, trace int, appendRows bool) {
 					s.SourcePage = nil
 				}
 				a.handleReadingFailure(item, err)
+				return
+			}
+			if page.HistoryAvailable != nil && !*page.HistoryAvailable {
+				page.QAs, page.Traces = nil, nil
+				page.QAOffset, page.TraceOffset = 0, 0
+				page.QAMore, page.TraceMore = false, false
+				mergeSessionHistoryMeta(&item, page, qa == 0 && trace == 0)
+				item.Detail, item.Body = &page.SessionDetail, ""
+				item.SessionSummary = "原始会话原文已过期或未留存"
+				s.SessionTools = false
+				s.Selected, s.SourcePage = &item, &page
 				return
 			}
 			if appendRows && s.SourcePage != nil {

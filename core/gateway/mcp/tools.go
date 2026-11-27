@@ -49,6 +49,9 @@ func (s *Server) memoryTools() []tool {
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
 		}, "query")}, s.recall},
 		{toolDefinition{"health", "Show engine health and authorized scopes.", schema(map[string]any{})}, s.health},
+		{toolDefinition{"remember_status", "Check the status of a previously submitted remember task.", schema(map[string]any{
+			"task_id": text,
+		}, "task_id")}, s.rememberStatus},
 	}
 }
 
@@ -136,6 +139,47 @@ func hash(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func canonicalRememberContent(raw string, kind engine.IngestKind) (any, any) {
+	if kind != engine.IngestKindDocument && object(json.RawMessage(raw)) && json.Valid([]byte(raw)) {
+		var parsed any
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&parsed); err == nil {
+			if canonicalJSON, err := json.Marshal(parsed); err == nil {
+				return parsed, json.RawMessage(canonicalJSON)
+			}
+			return parsed, json.RawMessage(raw)
+		}
+	}
+	return raw, raw
+}
+
+func deterministicRememberKey(agentID, receiptUser, datasetID string, args rememberArgs, canonicalContent any) string {
+	if key := strings.TrimSpace(args.IdempotencyKey); key != "" {
+		return key
+	}
+	if args.SessionID != "" && args.MessageID != "" {
+		identity, _ := json.Marshal([]string{receiptUser, datasetID, args.SessionID, args.MessageID, string(args.Kind)})
+		return "mcp:" + hash(identity)
+	}
+	var canonicalMeta any
+	if len(args.Metadata) > 0 {
+		canonicalMeta = args.Metadata
+	}
+	identity, _ := json.Marshal([]any{
+		agentID,
+		receiptUser,
+		datasetID,
+		string(args.Kind),
+		args.SessionID,
+		args.MessageID,
+		canonicalContent,
+		strings.TrimSpace(args.ContextDate),
+		canonicalMeta,
+	})
+	return "mcp:" + hash(identity)
+}
+
 func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawMessage) (any, error) {
 	var args rememberArgs
 	if json.Unmarshal(raw, &args) != nil || strings.TrimSpace(args.Content) == "" {
@@ -158,18 +202,32 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 	if receiptUser == "" {
 		receiptUser = agent.ID
 	}
-	key := args.IdempotencyKey
-	if key == "" && args.SessionID != "" && args.MessageID != "" {
-		identity, _ := json.Marshal([]string{receiptUser, project.DatasetID, args.SessionID, args.MessageID, string(args.Kind)})
-		key = "mcp:" + hash(identity)
-	}
-	if key == "" {
-		key = "mcp:" + randomID()
-	}
-	var content any = args.Content
+	canonicalForKey, content := canonicalRememberContent(args.Content, args.Kind)
+	var rawContent any
 	if args.Kind != engine.IngestKindDocument && object(json.RawMessage(args.Content)) && json.Valid([]byte(args.Content)) {
-		content = json.RawMessage(args.Content)
+		rawContent = json.RawMessage(args.Content)
 	}
+	key := deterministicRememberKey(agent.ID, receiptUser, project.DatasetID, args, canonicalForKey)
+	if svc := s.rememberService(); svc != nil {
+		return svc.Remember(ctx, RememberRequest{
+			Agent:          agent,
+			Project:        project,
+			UserID:         userID,
+			ReceiptUser:    receiptUser,
+			Kind:           args.Kind,
+			Content:        content,
+			RawContent:     rawContent,
+			SessionID:      args.SessionID,
+			MessageID:      args.MessageID,
+			IdempotencyKey: key,
+			ContextDate:    args.ContextDate,
+			Metadata:       args.Metadata,
+		})
+	}
+	return s.rememberDirect(ctx, project, userID, receiptUser, key, content, args)
+}
+
+func (s *Server) rememberDirect(ctx context.Context, project domain.Project, userID, receiptUser, key string, content any, args rememberArgs) (any, error) {
 	session := args.SessionID
 	if session == "" && args.Kind != engine.IngestKindDocument {
 		session = key
@@ -194,10 +252,10 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 	if err != nil {
 		return nil, err
 	}
-	reply := map[string]any{"ok": true, "idempotency_key": key, "dataset_id": project.DatasetID}
+	reply := map[string]any{"ok": true, "status": "saved", "saved": true, "idempotency_key": key, "dataset_id": project.DatasetID}
 	switch state {
 	case "saved":
-		reply["entry_id"], reply["deduplicated"] = prior.EntryID, true
+		reply["entry_id"], reply["document_id"], reply["deduplicated"] = prior.EntryID, prior.EntryID, true
 		return reply, nil
 	case "reserved":
 	default:
@@ -220,4 +278,61 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 	}
 	reply["entry_id"], reply["document_id"], reply["deduplicated"] = entryID, result.DocumentID, result.Deduplicated
 	return reply, nil
+}
+
+func (s *Server) rememberStatus(ctx context.Context, agent domain.Agent, raw json.RawMessage) (any, error) {
+	var args struct {
+		TaskID string `json:"task_id"`
+	}
+	if json.Unmarshal(raw, &args) != nil || strings.TrimSpace(args.TaskID) == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+	taskID := strings.TrimSpace(args.TaskID)
+	if svc := s.rememberService(); svc != nil {
+		return svc.LookupTask(ctx, agent, taskID)
+	}
+	return s.lookupTaskDirect(ctx, agent, taskID)
+}
+
+func (s *Server) lookupTaskDirect(ctx context.Context, agent domain.Agent, taskID string) (TaskStatusResult, error) {
+	item, err := s.cfg.Store.GetInboxItem(ctx, taskID)
+	if err != nil {
+		return TaskStatusResult{}, err
+	}
+	if item.AgentID != agent.ID {
+		return TaskStatusResult{}, domain.ErrForbidden
+	}
+	project, err := s.cfg.Store.GetProject(ctx, item.ProjectID)
+	if err != nil {
+		return TaskStatusResult{}, domain.ErrForbidden
+	}
+	if protected(project) {
+		return TaskStatusResult{}, domain.ErrForbidden
+	}
+	acl, err := s.cfg.Store.EvaluateProjectACL(ctx, project.ID, agent.ID)
+	if err != nil {
+		return TaskStatusResult{}, err
+	}
+	if acl.Access != domain.AccessRead && acl.Access != domain.AccessMaintain {
+		return TaskStatusResult{}, domain.ErrForbidden
+	}
+	var entryID string
+	if item.CaptureKey != "" {
+		if receipt, err := s.cfg.Store.GetCaptureReceipt(ctx, item.CaptureKey); err == nil {
+			entryID = receipt.EntryID
+		}
+	}
+	return TaskStatusResult{
+		OK:             true,
+		TaskID:         item.ID,
+		ProjectID:      item.ProjectID,
+		DatasetID:      item.DatasetID,
+		Status:         item.Status,
+		Saved:          item.Status == "succeeded",
+		EntryID:        entryID,
+		DocumentID:     entryID,
+		IdempotencyKey: item.CaptureKey,
+		LastError:      item.LastError,
+		UpdatedAt:      item.UpdatedAt,
+	}, nil
 }
