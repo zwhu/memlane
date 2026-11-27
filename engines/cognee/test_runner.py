@@ -113,7 +113,8 @@ class SetupTests(unittest.IsolatedAsyncioTestCase):
                                                    'checks': 'liveness_only'})
                 self.assertEqual(response.headers['cache-control'], 'no-store')
             for method, path in (('GET', '/internal/v1/health'), ('GET', '/internal/v1/model/status'),
-                                 ('POST', '/internal/v1/model/apply'), ('POST', '/api/v1/agents/create'),
+                                 ('POST', '/internal/v1/model/apply'), ('POST', '/internal/v1/datasets'),
+                                 ('POST', '/api/v1/agents/create'),
                                  ('GET', '/api/v1/datasets/id/data/count')):
                 self.assertEqual((await client.request(method, path)).json(), {'downstream': True})
             for path in ('/internal/v1/items', '/api/v1/permissions//x', '/api/v1/permissions/%2e/x',

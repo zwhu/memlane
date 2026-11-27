@@ -334,10 +334,14 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 	configureScopes(t, store)
 	allow(t, store, "common", "common", domain.AccessRead)
 
+	var mu sync.Mutex
 	var requests []engine.SearchRequest
 	var nextGC *engine.GraphSearchContext
 	eng.search = func(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
+		mu.Lock()
 		requests = append(requests, req)
+		gc := nextGC
+		mu.Unlock()
 		return engine.SearchResult{
 			OK: true,
 			Hits: []engine.SearchHit{
@@ -345,7 +349,7 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 				{DatasetID: "write-dataset", DocumentID: "doc-1", Title: "Note", Snippet: "Body"},
 				{DatasetID: "write-code", DocumentID: "code-1", Title: "Code", Snippet: "Func"},
 			},
-			GraphContext: nextGC,
+			GraphContext: gc,
 		}, nil
 	}
 	h := newTestServer(t, Config{Store: store, Engine: eng})
@@ -382,13 +386,29 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 		{`{"project_id":"write","query":"auth","mode":"chunks"}`, engine.SearchModeChunks, "write-dataset"},
 		{`{"project_id":"write","query":"auth","mode":"code"}`, engine.SearchModeCode, "write-code"},
 	} {
+		mu.Lock()
+		before := len(requests)
+		mu.Unlock()
 		data, msg := callTool(t, h, "recall", tc.args)
 		if msg != "" {
 			t.Fatalf("%s failed: %s", tc.args, msg)
 		}
-		req := requests[len(requests)-1]
-		if req.Mode != tc.wantMode || len(req.Scopes) == 0 || req.Scopes[0].DatasetID != tc.wantScope {
-			t.Fatalf("%s -> req=%+v, want mode=%q firstScope=%q", tc.args, req, tc.wantMode, tc.wantScope)
+		mu.Lock()
+		batch := append([]engine.SearchRequest(nil), requests[before:]...)
+		mu.Unlock()
+		matchedScope := false
+		for _, req := range batch {
+			if req.Mode != tc.wantMode || len(req.Scopes) == 0 {
+				t.Fatalf("%s -> req=%+v, want mode=%q", tc.args, req, tc.wantMode)
+			}
+			for _, sc := range req.Scopes {
+				if sc.DatasetID == tc.wantScope {
+					matchedScope = true
+				}
+			}
+		}
+		if !matchedScope {
+			t.Fatalf("%s -> batch=%+v, want scope=%q", tc.args, batch, tc.wantScope)
 		}
 		var out map[string]any
 		requireOK(t, json.Unmarshal(data, &out))
@@ -401,16 +421,22 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 	}
 
 	// 3. Invalid mode returns JSON-RPC Invalid params (-32602) without invoking engine.
+	mu.Lock()
 	beforeInvalid := len(requests)
+	mu.Unlock()
 	badReply := rpc(t, h, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"recall","arguments":{"project_id":"write","query":"auth","mode":"invalid"}}}`)
 	if badReply.Error == nil || badReply.Error.Code != -32602 {
 		t.Fatalf("invalid mode reply = %+v, want -32602", badReply)
 	}
-	if len(requests) != beforeInvalid {
+	mu.Lock()
+	afterInvalid := len(requests)
+	mu.Unlock()
+	if afterInvalid != beforeInvalid {
 		t.Fatal("invalid mode reached engine")
 	}
 
 	// 4. GraphContext strictly filters unauthorized datasets including chunk/graph conflicts.
+	mu.Lock()
 	nextGC = &engine.GraphSearchContext{
 		Entities: []engine.GraphSearchEntity{
 			{DatasetID: "hidden-dataset", Name: "HiddenEntity", Conflicts: []string{"hidden-only-conflict"}},
@@ -434,6 +460,7 @@ func TestRecallModesAndAuthorizedGraphContext(t *testing.T) {
 		},
 		DegradedToChunks: true,
 	}
+	mu.Unlock()
 	data, msg := callTool(t, h, "recall", `{"project_id":"write","query":"auth","mode":"hybrid"}`)
 	if msg != "" {
 		t.Fatalf("recall with graph_context failed: %s", msg)

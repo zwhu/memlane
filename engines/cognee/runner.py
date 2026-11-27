@@ -323,7 +323,7 @@ def setup_request_allowed(method, path):
     if '//' in path or any(part in ('.', '..') for part in path.split('/')):
         return False
     if (method, path) in {('GET', '/internal/v1/health'), ('GET', '/internal/v1/model/status'),
-                           ('POST', '/internal/v1/model/apply')}:
+                           ('POST', '/internal/v1/model/apply'), ('POST', '/internal/v1/datasets')}:
         return True
     if method == 'GET' and path.rstrip('/') in ('/health', '/api/v1/users/me'):
         return True
