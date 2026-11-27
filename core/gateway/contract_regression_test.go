@@ -1220,3 +1220,141 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 		t.Fatalf("unexpected agent-claude connection row: %+v", claudeRow)
 	}
 }
+
+func TestContractConnectionsTraeXCLIHooksDetection(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	traexBin := writeSyntheticExecutable(t, filepath.Join(binDir, "traecli"))
+	profileDir := filepath.Join(home, ".trae")
+	if err := os.MkdirAll(filepath.Join(profileDir, "cli"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := newContractMockEngine()
+	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.UpsertAgent(ctx, domain.Agent{
+		ID: "agent-traex", Kind: agents.HostTraeX, Name: "TRAE CLI", PrincipalID: "u-traex", DefaultAccess: domain.AccessMaintain,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          eng,
+		Projector:       eng,
+		ManagementToken: contractMgmtToken,
+		DiscoveryOptions: agents.DiscoveryOptions{
+			Home:  home,
+			Kinds: []string{agents.HostTraeX},
+			LookPath: func(name string) (string, error) {
+				if name == "traecli" {
+					return traexBin, nil
+				}
+				return "", errors.New("not found")
+			},
+			Environ: func(string) string { return "" },
+			RuntimeOverrides: map[string]agents.HostOverride{
+				agents.HostTraeX: {Executable: traexBin, ProfileDir: profileDir},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	fetchTraeX := func() map[string]any {
+		t.Helper()
+		code, resp := doHTTPJSON(t, srv, http.MethodGet, "/api/connections", "", mgmtHeaders())
+		if code != http.StatusOK {
+			t.Fatalf("GET /api/connections = %d: %+v", code, resp)
+		}
+		for _, raw := range resp["connections"].([]any) {
+			row := raw.(map[string]any)
+			if row["instance_id"] == "agent-traex" {
+				return row
+			}
+		}
+		t.Fatalf("agent-traex missing from connections: %+v", resp)
+		return nil
+	}
+
+	const memlaneHooks = `{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18174' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`
+	const thirdPartyHooks = `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/opt/flux/flux-hook stop"}]}]}}`
+	legacyPath := filepath.Join(profileDir, "hooks.json")
+	cliPath := filepath.Join(profileDir, "cli", "hooks.json")
+
+	// 1. Third-party hooks only in both files -> registered, needs_hook_repair=false.
+	if err := os.WriteFile(legacyPath, []byte(thirdPartyHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cliPath, []byte(thirdPartyHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row := fetchTraeX()
+	if row["status"] != "registered" || row["needs_hook_repair"] != false || row["capture"] != nil || row["environment_verified"] != nil {
+		t.Fatalf("third-party-only traex row mismatch: %+v", row)
+	}
+
+	// 2. Memlane hook ONLY in deprecated ~/.trae/hooks.json (not in cli/hooks.json) -> NOT active, needs_hook_repair=true.
+	if err := os.WriteFile(legacyPath, []byte(memlaneHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row = fetchTraeX()
+	if row["status"] != "registered" || row["needs_hook_repair"] != true || row["capture"] != nil || row["environment_verified"] != nil {
+		t.Fatalf("deprecated-only traex hook must not report active and must request repair: %+v", row)
+	}
+
+	// 3. Memlane hook in BOTH cli/hooks.json and deprecated hooks.json -> configured, still needs_hook_repair=true to clean deprecated file.
+	if err := os.WriteFile(cliPath, []byte(memlaneHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row = fetchTraeX()
+	capState, _ := row["capture"].(map[string]any)
+	if row["status"] != "configured_pending_new_session" || row["needs_hook_repair"] != true || capState == nil || capState["state"] != "waiting_session" {
+		t.Fatalf("dual cli+deprecated traex hook row mismatch: %+v", row)
+	}
+
+	// 4. Memlane hook in cli/hooks.json and deprecated hooks.json cleaned (third-party only) -> configured, needs_hook_repair=false.
+	if err := os.WriteFile(legacyPath, []byte(thirdPartyHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row = fetchTraeX()
+	capState, _ = row["capture"].(map[string]any)
+	if row["status"] != "configured_pending_new_session" || row["needs_hook_repair"] != false || capState == nil || capState["state"] != "waiting_session" {
+		t.Fatalf("clean cli/hooks.json traex row mismatch: %+v", row)
+	}
+
+	// 5. With a saved capture receipt: cli/hooks.json verifies environment; reverting to deprecated-only drops environment_verified and flags repair.
+	if _, _, err := store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "traex-key-1", UserID: "u-traex", DatasetID: "ds-traex", SessionID: "sess-traex-1",
+		MessageID: "m-traex-1", PayloadSHA256: "sha-traex-1", EntryType: "capture_qa",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkCaptureReceiptSaved(ctx, "traex-key-1", "entry-traex-1"); err != nil {
+		t.Fatal(err)
+	}
+	row = fetchTraeX()
+	capState, _ = row["capture"].(map[string]any)
+	if row["status"] != "configured_pending_new_session" || row["needs_hook_repair"] != false ||
+		row["environment_verified"] != true || row["plugin_version"] != "memlane-hook" ||
+		capState == nil || capState["state"] != "healthy" {
+		t.Fatalf("healthy cli/hooks.json traex row mismatch: %+v", row)
+	}
+
+	if err := os.WriteFile(cliPath, []byte(thirdPartyHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte(memlaneHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	row = fetchTraeX()
+	if row["needs_hook_repair"] != true || row["environment_verified"] != nil || row["plugin_version"] != nil {
+		t.Fatalf("deprecated-only traex with old receipt must not verify environment and must flag repair: %+v", row)
+	}
+}

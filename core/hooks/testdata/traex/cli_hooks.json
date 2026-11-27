@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/synthetic/flux/bin/flux-hook session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/synthetic/flux/bin/flux-hook stop"
+          },
+          {
+            "type": "command",
+            "command": "/synthetic/axis/bin/axis-chat-log-hook"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -565,3 +565,227 @@ func TestContractCodexAndTraeIDELegacyMigration(t *testing.T) {
 		}
 	})
 }
+
+func TestContractTraeXCLIPathAndLegacyMigration(t *testing.T) {
+	t.Run("clean install writes cli/hooks.json and traecli.toml without creating root hooks.json", func(t *testing.T) {
+		profileDir := t.TempDir()
+		keyFile := writePrivateKey(t, t.TempDir())
+		opts := hooks.InstallOptions{
+			Host:       hooks.HostTraeX,
+			ProfileDir: profileDir,
+			BinaryPath: syntheticBinaryPath,
+			GatewayURL: syntheticGatewayURL,
+			KeyFile:    keyFile,
+		}
+		preview, err := hooks.InstallHostConfig(opts)
+		if err != nil || preview.Blocked || preview.Applied || len(preview.Previews) != 2 {
+			t.Fatalf("clean preview failed: res=%+v err=%v", preview, err)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "cli", "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("preview must not create cli/hooks.json, stat err=%v", err)
+		}
+
+		opts.Apply = true
+		res, err := hooks.InstallHostConfig(opts)
+		if err != nil || res.Blocked || !res.Applied || len(res.Previews) != 2 {
+			t.Fatalf("clean apply failed: res=%+v err=%v", res, err)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clean traex install must not create deprecated root hooks.json, stat err=%v", err)
+		}
+		cliHooksRaw, err := os.ReadFile(filepath.Join(profileDir, "cli", "hooks.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cliDoc, err := agents.ParseJSONC(cliHooksRaw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		groups, ok := cliDoc["hooks"].(map[string]any)
+		if !ok || len(groups) != 7 {
+			t.Fatalf("expected 7 events in cli/hooks.json, got: %s", cliHooksRaw)
+		}
+		for _, event := range []string{
+			hooks.SessionStart, hooks.UserPromptSubmit, hooks.PostToolUse,
+			hooks.PostToolUseFailure, hooks.Stop, hooks.PreCompact, hooks.SessionEnd,
+		} {
+			if _, exists := groups[event]; !exists || !strings.Contains(string(cliHooksRaw), "hook traex "+event) {
+				t.Fatalf("cli/hooks.json missing event %s:\n%s", event, cliHooksRaw)
+			}
+		}
+
+		repeat, err := hooks.InstallHostConfig(opts)
+		if err != nil || len(repeat.Previews) != 0 {
+			t.Fatalf("expected idempotent traex reinstall, got previews=%d err=%v", len(repeat.Previews), err)
+		}
+
+		if _, err := hooks.UninstallHostConfig(opts); err != nil {
+			t.Fatalf("traex uninstall failed: %v", err)
+		}
+		afterRaw, err := os.ReadFile(filepath.Join(profileDir, "cli", "hooks.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(afterRaw), "memlane-hook") || strings.Contains(string(afterRaw), "hook traex ") {
+			t.Fatalf("managed hook remained in cli/hooks.json after uninstall:\n%s", afterRaw)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("traex uninstall must not create deprecated root hooks.json, stat err=%v", err)
+		}
+	})
+
+	t.Run("migrates legacy root hooks.json and installs cli/hooks.json while preserving third-party hooks", func(t *testing.T) {
+		profileDir := t.TempDir()
+		keyFile := writePrivateKey(t, t.TempDir())
+		cliHooksPath := filepath.Join(profileDir, "cli", "hooks.json")
+		legacyHooksPath := filepath.Join(profileDir, "hooks.json")
+		tomlPath := filepath.Join(profileDir, "traecli.toml")
+
+		origCLIHooks := copyFixture(t, "traex/cli_hooks.json", cliHooksPath)
+		origLegacyHooks := copyFixture(t, "traex/legacy_hooks.json", legacyHooksPath)
+		origTOML := copyFixture(t, "traex/legacy_traecli.toml", tomlPath)
+
+		opts := hooks.InstallOptions{
+			Host:       hooks.HostTraeX,
+			ProfileDir: profileDir,
+			BinaryPath: syntheticBinaryPath,
+			GatewayURL: syntheticGatewayURL,
+			KeyFile:    keyFile,
+		}
+		preview, err := hooks.InstallHostConfig(opts)
+		if err != nil || preview.Blocked || preview.Applied || len(preview.Previews) != 3 {
+			t.Fatalf("migration preview failed: res=%+v err=%v", preview, err)
+		}
+		if raw, err := os.ReadFile(cliHooksPath); err != nil || string(raw) != string(origCLIHooks) {
+			t.Fatalf("preview mutated cli/hooks.json")
+		}
+		if raw, err := os.ReadFile(legacyHooksPath); err != nil || string(raw) != string(origLegacyHooks) {
+			t.Fatalf("preview mutated legacy hooks.json")
+		}
+		if raw, err := os.ReadFile(tomlPath); err != nil || string(raw) != string(origTOML) {
+			t.Fatalf("preview mutated traecli.toml")
+		}
+
+		opts.Apply = true
+		res, err := hooks.InstallHostConfig(opts)
+		if err != nil || res.Blocked || !res.Applied || len(res.Previews) != 3 {
+			t.Fatalf("migration apply failed: res=%+v err=%v", res, err)
+		}
+
+		// cli/hooks.json contains native Memlane hooks plus preserved Flux Island and axis-chat-log-hook.
+		cliRaw, err := os.ReadFile(cliHooksPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cliText := string(cliRaw)
+		for _, keep := range []string{
+			"/synthetic/flux/bin/flux-hook session-start",
+			"/synthetic/flux/bin/flux-hook stop",
+			"/synthetic/axis/bin/axis-chat-log-hook",
+			"hook traex SessionStart",
+			"hook traex Stop",
+			"hook traex PreCompact",
+			"hook traex SessionEnd",
+		} {
+			if !strings.Contains(cliText, keep) {
+				t.Fatalf("expected %q in cli/hooks.json:\n%s", keep, cliText)
+			}
+		}
+
+		// Deprecated root hooks.json has all Memlane and legacy memlane-cognee hooks stripped while keeping third-party hooks.
+		legacyRaw, err := os.ReadFile(legacyHooksPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyText := string(legacyRaw)
+		if !strings.Contains(legacyText, "/synthetic/user-tools/keep-legacy-hook.sh") {
+			t.Fatalf("unrelated third-party hook lost from deprecated hooks.json:\n%s", legacyText)
+		}
+		for _, gone := range []string{"memlane-hook", "hook traex ", "/memlane-cognee/"} {
+			if strings.Contains(legacyText, gone) {
+				t.Fatalf("deprecated hooks.json still contains %q:\n%s", gone, legacyText)
+			}
+		}
+
+		// traecli.toml migrates legacy memlane-cognee MCP/plugin to stdio while keeping user config.
+		tomlRaw, err := os.ReadFile(tomlPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tomlText := string(tomlRaw)
+		if strings.Contains(tomlText, "memlane-cognee") {
+			t.Fatalf("legacy memlane-cognee remained in traecli.toml:\n%s", tomlText)
+		}
+		tomlDoc, err := agents.ParseTOML(tomlRaw)
+		if err != nil {
+			t.Fatalf("ParseTOML migrated traecli.toml: %v\n%s", err, tomlText)
+		}
+		if tomlDoc["model"] != "doubao-seed-code" {
+			t.Fatalf("model lost from traecli.toml: %+v", tomlDoc)
+		}
+		servers, _ := tomlDoc["mcp_servers"].(map[string]any)
+		userTools, _ := servers["user_tools"].(map[string]any)
+		memlaneSrv, _ := servers["memlane"].(map[string]any)
+		if userTools["url"] != "http://127.0.0.1:9920/mcp" || memlaneSrv["command"] != syntheticBinaryPath {
+			t.Fatalf("unexpected mcp_servers in traecli.toml: %+v", servers)
+		}
+		plugins, _ := tomlDoc["plugins"].(map[string]any)
+		fluxPlugin, _ := plugins["flux"].(map[string]any)
+		if fluxPlugin["enabled"] != true || len(plugins) != 1 {
+			t.Fatalf("expected only unrelated plugins.flux preserved, got: %+v", plugins)
+		}
+
+		// Idempotent reinstall produces zero previews.
+		repeat, err := hooks.InstallHostConfig(opts)
+		if err != nil || len(repeat.Previews) != 0 {
+			t.Fatalf("expected idempotent traex reinstall after migration, got previews=%d err=%v", len(repeat.Previews), err)
+		}
+
+		// Uninstall strips Memlane hooks from cli/hooks.json and MCP from traecli.toml while keeping all third-party entries.
+		if _, err := hooks.UninstallHostConfig(opts); err != nil {
+			t.Fatalf("traex uninstall failed: %v", err)
+		}
+		uninstalledCLI, err := os.ReadFile(cliHooksPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, keep := range []string{"/synthetic/flux/bin/flux-hook session-start", "/synthetic/flux/bin/flux-hook stop", "/synthetic/axis/bin/axis-chat-log-hook"} {
+			if !strings.Contains(string(uninstalledCLI), keep) {
+				t.Fatalf("third-party hook %q lost from cli/hooks.json on uninstall:\n%s", keep, uninstalledCLI)
+			}
+		}
+		if strings.Contains(string(uninstalledCLI), "memlane-hook") || strings.Contains(string(uninstalledCLI), "hook traex ") {
+			t.Fatalf("memlane hook remained in cli/hooks.json on uninstall:\n%s", uninstalledCLI)
+		}
+		uninstalledLegacy, err := os.ReadFile(legacyHooksPath)
+		if err != nil || !strings.Contains(string(uninstalledLegacy), "/synthetic/user-tools/keep-legacy-hook.sh") {
+			t.Fatalf("third-party hook lost from deprecated hooks.json on uninstall: %s %v", uninstalledLegacy, err)
+		}
+	})
+
+	t.Run("uninstall cleans unmigrated legacy root hooks.json without creating cli/hooks.json", func(t *testing.T) {
+		profileDir := t.TempDir()
+		legacyHooksPath := filepath.Join(profileDir, "hooks.json")
+		copyFixture(t, "traex/legacy_hooks.json", legacyHooksPath)
+
+		res, err := hooks.UninstallHostConfig(hooks.InstallOptions{
+			Host:       hooks.HostTraeX,
+			ProfileDir: profileDir,
+			Apply:      true,
+		})
+		if err != nil || !res.Applied || len(res.Previews) != 1 || res.Previews[0].Path != legacyHooksPath {
+			t.Fatalf("unmigrated uninstall failed: res=%+v err=%v", res, err)
+		}
+		if _, err := os.Stat(filepath.Join(profileDir, "cli", "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("uninstall must not create cli/hooks.json, stat err=%v", err)
+		}
+		cleaned, err := os.ReadFile(legacyHooksPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(cleaned), "/synthetic/user-tools/keep-legacy-hook.sh") ||
+			strings.Contains(string(cleaned), "memlane-hook") || strings.Contains(string(cleaned), "/memlane-cognee/") {
+			t.Fatalf("unexpected legacy hooks.json after uninstall:\n%s", cleaned)
+		}
+	})
+}

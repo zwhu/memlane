@@ -638,7 +638,14 @@ func (s *session) connectionVerified(row controlplane.AgentConnection) bool {
 func (s *session) connectionOutcome(row controlplane.AgentConnection, applied bool) {
 	switch {
 	case row.NeedsHookRepair:
-		s.hookAdvice(row.ID)
+		if row.Kind == agents.HostTraeIDE || row.Kind == "" {
+			s.hookAdvice(row.ID)
+		} else {
+			s.block(ExitActionRequired, "hook_repair_required")
+			if isAgent(row.Kind) {
+				s.action(readOnly, "connect", "--agent", row.Kind, "--dry-run")
+			}
+		}
 	case unknownConnection(row.Status):
 		s.block(ExitNeedsReview, "connection_state_unknown")
 	case unavailableConnection(row):

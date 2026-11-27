@@ -388,6 +388,12 @@ func TestVerifyConnectionRequiresPostActivationEvidence(t *testing.T) {
 	f.row.Status, f.row.NeedsHookRepair = "configured_pending_new_session", true
 	f.row.Capture = &controlplane.AgentCaptureState{State: "healthy"}
 	f.command(ExitActionRequired, args...)
+	f.row.Kind, f.row.ID = agents.HostTraeX, "agent-traex"
+	traexRepair := f.command(ExitActionRequired, "verify", "--stage", "connection", "--agent", agents.HostTraeX)
+	if !hasBlocker(traexRepair, "hook_repair_required") || !hasAction(traexRepair, "connect", "--agent", agents.HostTraeX, "--dry-run", "--json") {
+		t.Fatalf("traex NeedsHookRepair did not recommend connect --agent traex --dry-run: %+v", traexRepair)
+	}
+	f.row.Kind, f.row.ID = testAgent, testInstance
 	f.row.Status, f.row.NeedsHookRepair = "not_connected", false
 	f.row.Capture = nil
 	f.command(ExitActionRequired, args...)
@@ -2351,7 +2357,7 @@ func TestCorruptUpgradeReceiptOnlyBlocksZeroDownloadVerification(t *testing.T) {
 }
 
 func TestOptionCHostConfiguration(t *testing.T) {
-	for _, kind := range []string{agents.HostCodex, agents.HostPi, agents.HostTraeIDE, agents.HostAntigravity} {
+	for _, kind := range []string{agents.HostCodex, agents.HostTraeX, agents.HostPi, agents.HostTraeIDE, agents.HostAntigravity} {
 		t.Run(kind, func(t *testing.T) {
 			f := newFixture(t)
 			f.doc.Control.PluginDir = ""
@@ -2388,6 +2394,24 @@ func TestOptionCHostConfiguration(t *testing.T) {
 				writeFile(t, config, []byte(original))
 				if e := f.command(ExitActionRequired, "doctor"); !hasBlocker(e, "hook_repair_required") || !slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
 					t.Fatal("legacy entry did not get migration guidance")
+				}
+			case agents.HostTraeX:
+				config = filepath.Join(profile, "traecli.toml")
+				legacyHooks := filepath.Join(profile, "hooks.json")
+				cliHooks := filepath.Join(profile, "cli", "hooks.json")
+				original := "[mcp_servers.user]\nurl = \"http://localhost:9910\"\n"
+				conflicting := original + "[mcp_servers.third-party-cognee]\ncommand = \"external-cognee --token raw-traex-canary\"\n"
+				writeFile(t, config, []byte(conflicting))
+				writeFile(t, legacyHooks, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep-legacy-traex"}]},{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/old/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18790' --key-file '/tmp/old.key'","_memlane_managed":"memlane-hook"}]}]}}`))
+				writeFile(t, cliHooks, []byte(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/opt/flux/flux-hook session-start"}]}]}}`))
+				f.command(ExitPreflightBlocked, append(slices.Clone(args), "--dry-run")...)
+				out := f.rawCommand(ExitPreflightBlocked, []string{"doctor", "--json"})
+				if !strings.Contains(out.raw, "third_party_cognee_conflict") || strings.Contains(out.raw, "raw-traex-canary") {
+					t.Fatalf("unsafe or missing traex conflict information: %s", out.raw)
+				}
+				writeFile(t, config, []byte(original))
+				if e := f.command(ExitActionRequired, "doctor"); !hasBlocker(e, "hook_repair_required") || !slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
+					t.Fatalf("deprecated traex hooks.json did not trigger migration guidance: %+v", e)
 				}
 			case agents.HostTraeIDE:
 				args = []string{"repair", "trae-hooks"}
@@ -2442,6 +2466,29 @@ func TestOptionCHostConfiguration(t *testing.T) {
 					!bytes.Contains(raw, []byte(`"--key-file"`)) || bytes.Contains(raw, []byte("bearer_token_file")) ||
 					!bytes.Contains(raw, []byte("mcp_servers.user")) || bytes.Contains(raw, []byte("memlane-cognee")) {
 					t.Fatal("Codex hook/MCP migration was not applied")
+				}
+			case agents.HostTraeX:
+				cliHooks, err := os.ReadFile(filepath.Join(profile, "cli", "hooks.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				legacyHooks, err := os.ReadFile(filepath.Join(profile, "hooks.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(cliHooks), " hook traex ") ||
+					!strings.Contains(string(cliHooks), "/opt/flux/flux-hook session-start") ||
+					!strings.Contains(string(legacyHooks), "echo keep-legacy-traex") ||
+					strings.Contains(string(legacyHooks), "memlane-hook") ||
+					strings.Contains(string(legacyHooks), " hook traex ") ||
+					!bytes.Contains(raw, []byte(`"mcp"`)) ||
+					!bytes.Contains(raw, []byte(`"--key-file"`)) ||
+					!bytes.Contains(raw, []byte("mcp_servers.user")) {
+					t.Fatalf("TRAE CLI hook/MCP migration incomplete:\ncli=%s\nlegacy=%s\ntoml=%s", cliHooks, legacyHooks, raw)
+				}
+				if e := f.command(ExitOK, "doctor"); hasBlocker(e, "hook_repair_required") ||
+					slices.ContainsFunc(e.Connections.Hosts, func(h hostSummary) bool { return h.Kind == kind && h.NeedsHookRepair }) {
+					t.Fatalf("traex still needs hook repair after migration: %+v", e)
 				}
 			case agents.HostTraeIDE:
 				if !bytes.Contains(raw, []byte(" hook trae-ide ")) || !bytes.Contains(raw, []byte("keep-user-command")) ||

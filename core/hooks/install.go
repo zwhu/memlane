@@ -116,6 +116,16 @@ func editHost(opts InstallOptions, remove bool) (InstallResult, error) {
 		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "hooks.json"), remove, func(doc object) error {
 			return editAntigravityHooks(doc, opts, remove)
 		}))
+	} else if host == HostTraeX {
+		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "cli", "hooks.json"), remove, func(doc object) error {
+			return editHookGroups(doc, host, opts, remove)
+		}))
+		if err == nil {
+			// Clean any Memlane-managed entries from the deprecated root hooks.json without creating it.
+			err = add(jsonPreview(filepath.Join(opts.ProfileDir, "hooks.json"), true, func(doc object) error {
+				return editHookGroups(doc, host, opts, true)
+			}))
+		}
 	} else {
 		err = add(jsonPreview(filepath.Join(opts.ProfileDir, "hooks.json"), remove, func(doc object) error {
 			return editHookGroups(doc, host, opts, remove)
@@ -375,14 +385,7 @@ func managedAntigravityHookGroup(entry any) bool {
 }
 
 func managedAntigravityHookHandler(entry any) bool {
-	if managedHook(entry) {
-		return true
-	}
-	row, _ := entry.(object)
-	command := stringField(row, "command")
-	return strings.Contains(command, " hook "+HostAntigravity+" ") &&
-		strings.Contains(command, "--gateway-url ") &&
-		strings.Contains(command, "--key-file ")
+	return managedHook(entry, HostAntigravity)
 }
 
 func antigravityLegacyPluginPreview(profileDir string) (agents.EditPreview, error) {
@@ -461,7 +464,7 @@ func editHookGroups(doc object, host string, opts InstallOptions, remove bool) e
 				if nested, ok := group["hooks"].([]any); ok {
 					children := make([]any, 0, len(nested))
 					for _, child := range nested {
-						if !managedHook(child) {
+						if !managedHook(child, host) {
 							children = append(children, child)
 						}
 					}
@@ -471,7 +474,7 @@ func editHookGroups(doc object, host string, opts InstallOptions, remove bool) e
 						}
 						group["hooks"] = children
 					}
-				} else if managedHook(row) {
+				} else if managedHook(row, host) {
 					continue
 				}
 				kept = append(kept, row)
@@ -496,12 +499,17 @@ func editHookGroups(doc object, host string, opts InstallOptions, remove bool) e
 
 func shellWord(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
-func managedHook(entry any) bool {
+func managedHook(entry any, host string) bool {
 	row, _ := entry.(object)
 	if row["_memlane_managed"] == marker {
 		return true
 	}
 	command := stringField(row, "command")
+	if host != "" && strings.Contains(command, " hook "+host+" ") &&
+		strings.Contains(command, "--gateway-url ") &&
+		strings.Contains(command, "--key-file ") {
+		return true
+	}
 	for _, name := range legacyNames {
 		if strings.Contains(command, "/"+name+"/") {
 			return true

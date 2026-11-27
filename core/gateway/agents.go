@@ -218,7 +218,16 @@ func isLegacyTraeIDECommand(command string) bool {
 	return strings.Contains(command, "trae_ide_hook.py")
 }
 
-func isManagedHookEntry(entry any, hostKind string) (managed bool, legacyTrae bool) {
+func isLegacyManagedHookCommand(command string) bool {
+	for _, name := range []string{"memlane-cognee", "memlane_cognee", "memlane-memory"} {
+		if strings.Contains(command, "/"+name+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isManagedHookEntry(entry any, hostKind string) (managed bool, needsRepair bool) {
 	obj, ok := entry.(map[string]any)
 	if !ok {
 		return false, false
@@ -233,17 +242,21 @@ func isManagedHookEntry(entry any, hostKind string) (managed bool, legacyTrae bo
 		}
 		if hostKind == agents.HostTraeIDE && isLegacyTraeIDECommand(cmd) {
 			managed = true
-			legacyTrae = true
+			needsRepair = true
+		}
+		if hostKind == agents.HostTraeX && isLegacyManagedHookCommand(cmd) {
+			managed = true
+			needsRepair = true
 		}
 	}
 	if nested, ok := obj["hooks"].([]any); ok {
 		for _, child := range nested {
-			m, lt := isManagedHookEntry(child, hostKind)
+			m, nr := isManagedHookEntry(child, hostKind)
 			managed = managed || m
-			legacyTrae = legacyTrae || lt
+			needsRepair = needsRepair || nr
 		}
 	}
-	return managed, legacyTrae
+	return managed, needsRepair
 }
 
 func scanHookEventGroups(groups map[string]any, hostKind string) (installed bool, needsRepair bool) {
@@ -254,12 +267,12 @@ func scanHookEventGroups(groups map[string]any, hostKind string) (installed bool
 		}
 		eventManaged := false
 		for _, row := range rows {
-			m, lt := isManagedHookEntry(row, hostKind)
+			m, nr := isManagedHookEntry(row, hostKind)
 			if m {
 				eventManaged = true
 				installed = true
 			}
-			if lt {
+			if nr {
 				needsRepair = true
 			}
 		}
@@ -268,6 +281,44 @@ func scanHookEventGroups(groups map[string]any, hostKind string) (installed bool
 		}
 	}
 	return installed, needsRepair
+}
+
+func scanHooksFile(path, kind string) (installed bool, needsRepair bool) {
+	raw, err := agents.SafeReadFile(path, managedHookConfigLimit)
+	if err != nil {
+		return false, false
+	}
+	doc, err := agents.ParseJSONC(raw)
+	if err != nil || doc == nil {
+		return false, false
+	}
+	if kind == agents.HostAntigravity {
+		if memlaneGroup, ok := doc["memlane"].(map[string]any); ok {
+			if inst, _ := scanHookEventGroups(memlaneGroup, kind); inst {
+				return true, false
+			}
+		}
+	}
+	if wrapper, ok := doc["hooks"].(map[string]any); ok {
+		inst, repair := scanHookEventGroups(wrapper, kind)
+		if inst {
+			if kind == agents.HostTraeIDE {
+				if v, hasVersion := doc["version"]; !hasVersion || (v != float64(1) && v != json.Number("1")) {
+					repair = true
+				}
+			}
+			return true, repair
+		}
+		return false, false
+	}
+	inst, repair := scanHookEventGroups(doc, kind)
+	if inst {
+		if kind == agents.HostTraeIDE {
+			repair = true
+		}
+		return true, repair
+	}
+	return false, false
 }
 
 func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
@@ -292,55 +343,29 @@ func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
 		return managedHookStatus{}
 	}
 
-	candidates := []string{filepath.Join(profileDir, "hooks.json")}
 	if kind == agents.HostTraeX {
-		candidates = append(candidates, filepath.Join(profileDir, "cli", "hooks.json"))
-	}
-	var result managedHookStatus
-	for _, path := range candidates {
-		raw, err := agents.SafeReadFile(path, managedHookConfigLimit)
-		if err != nil {
-			continue
-		}
-		doc, err := agents.ParseJSONC(raw)
-		if err != nil || doc == nil {
-			continue
-		}
-		if kind == agents.HostAntigravity {
-			if memlaneGroup, ok := doc["memlane"].(map[string]any); ok {
-				if inst, _ := scanHookEventGroups(memlaneGroup, kind); inst {
-					result.installed = true
-					result.pluginVersion = "memlane-hook"
-					continue
-				}
-			}
-		}
-		if wrapper, ok := doc["hooks"].(map[string]any); ok {
-			inst, repair := scanHookEventGroups(wrapper, kind)
-			if inst {
-				result.installed = true
-				result.pluginVersion = "memlane-hook"
-				if repair {
-					result.needsRepair = true
-				}
-				if kind == agents.HostTraeIDE {
-					if v, hasVersion := doc["version"]; !hasVersion || (v != float64(1) && v != json.Number("1")) {
-						result.needsRepair = true
-					}
-				}
-			}
-			continue
-		}
-		inst, repair := scanHookEventGroups(doc, kind)
-		if inst {
+		// Current traecli loads hooks from <profile>/cli/hooks.json and ignores deprecated <profile>/hooks.json.
+		activeInstalled, activeRepair := scanHooksFile(filepath.Join(profileDir, "cli", "hooks.json"), kind)
+		deprecatedInstalled, _ := scanHooksFile(filepath.Join(profileDir, "hooks.json"), kind)
+		var result managedHookStatus
+		if activeInstalled {
 			result.installed = true
 			result.pluginVersion = "memlane-hook"
-			if repair || kind == agents.HostTraeIDE {
+			if activeRepair {
 				result.needsRepair = true
 			}
 		}
+		if deprecatedInstalled {
+			result.needsRepair = true
+		}
+		return result
 	}
-	return result
+
+	inst, repair := scanHooksFile(filepath.Join(profileDir, "hooks.json"), kind)
+	if !inst {
+		return managedHookStatus{}
+	}
+	return managedHookStatus{installed: true, needsRepair: repair, pluginVersion: "memlane-hook"}
 }
 
 type captureActivityStats struct {

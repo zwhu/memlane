@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "_memlane_managed": "memlane-hook",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/synthetic/old/memlane' hook traex SessionStart --gateway-url 'http://127.0.0.1:18799' --key-file '/synthetic/old.key'",
+            "_memlane_managed": "memlane-hook"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/synthetic/user-tools/keep-legacy-hook.sh"
+          },
+          {
+            "type": "command",
+            "command": "/synthetic/legacy/memlane-cognee/scripts/traex_hook.py Stop"
+          }
+        ]
+      },
+      {
+        "_memlane_managed": "memlane-hook",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/synthetic/old/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18799' --key-file '/synthetic/old.key'",
+            "_memlane_managed": "memlane-hook"
+          }
+        ]
+      }
+    ]
+  }
+}

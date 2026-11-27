@@ -1,0 +1,14 @@
+# User TRAE CLI configuration
+model = "doubao-seed-code"
+
+[mcp_servers.user_tools]
+url = "http://127.0.0.1:9920/mcp"
+
+[mcp_servers.memlane-cognee]
+command = "/synthetic/legacy/memlane-cognee/bin/mcp"
+
+[plugins.flux]
+enabled = true
+
+[plugins."memlane-cognee@official"]
+enabled = true

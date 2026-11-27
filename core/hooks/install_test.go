@@ -64,7 +64,14 @@ func TestInstallAllHosts(t *testing.T) {
 				}
 				return
 			}
-			raw := readConfig(t, filepath.Join(opts.ProfileDir, "hooks.json"))
+			hooksPath := filepath.Join(opts.ProfileDir, "hooks.json")
+			if host == HostTraeX {
+				hooksPath = filepath.Join(opts.ProfileDir, "cli", "hooks.json")
+				if _, err := os.Stat(filepath.Join(opts.ProfileDir, "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("traex clean install must not create deprecated hooks.json, stat err=%v", err)
+				}
+			}
+			raw := readConfig(t, hooksPath)
 			data, err := agents.ParseJSONC([]byte(raw))
 			if err != nil {
 				t.Fatal(err)
@@ -129,9 +136,14 @@ func TestInstallAllHosts(t *testing.T) {
 			if _, err := UninstallHostConfig(opts); err != nil {
 				t.Fatal(err)
 			}
-			afterUninstall := readConfig(t, filepath.Join(opts.ProfileDir, "hooks.json"))
+			afterUninstall := readConfig(t, hooksPath)
 			if strings.Contains(afterUninstall, marker) || strings.Contains(afterUninstall, "hook "+host+" ") || strings.Contains(afterUninstall, PreCompact) {
 				t.Fatalf("hook remains after uninstall: %s", afterUninstall)
+			}
+			if host == HostTraeX {
+				if _, err := os.Stat(filepath.Join(opts.ProfileDir, "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("traex uninstall must not create deprecated hooks.json, stat err=%v", err)
+				}
 			}
 		})
 	}
@@ -408,6 +420,12 @@ func TestInstallPreCompactPreservesUserHook(t *testing.T) {
 		t.Run(host, func(t *testing.T) {
 			dir := t.TempDir()
 			hooksPath := filepath.Join(dir, "hooks.json")
+			if host == HostTraeX {
+				hooksPath = filepath.Join(dir, "cli", "hooks.json")
+				if err := os.MkdirAll(filepath.Dir(hooksPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
 			writeConfig(t, hooksPath, `{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"echo user-precompact"}]}]}}`)
 			opts := InstallOptions{
 				Host: host, ProfileDir: dir,
@@ -430,6 +448,138 @@ func TestInstallPreCompactPreservesUserHook(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInstallTraeXCLIHooksMigrationAndCleanup(t *testing.T) {
+	t.Run("migrates deprecated hooks.json into cli/hooks.json while preserving third-party hooks", func(t *testing.T) {
+		dir := t.TempDir()
+		cliHooksPath := filepath.Join(dir, "cli", "hooks.json")
+		legacyHooksPath := filepath.Join(dir, "hooks.json")
+		if err := os.MkdirAll(filepath.Dir(cliHooksPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		const origCLIHooks = "{\n  \"hooks\": {\n    \"SessionStart\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"/opt/flux/flux-hook session-start\"}]}],\n    \"Stop\": [{\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"/opt/axis/axis-chat-log-hook\"}]}]\n  }\n}\n"
+		const origLegacyHooks = "{\n  \"hooks\": {\n    \"SessionStart\": [{\"_memlane_managed\": \"memlane-hook\", \"hooks\": [{\"type\": \"command\", \"command\": \"'/old/memlane' hook traex SessionStart --gateway-url 'http://127.0.0.1:18790' --key-file '/tmp/old.key'\", \"_memlane_managed\": \"memlane-hook\"}]}],\n    \"Stop\": [\n      {\"matcher\": \"*\", \"hooks\": [{\"type\": \"command\", \"command\": \"echo keep-legacy\"}, {\"type\": \"command\", \"command\": \"/opt/memlane-cognee/traex_hook.py Stop\"}]},\n      {\"hooks\": [{\"type\": \"command\", \"command\": \"'/old/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18790' --key-file '/tmp/old.key'\"}]}\n    ]\n  }\n}\n"
+		writeConfig(t, cliHooksPath, origCLIHooks)
+		writeConfig(t, legacyHooksPath, origLegacyHooks)
+
+		opts := InstallOptions{
+			Host: HostTraeX, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18790", KeyFile: "/tmp/traex.key",
+		}
+		preview, err := InstallHostConfig(opts)
+		if err != nil || preview.Blocked || preview.Applied || len(preview.Previews) != 3 {
+			t.Fatalf("preview: %+v %v", preview, err)
+		}
+		if readConfig(t, cliHooksPath) != origCLIHooks || readConfig(t, legacyHooksPath) != origLegacyHooks {
+			t.Fatal("preview mutated hooks files")
+		}
+
+		opts.Apply = true
+		res, err := InstallHostConfig(opts)
+		if err != nil || !res.Applied || len(res.Previews) != 3 {
+			t.Fatalf("apply: %+v %v", res, err)
+		}
+		cliAfter := readConfig(t, cliHooksPath)
+		for _, want := range []string{"/opt/flux/flux-hook session-start", "/opt/axis/axis-chat-log-hook", "hook traex SessionStart", "hook traex Stop", "hook traex PreCompact", "hook traex SessionEnd"} {
+			if !strings.Contains(cliAfter, want) {
+				t.Fatalf("cli/hooks.json missing %q:\n%s", want, cliAfter)
+			}
+		}
+		legacyAfter := readConfig(t, legacyHooksPath)
+		if !strings.Contains(legacyAfter, "echo keep-legacy") {
+			t.Fatalf("third-party hook lost from deprecated hooks.json:\n%s", legacyAfter)
+		}
+		for _, gone := range []string{marker, "hook traex ", "/memlane-cognee/"} {
+			if strings.Contains(legacyAfter, gone) {
+				t.Fatalf("managed/legacy entry %q remained in deprecated hooks.json:\n%s", gone, legacyAfter)
+			}
+		}
+		if repeat, err := InstallHostConfig(opts); err != nil || len(repeat.Previews) != 0 {
+			t.Fatalf("repeat install not idempotent: %+v %v", repeat, err)
+		}
+
+		if _, err := UninstallHostConfig(opts); err != nil {
+			t.Fatal(err)
+		}
+		cliUninstalled := readConfig(t, cliHooksPath)
+		for _, keep := range []string{"/opt/flux/flux-hook session-start", "/opt/axis/axis-chat-log-hook"} {
+			if !strings.Contains(cliUninstalled, keep) {
+				t.Fatalf("third-party hook %q lost after uninstall:\n%s", keep, cliUninstalled)
+			}
+		}
+		if strings.Contains(cliUninstalled, marker) || strings.Contains(cliUninstalled, "hook traex ") {
+			t.Fatalf("memlane hook remained in cli/hooks.json after uninstall:\n%s", cliUninstalled)
+		}
+		if readConfig(t, legacyHooksPath) != legacyAfter {
+			t.Fatalf("uninstall unexpectedly altered cleaned deprecated hooks.json")
+		}
+	})
+
+	t.Run("third-party-only deprecated hooks.json is untouched and excluded from previews", func(t *testing.T) {
+		dir := t.TempDir()
+		legacyHooksPath := filepath.Join(dir, "hooks.json")
+		const thirdPartyOnly = "{\n  \"hooks\": {\n    \"Stop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"echo third-party-only\"}]}]\n  }\n}\n"
+		writeConfig(t, legacyHooksPath, thirdPartyOnly)
+
+		opts := InstallOptions{
+			Host: HostTraeX, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18790", KeyFile: "/tmp/traex.key",
+			Apply: true,
+		}
+		res, err := InstallHostConfig(opts)
+		if err != nil || !res.Applied || len(res.Previews) != 2 {
+			t.Fatalf("expected only cli/hooks.json and traecli.toml previews, got %+v %v", res, err)
+		}
+		if readConfig(t, legacyHooksPath) != thirdPartyOnly {
+			t.Fatalf("third-party-only deprecated hooks.json was modified")
+		}
+	})
+
+	t.Run("uninstall cleans unmigrated deprecated hooks.json without creating cli/hooks.json", func(t *testing.T) {
+		dir := t.TempDir()
+		legacyHooksPath := filepath.Join(dir, "hooks.json")
+		writeConfig(t, legacyHooksPath, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep-me"}]},{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18790' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`)
+
+		opts := InstallOptions{Host: HostTraeX, ProfileDir: dir, Apply: true}
+		res, err := UninstallHostConfig(opts)
+		if err != nil || !res.Applied || len(res.Previews) != 1 || res.Previews[0].Path != legacyHooksPath {
+			t.Fatalf("unexpected uninstall result: %+v %v", res, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "cli", "hooks.json")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("uninstall must not create cli/hooks.json, stat err=%v", err)
+		}
+		after := readConfig(t, legacyHooksPath)
+		if !strings.Contains(after, "echo keep-me") || strings.Contains(after, marker) || strings.Contains(after, "hook traex ") {
+			t.Fatalf("unexpected deprecated hooks.json after uninstall: %s", after)
+		}
+	})
+
+	t.Run("third-party cognee conflict in cli/hooks.json blocks without mutating files", func(t *testing.T) {
+		dir := t.TempDir()
+		cliHooksPath := filepath.Join(dir, "cli", "hooks.json")
+		legacyHooksPath := filepath.Join(dir, "hooks.json")
+		if err := os.MkdirAll(filepath.Dir(cliHooksPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		const conflictCLI = `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"external-cognee-hook Stop"}]}]}}`
+		const legacyHooks = `{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/old/memlane' hook traex Stop","_memlane_managed":"memlane-hook"}]}]}}`
+		writeConfig(t, cliHooksPath, conflictCLI)
+		writeConfig(t, legacyHooksPath, legacyHooks)
+
+		opts := InstallOptions{
+			Host: HostTraeX, ProfileDir: dir,
+			BinaryPath: "/bin/memlane", GatewayURL: "http://127.0.0.1:18790", KeyFile: "/tmp/traex.key",
+			Apply: true,
+		}
+		res, err := InstallHostConfig(opts)
+		if !errors.Is(err, ErrConflictBlocked) || !res.Blocked || res.Applied {
+			t.Fatalf("expected ErrConflictBlocked, got %+v %v", res, err)
+		}
+		if readConfig(t, cliHooksPath) != conflictCLI || readConfig(t, legacyHooksPath) != legacyHooks {
+			t.Fatal("blocked install mutated traex hook files")
+		}
+	})
 }
 
 func TestInstallTraeIDEMCPConfig(t *testing.T) {

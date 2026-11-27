@@ -322,3 +322,54 @@ func TestAntigravityEmptyConfigsNamedHooksAndDisabledPlugins(t *testing.T) {
 		}
 	})
 }
+
+func TestTraeXCLIHooksConflictScanAndDisable(t *testing.T) {
+	home := t.TempDir()
+	cliHooksPath := filepath.Join(home, "cli", "hooks.json")
+	legacyHooksPath := filepath.Join(home, "hooks.json")
+	putFile(t, cliHooksPath, `{
+  "hooks": {
+    "SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/flux/flux-hook session-start"}]}],
+    "Stop": [
+      {"matcher": "*", "hooks": [{"type": "command", "command": "/opt/axis/axis-chat-log-hook"}, {"type": "command", "command": "third-party-cognee-hook Stop"}]}
+    ]
+  }
+}`, 0o600)
+	putFile(t, legacyHooksPath, `{
+  "hooks": {
+    "Stop": [{"_memlane_managed": "memlane-hook", "hooks": [{"type": "command", "command": "'/bin/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18790' --key-file '/tmp/k'", "_memlane_managed": "memlane-hook"}]}]
+  }
+}`, 0o600)
+
+	host := DetectedHost{Kind: HostTraeX, ProfileDir: home}
+	policy := ConflictPolicy{
+		ManagedMarkers:   []string{"memlane-cognee", "memlane hook", "memlane"},
+		ConflictKeywords: []string{"cognee"},
+		BackupDir:        t.TempDir(),
+	}
+	report, err := ScanHostConflicts(host, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Blocked || len(report.ThirdPartyConflicts) != 1 || report.ThirdPartyConflicts[0].ConfigPath != cliHooksPath ||
+		len(report.ManagedLegacy) != 1 || report.ManagedLegacy[0].ConfigPath != legacyHooksPath || report.UnrelatedCount != 2 {
+		t.Fatalf("unexpected traex conflict report: %+v", report)
+	}
+
+	records, err := DisableThirdPartyConflicts(report, policy, true)
+	if err != nil || len(records) != 1 || records[0].OriginalPath != cliHooksPath {
+		t.Fatalf("disable traex cli/hooks.json conflict: %+v %v", records, err)
+	}
+	edited, err := os.ReadFile(cliHooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(edited)
+	if strings.Contains(got, "third-party-cognee-hook") || !strings.Contains(got, "/opt/flux/flux-hook session-start") || !strings.Contains(got, "/opt/axis/axis-chat-log-hook") {
+		t.Fatalf("unexpected cli/hooks.json after disabling conflict:\n%s", got)
+	}
+	after, err := ScanHostConflicts(host, policy)
+	if err != nil || after.Blocked || len(after.ThirdPartyConflicts) != 0 || len(after.ManagedLegacy) != 1 {
+		t.Fatalf("unexpected traex report after disable: %+v %v", after, err)
+	}
+}
