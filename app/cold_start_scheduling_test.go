@@ -287,7 +287,7 @@ func TestColdStartDeferredTasksFollowBootstrap(t *testing.T) {
 				t.Fatal("failed bootstrap did not settle in the error state")
 			}
 
-			want := map[string]bool{"/v1/generation": true, "/v1/connections": true, "/health": true, "/v1/runtime/monitor": true}
+			want := map[string]bool{"/v1/generation": true, "/v1/connections": true, "/v1/runtime/monitor": true}
 			if scenario != "settings" {
 				want["/v1/projects/p/message-summary"] = true
 			}

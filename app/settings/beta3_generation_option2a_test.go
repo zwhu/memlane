@@ -626,8 +626,8 @@ func TestBeta3SetupOnlyMonitorAndOverview(t *testing.T) {
 	a.dispatch = func(fn func()) { updates <- fn }
 	a.PollServiceMonitor(true)
 	drainReading(t, updates, func() bool { return !a.monitor.Polling })
-	if a.monitor.CompletionStatus != SetupOnlyCompletion || health.Load() != 1 || monitor.Load() != 1 || unexpected.Load() != 0 {
-		t.Fatal("setup mode probed the completion port or skipped real service checks")
+	if a.monitor.CompletionStatus != SetupOnlyCompletion || health.Load() != 0 || monitor.Load() != 1 || unexpected.Load() != 0 {
+		t.Fatalf("setup mode probed completion/direct /health or skipped gateway monitor: health=%d monitor=%d unexpected=%d", health.Load(), monitor.Load(), unexpected.Load())
 	}
 	service := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).Fill().Children(func() { a.ViewServiceOverview(c) })

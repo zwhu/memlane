@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zwhu/memlane/app/settings"
 )
 
 const (
@@ -49,7 +51,7 @@ func (a *App) RefreshForTrayClick() {
 }
 
 func (a *App) refreshServiceMonitorForTray() {
-	if a.Config.ServiceURL != "" {
+	if settings.HasServiceMonitorEndpoint(a.Config) {
 		a.pollServiceMonitor(false)
 	}
 }

@@ -13,6 +13,16 @@ import (
 	"github.com/zwhu/memlane/internal/controlplane"
 )
 
+// ControlReceiptError indicates the gateway responded over HTTP, but the body
+// could not be read or decoded as expected.
+type ControlReceiptError struct {
+	Message string
+}
+
+func (e *ControlReceiptError) Error() string {
+	return e.Message
+}
+
 func (c ProjectControlClient) request(ctx context.Context, method, path string, input, output any) error {
 	return c.RequestWithHeaders(ctx, method, path, nil, input, output, 2*1024*1024)
 }
@@ -96,7 +106,7 @@ func (c ProjectControlClient) RequestWithHeaders(ctx context.Context, method, pa
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
 	if err != nil || int64(len(data)) > maxBytes {
-		return fmt.Errorf("项目管理回执未确认，请刷新核对")
+		return &ControlReceiptError{Message: "项目管理回执未确认，请刷新核对"}
 	}
 	if requiredReadingField != "" {
 		// The running backend may have changed after the successful capability probe.
@@ -106,7 +116,7 @@ func (c ProjectControlClient) RequestWithHeaders(ctx context.Context, method, pa
 		}
 	}
 	if json.Unmarshal(data, output) != nil {
-		return fmt.Errorf("项目管理回执未确认，请刷新核对")
+		return &ControlReceiptError{Message: "项目管理回执未确认，请刷新核对"}
 	}
 	return nil
 }

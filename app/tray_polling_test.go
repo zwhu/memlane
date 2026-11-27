@@ -33,10 +33,8 @@ func TestTrayClickRefreshesMonitorAndRecoversDirectoryDuringHiddenColdStart(t *t
 	}, nil)
 	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.RequestURI() {
-		case "/health":
-			fmt.Fprint(w, `{"ok":true}`)
 		case "/v1/runtime/monitor":
-			fmt.Fprint(w, `{"state":"ready"}`)
+			fmt.Fprint(w, `{"state":"ready","gateway_ok":true,"engine_ok":true,"engine_phase":"ready"}`)
 		case "/v1/completion/health":
 			fmt.Fprint(w, `{"status":"ready"}`)
 		case "/v1/projects":
@@ -341,5 +339,55 @@ func TestTrayAndForegroundPollingConcurrentStartStopNoLeak(t *testing.T) {
 				t.Fatalf("iteration %d: foreground poller leaked after concurrent stop", i)
 			}
 		}
+	}
+}
+
+func TestTrayClickRefreshesGatewayOnlyConfigFromStartingToReady(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "management.token")
+	if err := os.WriteFile(token, []byte("synthetic-tray-gateway-only-token-for-tests"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var ready atomic.Bool
+	a := New(Config{
+		ServiceURL:     "",
+		ProjectControl: &ProjectControlConfig{URL: "http://127.0.0.1:61258", ManagementTokenFile: token},
+	}, nil)
+	a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runtime/monitor":
+			if !ready.Load() {
+				fmt.Fprint(w, `{"gateway_ok":true,"engine_ok":false,"engine_phase":"starting","state":"starting","inbox":{"pending":2,"processing":0,"extraction_paused":true,"pause_reason":"engine_starting"}}`)
+				return
+			}
+			fmt.Fprint(w, `{"gateway_ok":true,"engine_ok":true,"engine_phase":"ready","state":"ready","inbox":{"pending":0,"processing":0,"extraction_paused":false}}`)
+		case "/v1/completion/health":
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":{"code":"not_configured"}}`)
+		case "/v1/projects":
+			json.NewEncoder(w).Encode(AccessDirectory{})
+		default:
+			t.Errorf("unexpected gateway-only tray request: %s %s", r.Method, r.URL.RequestURI())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})}
+	a.windowHidden, a.windowInactive = true, true
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+
+	a.RefreshForTrayClick()
+	if !a.monitor.Polling {
+		t.Fatal("RefreshForTrayClick skipped gateway-only config with empty ServiceURL")
+	}
+	drainReading(t, updates, func() bool { return !a.monitor.Polling && !a.access.Loading })
+	if a.monitor.State != "starting" || a.monitor.EngineStatus != "启动中" || a.trayStatusLevel() == "danger" {
+		t.Fatalf("unexpected starting tray state: state=%q engine=%q level=%q", a.monitor.State, a.monitor.EngineStatus, a.trayStatusLevel())
+	}
+
+	ready.Store(true)
+	a.RefreshForTrayClick()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling && !a.access.Loading })
+	if a.monitor.State != "ready" || a.monitor.EngineStatus != "已连接" || a.trayStatusLevel() != "ok" {
+		t.Fatalf("tray did not transition starting->ready on gateway-only config: state=%q engine=%q level=%q",
+			a.monitor.State, a.monitor.EngineStatus, a.trayStatusLevel())
 	}
 }

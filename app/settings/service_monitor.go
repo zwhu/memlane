@@ -63,7 +63,23 @@ type MonitorBusinessSummary struct {
 	RecallQueries             *MonitorRecallQueryStats `json:"recall_queries,omitempty"`
 }
 
+type MonitorInboxSummary struct {
+	Pending          int    `json:"pending"`
+	Processing       int    `json:"processing"`
+	Succeeded        int    `json:"succeeded,omitempty"`
+	Failed           int    `json:"failed"`
+	AwaitingPublish  int    `json:"awaiting_publish"`
+	PublishFailed    int    `json:"publish_failed"`
+	ExtractionPaused bool   `json:"extraction_paused"`
+	PauseReason      string `json:"pause_reason,omitempty"`
+}
+
 type ServiceMonitorSnapshot struct {
+	GatewayOK           *bool                       `json:"gateway_ok,omitempty"`
+	EngineOK            *bool                       `json:"engine_ok,omitempty"`
+	EnginePhase         string                      `json:"engine_phase,omitempty"`
+	StartupError        string                      `json:"startup_error,omitempty"`
+	Inbox               *MonitorInboxSummary        `json:"inbox,omitempty"`
 	CheckedAtISO        string                      `json:"checked_at_iso,omitempty"`
 	LastOKAtISO         string                      `json:"last_ok_at_iso,omitempty"`
 	LastErrorAt         string                      `json:"last_error_at,omitempty"`
@@ -82,6 +98,186 @@ type ServiceMonitorSnapshot struct {
 	Disk                *DiskMonitorState           `json:"disk"`
 	Summary             *MonitorBusinessSummary     `json:"summary"`
 	LogTail             []string                    `json:"log_tail"`
+}
+
+// BoolPtr returns a pointer to v for constructing tri-state monitor snapshots.
+func BoolPtr(v bool) *bool { return &v }
+
+// GatewayHealthy reports whether the snapshot explicitly asserts gateway_ok=true.
+func (s *ServiceMonitorSnapshot) GatewayHealthy() bool {
+	return s != nil && s.GatewayOK != nil && *s.GatewayOK
+}
+
+// HasServiceMonitorEndpoint reports whether the runtime config has either a
+// local gateway URL or a legacy direct engine ServiceURL to monitor.
+func HasServiceMonitorEndpoint(cfg Config) bool {
+	return strings.TrimSpace(cfg.ServiceURL) != "" ||
+		(cfg.ProjectControl != nil && strings.TrimSpace(cfg.ProjectControl.URL) != "")
+}
+
+// DualStateSummary is the single source of truth for gateway vs. extraction
+// dual-state presentation shared by the main window and macOS menu bar flyout.
+type DualStateSummary struct {
+	GatewayHealthy   bool
+	EngineStarting   bool
+	ExtractionPaused bool
+	EngineFault      bool
+	BacklogCount     int
+	Reason           string
+}
+
+type dualStateCacheKey struct {
+	state            string
+	controlChecked   bool
+	controlReachable bool
+	controlErrorKind string
+	lastError        string
+	snapshot         *ServiceMonitorSnapshot
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func classifyControlError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if IsControlAuthDenied(err) {
+		return "auth"
+	}
+	var ctrlErr *ControlResponseError
+	if errors.As(err, &ctrlErr) && ctrlErr != nil {
+		return "response"
+	}
+	var receiptErr *ControlReceiptError
+	if errors.As(err, &receiptErr) && receiptErr != nil {
+		return "response"
+	}
+	return "unreachable"
+}
+
+func classifyHealthError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var httpErr *OfficialHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil {
+		if httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden {
+			return "auth"
+		}
+		return "response"
+	}
+	if strings.Contains(err.Error(), "official credential unavailable") {
+		return "auth"
+	}
+	return "unreachable"
+}
+
+func monitorSnapshotOutcome(snap *ServiceMonitorSnapshot) (state string, healthErr error) {
+	if snap == nil {
+		return "", nil
+	}
+	if snap.GatewayOK != nil && !*snap.GatewayOK {
+		return "degraded", errors.New(firstNonEmptyText(snap.LastError, snap.StartupError, "gateway_not_ready"))
+	}
+	if snap.State == "starting" || snap.EnginePhase == "starting" {
+		return "starting", nil
+	}
+	if snap.State == "exited" || snap.EnginePhase == "exited" {
+		return "exited", nil
+	}
+	if snap.State == "degraded" || snap.EnginePhase == "degraded" {
+		return "degraded", errors.New(firstNonEmptyText(snap.LastError, snap.StartupError, "engine_unavailable"))
+	}
+	if snap.EngineOK != nil {
+		if *snap.EngineOK {
+			return "ready", nil
+		}
+		return "degraded", errors.New(firstNonEmptyText(snap.LastError, snap.StartupError, "engine_not_ready"))
+	}
+	if snap.State == "ready" || snap.EnginePhase == "ready" {
+		return "ready", nil
+	}
+	return "unknown", nil
+}
+
+func (a *Controller) DualStateSummary() DualStateSummary {
+	m := &a.monitor
+	snap := m.Snapshot
+	key := dualStateCacheKey{
+		state:            m.State,
+		controlChecked:   m.ControlChecked,
+		controlReachable: m.ControlReachable,
+		controlErrorKind: m.ControlErrorKind,
+		lastError:        m.LastError,
+		snapshot:         snap,
+	}
+	if m.dualCacheValid && m.dualCacheKey == key {
+		return m.dualCacheVal
+	}
+
+	gatewayHealthy := m.ControlReachable || (!m.ControlChecked && snap.GatewayHealthy())
+	if snap != nil && snap.GatewayOK != nil && !*snap.GatewayOK {
+		gatewayHealthy = false
+	}
+	engineStarting := gatewayHealthy && (m.State == "starting" ||
+		(m.State == "" && snap != nil && (snap.State == "starting" || snap.EnginePhase == "starting")))
+
+	backlog := 0
+	var startupErr, snapLastErr, pauseReason, statusSummary string
+	hasInbox := false
+	inboxPaused := false
+	if snap != nil {
+		startupErr = strings.TrimSpace(snap.StartupError)
+		snapLastErr = strings.TrimSpace(snap.LastError)
+		statusSummary = strings.TrimSpace(snap.StatusSummary)
+		if snap.Inbox != nil {
+			hasInbox = true
+			if snap.Inbox.Pending > 0 {
+				backlog += snap.Inbox.Pending
+			}
+			if snap.Inbox.Processing > 0 {
+				backlog += snap.Inbox.Processing
+			}
+			inboxPaused = snap.Inbox.ExtractionPaused
+			pauseReason = strings.TrimSpace(snap.Inbox.PauseReason)
+		}
+	}
+
+	engineFault := gatewayHealthy && !engineStarting && (m.State == "degraded" || m.State == "exited" ||
+		(snap != nil && (snap.EnginePhase == "degraded" || snap.EnginePhase == "exited" || (snap.EngineOK != nil && !*snap.EngineOK))))
+	extractionPaused := false
+	if hasInbox {
+		extractionPaused = gatewayHealthy && inboxPaused
+	} else {
+		extractionPaused = engineFault
+	}
+
+	reason := ""
+	if engineStarting || extractionPaused || engineFault {
+		reason = firstNonEmptyText(startupErr, snapLastErr, strings.TrimSpace(m.LastError), pauseReason, statusSummary)
+		if reason != "" {
+			reason = controlplane.RedactSecretText(reason)
+		}
+	}
+	summary := DualStateSummary{
+		GatewayHealthy:   gatewayHealthy,
+		EngineStarting:   engineStarting,
+		ExtractionPaused: extractionPaused,
+		EngineFault:      engineFault,
+		BacklogCount:     backlog,
+		Reason:           reason,
+	}
+	m.dualCacheKey = key
+	m.dualCacheVal = summary
+	m.dualCacheValid = true
+	return summary
 }
 
 type ServiceMonitorState struct {
@@ -105,6 +301,8 @@ type ServiceMonitorState struct {
 	ControlReachable               bool
 	ControlChecked                 bool
 	ControlError                   string
+	ControlErrorKind               string
+	HealthErrorKind                string
 	Snapshot                       *ServiceMonitorSnapshot
 	Expanded                       bool
 	ShowRawLogs                    bool
@@ -113,6 +311,9 @@ type ServiceMonitorState struct {
 	PollEnabled                    bool
 	NextPollAt                     time.Time
 	Request                        uint64
+	dualCacheKey                   dualStateCacheKey
+	dualCacheValid                 bool
+	dualCacheVal                   DualStateSummary
 }
 
 const (
@@ -152,9 +353,41 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		started := time.Now()
-		_, healthErr := client.request(ctx, "GET", "/health", nil)
-		latencyMs := float64(time.Since(started).Microseconds()) / 1000.0
+		var healthErr error
+		var latencyMs float64
+
+		var snap *ServiceMonitorSnapshot
+		var controlErr error
+		var controlLatencyMs float64
+		var hasControlLatency bool
+		if hasControl {
+			var fetched ServiceMonitorSnapshot
+			path := "/v1/runtime/monitor"
+			if allowLogs && includeLogs {
+				path += "?include_logs=1"
+			}
+			ctrlStarted := time.Now()
+			controlErr = controlClient.request(ctx, "GET", path, nil, &fetched)
+			if controlErr == nil {
+				controlLatencyMs = float64(time.Since(ctrlStarted).Microseconds()) / 1000.0
+				hasControlLatency = true
+				snap = &fetched
+				if snap.LatencyMs != nil {
+					latencyMs = *snap.LatencyMs
+				} else {
+					latencyMs = controlLatencyMs
+				}
+				_, healthErr = monitorSnapshotOutcome(snap)
+			} else {
+				healthErr = controlErr
+			}
+		} else if strings.TrimSpace(client.Config.ServiceURL) != "" {
+			started := time.Now()
+			_, healthErr = client.request(ctx, "GET", "/health", nil)
+			latencyMs = float64(time.Since(started).Microseconds()) / 1000.0
+		} else {
+			healthErr = errors.New("service_url_not_configured")
+		}
 
 		completion := "未配置"
 		completionEndpoint := ""
@@ -221,25 +454,6 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			probeStandaloneCompletion()
 		}
 
-		var snap *ServiceMonitorSnapshot
-		var controlErr error
-		var controlLatencyMs float64
-		var hasControlLatency bool
-		if hasControl {
-			var fetched ServiceMonitorSnapshot
-			path := "/v1/runtime/monitor"
-			if allowLogs && (includeLogs || healthErr != nil) {
-				path += "?include_logs=1"
-			}
-			ctrlStarted := time.Now()
-			controlErr = controlClient.request(ctx, "GET", path, nil, &fetched)
-			if controlErr == nil {
-				controlLatencyMs = float64(time.Since(ctrlStarted).Microseconds()) / 1000.0
-				hasControlLatency = true
-				snap = &fetched
-			}
-		}
-
 		a.dispatch(func() {
 			if request != a.monitor.Request {
 				return
@@ -262,6 +476,7 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 }
 
 func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, latencyMs float64, completion string, completionLatencyMs float64, hasCompletionLatency bool, hasControl bool, snap *ServiceMonitorSnapshot, controlErr error, controlLatencyMs float64, hasControlLatency bool) {
+	prevEngineReady := a.monitor.State == "ready"
 	a.monitor.CompletionStatus = completion
 	a.monitor.Polling = false
 	a.monitor.LastCheckedAt = now
@@ -283,27 +498,47 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 	}
 	if hasControl && controlErr != nil {
 		a.monitor.ControlError = controlplane.RedactSecretText(controlErr.Error())
+		a.monitor.ControlErrorKind = classifyControlError(controlErr)
 	} else {
 		a.monitor.ControlError = ""
+		a.monitor.ControlErrorKind = ""
 	}
 	if hasControl && controlErr == nil && snap != nil {
 		a.monitor.Snapshot = snap
 	}
+	a.monitor.HealthErrorKind = ""
 
-	if snap != nil && snap.State == "exited" {
-		a.monitor.State = "exited"
-		a.monitor.ConsecutiveFailures++
-		a.monitor.HasLatency = false
-		a.monitor.LastError = controlplane.RedactSecretText(snap.LastError)
-		a.monitor.EngineStatus = "服务已退出"
-		return
-	}
-	if snap != nil && snap.State == "degraded" {
-		reason := snap.LastError
-		if reason == "" {
-			reason = "engine_unavailable"
+	if snap != nil {
+		outcome, snapErr := monitorSnapshotOutcome(snap)
+		switch outcome {
+		case "starting":
+			a.monitor.State = "starting"
+			a.monitor.ConsecutiveFailures = 0
+			a.monitor.HasLatency = false
+			a.monitor.LastError = controlplane.RedactSecretText(firstNonEmptyText(snap.StartupError, snap.LastError))
+			a.monitor.EngineStatus = "启动中"
+			return
+		case "exited":
+			a.monitor.State = "exited"
+			a.monitor.ConsecutiveFailures++
+			a.monitor.HasLatency = false
+			a.monitor.LastError = controlplane.RedactSecretText(firstNonEmptyText(snap.LastError, snap.StartupError))
+			a.monitor.EngineStatus = "服务已退出"
+			return
+		case "unknown":
+			a.monitor.State = "unknown"
+			a.monitor.HasLatency = false
+			a.monitor.LastError = ""
+			a.monitor.EngineStatus = "状态未知"
+			return
+		case "degraded":
+			a.monitor.ConsecutiveFailures++
+			a.monitor.LastError = controlplane.RedactSecretText(snapErr.Error())
+			a.monitor.HasLatency = false
+			a.monitor.State = "degraded"
+			a.monitor.EngineStatus = a.monitor.LastError
+			return
 		}
-		healthErr = errors.New(reason)
 	}
 	if healthErr == nil {
 		a.monitor.State = "ready"
@@ -313,7 +548,13 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 		a.monitor.HasLatency = true
 		a.monitor.LastError = ""
 		a.monitor.EngineStatus = "已连接"
+		if !prevEngineReady && a.config.ProjectControl != nil && strings.TrimSpace(a.config.ProjectControl.URL) != "" {
+			InvalidateControlCapabilitiesCache(a.config.ProjectControl.URL)
+		}
 		return
+	}
+	if !hasControl {
+		a.monitor.HealthErrorKind = classifyHealthError(healthErr)
 	}
 	a.monitor.ConsecutiveFailures++
 	a.monitor.LastError = controlplane.RedactSecretText(healthErr.Error())
@@ -328,7 +569,7 @@ func (a *Controller) ApplyServiceMonitorResult(now time.Time, healthErr error, l
 }
 
 func (a *Controller) RefreshServiceMonitorIfDue(now time.Time) {
-	if !a.canDispatch() || a.windowIsInactive() || a.windowIsHidden() || !a.monitor.PollEnabled || a.monitor.Polling || a.config.ServiceURL == "" || now.Before(a.monitor.NextPollAt) {
+	if !a.canDispatch() || a.windowIsInactive() || a.windowIsHidden() || !a.monitor.PollEnabled || a.monitor.Polling || !HasServiceMonitorEndpoint(a.config) || now.Before(a.monitor.NextPollAt) {
 		return
 	}
 	a.refreshServiceMonitor()

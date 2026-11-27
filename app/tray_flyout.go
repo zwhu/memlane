@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/zwhu/memlane/app/settings"
 )
 
 var v4IconWindow = v4IconSVG(`<rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14"/>`)
@@ -33,61 +34,120 @@ func (a *App) SetTrayDark(dark bool) {
 	a.desktopPrefs.TrayDark = dark
 }
 
-func (a *App) trayStatusLevel() string {
+func trayDualStateLabelFor(dual settings.DualStateSummary) string {
+	if !dual.GatewayHealthy {
+		return ""
+	}
+	if dual.EngineStarting {
+		if dual.BacklogCount > 0 {
+			return fmt.Sprintf("采集正常，引擎启动中，%d 条待处理", dual.BacklogCount)
+		}
+		return "采集正常，引擎启动中"
+	}
+	if dual.ExtractionPaused {
+		if dual.BacklogCount > 0 {
+			return fmt.Sprintf("采集正常，提炼暂停，%d 条待处理", dual.BacklogCount)
+		}
+		return "采集正常，提炼暂停"
+	}
+	if dual.EngineFault {
+		return "采集正常，引擎异常"
+	}
+	return ""
+}
+
+func (a *App) trayStatusLevelFor(dual settings.DualStateSummary) string {
 	summary := a.settingsController.TrayQueueSummary()
 	hookErrors := 0
 	if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
 		hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
 	}
 	switch {
-	case a.monitor.State == "degraded" || a.monitor.State == "exited" ||
-		(a.monitor.EngineStatus != "" && a.monitor.EngineStatus != "已连接" && a.monitor.EngineStatus != "尚未检查") ||
-		(a.monitor.ControlChecked && !a.monitor.ControlReachable) || summary.HasErrorAlert:
+	case (a.monitor.ControlChecked && !a.monitor.ControlReachable) || summary.HasErrorAlert:
 		return "danger"
-	case a.monitor.State == "warning" || a.trayLowDisk() || hookErrors > 0 || len(summary.Alerts) > 0:
+	case !dual.EngineStarting && (a.monitor.State == "degraded" || a.monitor.State == "exited" ||
+		(a.monitor.EngineStatus != "" && a.monitor.EngineStatus != "已连接" && a.monitor.EngineStatus != "尚未检查" && a.monitor.EngineStatus != "启动中" && a.monitor.EngineStatus != "状态未知")):
+		return "danger"
+	case dual.EngineStarting || dual.ExtractionPaused || dual.EngineFault || a.monitor.State == "warning" || a.monitor.State == "unknown" || a.trayLowDisk() || hookErrors > 0 || len(summary.Alerts) > 0:
 		return "warn"
 	default:
 		return "ok"
 	}
 }
 
+func (a *App) trayStatusLevel() string {
+	return a.trayStatusLevelFor(a.settingsController.DualStateSummary())
+}
+
 // TrayIconState returns the cached 32x32 PNG bytes, template flag, and tooltip
 // for the macOS menu bar icon. Zero PNG encoding happens after first call.
 func (a *App) TrayIconState() (pngBytes []byte, isTemplate bool, tooltip string) {
-	switch a.trayStatusLevel() {
+	dual := a.settingsController.DualStateSummary()
+	dualLabel := trayDualStateLabelFor(dual)
+	switch a.trayStatusLevelFor(dual) {
 	case "danger":
-		if a.desktopPrefs.TrayDark {
-			return trayIconDangerDark, false, "Memlane · 服务或项目存在异常"
+		tip := "Memlane · 服务或项目存在异常"
+		if dualLabel != "" {
+			tip = "Memlane · " + dualLabel
 		}
-		return trayIconDangerLight, false, "Memlane · 服务或项目存在异常"
+		if a.desktopPrefs.TrayDark {
+			return trayIconDangerDark, false, tip
+		}
+		return trayIconDangerLight, false, tip
 	case "warn":
-		if a.desktopPrefs.TrayDark {
-			return trayIconWarnDark, false, "Memlane · 有待处理提醒"
+		tip := "Memlane · 有待处理提醒"
+		if dualLabel != "" {
+			tip = "Memlane · " + dualLabel
 		}
-		return trayIconWarnLight, false, "Memlane · 有待处理提醒"
+		if a.desktopPrefs.TrayDark {
+			return trayIconWarnDark, false, tip
+		}
+		return trayIconWarnLight, false, tip
 	default:
 		return trayIconHealthy, true, "Memlane"
 	}
 }
 
-func (a *App) trayOverallServiceStatus() (dotState, label string) {
+func (a *App) trayOverallServiceStatusFor(dual settings.DualStateSummary) (dotState, label string) {
+	dualLabel := trayDualStateLabelFor(dual)
+	if dual.GatewayHealthy && dual.EngineStarting {
+		return "run", dualLabel
+	}
+	if dual.GatewayHealthy && dual.ExtractionPaused {
+		dot := "warn"
+		if a.monitor.State == "exited" || a.monitor.State == "degraded" {
+			dot = "fail"
+		}
+		return dot, dualLabel
+	}
+	if dual.GatewayHealthy && dual.EngineFault {
+		return "fail", dualLabel
+	}
 	hookErrors := 0
 	if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
 		hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
 	}
 	switch {
+	case a.monitor.State == "starting" || a.monitor.EngineStatus == "启动中":
+		return "run", "服务 · 启动中"
 	case a.monitor.State == "exited":
 		return "fail", "服务 · 已停止"
-	case a.monitor.State == "degraded" || (a.monitor.EngineStatus != "" && a.monitor.EngineStatus != "已连接" && a.monitor.EngineStatus != "尚未检查") ||
+	case a.monitor.State == "degraded" || (a.monitor.EngineStatus != "" && a.monitor.EngineStatus != "已连接" && a.monitor.EngineStatus != "尚未检查" && a.monitor.EngineStatus != "状态未知") ||
 		(a.monitor.ControlChecked && !a.monitor.ControlReachable):
 		return "fail", "服务 · 异常"
 	case a.monitor.State == "warning" || a.trayLowDisk() || hookErrors > 0:
 		return "warn", "服务 · 需关注"
+	case a.monitor.State == "unknown" || a.monitor.EngineStatus == "状态未知":
+		return "neutral", "服务 · 状态未知"
 	case a.monitor.State == "ready" || a.monitor.EngineStatus == "已连接":
 		return "ok", "服务 · 已连接"
 	default:
 		return "neutral", "服务 · 待检查"
 	}
+}
+
+func (a *App) trayOverallServiceStatus() (dotState, label string) {
+	return a.trayOverallServiceStatusFor(a.settingsController.DualStateSummary())
 }
 
 func (a *App) trayLowDisk() bool {
@@ -142,6 +202,15 @@ func (a *App) TrayFlyoutHeight() int {
 		alerts += 21 + count*(trayAlertRowHeight+trayAlertGap)
 	}
 	height := header + components + alerts + settings + footer + borderAndBuffer
+	dual := a.settingsController.DualStateSummary()
+	if dual.GatewayHealthy && (dual.EngineStarting || dual.ExtractionPaused || dual.EngineFault) {
+		height += 38
+		if !dual.EngineStarting && dual.Reason != "" {
+			for _, line := range strings.Split(dual.Reason, "\n") {
+				height += 16 * max(1, (len([]rune(line))+23)/24)
+			}
+		}
+	}
 	if a.KeepAliveOnQuit() {
 		height += 30
 	}
@@ -158,11 +227,13 @@ func (a *App) TrayFlyoutHeight() int {
 // TrayFlyoutView renders the custom V4 menu bar flyout.
 func (a *App) TrayFlyoutView(c *ui.Context) {
 	applyAppearance(a.effectiveDark(c.Theme().Dark))
+	dual := a.settingsController.DualStateSummary()
 	ui.Themed(c, homeTheme).Fill().FontWeight(400).Background(tok.BgElevated).Children(func() {
 		ui.Column(c.Key("tray-flyout-root")).Fill().Background(tok.BgElevated).Border(1, tok.Border).Radius(10).Clip().Children(func() {
-			a.trayFlyoutHeader(c)
+			a.trayFlyoutHeader(c, dual)
 			ui.Scroll(c.Key("tray-flyout-body")).Grow(1).MinHeight(0).FillWidth().Children(func() {
 				ui.Column(c).FillWidth().Gap(0).Children(func() {
+					a.trayFlyoutDualStateSection(c, dual)
 					a.trayFlyoutComponentsSection(c)
 					a.trayFlyoutAlertsSection(c)
 					a.trayFlyoutQuickSettingsSection(c)
@@ -173,8 +244,8 @@ func (a *App) TrayFlyoutView(c *ui.Context) {
 	})
 }
 
-func (a *App) trayFlyoutHeader(c *ui.Context) {
-	dotState, statusLabel := a.trayOverallServiceStatus()
+func (a *App) trayFlyoutHeader(c *ui.Context, dual settings.DualStateSummary) {
+	dotState, statusLabel := a.trayOverallServiceStatusFor(dual)
 	ui.Row(c.Key("tray-head")).FillWidth().Shrink(0).Padding(10, sp3).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain).Shrink(0)
@@ -220,6 +291,40 @@ func trayIconButton(c *ui.Context, key, label string, icon *ui.SVG, fn func()) u
 		ui.Icon(c, icon).FontSize(14).TextColor(icoCol)
 	}).OnClick(fn)
 	return btn
+}
+
+func (a *App) trayFlyoutDualStateSection(c *ui.Context, dual settings.DualStateSummary) {
+	label := trayDualStateLabelFor(dual)
+	if !dual.GatewayHealthy || label == "" {
+		return
+	}
+	dotState := "warn"
+	textColor := tok.Warning
+	if dual.EngineStarting {
+		dotState = "run"
+		textColor = tok.Accent
+	} else if dual.EngineFault || a.monitor.State == "exited" || a.monitor.State == "degraded" {
+		dotState = "fail"
+		textColor = tok.Danger
+	}
+	row := ui.ButtonBase(c.Key("tray-dual-state")).Role(ui.RoleButton).Label(label).
+		Cursor(ui.CursorPointer).FillWidth().Padding(sp2, sp3).Gap(4).
+		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Stretch).Justify(ui.Start)
+	row.Background(homeHoverColor(row, "tray-dual-state-bg", tok.Fill1, tok.Hover))
+	row.Children(func() {
+		ui.Column(c).FillWidth().Gap(2).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+				v4StatusDot(c, dotState)
+				ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(textColor).SingleLine().Grow(1).MinWidth(0)
+				ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
+			})
+			if !dual.EngineStarting && dual.Reason != "" {
+				ui.Text(c, dual.Reason).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.4)
+			}
+		})
+	}).OnClick(func() {
+		a.openSettingsFromTray("服务")
+	})
 }
 
 func (a *App) trayFlyoutComponentsSection(c *ui.Context) {

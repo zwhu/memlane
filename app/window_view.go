@@ -46,19 +46,11 @@ func (a *App) View(c *ui.Context) {
 }
 func (a *App) viewContent(c *ui.Context) {
 	externalStopped := a.isExternalManagedStoreStopped()
-	if externalStopped {
-		if !a.monitor.Polling {
-			a.externalStorePollPaused = true
-			a.settingsController.EnableServicePolling(false)
-		}
-	} else if a.externalStorePollPaused {
-		a.externalStorePollPaused = false
-		a.settingsController.EnableServicePolling(true)
-	}
 	now := time.Now()
 	if !a.windowHidden {
 		c.After(2 * time.Second)
 		a.pollViewReadingIdentity(c.Now())
+		a.refreshServiceMonitorIfDue(now)
 		if !externalStopped && now.After(a.access.Next) {
 			a.RefreshProjectDirectory()
 		}
@@ -98,6 +90,7 @@ func (a *App) mainShell(c *ui.Context) {
 					a.projectNavigation(c)
 				}
 				a.externalStoreStoppedBanner(c)
+				a.serviceDualStateBanner(c)
 				switch a.page {
 				case "用户画像":
 					a.userProfilesPage(c)

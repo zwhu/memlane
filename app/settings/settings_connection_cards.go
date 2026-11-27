@@ -376,6 +376,10 @@ func (a *Controller) ServiceCogneeStatus() (dotState, status string, color ui.Co
 	switch a.monitor.State {
 	case "ready":
 		dotState, status = "ok", "已连接"
+	case "starting":
+		dotState, status = "run", "启动中"
+	case "unknown":
+		dotState, status = "neutral", "状态未知"
 	case "warning":
 		dotState, status = "warn", "短暂波动"
 	case "exited":
@@ -385,6 +389,8 @@ func (a *Controller) ServiceCogneeStatus() (dotState, status string, color ui.Co
 	default:
 		if a.monitor.EngineStatus == "已连接" {
 			dotState, status = "ok", "已连接"
+		} else if a.monitor.EngineStatus == "启动中" {
+			dotState, status = "run", "启动中"
 		} else if a.monitor.EngineStatus != "" && a.monitor.EngineStatus != "尚未检查" {
 			dotState, status = "fail", a.monitor.EngineStatus
 		}

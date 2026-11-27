@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -500,5 +501,263 @@ func TestSidebarServicePopoverUsesMonitorDiskAndChannelStatus(t *testing.T) {
 		if dot, metric, color := a.trayChannelStatus(); dot != tc.dot || metric != tc.trayText || (dot == "warn" && color != tok.Warning) || (dot == "ok" && color != tok.Text2) {
 			t.Fatalf("unexpected shared channel status: dot=%s metric=%q color=%v", dot, metric, color)
 		}
+	}
+}
+
+func TestServiceMonitorGatewayOnlyStartingInboxAndCapabilitiesInvalidation(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("z", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const controlURL = "http://127.0.0.1:61288"
+	settings.InvalidateControlCapabilitiesCache(controlURL)
+	t.Cleanup(func() { settings.InvalidateControlCapabilitiesCache(controlURL) })
+
+	var phase atomic.Int32 // 0=starting, 1=ready
+	var directHealthCalls, monitorCalls, capsCalls atomic.Int32
+
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			directHealthCalls.Add(1)
+			http.Error(w, "must not probe direct engine /health", http.StatusTeapot)
+		case "/v1/capabilities":
+			capsCalls.Add(1)
+			ready := phase.Load() == 1
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_versions":       []string{"v2", "v1"},
+				"reading_contract":   settings.ReadingContract,
+				"engine_ready":       ready,
+				"capabilities_epoch": int64(phase.Load() + 1),
+				"features": map[string]bool{
+					"async_capture": true,
+					"local_body":    ready,
+				},
+			})
+		case "/v1/runtime/monitor":
+			monitorCalls.Add(1)
+			if phase.Load() == 0 {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"gateway_ok":     true,
+					"engine_ok":      false,
+					"engine_phase":   "starting",
+					"state":          "starting",
+					"startup_error":  "",
+					"status_summary": "记忆引擎启动中，已可正常浏览和采集",
+					"inbox": map[string]any{
+						"pending":           3,
+						"processing":        1,
+						"failed":            0,
+						"awaiting_publish":  0,
+						"publish_failed":    0,
+						"extraction_paused": true,
+						"pause_reason":      "engine_starting",
+					},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"gateway_ok":     true,
+				"engine_ok":      true,
+				"engine_phase":   "ready",
+				"state":          "ready",
+				"latency_ms":     14.5,
+				"status_summary": "提炼服务运行正常",
+				"inbox": map[string]any{
+					"pending":           0,
+					"processing":        0,
+					"failed":            0,
+					"awaiting_publish":  0,
+					"publish_failed":    0,
+					"extraction_paused": false,
+				},
+			})
+		case "/v1/completion/health":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_configured"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// Pure gateway config without ServiceURL must still poll normally.
+	a := New(Config{
+		ServiceURL:     "",
+		ProjectControl: &ProjectControlConfig{URL: controlURL, ManagementTokenFile: token},
+	}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+	a.monitor.PollEnabled = true
+
+	// Prime capabilities cache while engine is starting (engine_ready=false).
+	ctrlClient := settings.ProjectControlClient{
+		Config: *a.Config.ProjectControl,
+		HTTP:   a.Client.HTTP,
+	}
+	if ok, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil || ok {
+		t.Fatalf("expected local_body=false while starting, got (%v, %v)", ok, err)
+	}
+	if capsCalls.Load() != 1 {
+		t.Fatalf("expected 1 capabilities call, got %d", capsCalls.Load())
+	}
+
+	// Poll 1: engine is starting -> no direct /health, monitor enters starting state.
+	a.refreshServiceMonitorIfDue(time.Now().Add(time.Hour))
+	if !a.monitor.Polling {
+		t.Fatal("RefreshServiceMonitorIfDue skipped pure-gateway config with empty ServiceURL")
+	}
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+
+	if directHealthCalls.Load() != 0 || monitorCalls.Load() != 1 {
+		t.Fatalf("expected gateway-only monitor poll: directHealth=%d monitor=%d", directHealthCalls.Load(), monitorCalls.Load())
+	}
+	if a.monitor.State != "starting" || a.monitor.EngineStatus != "启动中" || !a.monitor.ControlReachable {
+		t.Fatalf("unexpected starting monitor state: state=%q engine=%q ctrl=%v", a.monitor.State, a.monitor.EngineStatus, a.monitor.ControlReachable)
+	}
+	dot, status, _ := a.settingsController.ServiceCogneeStatus()
+	if dot != "run" || status != "启动中" {
+		t.Fatalf("ServiceCogneeStatus = (%q, %q), want (\"run\", \"启动中\")", dot, status)
+	}
+	dual := a.settingsController.DualStateSummary()
+	if !dual.GatewayHealthy || !dual.EngineStarting || dual.BacklogCount != 4 {
+		t.Fatalf("unexpected starting DualStateSummary: %+v", dual)
+	}
+
+	// Poll 2: engine transitions starting -> ready -> must invalidate capabilities cache!
+	phase.Store(1)
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+
+	if a.monitor.State != "ready" || a.monitor.EngineStatus != "已连接" {
+		t.Fatalf("expected ready after recovery, got state=%q engine=%q", a.monitor.State, a.monitor.EngineStatus)
+	}
+	if ok, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil || !ok {
+		t.Fatalf("expected invalidated capabilities cache to refresh local_body=true, got (%v, %v)", ok, err)
+	}
+	if capsCalls.Load() != 2 {
+		t.Fatalf("expected capabilities refetch after engine recovery, calls=%d", capsCalls.Load())
+	}
+}
+
+func TestServiceMonitorIncompleteAndContradictoryPayloads(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(token, []byte(strings.Repeat("p", 40)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	const controlURL = "http://127.0.0.1:61289"
+	settings.InvalidateControlCapabilitiesCache(controlURL)
+	t.Cleanup(func() { settings.InvalidateControlCapabilitiesCache(controlURL) })
+
+	var monitorBody atomic.Value
+	monitorBody.Store(`{}`)
+	var capsCalls atomic.Int32
+
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			capsCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"api_versions":       []string{"v2", "v1"},
+				"reading_contract":   settings.ReadingContract,
+				"engine_ready":       true,
+				"capabilities_epoch": 1,
+				"features":           map[string]bool{"local_body": true},
+			})
+		case "/v1/runtime/monitor":
+			_, _ = w.Write([]byte(monitorBody.Load().(string)))
+		case "/v1/completion/health":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_configured"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	a := New(Config{
+		ConfigFile:     "/synthetic/runtime.json",
+		ProjectControl: &ProjectControlConfig{URL: controlURL, ManagementTokenFile: token},
+	}, nil)
+	a.Client.HTTP = &http.Client{Transport: transport}
+	updates := make(chan func(), 16)
+	a.Update = func(fn func()) { updates <- fn }
+
+	// Prime capabilities cache (engine_ready=true, 5m TTL).
+	ctrlClient := settings.ProjectControlClient{Config: *a.Config.ProjectControl, HTTP: a.Client.HTTP}
+	if _, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil {
+		t.Fatal(err)
+	}
+	if capsCalls.Load() != 1 {
+		t.Fatalf("expected 1 capabilities fetch, got %d", capsCalls.Load())
+	}
+
+	// 1. Empty JSON {} -> state="unknown", EngineStatus="状态未知", ControlReachable=true, no cache invalidation.
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	if a.monitor.State != "unknown" || a.monitor.EngineStatus != "状态未知" || !a.monitor.ControlReachable || a.monitor.HasLatency {
+		t.Fatalf("empty payload mishandled: state=%q engine=%q ctrl=%v hasLatency=%v",
+			a.monitor.State, a.monitor.EngineStatus, a.monitor.ControlReachable, a.monitor.HasLatency)
+	}
+	if a.isExternalManagedStoreStopped() {
+		t.Fatal("empty payload with reachable gateway must not trigger external-store-stopped")
+	}
+	if _, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil || capsCalls.Load() != 1 {
+		t.Fatalf("empty payload must not invalidate capabilities cache: calls=%d err=%v", capsCalls.Load(), err)
+	}
+
+	// 2. Contradictory payload: engine_ok=false + state=ready -> never ready, no cache invalidation.
+	monitorBody.Store(`{"gateway_ok":true,"engine_ok":false,"state":"ready"}`)
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	if a.monitor.State == "ready" || a.monitor.EngineStatus == "已连接" {
+		t.Fatalf("contradictory engine_ok=false payload must not enter ready: state=%q engine=%q", a.monitor.State, a.monitor.EngineStatus)
+	}
+	if _, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil || capsCalls.Load() != 1 {
+		t.Fatalf("contradictory payload must not invalidate capabilities cache: calls=%d err=%v", capsCalls.Load(), err)
+	}
+
+	// 3. Legacy payload {"state":"ready"} without engine_ok -> enters ready and invalidates cache.
+	monitorBody.Store(`{"state":"ready"}`)
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	if a.monitor.State != "ready" || a.monitor.EngineStatus != "已连接" {
+		t.Fatalf("legacy ready payload did not enter ready: state=%q engine=%q", a.monitor.State, a.monitor.EngineStatus)
+	}
+	if _, err := ctrlClient.ProbeFeature(context.Background(), "local_body"); err != nil || capsCalls.Load() != 2 {
+		t.Fatalf("transition to ready must invalidate capabilities cache: calls=%d err=%v", capsCalls.Load(), err)
+	}
+
+	// 4. Explicit gateway_ok=false takes precedence over state=ready and engine_phase=starting.
+	for _, payload := range []string{
+		`{"gateway_ok":false,"state":"ready"}`,
+		`{"gateway_ok":false,"engine_phase":"starting"}`,
+	} {
+		monitorBody.Store(payload)
+		a.refreshServiceMonitor()
+		drainReading(t, updates, func() bool { return !a.monitor.Polling })
+		if a.monitor.State != "degraded" {
+			t.Fatalf("payload %s: expected State=degraded, got %q", payload, a.monitor.State)
+		}
+		if dual := a.settingsController.DualStateSummary(); dual.GatewayHealthy {
+			t.Fatalf("payload %s: expected GatewayHealthy=false, got %+v", payload, dual)
+		}
+	}
+
+	// 5. Transition ready -> explicit engine_ok=false + extraction_paused=false surfaces degraded immediately (no debounce).
+	monitorBody.Store(`{"gateway_ok":true,"engine_ok":true,"engine_phase":"ready","state":"ready"}`)
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	if a.monitor.State != "ready" {
+		t.Fatalf("expected ready before fault, got %q", a.monitor.State)
+	}
+	monitorBody.Store(`{"gateway_ok":true,"engine_ok":false,"engine_phase":"degraded","state":"degraded","last_error":"cognee probe timeout","inbox":{"extraction_paused":false}}`)
+	a.refreshServiceMonitor()
+	drainReading(t, updates, func() bool { return !a.monitor.Polling })
+	if a.monitor.State != "degraded" || a.monitor.EngineStatus == "已连接" {
+		t.Fatalf("explicit degraded snapshot must not be debounced as connected: state=%q engine=%q", a.monitor.State, a.monitor.EngineStatus)
+	}
+	dual := a.settingsController.DualStateSummary()
+	if !dual.GatewayHealthy || !dual.EngineFault || dual.ExtractionPaused {
+		t.Fatalf("expected GatewayHealthy=true EngineFault=true ExtractionPaused=false, got %+v", dual)
 	}
 }
