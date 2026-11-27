@@ -424,7 +424,7 @@ def _configure_store(config, root):
     os.environ.update({key: str(value) for key, value in private.items()})
     os.environ.update(HOME=str(root / 'home'), SYSTEM_ROOT_DIRECTORY=str(root / 'system'),
                       DATA_ROOT_DIRECTORY=str(root / 'data'), CACHE_ROOT_DIRECTORY=str(root / 'cache'),
-                      DB_PATH=str(root / 'system/databases'), CACHE_BACKEND='sqlite', CACHING='true',
+                      DB_PATH=str(root / 'system/databases'), CACHE_BACKEND='sqlite', CACHING='true', SESSION_TTL_SECONDS='0',
                       LOGS_ROOT_DIRECTORY=str(root / 'logs'), COGNEE_LOGS_DIR=str(root / 'logs'),
                       TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false', PYTHON_DOTENV_DISABLED='1',
                       ENABLE_BACKEND_ACCESS_CONTROL='true', REQUIRE_AUTHENTICATION='true',

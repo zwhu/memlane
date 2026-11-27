@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -85,6 +86,18 @@ class SourceTests(unittest.TestCase):
         path.chmod(0o644)
         with self.assertRaisesRegex(PolicyError, 'private_credential_required'):
             read_secret(path)
+
+    def test_configure_store_disables_session_ttl(self):
+        store_root = self.root / 'store'
+        store_root.mkdir(mode=0o700)
+        with patch.dict(os.environ, {'SESSION_TTL_SECONDS': '604800'}, clear=False):
+            runner._configure_store({}, store_root)
+            self.assertEqual(os.environ['CACHE_BACKEND'], 'sqlite')
+            self.assertEqual(os.environ['CACHING'], 'true')
+            self.assertEqual(os.environ['SESSION_TTL_SECONDS'], '0')
+            from cognee.infrastructure.databases.cache.config import CacheConfig
+
+            self.assertEqual(CacheConfig().session_ttl_seconds, 0)
 
 
 class SetupTests(unittest.IsolatedAsyncioTestCase):
