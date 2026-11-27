@@ -124,6 +124,16 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 				"ok": true, "items": []any{},
 				"semantic_hits": []map[string]any{{"dataset_id": "ds", "document_id": in.Query, "title": in.Query, "snippet": "A real official snippet"}},
 			})
+		case "/v1/datasets/ds/documents/new":
+			body := "A real official snippet"
+			json.NewEncoder(w).Encode(documentLookupV2Response{
+				Document: Document{ID: "new", Dataset: "ds", Name: "new.md"},
+				Title:    "new",
+				Content:  &body,
+			})
+		case "/v1/datasets/ds/documents/new/body":
+			body := "A real official snippet"
+			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: "new", DatasetID: "ds", Body: &body})
 		default:
 			json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		}
@@ -170,7 +180,10 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 		t.Fatal("latest request missing")
 	}
 	a.openSearchResult(a.searchUI.Rows[0])
-	drainReading(t, updates, func() bool { return !a.state().Reading })
+	drainReading(t, updates, func() bool {
+		s := a.state()
+		return s.Selected != nil && s.Selected.Document != nil && !s.Reading && !s.Loading
+	})
 	if a.page != "知识" || a.searchOrigin == nil {
 		t.Fatal("result origin missing")
 	}
