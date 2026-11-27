@@ -269,14 +269,16 @@ func (s *Store) RecordGenerationValidation(ctx context.Context, v GenerationVali
 	if err := validateGenerationPayload(v.PayloadJSON); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO generation_validations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(operation_id) DO UPDATE SET profile_id=excluded.profile_id,profile_revision=excluded.profile_revision,
-		digest=excluded.digest,registered_revision=excluded.registered_revision,status=excluded.status,plain_passed=excluded.plain_passed,
-		schema_passed=excluded.schema_passed,quality_passed=excluded.quality_passed,structured_mode=excluded.structured_mode,
-		error_code=excluded.error_code,payload_json=excluded.payload_json,updated_at=excluded.updated_at`,
-		v.OperationID, v.ProfileID, v.ProfileRevision, v.Digest, v.RegisteredRevision, v.Status, boolToInt(v.PlainPassed),
-		boolToInt(v.SchemaPassed), boolToInt(v.QualityPassed), v.StructuredMode, v.ErrorCode, defaultText(v.PayloadJSON, "{}"),
-		defaultText(v.UpdatedAt, NowUTCMicro()))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO generation_validations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(operation_id) DO UPDATE SET profile_id=excluded.profile_id,profile_revision=excluded.profile_revision,
+			digest=excluded.digest,registered_revision=excluded.registered_revision,status=excluded.status,plain_passed=excluded.plain_passed,
+			schema_passed=excluded.schema_passed,quality_passed=excluded.quality_passed,structured_mode=excluded.structured_mode,
+			error_code=excluded.error_code,payload_json=excluded.payload_json,updated_at=excluded.updated_at`,
+			v.OperationID, v.ProfileID, v.ProfileRevision, v.Digest, v.RegisteredRevision, v.Status, boolToInt(v.PlainPassed),
+			boolToInt(v.SchemaPassed), boolToInt(v.QualityPassed), v.StructuredMode, v.ErrorCode, defaultText(v.PayloadJSON, "{}"),
+			defaultText(v.UpdatedAt, NowUTCMicro()))
+	})
 }
 
 func (s *Store) IsGenerationDigestValidated(ctx context.Context, digest string) (bool, error) {
@@ -346,8 +348,10 @@ func RecordGenerationOperation(ctx context.Context, tx *sql.Tx, id string, resul
 }
 
 func (s *Store) SetGenerationStartupError(ctx context.Context, code string) error {
-	return execSQL(ctx, s.db, `UPDATE generation_state SET startup_error=?,updated_at=?
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `UPDATE generation_state SET startup_error=?,updated_at=?
   WHERE singleton=1 AND startup_error<>?`, code, NowUTCMicro(), code)
+	})
 }
 
 func validateGenerationPayload(payload string) error {
@@ -411,16 +415,18 @@ func (s *Store) UpsertGenerationHandoff(ctx context.Context, p GenerationHandoff
 			return err
 		}
 	}
-	return execSQL(ctx, s.db, `INSERT INTO generation_handoffs (`+generationHandoffColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
-		profile_id=excluded.profile_id, profile_revision=excluded.profile_revision, digest=excluded.digest,
-		previous_profile_id=excluded.previous_profile_id, previous_revision=excluded.previous_revision, status=excluded.status,
-		reason=excluded.reason, started_at=excluded.started_at, ended_at=excluded.ended_at,
-		active_committed=excluded.active_committed, cancelled_sessions=excluded.cancelled_sessions, pending_sessions=excluded.pending_sessions,
-		unconfirmed_sessions=excluded.unconfirmed_sessions, payload_json=excluded.payload_json, runtime_payload_json=excluded.runtime_payload_json`,
-		p.OperationID, p.ProfileID, p.ProfileRevision, p.Digest, p.PreviousProfileID, p.PreviousRevision, p.Status,
-		p.Reason, p.StartedAt, p.EndedAt, boolToInt(p.ActiveCommitted), p.CancelledSessions, p.PendingSessions, p.UnconfirmedSessions,
-		defaultText(p.PayloadJSON, "{}"), defaultText(p.RuntimePayloadJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO generation_handoffs (`+generationHandoffColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
+			profile_id=excluded.profile_id, profile_revision=excluded.profile_revision, digest=excluded.digest,
+			previous_profile_id=excluded.previous_profile_id, previous_revision=excluded.previous_revision, status=excluded.status,
+			reason=excluded.reason, started_at=excluded.started_at, ended_at=excluded.ended_at,
+			active_committed=excluded.active_committed, cancelled_sessions=excluded.cancelled_sessions, pending_sessions=excluded.pending_sessions,
+			unconfirmed_sessions=excluded.unconfirmed_sessions, payload_json=excluded.payload_json, runtime_payload_json=excluded.runtime_payload_json`,
+			p.OperationID, p.ProfileID, p.ProfileRevision, p.Digest, p.PreviousProfileID, p.PreviousRevision, p.Status,
+			p.Reason, p.StartedAt, p.EndedAt, boolToInt(p.ActiveCommitted), p.CancelledSessions, p.PendingSessions, p.UnconfirmedSessions,
+			defaultText(p.PayloadJSON, "{}"), defaultText(p.RuntimePayloadJSON, "{}"))
+	})
 }
 
 func (s *Store) GetGenerationHandoff(ctx context.Context, op string) (GenerationHandoff, error) {

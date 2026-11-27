@@ -164,6 +164,92 @@ func (p *pendingPromptStore) record(agentID, sessionID string, item pendingPromp
 	p.touchLocked(key)
 }
 
+func findPendingIndexLocked(state *sessionPromptState, datasetID, turnID, messageID string) int {
+	if turnID != "" {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == turnID && state.pending[i].matchesDataset(datasetID) {
+				return i
+			}
+		}
+	}
+	if messageID != "" && messageID != turnID {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == messageID && state.pending[i].matchesDataset(datasetID) {
+				return i
+			}
+		}
+	}
+	if turnID != "" {
+		for i := len(state.pending) - 1; i >= 0; i-- {
+			if state.pending[i].TurnID == "" && state.pending[i].matchesDataset(datasetID) {
+				return i
+			}
+		}
+		return -1
+	}
+	for i := len(state.pending) - 1; i >= 0; i-- {
+		if state.pending[i].matchesDataset(datasetID) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (p *pendingPromptStore) peekPending(agentID, sessionID, datasetID, turnID, messageID string) (pendingPrompt, bool) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	datasetID = strings.TrimSpace(datasetID)
+	turnID = strings.TrimSpace(turnID)
+	messageID = strings.TrimSpace(messageID)
+	if agentID == "" || sessionID == "" {
+		return pendingPrompt{}, false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	p.pruneLocked(now)
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	state, ok := p.entries[key]
+	if !ok || len(state.pending) == 0 {
+		return pendingPrompt{}, false
+	}
+	idx := findPendingIndexLocked(state, datasetID, turnID, messageID)
+	if idx < 0 {
+		return pendingPrompt{}, false
+	}
+	chosen := state.pending[idx]
+	chosen.DatasetIDs = slices.Clone(chosen.DatasetIDs)
+	return chosen, true
+}
+
+func (p *pendingPromptStore) ackPending(agentID, sessionID string, matched pendingPrompt) {
+	agentID = strings.TrimSpace(agentID)
+	sessionID = strings.TrimSpace(sessionID)
+	if agentID == "" || sessionID == "" {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock()
+	p.pruneLocked(now)
+	key := sessionPromptKey{agentID: agentID, sessionID: sessionID}
+	state, ok := p.entries[key]
+	if !ok || len(state.pending) == 0 {
+		return
+	}
+	for i := len(state.pending) - 1; i >= 0; i-- {
+		item := state.pending[i]
+		if item.TurnID == matched.TurnID && item.Prompt == matched.Prompt && item.RecordedAt.Equal(matched.RecordedAt) {
+			state.pending = append(state.pending[:i], state.pending[i+1:]...)
+			state.updatedAt = now
+			p.touchLocked(key)
+			return
+		}
+	}
+}
+
 func (p *pendingPromptStore) popPending(agentID, sessionID, datasetID, turnID, messageID string) (pendingPrompt, bool) {
 	agentID = strings.TrimSpace(agentID)
 	sessionID = strings.TrimSpace(sessionID)
@@ -183,44 +269,16 @@ func (p *pendingPromptStore) popPending(agentID, sessionID, datasetID, turnID, m
 	if !ok || len(state.pending) == 0 {
 		return pendingPrompt{}, false
 	}
-
-	popAt := func(idx int) pendingPrompt {
-		chosen := state.pending[idx]
-		chosen.DatasetIDs = slices.Clone(chosen.DatasetIDs)
-		state.pending = append(state.pending[:idx], state.pending[idx+1:]...)
-		state.updatedAt = now
-		p.touchLocked(key)
-		return chosen
-	}
-
-	if turnID != "" {
-		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == turnID && state.pending[i].matchesDataset(datasetID) {
-				return popAt(i), true
-			}
-		}
-	}
-	if messageID != "" && messageID != turnID {
-		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == messageID && state.pending[i].matchesDataset(datasetID) {
-				return popAt(i), true
-			}
-		}
-	}
-	if turnID != "" {
-		for i := len(state.pending) - 1; i >= 0; i-- {
-			if state.pending[i].TurnID == "" && state.pending[i].matchesDataset(datasetID) {
-				return popAt(i), true
-			}
-		}
+	idx := findPendingIndexLocked(state, datasetID, turnID, messageID)
+	if idx < 0 {
 		return pendingPrompt{}, false
 	}
-	for i := len(state.pending) - 1; i >= 0; i-- {
-		if state.pending[i].matchesDataset(datasetID) {
-			return popAt(i), true
-		}
-	}
-	return pendingPrompt{}, false
+	chosen := state.pending[idx]
+	chosen.DatasetIDs = slices.Clone(chosen.DatasetIDs)
+	state.pending = append(state.pending[:idx], state.pending[idx+1:]...)
+	state.updatedAt = now
+	p.touchLocked(key)
+	return chosen, true
 }
 
 func (p *pendingPromptStore) last(agentID, sessionID string) (pendingPrompt, bool) {
@@ -298,6 +356,7 @@ type inboxPayload struct {
 	Content        json.RawMessage    `json:"content"`
 	SourceMeta     engine.SourceMeta  `json:"source_meta"`
 	UserID         string             `json:"user_id"`
+	EngineUserID   string             `json:"engine_user_id,omitempty"`
 	ExtractMode    engine.ExtractMode `json:"extract_mode"`
 	IdempotencyKey string             `json:"idempotency_key,omitempty"`
 }
@@ -390,6 +449,8 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 		writeError(w, 400, "invalid_content", "capture content required")
 		return
 	}
+	var pairedPrompt pendingPrompt
+	usedPendingPrompt := false
 	if req.Kind == engine.IngestKindCaptureQA && strings.TrimSpace(req.SessionID) != "" {
 		if fields, ok := content.(map[string]any); ok {
 			questionText, _ := fields["question"].(string)
@@ -401,7 +462,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 						explicitTurnID = strings.TrimSpace(rawTurnID)
 					}
 				}
-				pending, found := s.prompts.popPending(agent.ID, req.SessionID, project.DatasetID, explicitTurnID, req.MessageID)
+				pending, found := s.prompts.peekPending(agent.ID, req.SessionID, project.DatasetID, explicitTurnID, req.MessageID)
 				if !found {
 					writeJSON(w, http.StatusOK, map[string]any{
 						"ok": true, "accepted": false, "status": "skipped_missing_question",
@@ -409,6 +470,8 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 					})
 					return
 				}
+				pairedPrompt = pending
+				usedPendingPrompt = true
 				fields["question"] = pending.Prompt
 				existingPromptTime, _ := fields["prompt_time"].(string)
 				if strings.TrimSpace(existingPromptTime) == "" && pending.PromptTime != "" {
@@ -418,6 +481,9 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 		}
 	}
 	if s.filterCapture(w, ctx, req, agent, project, content) {
+		if usedPendingPrompt {
+			s.prompts.ackPending(agent.ID, req.SessionID, pairedPrompt)
+		}
 		return
 	}
 	req.Content, err = json.Marshal(content)
@@ -425,6 +491,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 		writeDomainError(w, err)
 		return
 	}
+	req.EngineUserID = ""
 	if req.UserID == "" {
 		req.UserID = agent.PrincipalID
 	}
@@ -472,34 +539,24 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 	}
 	receipt := domain.CaptureReceipt{CaptureKey: captureKey, UserID: receiptUser, DatasetID: project.DatasetID,
 		SessionID: req.SessionID, MessageID: req.MessageID, PayloadSHA256: payloadHash, EntryType: string(req.Kind)}
-	state, _, err := s.cfg.Store.ReserveCaptureReceipt(ctx, receipt)
-	if errors.Is(err, domain.ErrConflict) {
-		writeError(w, 409, "capture_conflict", "capture key already has another payload or scope")
-		return
-	}
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
 	itemID := tupleDigest(agent.ID, project.DatasetID, captureKey)
-	response := map[string]any{"ok": true, "accepted": true, "inbox_id": itemID,
-		"capture_key": captureKey, "project_id": project.ID, "dataset_id": project.DatasetID}
-	// Once the reservation exists, finish publication even if the client disconnects.
-	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	abortPending := func(err error) {
-		if state == "reserved" {
-			cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			defer stop()
-			err = errors.Join(err, s.cfg.Store.AbortPendingCaptureReceipt(cleanup, captureKey))
-		}
-		writeDomainError(w, err)
+	enqueueInput := domain.EnqueueCaptureInput{
+		Receipt: receipt,
+		Inbox: domain.CaptureInboxItem{
+			ID: itemID, ProjectID: project.ID, DatasetID: project.DatasetID, AgentID: agent.ID,
+			SessionID: req.SessionID, MessageID: req.MessageID, CaptureKey: captureKey,
+			Kind: string(req.Kind), PayloadJSON: string(encoded),
+		},
+		Limits: domain.CaptureLimits{
+			MaxPendingItems: s.cfg.InboxMaxPendingItems,
+			MaxPendingBytes: s.cfg.InboxMaxPendingBytes,
+		},
 	}
 	if explicitSession != "" {
-		key := sessionBindingKey(agent.ID, explicitSession)
-		if err := s.cfg.Store.UpsertSessionBinding(persist, key, project.ID, float64(time.Now().UnixMilli())/1000); err != nil {
-			abortPending(err)
-			return
+		enqueueInput.SessionBinding = &domain.SessionBinding{
+			SessionKey: sessionBindingKey(agent.ID, explicitSession),
+			ProjectID:  project.ID,
+			UpdatedAt:  float64(time.Now().UnixMilli()) / 1000,
 		}
 		parentSessionID := strings.TrimSpace(req.ParentSessionID)
 		subagentRole := strings.TrimSpace(req.SubagentRole)
@@ -520,30 +577,49 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request, agent domain.Age
 			subagentRole = ""
 		}
 		if parentSessionID != "" || subagentRole != "" {
-			if err := s.cfg.Store.UpsertSessionRelation(persist, domain.SessionRelation{
+			enqueueInput.SessionRelation = &domain.SessionRelation{
 				DatasetID:       project.DatasetID,
 				SessionID:       req.SessionID,
 				ParentSessionID: parentSessionID,
 				SubagentRole:    subagentRole,
-			}); err != nil {
-				abortPending(err)
-				return
 			}
 		}
 	}
+	result, err := s.cfg.Store.ReserveAndEnqueueCapture(ctx, enqueueInput)
+	if errors.Is(err, domain.ErrConflict) {
+		writeError(w, http.StatusConflict, "capture_conflict", "capture key already has another payload or scope")
+		return
+	}
+	if errors.Is(err, domain.ErrInboxCapacityExceeded) {
+		writeError(w, http.StatusInsufficientStorage, "inbox_capacity_exceeded", "capture inbox capacity limit reached")
+		return
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if usedPendingPrompt {
+		s.prompts.ackPending(agent.ID, explicitSession, pairedPrompt)
+	}
+	response := map[string]any{
+		"ok": true, "accepted": true,
+		"capture_key": captureKey, "project_id": project.ID, "dataset_id": project.DatasetID,
+	}
 	status := http.StatusOK
-	response["status"], response["deduplicated"] = state, true
-	if state == "reserved" {
-		item, err := s.cfg.Store.EnqueueInboxItem(persist, domain.CaptureInboxItem{ID: itemID, ProjectID: project.ID,
-			DatasetID: project.DatasetID, AgentID: agent.ID, SessionID: req.SessionID, MessageID: req.MessageID,
-			CaptureKey: captureKey, Kind: string(req.Kind), PayloadJSON: string(encoded)})
-		if err != nil {
-			abortPending(err)
-			return
-		}
+	if !result.Deduplicated {
 		s.inbox.Notify()
 		status = http.StatusAccepted
-		response["status"], response["deduplicated"] = item.Status, false
+		response["inbox_id"] = result.InboxItem.ID
+		response["status"] = result.InboxItem.Status
+		response["deduplicated"] = false
+	} else {
+		response["deduplicated"] = true
+		if result.HasInboxItem {
+			response["inbox_id"] = result.InboxItem.ID
+			response["status"] = result.InboxItem.Status
+		} else {
+			response["status"] = result.Receipt.Status
+		}
 	}
 	writeJSON(w, status, response)
 }
@@ -1125,15 +1201,23 @@ func (s *Server) sessionEnd(w http.ResponseWriter, r *http.Request, agent domain
 	}
 	s.inbox.Notify()
 	queued := false
+	flushStatus := "skipped"
 	if needsConsolidation {
-		queued = s.inbox.ScheduleSessionFlush(project.DatasetID, req.SessionID)
+		res, err := s.inbox.ScheduleSessionFlushJob(ctx, project.ID, project.DatasetID, req.SessionID)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		flushStatus = string(res)
+		queued = res == FlushScheduled
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok":         true,
-		"queued":     queued,
-		"project_id": project.ID,
-		"dataset_id": project.DatasetID,
-		"session_id": req.SessionID,
+		"ok":           true,
+		"queued":       queued,
+		"flush_status": flushStatus,
+		"project_id":   project.ID,
+		"dataset_id":   project.DatasetID,
+		"session_id":   req.SessionID,
 	})
 }
 

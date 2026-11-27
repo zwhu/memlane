@@ -34,10 +34,14 @@ type Config struct {
 	AgentTokens       map[string]string
 	OutputLanguage    string
 	MaxBodyBytes      int64
-	SearchTimeout     time.Duration
-	InboxWorkers      int
-	InboxPollInterval time.Duration
-	DiscoveryOptions  agents.DiscoveryOptions
+	SearchTimeout        time.Duration
+	InboxWorkers         int
+	InboxPollInterval    time.Duration
+	InboxMaxPendingItems int
+	InboxMaxPendingBytes int64
+	InboxPruneInterval   int
+	InboxPruneRetention  time.Duration
+	DiscoveryOptions     agents.DiscoveryOptions
 	ConflictPolicy    *agents.ConflictPolicy
 	DaemonStatus      func(context.Context) map[string]any
 	CursorSecret      []byte
@@ -86,7 +90,8 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.Store == nil || cfg.Engine == nil || len(cfg.ManagementToken) < 24 {
 		return nil, errors.New("store, engine and management token of at least 24 bytes required")
 	}
-	if cfg.MaxBodyBytes < 0 || cfg.SearchTimeout < 0 || cfg.InboxWorkers < 0 || cfg.InboxPollInterval < 0 {
+	if cfg.MaxBodyBytes < 0 || cfg.SearchTimeout < 0 || cfg.InboxWorkers < 0 || cfg.InboxPollInterval < 0 ||
+		cfg.InboxMaxPendingItems < 0 || cfg.InboxMaxPendingBytes < 0 || cfg.InboxPruneInterval < 0 || cfg.InboxPruneRetention < 0 {
 		return nil, errors.New("gateway limits must be positive")
 	}
 	if cfg.MaxBodyBytes == 0 {
@@ -96,10 +101,22 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.SearchTimeout = 15 * time.Second
 	}
 	if cfg.InboxWorkers == 0 {
-		cfg.InboxWorkers = 1
+		cfg.InboxWorkers = 2
 	}
 	if cfg.InboxPollInterval == 0 {
 		cfg.InboxPollInterval = 2 * time.Second
+	}
+	if cfg.InboxMaxPendingItems == 0 {
+		cfg.InboxMaxPendingItems = 10000
+	}
+	if cfg.InboxMaxPendingBytes == 0 {
+		cfg.InboxMaxPendingBytes = 256 << 20
+	}
+	if cfg.InboxPruneInterval == 0 {
+		cfg.InboxPruneInterval = 64
+	}
+	if cfg.InboxPruneRetention == 0 {
+		cfg.InboxPruneRetention = 24 * time.Hour
 	}
 	if cfg.OutputLanguage == "" {
 		cfg.OutputLanguage = "zh-CN"

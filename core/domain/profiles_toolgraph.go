@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -74,16 +75,18 @@ func (s *Store) UpsertUserProfile(ctx context.Context, p UserProfile) error {
 	if err := requireIDs(p.InstanceID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO user_profiles (`+userProfileColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET
-		kind=excluded.kind, operation_id=excluded.operation_id, method=excluded.method,
-		status=excluded.status, dataset_id=excluded.dataset_id, document_dataset_id=excluded.document_dataset_id,
-		document_data_id=excluded.document_data_id, previous_dataset_id=excluded.previous_dataset_id, previous_data_id=excluded.previous_data_id,
-		content_hash=excluded.content_hash, started_at=excluded.started_at, updated_at=excluded.updated_at,
-		progress_json=excluded.progress_json, extra_json=excluded.extra_json`,
-		p.InstanceID, p.Kind, p.OperationID, p.Method, p.Status, p.DatasetID, p.Document.DatasetID,
-		p.Document.DataID, p.Previous.DatasetID, p.Previous.DataID, p.ContentHash, p.StartedAt, p.UpdatedAt, defaultText(p.ProgressJSON, "{}"),
-		defaultText(p.ExtraJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO user_profiles (`+userProfileColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id) DO UPDATE SET
+			kind=excluded.kind, operation_id=excluded.operation_id, method=excluded.method,
+			status=excluded.status, dataset_id=excluded.dataset_id, document_dataset_id=excluded.document_dataset_id,
+			document_data_id=excluded.document_data_id, previous_dataset_id=excluded.previous_dataset_id, previous_data_id=excluded.previous_data_id,
+			content_hash=excluded.content_hash, started_at=excluded.started_at, updated_at=excluded.updated_at,
+			progress_json=excluded.progress_json, extra_json=excluded.extra_json`,
+			p.InstanceID, p.Kind, p.OperationID, p.Method, p.Status, p.DatasetID, p.Document.DatasetID,
+			p.Document.DataID, p.Previous.DatasetID, p.Previous.DataID, p.ContentHash, p.StartedAt, p.UpdatedAt, defaultText(p.ProgressJSON, "{}"),
+			defaultText(p.ExtraJSON, "{}"))
+	})
 }
 
 func (s *Store) GetUserProfile(ctx context.Context, instanceID string) (UserProfile, error) {
@@ -95,7 +98,9 @@ func (s *Store) ListUserProfiles(ctx context.Context) ([]UserProfile, error) {
 }
 
 func (s *Store) DeleteUserProfile(ctx context.Context, instanceID string) error {
-	return requireAffected(s.db.ExecContext(ctx, `DELETE FROM user_profiles`+` WHERE instance_id=?`, instanceID))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return requireAffected(tx.ExecContext(ctx, `DELETE FROM user_profiles`+` WHERE instance_id=?`, instanceID))
+	})
 }
 
 const userProfileAttemptColumns = `operation_id, instance_id, kind, method, status, dataset_id, document_dataset_id,
@@ -114,17 +119,19 @@ func (s *Store) UpsertUserProfileAttempt(ctx context.Context, p UserProfileAttem
 	if err := requireIDs(p.OperationID, p.InstanceID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO user_profile_attempts (`+userProfileAttemptColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
-		instance_id=excluded.instance_id, kind=excluded.kind, method=excluded.method,
-		status=excluded.status, dataset_id=excluded.dataset_id, document_dataset_id=excluded.document_dataset_id,
-		document_data_id=excluded.document_data_id, previous_dataset_id=excluded.previous_dataset_id, previous_data_id=excluded.previous_data_id,
-		content_hash=excluded.content_hash, error_code=excluded.error_code, exit_code=excluded.exit_code,
-		failure_reason=excluded.failure_reason, started_at=excluded.started_at, updated_at=excluded.updated_at,
-		progress_json=excluded.progress_json, extra_json=excluded.extra_json`,
-		p.OperationID, p.InstanceID, p.Kind, p.Method, p.Status, p.DatasetID, p.Document.DatasetID,
-		p.Document.DataID, p.Previous.DatasetID, p.Previous.DataID, p.ContentHash, p.ErrorCode, p.ExitCode, p.FailureReason,
-		p.StartedAt, p.UpdatedAt, defaultText(p.ProgressJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO user_profile_attempts (`+userProfileAttemptColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET
+			instance_id=excluded.instance_id, kind=excluded.kind, method=excluded.method,
+			status=excluded.status, dataset_id=excluded.dataset_id, document_dataset_id=excluded.document_dataset_id,
+			document_data_id=excluded.document_data_id, previous_dataset_id=excluded.previous_dataset_id, previous_data_id=excluded.previous_data_id,
+			content_hash=excluded.content_hash, error_code=excluded.error_code, exit_code=excluded.exit_code,
+			failure_reason=excluded.failure_reason, started_at=excluded.started_at, updated_at=excluded.updated_at,
+			progress_json=excluded.progress_json, extra_json=excluded.extra_json`,
+			p.OperationID, p.InstanceID, p.Kind, p.Method, p.Status, p.DatasetID, p.Document.DatasetID,
+			p.Document.DataID, p.Previous.DatasetID, p.Previous.DataID, p.ContentHash, p.ErrorCode, p.ExitCode, p.FailureReason,
+			p.StartedAt, p.UpdatedAt, defaultText(p.ProgressJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	})
 }
 
 func (s *Store) GetUserProfileAttempt(ctx context.Context, operationID string) (UserProfileAttempt, error) {
@@ -136,7 +143,9 @@ func (s *Store) ListUserProfileAttempts(ctx context.Context, instanceID string) 
 }
 
 func (s *Store) DeleteUserProfileAttempt(ctx context.Context, operationID string) error {
-	return requireAffected(s.db.ExecContext(ctx, `DELETE FROM user_profile_attempts`+` WHERE operation_id=?`, operationID))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return requireAffected(tx.ExecContext(ctx, `DELETE FROM user_profile_attempts`+` WHERE operation_id=?`, operationID))
+	})
 }
 
 type ToolGraphJob struct {
@@ -170,13 +179,15 @@ func (s *Store) UpsertToolGraphJob(ctx context.Context, p ToolGraphJob) error {
 	if p.Scope != "control" && p.Scope != "service" {
 		return fmt.Errorf("tool graph scope: %w", ErrInvalidArgument)
 	}
-	return execSQL(ctx, s.db, `INSERT INTO tool_graph_jobs (`+toolGraphJobColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,operation_id) DO UPDATE SET
-		dataset_id=excluded.dataset_id, user_id=excluded.user_id, status=excluded.status,
-		signature=excluded.signature, error_code=excluded.error_code, created_at=excluded.created_at,
-		started_at=excluded.started_at, ended_at=excluded.ended_at, payload_json=excluded.payload_json`,
-		p.Scope, p.OperationID, p.DatasetID, p.UserID, p.Status, p.Signature, p.ErrorCode,
-		p.CreatedAt, p.StartedAt, p.EndedAt, defaultText(p.PayloadJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO tool_graph_jobs (`+toolGraphJobColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,operation_id) DO UPDATE SET
+			dataset_id=excluded.dataset_id, user_id=excluded.user_id, status=excluded.status,
+			signature=excluded.signature, error_code=excluded.error_code, created_at=excluded.created_at,
+			started_at=excluded.started_at, ended_at=excluded.ended_at, payload_json=excluded.payload_json`,
+			p.Scope, p.OperationID, p.DatasetID, p.UserID, p.Status, p.Signature, p.ErrorCode,
+			p.CreatedAt, p.StartedAt, p.EndedAt, defaultText(p.PayloadJSON, "{}"))
+	})
 }
 
 func (s *Store) GetToolGraphJob(ctx context.Context, scope string, operationID string) (ToolGraphJob, error) {
@@ -188,7 +199,9 @@ func (s *Store) ListToolGraphJobs(ctx context.Context, scope string) ([]ToolGrap
 }
 
 func (s *Store) DeleteToolGraphJob(ctx context.Context, scope string, operationID string) error {
-	return requireAffected(s.db.ExecContext(ctx, `DELETE FROM tool_graph_jobs`+` WHERE scope=? AND operation_id=?`, scope, operationID))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return requireAffected(tx.ExecContext(ctx, `DELETE FROM tool_graph_jobs`+` WHERE scope=? AND operation_id=?`, scope, operationID))
+	})
 }
 
 type ToolGraphWatermark struct {
@@ -213,11 +226,13 @@ func (s *Store) UpsertToolGraphWatermark(ctx context.Context, p ToolGraphWaterma
 	if err := requireIDs(p.UserID, p.SessionID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO tool_graph_watermarks (`+toolGraphWatermarkColumns+`)
-		VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,session_id) DO UPDATE SET
-		count=excluded.count, min_seq=excluded.min_seq, max_seq=excluded.max_seq,
-		persisted_max_seq=excluded.persisted_max_seq, updated_at=excluded.updated_at`,
-		p.UserID, p.SessionID, p.Count, p.MinSeq, p.MaxSeq, p.PersistedMaxSeq, p.UpdatedAt)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO tool_graph_watermarks (`+toolGraphWatermarkColumns+`)
+			VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id,session_id) DO UPDATE SET
+			count=excluded.count, min_seq=excluded.min_seq, max_seq=excluded.max_seq,
+			persisted_max_seq=excluded.persisted_max_seq, updated_at=excluded.updated_at`,
+			p.UserID, p.SessionID, p.Count, p.MinSeq, p.MaxSeq, p.PersistedMaxSeq, p.UpdatedAt)
+	})
 }
 
 func (s *Store) GetToolGraphWatermark(ctx context.Context, userID string, sessionID string) (ToolGraphWatermark, error) {
@@ -229,5 +244,7 @@ func (s *Store) ListToolGraphWatermarks(ctx context.Context, userID string) ([]T
 }
 
 func (s *Store) DeleteToolGraphWatermark(ctx context.Context, userID string, sessionID string) error {
-	return requireAffected(s.db.ExecContext(ctx, `DELETE FROM tool_graph_watermarks`+` WHERE user_id=? AND session_id=?`, userID, sessionID))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return requireAffected(tx.ExecContext(ctx, `DELETE FROM tool_graph_watermarks`+` WHERE user_id=? AND session_id=?`, userID, sessionID))
+	})
 }

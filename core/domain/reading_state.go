@@ -98,14 +98,16 @@ func (s *Store) UpsertReadScope(ctx context.Context, scope ReadScope) error {
 			return fmt.Errorf("invalid read scope timestamp: %w", ErrInvalidArgument)
 		}
 	}
-	return execSQL(ctx, s.db, `INSERT INTO ui_read_scopes (`+readScopeColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(scope_hash) DO UPDATE SET project_id=excluded.project_id,dataset_id=excluded.dataset_id,initialized=excluded.initialized,
-		enabled_at_ns=excluded.enabled_at_ns,read_horizon_at_ns=excluded.read_horizon_at_ns,horizon_max_rowid=excluded.horizon_max_rowid,
-		state_rev=excluded.state_rev,is_auto_baseline=excluded.is_auto_baseline,legacy_file_sha256=excluded.legacy_file_sha256,
-		legacy_mtime_ns=excluded.legacy_mtime_ns,updated_at=excluded.updated_at`,
-		scope.ScopeHash, scope.ProjectID, scope.DatasetID, boolToInt(scope.Initialized), scope.EnabledAtNS, scope.ReadHorizonAtNS,
-		scope.HorizonMaxRowID, max(1, scope.StateRev), boolToInt(scope.IsAutoBaseline), scope.LegacyFileSHA256, scope.LegacyMtimeNS,
-		defaultText(scope.UpdatedAt, NowUTCMicro()))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO ui_read_scopes (`+readScopeColumns+`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(scope_hash) DO UPDATE SET project_id=excluded.project_id,dataset_id=excluded.dataset_id,initialized=excluded.initialized,
+			enabled_at_ns=excluded.enabled_at_ns,read_horizon_at_ns=excluded.read_horizon_at_ns,horizon_max_rowid=excluded.horizon_max_rowid,
+			state_rev=excluded.state_rev,is_auto_baseline=excluded.is_auto_baseline,legacy_file_sha256=excluded.legacy_file_sha256,
+			legacy_mtime_ns=excluded.legacy_mtime_ns,updated_at=excluded.updated_at`,
+			scope.ScopeHash, scope.ProjectID, scope.DatasetID, boolToInt(scope.Initialized), scope.EnabledAtNS, scope.ReadHorizonAtNS,
+			scope.HorizonMaxRowID, max(1, scope.StateRev), boolToInt(scope.IsAutoBaseline), scope.LegacyFileSHA256, scope.LegacyMtimeNS,
+			defaultText(scope.UpdatedAt, NowUTCMicro()))
+	})
 }
 
 func (s *Store) SetReadItem(ctx context.Context, scopeHash, docID string, isRead bool) error {

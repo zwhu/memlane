@@ -131,21 +131,32 @@ func (s *Store) UpsertCatalogDoc(ctx context.Context, p CatalogDoc) error {
 	if err := requireIDs(p.DatasetID, p.DocID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO catalog_docs (`+catalogDocColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,doc_id) DO UPDATE SET
-		cognee_rowid=excluded.cognee_rowid, kind=excluded.kind, is_knowledge=excluded.is_knowledge,
-		common_category=excluded.common_category, lesson_type=excluded.lesson_type, state_key=excluded.state_key,
-		category=excluded.category, session_id=excluded.session_id, doc_name=excluded.doc_name,
-		doc_label=excluded.doc_label, raw_data_location=excluded.raw_data_location, content_hash=excluded.content_hash,
-		created_at_raw=excluded.created_at_raw, created_at_ns=excluded.created_at_ns, created_at_invalid=excluded.created_at_invalid,
-		updated_at_ns=excluded.updated_at_ns, effective_date=excluded.effective_date, effective_date_source=excluded.effective_date_source,
-		day_desc_key=excluded.day_desc_key, sort_ts_desc_key=excluded.sort_ts_desc_key, recall_count=excluded.recall_count,
-		recall_desc_key=excluded.recall_desc_key, pipeline_status=excluded.pipeline_status, source_updated_at=excluded.source_updated_at,
-		doc_seq=excluded.doc_seq`,
-		p.DatasetID, p.DocID, p.CogneeRowID, p.Kind, boolToInt(p.IsKnowledge), p.CommonCategory, p.LessonType,
-		p.StateKey, p.Category, p.SessionID, p.DocName, p.DocLabel, p.RawDataLocation, p.ContentHash,
-		p.CreatedAtRaw, p.CreatedAtNS, boolToInt(p.CreatedAtInvalid), p.UpdatedAtNS, p.EffectiveDate, p.EffectiveDateSource, p.DayDescKey,
-		p.SortTSDescKey, p.RecallCount, p.RecallDescKey, p.PipelineStatus, p.SourceUpdatedAt, p.DocSeq)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO catalog_docs (`+catalogDocColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,doc_id) DO UPDATE SET
+			cognee_rowid=excluded.cognee_rowid, kind=excluded.kind, is_knowledge=excluded.is_knowledge,
+			common_category=excluded.common_category, lesson_type=excluded.lesson_type, state_key=excluded.state_key,
+			category=excluded.category, session_id=excluded.session_id, doc_name=excluded.doc_name,
+			doc_label=excluded.doc_label, raw_data_location=excluded.raw_data_location, content_hash=excluded.content_hash,
+			created_at_raw=excluded.created_at_raw, created_at_ns=excluded.created_at_ns, created_at_invalid=excluded.created_at_invalid,
+			updated_at_ns=excluded.updated_at_ns, effective_date=excluded.effective_date, effective_date_source=excluded.effective_date_source,
+			day_desc_key=excluded.day_desc_key, sort_ts_desc_key=excluded.sort_ts_desc_key, recall_count=excluded.recall_count,
+			recall_desc_key=excluded.recall_desc_key, pipeline_status=excluded.pipeline_status, source_updated_at=excluded.source_updated_at,
+			doc_seq=excluded.doc_seq`,
+			p.DatasetID, p.DocID, p.CogneeRowID, p.Kind, boolToInt(p.IsKnowledge), p.CommonCategory, p.LessonType,
+			p.StateKey, p.Category, p.SessionID, p.DocName, p.DocLabel, p.RawDataLocation, p.ContentHash,
+			p.CreatedAtRaw, p.CreatedAtNS, boolToInt(p.CreatedAtInvalid), p.UpdatedAtNS, p.EffectiveDate, p.EffectiveDateSource, p.DayDescKey,
+			p.SortTSDescKey, p.RecallCount, p.RecallDescKey, p.PipelineStatus, p.SourceUpdatedAt, p.DocSeq)
+	})
+}
+
+func (s *Store) DeleteCatalogDoc(ctx context.Context, datasetID, docID string) error {
+	if err := requireIDs(datasetID, docID); err != nil {
+		return err
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `DELETE FROM catalog_docs WHERE dataset_id=? AND doc_id=?`, datasetID, docID)
+	})
 }
 
 type CatalogSession struct {
@@ -179,14 +190,16 @@ func (s *Store) UpsertCatalogSession(ctx context.Context, p CatalogSession) erro
 	if err := requireIDs(p.DatasetID, p.SessionID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO catalog_sessions (`+catalogSessionColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,user_id,session_id) DO UPDATE SET
-		agent_id=excluded.agent_id, status=excluded.status, started_at=excluded.started_at,
-		last_activity_at=excluded.last_activity_at, sort_ts_desc_key=excluded.sort_ts_desc_key, parent_session_id=excluded.parent_session_id,
-		root_session_id=excluded.root_session_id, subagent_role=excluded.subagent_role, nesting_depth=excluded.nesting_depth,
-		is_top_level=excluded.is_top_level, child_count=excluded.child_count`,
-		p.DatasetID, p.UserID, p.SessionID, p.AgentID, p.Status, p.StartedAt, p.LastActivityAt,
-		p.SortTSDescKey, p.ParentSessionID, p.RootSessionID, p.SubagentRole, p.NestingDepth, boolToInt(p.IsTopLevel), p.ChildCount)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO catalog_sessions (`+catalogSessionColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,user_id,session_id) DO UPDATE SET
+			agent_id=excluded.agent_id, status=excluded.status, started_at=excluded.started_at,
+			last_activity_at=excluded.last_activity_at, sort_ts_desc_key=excluded.sort_ts_desc_key, parent_session_id=excluded.parent_session_id,
+			root_session_id=excluded.root_session_id, subagent_role=excluded.subagent_role, nesting_depth=excluded.nesting_depth,
+			is_top_level=excluded.is_top_level, child_count=excluded.child_count`,
+			p.DatasetID, p.UserID, p.SessionID, p.AgentID, p.Status, p.StartedAt, p.LastActivityAt,
+			p.SortTSDescKey, p.ParentSessionID, p.RootSessionID, p.SubagentRole, p.NestingDepth, boolToInt(p.IsTopLevel), p.ChildCount)
+	})
 }
 
 type CatalogSyncState struct {
@@ -223,16 +236,18 @@ func (s *Store) UpsertCatalogSyncState(ctx context.Context, p CatalogSyncState) 
 	if err := requireIDs(p.DatasetID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO catalog_sync_state (`+catalogSyncColumns+`)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id) DO UPDATE SET
-		dataset_hex=excluded.dataset_hex, doc_count=excluded.doc_count, max_rowid=excluded.max_rowid,
-		sum_rowid=excluded.sum_rowid, max_updated_at=excluded.max_updated_at, id_checksum=excluded.id_checksum,
-		data_hash=excluded.data_hash, knowledge_count=excluded.knowledge_count, raw_doc_count=excluded.raw_doc_count,
-		common_count=excluded.common_count, session_count=excluded.session_count, session_sig=excluded.session_sig,
-		catalog_version=excluded.catalog_version, synced_at=excluded.synced_at`,
-		p.DatasetID, p.DatasetHex, p.DocCount, p.MaxRowID, p.SumRowID, p.MaxUpdatedAt, p.IDChecksum,
-		p.DataHash, p.KnowledgeCount, p.RawDocCount, p.CommonCount, p.SessionCount, p.SessionSig, p.CatalogVersion,
-		p.SyncedAt)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO catalog_sync_state (`+catalogSyncColumns+`)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id) DO UPDATE SET
+			dataset_hex=excluded.dataset_hex, doc_count=excluded.doc_count, max_rowid=excluded.max_rowid,
+			sum_rowid=excluded.sum_rowid, max_updated_at=excluded.max_updated_at, id_checksum=excluded.id_checksum,
+			data_hash=excluded.data_hash, knowledge_count=excluded.knowledge_count, raw_doc_count=excluded.raw_doc_count,
+			common_count=excluded.common_count, session_count=excluded.session_count, session_sig=excluded.session_sig,
+			catalog_version=excluded.catalog_version, synced_at=excluded.synced_at`,
+			p.DatasetID, p.DatasetHex, p.DocCount, p.MaxRowID, p.SumRowID, p.MaxUpdatedAt, p.IDChecksum,
+			p.DataHash, p.KnowledgeCount, p.RawDocCount, p.CommonCount, p.SessionCount, p.SessionSig, p.CatalogVersion,
+			p.SyncedAt)
+	})
 }
 
 type SessionRelation struct {
@@ -252,7 +267,7 @@ func scanSessionRelation(row scanner) (SessionRelation, error) {
 	return r, rowError(err)
 }
 
-func (s *Store) UpsertSessionRelation(ctx context.Context, rel SessionRelation) error {
+func upsertSessionRelationTx(ctx context.Context, tx *sql.Tx, rel SessionRelation) error {
 	rel.DatasetID = strings.TrimSpace(rel.DatasetID)
 	rel.SessionID = strings.TrimSpace(rel.SessionID)
 	rel.ParentSessionID = strings.TrimSpace(rel.ParentSessionID)
@@ -267,13 +282,19 @@ func (s *Store) UpsertSessionRelation(ctx context.Context, rel SessionRelation) 
 	if rel.UpdatedAt == "" {
 		rel.UpdatedAt = NowUTCNS()
 	}
-	return execSQL(ctx, s.db, `INSERT INTO session_relations (`+sessionRelationColumns+`)
+	return execSQL(ctx, tx, `INSERT INTO session_relations (`+sessionRelationColumns+`)
 		VALUES(?,?,?,?,?,?) ON CONFLICT(dataset_id,session_id) DO UPDATE SET
 		parent_session_id=CASE WHEN excluded.parent_session_id<>'' THEN excluded.parent_session_id ELSE session_relations.parent_session_id END,
 		root_session_id=CASE WHEN excluded.root_session_id<>'' THEN excluded.root_session_id ELSE session_relations.root_session_id END,
 		subagent_role=CASE WHEN excluded.subagent_role<>'' THEN excluded.subagent_role ELSE session_relations.subagent_role END,
 		updated_at=excluded.updated_at`,
 		rel.DatasetID, rel.SessionID, rel.ParentSessionID, rel.RootSessionID, rel.SubagentRole, rel.UpdatedAt)
+}
+
+func (s *Store) UpsertSessionRelation(ctx context.Context, rel SessionRelation) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return upsertSessionRelationTx(ctx, tx, rel)
+	})
 }
 
 func (s *Store) ListSessionRelations(ctx context.Context, datasetID string) ([]SessionRelation, error) {

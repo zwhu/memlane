@@ -12,14 +12,15 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 const utcNSLayout = "2006-01-02T15:04:05.000000000Z"
 
 var (
-	ErrNotFound        = errors.New("not found")
-	ErrConflict        = errors.New("conflict")
-	ErrInvalidArgument = errors.New("invalid argument")
-	ErrForbidden       = errors.New("forbidden")
+	ErrNotFound              = errors.New("not found")
+	ErrConflict              = errors.New("conflict")
+	ErrInvalidArgument       = errors.New("invalid argument")
+	ErrForbidden             = errors.New("forbidden")
+	ErrInboxCapacityExceeded = errors.New("inbox capacity exceeded")
 )
 
 type Store struct {

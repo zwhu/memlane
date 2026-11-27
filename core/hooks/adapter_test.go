@@ -2028,3 +2028,49 @@ func TestSessionEndNotification(t *testing.T) {
 		<-requests
 	})
 }
+
+func TestSessionEndIngestFailureStillSendsSessionEnd(t *testing.T) {
+	t.Setenv("MEMLANE_PROCESSING_SESSION", "")
+	dir := t.TempDir()
+	scope := `"session_id":"sess-decouple","cwd":` + string(mustJSON(t, dir)) + `,"question":"q","answer":"a"`
+
+	t.Run("ingest 500 still forwards session-end", func(t *testing.T) {
+		var paths []string
+		client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			if r.URL.Path == "/ingest" {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		})
+		cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: privateKey(t), HTTPClient: client}
+		_, err := Handle(context.Background(), HostCodex, SessionEnd, []byte("{"+scope+"}"), cfg)
+		if err == nil {
+			t.Fatal("expected ingest error to be returned")
+		}
+		if len(paths) != 2 || paths[0] != "/ingest" || paths[1] != "/session-end" {
+			t.Fatalf("expected [/ingest /session-end], got %v", paths)
+		}
+	})
+
+	t.Run("both fail returns joined error", func(t *testing.T) {
+		var paths []string
+		client := localHandler(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			if r.URL.Path == "/ingest" {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		})
+		cfg := Config{GatewayURL: "http://127.0.0.1:1234", KeyFile: privateKey(t), HTTPClient: client}
+		_, err := Handle(context.Background(), HostCodex, SessionEnd, []byte("{"+scope+"}"), cfg)
+		if !errors.Is(err, HTTPError(http.StatusInternalServerError)) || !errors.Is(err, HTTPError(http.StatusServiceUnavailable)) {
+			t.Fatalf("expected joined 500+503 error, got %v", err)
+		}
+		if len(paths) != 2 || paths[0] != "/ingest" || paths[1] != "/session-end" {
+			t.Fatalf("expected [/ingest /session-end], got %v", paths)
+		}
+	})
+}

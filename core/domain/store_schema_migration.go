@@ -45,5 +45,13 @@ func migrateStoreSchema(ctx context.Context, tx *sql.Tx, version int) error {
 			return fmt.Errorf("migrate session_relations: %w", err)
 		}
 	}
+	if version < 5 {
+		if err := execSQL(ctx, tx, sessionFlushDDL); err != nil {
+			return fmt.Errorf("migrate session_flush_jobs: %w", err)
+		}
+		if err := execSQL(ctx, tx, captureInboxV5IndexesDDL); err != nil {
+			return fmt.Errorf("migrate capture_inbox indexes: %w", err)
+		}
+	}
 	return nil
 }

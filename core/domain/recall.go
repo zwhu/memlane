@@ -155,10 +155,12 @@ func (s *Store) RecordRecallQueryStat(ctx context.Context, channel string, hitCo
 	if !validRecallChannel(channel) || hitCount < 0 {
 		return fmt.Errorf("invalid recall query stat: %w", ErrInvalidArgument)
 	}
-	return execSQL(ctx, s.db, `INSERT INTO recall_query_stats VALUES(?,1,?,?,?,?)
-		ON CONFLICT(channel) DO UPDATE SET total_queries=total_queries+1,hit_queries=hit_queries+excluded.hit_queries,
-		empty_queries=empty_queries+excluded.empty_queries,total_hits=total_hits+excluded.total_hits,
-		last_query_at=MAX(COALESCE(last_query_at,''),excluded.last_query_at)`, channel, boolToInt(hitCount > 0), boolToInt(hitCount == 0), hitCount, defaultText(at, NowUTCMicro()))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO recall_query_stats VALUES(?,1,?,?,?,?)
+			ON CONFLICT(channel) DO UPDATE SET total_queries=total_queries+1,hit_queries=hit_queries+excluded.hit_queries,
+			empty_queries=empty_queries+excluded.empty_queries,total_hits=total_hits+excluded.total_hits,
+			last_query_at=MAX(COALESCE(last_query_at,''),excluded.last_query_at)`, channel, boolToInt(hitCount > 0), boolToInt(hitCount == 0), hitCount, defaultText(at, NowUTCMicro()))
+	})
 }
 
 const recallDocColumns = "dataset_id,document_id,total_hits,auto_hits,explicit_hits,last_recalled_at,rev"

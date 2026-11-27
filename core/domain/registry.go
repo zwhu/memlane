@@ -274,7 +274,9 @@ func (s *Store) ConnectAgent(ctx context.Context, a Agent) error {
 }
 
 func (s *Store) UpsertAgent(ctx context.Context, a Agent) error {
-	return writeAgent(ctx, s.db, a, true)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return writeAgent(ctx, tx, a, true)
+	})
 }
 
 func writeAgent(ctx context.Context, db sqlExecer, a Agent, upsert bool) error {
@@ -317,7 +319,9 @@ func scanACL(row scanner) (ACLOverride, error) {
 }
 
 func (s *Store) SetACLOverride(ctx context.Context, a ACLOverride) error {
-	return writeACLOverride(ctx, s.db, a)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return writeACLOverride(ctx, tx, a)
+	})
 }
 
 func (s *Store) UpdateACLOverride(ctx context.Context, a ACLOverride, expected *int) error {
@@ -363,7 +367,9 @@ func (s *Store) GetACLOverride(ctx context.Context, kind, id, agentID string) (A
 }
 
 func (s *Store) DeleteACLOverride(ctx context.Context, kind, id, agentID string) error {
-	return execSQL(ctx, s.db, `DELETE FROM project_acl_overrides WHERE target_kind=? AND target_id=? AND agent_id=?`, kind, id, agentID)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `DELETE FROM project_acl_overrides WHERE target_kind=? AND target_id=? AND agent_id=?`, kind, id, agentID)
+	})
 }
 
 func (s *Store) ListACLOverrides(ctx context.Context, kind, id string) ([]ACLOverride, error) {
@@ -476,12 +482,21 @@ func scanSessionBinding(row scanner) (SessionBinding, error) {
 	err := row.Scan(&b.SessionKey, &b.ProjectID, &b.UpdatedAt)
 	return b, rowError(err)
 }
+func upsertSessionBindingTx(ctx context.Context, tx *sql.Tx, sessionKey, projectID string, updatedAt float64) error {
+	if err := requireIDs(sessionKey, projectID); err != nil {
+		return err
+	}
+	return execSQL(ctx, tx, `INSERT INTO session_bindings VALUES(?,?,?) ON CONFLICT(session_key) DO UPDATE SET
+		project_id=excluded.project_id,updated_at=excluded.updated_at`, sessionKey, projectID, updatedAt)
+}
+
 func (s *Store) UpsertSessionBinding(ctx context.Context, sessionKey, projectID string, updatedAt float64) error {
 	if err := requireIDs(sessionKey, projectID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO session_bindings VALUES(?,?,?) ON CONFLICT(session_key) DO UPDATE SET
-		project_id=excluded.project_id,updated_at=excluded.updated_at`, sessionKey, projectID, updatedAt)
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return upsertSessionBindingTx(ctx, tx, sessionKey, projectID, updatedAt)
+	})
 }
 func (s *Store) GetSessionBinding(ctx context.Context, sessionKey string) (SessionBinding, error) {
 	return scanSessionBinding(s.db.QueryRowContext(ctx, `SELECT session_key,project_id,updated_at FROM session_bindings WHERE session_key=?`, sessionKey))
@@ -528,14 +543,16 @@ func (s *Store) UpsertRegistryDefaults(ctx context.Context, p RegistryDefaults) 
 	if err := ValidateAccessLevel(p.Access); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO defaults (`+`singleton,`+registryDefaultsColumns+`)
-		VALUES(1,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
-		access=excluded.access, capture=excluded.capture, auto_process=excluded.auto_process,
-		revision=excluded.revision, service_namespace=excluded.service_namespace, runtime_catalog_imported=excluded.runtime_catalog_imported,
-		reserved_datasets_json=excluded.reserved_datasets_json, tool_graph_json=excluded.tool_graph_json, host_targets_json=excluded.host_targets_json,
-		extra_json=excluded.extra_json`,
-		p.Access, boolToInt(p.Capture), boolToInt(p.AutoProcess), p.Revision, p.ServiceNamespace, boolToInt(p.RuntimeCatalogImported), defaultText(p.ReservedDatasetsJSON, "[]"),
-		defaultText(p.ToolGraphJSON, "{}"), defaultText(p.HostTargetsJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO defaults (`+`singleton,`+registryDefaultsColumns+`)
+			VALUES(1,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
+			access=excluded.access, capture=excluded.capture, auto_process=excluded.auto_process,
+			revision=excluded.revision, service_namespace=excluded.service_namespace, runtime_catalog_imported=excluded.runtime_catalog_imported,
+			reserved_datasets_json=excluded.reserved_datasets_json, tool_graph_json=excluded.tool_graph_json, host_targets_json=excluded.host_targets_json,
+			extra_json=excluded.extra_json`,
+			p.Access, boolToInt(p.Capture), boolToInt(p.AutoProcess), p.Revision, p.ServiceNamespace, boolToInt(p.RuntimeCatalogImported), defaultText(p.ReservedDatasetsJSON, "[]"),
+			defaultText(p.ToolGraphJSON, "{}"), defaultText(p.HostTargetsJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	})
 }
 
 const commonConfigColumns = `id, name, kind, dataset_id, dataset_name, code_enabled, status,
@@ -552,12 +569,14 @@ func (s *Store) UpsertCommonConfig(ctx context.Context, p CommonConfig) error {
 	if err := requireIDs(p.ID, p.Name); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO common_config (`+`singleton,`+commonConfigColumns+`)
-		VALUES(1,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
-		id=excluded.id, name=excluded.name, kind=excluded.kind,
-		dataset_id=excluded.dataset_id, dataset_name=excluded.dataset_name, code_enabled=excluded.code_enabled,
-		status=excluded.status, desired_revision=excluded.desired_revision, operation_id=excluded.operation_id,
-		applied_json=excluded.applied_json, extra_json=excluded.extra_json`,
-		p.ID, p.Name, defaultText(p.Kind, "common"), p.DatasetID, p.DatasetName, boolToInt(p.CodeEnabled), p.Status,
-		p.DesiredRevision, p.OperationID, defaultText(p.AppliedJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO common_config (`+`singleton,`+commonConfigColumns+`)
+			VALUES(1,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET
+			id=excluded.id, name=excluded.name, kind=excluded.kind,
+			dataset_id=excluded.dataset_id, dataset_name=excluded.dataset_name, code_enabled=excluded.code_enabled,
+			status=excluded.status, desired_revision=excluded.desired_revision, operation_id=excluded.operation_id,
+			applied_json=excluded.applied_json, extra_json=excluded.extra_json`,
+			p.ID, p.Name, defaultText(p.Kind, "common"), p.DatasetID, p.DatasetName, boolToInt(p.CodeEnabled), p.Status,
+			p.DesiredRevision, p.OperationID, defaultText(p.AppliedJSON, "{}"), defaultText(p.ExtraJSON, "{}"))
+	})
 }

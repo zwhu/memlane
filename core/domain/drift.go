@@ -106,10 +106,12 @@ func (s *Store) DismissSessionDrift(ctx context.Context, boundDatasetID, session
 	if err := requireIDs(boundDatasetID, sessionID, targetProjectID); err != nil {
 		return err
 	}
-	return execSQL(ctx, s.db, `INSERT INTO session_drift_disposition VALUES(?,?,'dismissed',?,?)
-		ON CONFLICT(bound_dataset_id,session_id) DO UPDATE SET
-		target_project_id=excluded.target_project_id, updated_at=excluded.updated_at`,
-		boundDatasetID, sessionID, targetProjectID, NowUTCMicro())
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `INSERT INTO session_drift_disposition VALUES(?,?,'dismissed',?,?)
+			ON CONFLICT(bound_dataset_id,session_id) DO UPDATE SET
+			target_project_id=excluded.target_project_id, updated_at=excluded.updated_at`,
+			boundDatasetID, sessionID, targetProjectID, NowUTCMicro())
+	})
 }
 
 func (s *Store) GetSessionDriftDisposition(ctx context.Context, boundDatasetID, sessionID string) (SessionDriftDisposition, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -228,6 +229,7 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 				allowEmptyQuestion = sessionID != ""
 			}
 		}
+		var ingestErr error
 		if payload != nil {
 			kind, id, content := captureWithOptions(payload, event, allowEmptyQuestion)
 			if content != nil {
@@ -253,7 +255,10 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 					}
 				}
 				if err := forward(ctx, cfg, "/ingest", ingestScope, nil); err != nil {
-					return nil, err
+					if event != SessionEnd {
+						return nil, err
+					}
+					ingestErr = err
 				}
 			}
 		}
@@ -265,8 +270,14 @@ func Handle(ctx context.Context, host, event string, rawInput []byte, cfg Config
 				"host":       host,
 			}
 			if err := forward(ctx, cfg, "/session-end", endPayload, nil); err != nil {
+				if ingestErr != nil {
+					return nil, errors.Join(ingestErr, err)
+				}
 				return nil, err
 			}
+		}
+		if ingestErr != nil {
+			return nil, ingestErr
 		}
 		if host == HostPi && (event == "capture" || event == Stop || event == SessionEnd) {
 			return []byte(`{"status":"complete"}`), nil

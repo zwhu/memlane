@@ -156,6 +156,8 @@ func TestClearCatalogProjection(t *testing.T) {
 			VALUES('key','u','d','s','m','sha','qa','pending','');
 		INSERT INTO capture_inbox(id,project_id,dataset_id,agent_id,session_id,message_id,kind,payload_json,status,created_at,updated_at)
 			VALUES('in','p','d','a','s','m','qa','{}','pending','','');
+		INSERT INTO session_flush_jobs(id,project_id,dataset_id,session_id,status,created_at,updated_at)
+			VALUES('flush:1','p','d','s','pending','','');
 		INSERT INTO session_project_hits(bound_dataset_id,session_id,target_project_id,updated_at) VALUES('d','s','p','');
 		INSERT INTO session_drift_seen VALUES('d','s','m','');
 		INSERT INTO session_drift_disposition VALUES('d','s','dismissed','p','');

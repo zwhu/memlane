@@ -318,8 +318,7 @@ func (s *Server) syncDocumentDeletion(ctx context.Context, ds, doc string) error
 		_, err := s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
 		return err
 	}
-	_, err := s.cfg.Store.DB().ExecContext(ctx, "DELETE FROM catalog_docs WHERE dataset_id=? AND doc_id=?", ds, doc)
-	return err
+	return s.cfg.Store.DeleteCatalogDoc(ctx, ds, doc)
 }
 
 func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request) {

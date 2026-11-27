@@ -2,41 +2,47 @@ package gateway
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
 
-const maxSessionFlushQueue = 256
-
 var errExtractionPausedModelUnverified = errors.New("extraction paused: active model unverified")
 
-type sessionFlushKey struct {
-	datasetID string
-	sessionID string
-}
+type FlushScheduleStatus string
+
+const (
+	FlushScheduled    FlushScheduleStatus = "queued"
+	FlushDeduplicated FlushScheduleStatus = "deduplicated"
+	FlushStopping     FlushScheduleStatus = "stopping"
+	FlushInvalid      FlushScheduleStatus = "invalid"
+)
 
 type InboxWorker struct {
-	cfg                Config
-	server             *Server
-	wake               chan struct{}
-	mu                 sync.Mutex
-	run                *inboxRun
-	flushQueued        map[sessionFlushKey]bool
-	flushActive        map[sessionFlushKey]bool
-	flushOrder         []sessionFlushKey
-	extractBackoffMu   sync.Mutex
-	extractBackoffNext time.Time
-	extractBackoffDur  time.Duration
+	cfg                 Config
+	server              *Server
+	wake                chan struct{}
+	mu                  sync.Mutex
+	claimMu             sync.Mutex
+	preferFlush         map[string]bool
+	run                 *inboxRun
+	activeDatasets      map[string]bool
+	startedAt           string
+	needsRecovery       atomic.Bool
+	completedSincePrune atomic.Int64
+	extractBackoffMu    sync.Mutex
+	extractBackoffNext  time.Time
+	extractBackoffDur   time.Duration
 }
 
 type inboxRun struct {
@@ -80,7 +86,52 @@ func (w *InboxWorker) Notify() {
 	}
 }
 
+func (w *InboxWorker) isStopping() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.run == nil || !w.run.stopping {
+		return false
+	}
+	select {
+	case <-w.run.done:
+		return false
+	default:
+		return true
+	}
+}
+
 func (w *InboxWorker) Start(ctx context.Context) {
+	w.mu.Lock()
+	if w.run != nil {
+		select {
+		case <-w.run.done:
+		default:
+			w.mu.Unlock()
+			return
+		}
+	}
+	if w.activeDatasets == nil {
+		w.activeDatasets = make(map[string]bool)
+	}
+	startedAt := domain.NowUTCMicro()
+	w.startedAt = startedAt
+	w.mu.Unlock()
+
+	if inboxRec, flushRec, err := w.cfg.Store.RecoverStaleProcessingBefore(context.Background(), startedAt); err != nil {
+		w.needsRecovery.Store(true)
+		log.Printf("gateway inbox recover stale processing: %s", sanitizeError(err))
+	} else {
+		w.needsRecovery.Store(false)
+		if inboxRec > 0 || flushRec > 0 {
+			log.Printf("gateway inbox recovered stale processing items: inbox=%d session_flush=%d", inboxRec, flushRec)
+		}
+	}
+	if pruned, err := w.PruneSucceededPayloads(context.Background(), w.pruneRetention()); err != nil {
+		log.Printf("gateway inbox prune succeeded payloads: %s", sanitizeError(err))
+	} else if pruned > 0 {
+		log.Printf("gateway inbox pruned succeeded payloads: count=%d", pruned)
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.run != nil {
@@ -142,97 +193,83 @@ func (w *InboxWorker) Stop(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		run.cancel()
+		grace := time.NewTimer(2 * time.Second)
+		defer grace.Stop()
+		select {
+		case <-run.done:
+		case <-grace.C:
+		}
 		return ctx.Err()
 	}
 }
 
-func (w *InboxWorker) ScheduleSessionFlush(datasetID, sessionID string) bool {
-	key := sessionFlushKey{
-		datasetID: strings.TrimSpace(datasetID),
-		sessionID: strings.TrimSpace(sessionID),
+func (w *InboxWorker) ScheduleSessionFlushJob(ctx context.Context, projectID, datasetID, sessionID string) (FlushScheduleStatus, error) {
+	datasetID = strings.TrimSpace(datasetID)
+	sessionID = strings.TrimSpace(sessionID)
+	if datasetID == "" || sessionID == "" {
+		return FlushInvalid, nil
 	}
-	if key.datasetID == "" || key.sessionID == "" {
-		return false
+	if w.isStopping() {
+		return FlushStopping, nil
 	}
-	w.mu.Lock()
-	if w.run != nil && w.run.stopping {
-		select {
-		case <-w.run.done:
-		default:
-			w.mu.Unlock()
-			return false
-		}
+	_, queued, err := w.cfg.Store.EnqueueSessionFlushJob(ctx, projectID, datasetID, sessionID)
+	if err != nil {
+		return "", err
 	}
-	if w.flushQueued == nil {
-		w.flushQueued = make(map[sessionFlushKey]bool)
+	if !queued {
+		return FlushDeduplicated, nil
 	}
-	if w.flushActive == nil {
-		w.flushActive = make(map[sessionFlushKey]bool)
-	}
-	if w.flushQueued[key] || w.flushActive[key] || len(w.flushOrder) >= maxSessionFlushQueue {
-		w.mu.Unlock()
-		return false
-	}
-	w.flushQueued[key] = true
-	w.flushOrder = append(w.flushOrder, key)
-	w.mu.Unlock()
 	w.Notify()
-	return true
+	return FlushScheduled, nil
+}
+
+func (w *InboxWorker) ScheduleSessionFlush(datasetID, sessionID string) bool {
+	status, err := w.ScheduleSessionFlushJob(context.Background(), "", datasetID, sessionID)
+	return err == nil && status == FlushScheduled
 }
 
 func (w *InboxWorker) hasQueuedSessionFlushes() bool {
+	has, err := w.cfg.Store.HasPendingSessionFlushJobs(context.Background())
+	return err == nil && has
+}
+
+func (w *InboxWorker) activeDatasetsSnapshot() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return len(w.flushOrder) > 0
+	if len(w.activeDatasets) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(w.activeDatasets))
+	for ds := range w.activeDatasets {
+		out = append(out, ds)
+	}
+	slices.Sort(out)
+	return out
 }
 
-func (w *InboxWorker) claimNextSessionFlush(ctx context.Context) (sessionFlushKey, bool, error) {
+func (w *InboxWorker) markDatasetActive(datasetID string) {
 	w.mu.Lock()
-	candidates := append([]sessionFlushKey(nil), w.flushOrder...)
+	if w.activeDatasets == nil {
+		w.activeDatasets = make(map[string]bool)
+	}
+	w.activeDatasets[datasetID] = true
 	w.mu.Unlock()
-	if len(candidates) == 0 {
-		return sessionFlushKey{}, false, nil
-	}
-	for _, key := range candidates {
-		inFlight, err := w.sessionHasInFlightInbox(ctx, key.datasetID, key.sessionID)
-		if err != nil {
-			return sessionFlushKey{}, false, err
-		}
-		if inFlight {
-			continue
-		}
-		w.mu.Lock()
-		if !w.flushQueued[key] || w.flushActive[key] {
-			w.mu.Unlock()
-			continue
-		}
-		delete(w.flushQueued, key)
-		for i, item := range w.flushOrder {
-			if item == key {
-				w.flushOrder = append(w.flushOrder[:i], w.flushOrder[i+1:]...)
-				break
-			}
-		}
-		if w.flushActive == nil {
-			w.flushActive = make(map[sessionFlushKey]bool)
-		}
-		w.flushActive[key] = true
-		w.mu.Unlock()
-		return key, true, nil
-	}
-	return sessionFlushKey{}, false, nil
 }
 
-func (w *InboxWorker) finishSessionFlush(key sessionFlushKey) {
+func (w *InboxWorker) releaseDataset(datasetID string) {
 	w.mu.Lock()
-	delete(w.flushActive, key)
+	delete(w.activeDatasets, datasetID)
+	stopping := w.run != nil && w.run.stopping
 	w.mu.Unlock()
+	if !stopping {
+		w.Notify()
+	}
 }
 
 func (w *InboxWorker) sessionHasInFlightInbox(ctx context.Context, datasetID, sessionID string) (bool, error) {
 	var exists bool
 	err := w.cfg.Store.DB().QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM capture_inbox WHERE dataset_id=? AND session_id=? AND status IN ('pending','processing'))`,
+		`SELECT EXISTS(SELECT 1 FROM capture_inbox WHERE dataset_id=? AND session_id=? AND status IN ('pending','processing','failed'))`,
 		datasetID, sessionID).Scan(&exists)
 	return exists, err
 }
@@ -249,8 +286,8 @@ func (w *InboxWorker) sessionNeedsConsolidation(ctx context.Context, datasetID, 
 	return exists, err
 }
 
-func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) error {
-	needs, err := w.sessionNeedsConsolidation(ctx, key.datasetID, key.sessionID)
+func (w *InboxWorker) flushSession(ctx context.Context, job domain.SessionFlushJob) error {
+	needs, err := w.sessionNeedsConsolidation(ctx, job.DatasetID, job.SessionID)
 	if err != nil {
 		return fmt.Errorf("check session consolidation: %w", err)
 	}
@@ -262,14 +299,14 @@ func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) err
 		return err
 	}
 	extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{
-		Scope:               engine.Scope{DatasetID: key.datasetID},
-		DocIDs:              []string{key.sessionID},
+		Scope:               engine.Scope{DatasetID: job.DatasetID},
+		DocIDs:              []string{job.SessionID},
 		ExpectedModelDigest: model,
 		OutputLanguage:      w.cfg.OutputLanguage,
 		Mode:                engine.ExtractModeDefault,
 	})
 	if err != nil {
-		if isRetryableModelConflict(err) {
+		if isRetryableEnginePause(err) {
 			w.advanceExtractBackoff()
 			return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
 		}
@@ -287,6 +324,12 @@ func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) err
 	return nil
 }
 
+func (w *InboxWorker) startedAtSnapshot() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.startedAt
+}
+
 func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	if w.inExtractBackoff() {
 		return false, nil
@@ -296,33 +339,98 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	} else if gateErr != nil {
 		return false, gateErr
 	}
-	item, err := w.cfg.Store.ClaimNextInboxItem(ctx)
-	if errors.Is(err, domain.ErrNotFound) {
-		key, ok, claimErr := w.claimNextSessionFlush(ctx)
-		if claimErr != nil {
-			return false, claimErr
+
+	w.claimMu.Lock()
+	excluded := w.activeDatasetsSnapshot()
+	if w.needsRecovery.Load() && len(excluded) == 0 {
+		if _, _, err := w.cfg.Store.RecoverStaleProcessingBefore(ctx, w.startedAtSnapshot()); err == nil {
+			w.needsRecovery.Store(false)
 		}
-		if !ok {
-			return false, nil
-		}
-		defer w.finishSessionFlush(key)
-		if flushErr := w.flushSession(ctx, key); flushErr != nil {
-			if errors.Is(flushErr, errExtractionPausedModelUnverified) {
-				w.requeueSessionFlush(key)
-				return false, nil
-			}
-			return true, flushErr
-		}
-		return true, nil
 	}
-	if err != nil {
+
+	var flushPreferred []string
+	if len(w.preferFlush) > 0 {
+		excludedSet := make(map[string]bool, len(excluded))
+		for _, ds := range excluded {
+			excludedSet[ds] = true
+		}
+		for ds := range w.preferFlush {
+			if !excludedSet[ds] {
+				flushPreferred = append(flushPreferred, ds)
+			}
+		}
+		slices.Sort(flushPreferred)
+	}
+	if len(flushPreferred) > 0 {
+		job, flushErr := w.cfg.Store.ClaimNextSessionFlushInDatasets(ctx, flushPreferred)
+		if flushErr == nil {
+			delete(w.preferFlush, job.DatasetID)
+			w.markDatasetActive(job.DatasetID)
+			w.claimMu.Unlock()
+			defer w.releaseDataset(job.DatasetID)
+			return w.finishSessionFlushJob(ctx, job)
+		}
+		if errors.Is(flushErr, domain.ErrNotFound) {
+			for _, ds := range flushPreferred {
+				delete(w.preferFlush, ds)
+			}
+		} else {
+			w.claimMu.Unlock()
+			return false, flushErr
+		}
+	}
+
+	item, err := w.cfg.Store.ClaimNextInboxItemExcludingDatasets(ctx, excluded)
+	if err == nil {
+		if w.preferFlush == nil {
+			w.preferFlush = make(map[string]bool)
+		}
+		w.preferFlush[item.DatasetID] = true
+		w.markDatasetActive(item.DatasetID)
+		w.claimMu.Unlock()
+		defer w.releaseDataset(item.DatasetID)
+		return w.finishInboxItem(ctx, item)
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		w.claimMu.Unlock()
 		return false, err
 	}
-	err = w.process(ctx, item)
+
+	job, flushErr := w.cfg.Store.ClaimNextSessionFlushExcludingDatasets(ctx, excluded)
+	if flushErr == nil {
+		delete(w.preferFlush, job.DatasetID)
+		w.markDatasetActive(job.DatasetID)
+		w.claimMu.Unlock()
+		defer w.releaseDataset(job.DatasetID)
+		return w.finishSessionFlushJob(ctx, job)
+	}
+	w.claimMu.Unlock()
+	if errors.Is(flushErr, domain.ErrNotFound) {
+		return false, nil
+	}
+	return false, flushErr
+}
+
+func (w *InboxWorker) pruneInterval() int {
+	if w.cfg.InboxPruneInterval > 0 {
+		return w.cfg.InboxPruneInterval
+	}
+	return 64
+}
+
+func (w *InboxWorker) pruneRetention() time.Duration {
+	if w.cfg.InboxPruneRetention > 0 {
+		return w.cfg.InboxPruneRetention
+	}
+	return 24 * time.Hour
+}
+
+func (w *InboxWorker) finishInboxItem(ctx context.Context, item domain.CaptureInboxItem) (bool, error) {
+	err := w.process(ctx, item)
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if errors.Is(err, errExtractionPausedModelUnverified) {
-		if requeueErr := w.requeueInboxItem(finish, item.ID); requeueErr != nil {
+	if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
+		if requeueErr := w.cfg.Store.RequeueInboxItem(finish, item.ID); requeueErr != nil {
 			return true, requeueErr
 		}
 		return false, nil
@@ -339,31 +447,45 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	if err := w.cfg.Store.MarkInboxSucceeded(finish, item.ID); err != nil {
 		return true, err
 	}
+	if n := w.completedSincePrune.Add(1); n%int64(w.pruneInterval()) == 0 {
+		if _, pruneErr := w.PruneSucceededPayloads(finish, w.pruneRetention()); pruneErr != nil {
+			log.Printf("gateway inbox auto prune succeeded payloads: %s", sanitizeError(pruneErr))
+		}
+	}
 	if w.hasQueuedSessionFlushes() {
 		w.Notify()
 	}
 	return true, nil
 }
 
-func (w *InboxWorker) requeueInboxItem(ctx context.Context, id string) error {
-	return w.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
-			`UPDATE capture_inbox SET status='pending', updated_at=? WHERE id=? AND status='processing'`,
-			domain.NowUTCMicro(), id)
-		return err
-	})
-}
-
-func (w *InboxWorker) requeueSessionFlush(key sessionFlushKey) {
-	w.mu.Lock()
-	if w.flushQueued == nil {
-		w.flushQueued = make(map[sessionFlushKey]bool)
+func (w *InboxWorker) finishSessionFlushJob(ctx context.Context, job domain.SessionFlushJob) (bool, error) {
+	err := w.flushSession(ctx, job)
+	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
+		if requeueErr := w.cfg.Store.RequeueSessionFlush(finish, job.ID); requeueErr != nil {
+			return true, requeueErr
+		}
+		return false, nil
 	}
-	if !w.flushQueued[key] && len(w.flushOrder) < maxSessionFlushQueue {
-		w.flushQueued[key] = true
-		w.flushOrder = append(w.flushOrder, key)
+	if err != nil {
+		requeued, persistErr := w.cfg.Store.MarkSessionFlushFailed(finish, job.ID, sanitizeError(err))
+		if persistErr != nil {
+			return true, errors.Join(err, persistErr)
+		}
+		if requeued {
+			w.Notify()
+		}
+		return true, nil
 	}
-	w.mu.Unlock()
+	requeued, err := w.cfg.Store.MarkSessionFlushSucceeded(finish, job.ID)
+	if err != nil {
+		return true, err
+	}
+	if requeued {
+		w.Notify()
+	}
+	return true, nil
 }
 
 func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem) error {
@@ -374,9 +496,9 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 	if len(payload.Content) == 0 || string(payload.Content) == "null" {
 		return errors.New("inbox content missing")
 	}
-	// Gateway already enforced project ACL before enqueueing; run stateless engine
-	// writes under the owner scope so newly created datasets auto-provision cleanly.
-	scope := engine.Scope{DatasetID: item.DatasetID}
+	// Gateway already enforced project ACL before enqueueing; Hook auto-capture and legacy v4 rows
+	// leave EngineUserID empty (owner scope), while trusted MCP fallback sets EngineUserID explicitly.
+	scope := engine.Scope{DatasetID: item.DatasetID, UserID: payload.EngineUserID}
 	key := payload.IdempotencyKey
 	if key == "" {
 		key = item.CaptureKey
@@ -409,7 +531,7 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
 			IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
 		if err != nil {
-			if isRetryableModelConflict(err) {
+			if isRetryableEnginePause(err) {
 				w.advanceExtractBackoff()
 				return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
 			}
@@ -418,6 +540,7 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		if !result.OK || result.DocumentID == "" && result.EntryID == "" {
 			return errors.New("engine did not accept inbox item")
 		}
+		w.resetExtractBackoff()
 		ingestDocID = result.DocumentID
 		docID = result.DocumentID
 		if docID == "" {
@@ -445,7 +568,7 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{Scope: scope, DocIDs: []string{docID},
 			ExpectedModelDigest: model, OutputLanguage: w.cfg.OutputLanguage, Mode: mode})
 		if err != nil {
-			if isRetryableModelConflict(err) {
+			if isRetryableEnginePause(err) {
 				w.advanceExtractBackoff()
 				return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
 			}
@@ -479,6 +602,31 @@ func isRetryableModelConflict(err error) bool {
 	return strings.Contains(msg, "generation_handoff_in_progress") ||
 		strings.Contains(msg, "generation_handoff_busy") ||
 		strings.Contains(msg, "model_digest_mismatch")
+}
+
+func isRetryableEnginePause(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Request timeouts (extract_timeout / engine_timeout) must surface as failed items for manual retry.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if isRetryableModelConflict(err) {
+		return true
+	}
+	if errors.Is(err, engine.ErrUnavailable) {
+		return true
+	}
+	var engErr *engine.EngineError
+	if errors.As(err, &engErr) && engErr != nil {
+		if engErr.StatusCode == http.StatusServiceUnavailable ||
+			engErr.Code == "generation_not_configured" ||
+			engErr.Code == "engine_unavailable" {
+			return true
+		}
+	}
+	return strings.Contains(err.Error(), "generation_not_configured")
 }
 
 func (w *InboxWorker) inExtractBackoff() bool {
@@ -541,7 +689,21 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	retried := make([]string, 0, len(ids))
+	flushQuery := `SELECT id FROM session_flush_jobs WHERE status='failed'`
+	var flushArgs []any
+	if projectID != "" {
+		flushQuery += ` AND project_id=?`
+		flushArgs = append(flushArgs, projectID)
+	}
+	flushIDs, err := readRows(ctx, w.cfg.Store.DB(), flushQuery+` ORDER BY created_at,id`, flushArgs, func(row rowScanner) (string, error) {
+		var id string
+		err := row.Scan(&id)
+		return id, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	retried := make([]string, 0, len(ids)+len(flushIDs))
 	defer w.Notify()
 	for _, id := range ids {
 		if _, err := w.cfg.Store.RetryInboxItem(ctx, id); err != nil {
@@ -552,7 +714,24 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 		}
 		retried = append(retried, id)
 	}
+	for _, id := range flushIDs {
+		if _, err := w.cfg.Store.RetrySessionFlushJob(ctx, id); err != nil {
+			if errors.Is(err, domain.ErrConflict) {
+				continue
+			}
+			return retried, err
+		}
+		retried = append(retried, id)
+	}
 	return retried, nil
+}
+
+func (w *InboxWorker) PruneSucceededPayloads(ctx context.Context, retention time.Duration) (int64, error) {
+	olderThan := ""
+	if retention > 0 {
+		olderThan = time.Now().UTC().Add(-retention).Format("2006-01-02T15:04:05.000000+00:00")
+	}
+	return w.cfg.Store.PruneSucceededInboxPayloads(ctx, olderThan)
 }
 
 func (w *InboxWorker) Summary(ctx context.Context, projectID string) (InboxSummary, error) {
@@ -583,8 +762,25 @@ func (w *InboxWorker) summary(ctx context.Context, db sqlRead, projectID string)
 	if err != nil {
 		return out, err
 	}
-	out.RecentFailures, err = readRows(ctx, db, `SELECT id,project_id,last_error,attempts,updated_at,last_error_at FROM capture_inbox
-		WHERE status='failed'`+where+` ORDER BY updated_at DESC,id LIMIT 20`, args, func(row rowScanner) (InboxFailure, error) {
+	var flushPending, flushProcessing, flushFailed int
+	err = db.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE status='pending'),COUNT(*) FILTER(WHERE status='processing'),
+		COUNT(*) FILTER(WHERE status='failed') FROM session_flush_jobs WHERE 1=1`+where, args...).
+		Scan(&flushPending, &flushProcessing, &flushFailed)
+	if err != nil {
+		return out, err
+	}
+	out.Pending += flushPending
+	out.Processing += flushProcessing
+	out.Failed += flushFailed
+
+	unionArgs := make([]any, 0, len(args)*2)
+	unionArgs = append(unionArgs, args...)
+	unionArgs = append(unionArgs, args...)
+	out.RecentFailures, err = readRows(ctx, db, `SELECT id,project_id,last_error,attempts,updated_at,last_error_at FROM (
+		SELECT id,project_id,last_error,attempts,updated_at,last_error_at FROM capture_inbox WHERE status='failed'`+where+`
+		UNION ALL
+		SELECT id,project_id,last_error,attempts,updated_at,last_error_at FROM session_flush_jobs WHERE status='failed'`+where+`
+	) ORDER BY updated_at DESC,id LIMIT 20`, unionArgs, func(row rowScanner) (InboxFailure, error) {
 		var f InboxFailure
 		err := row.Scan(&f.ID, &f.ProjectID, &f.LastError, &f.Attempts, &f.UpdatedAt, &f.LastErrorAt)
 		if f.LastError != "" {
