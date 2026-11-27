@@ -106,9 +106,10 @@
 5. `ListItems / GetItem / DeleteItem(scope, item_id)`：原始记录与结构化记忆条目的受授权读取与删除。
 6. `Graph(scope, filter)`：返回引擎无关的标准 `{nodes, edges}` 图谱载荷供 `web/official-graph` 沙箱渲染。
 
-**存储真相边界**：
-- **内容唯一真相**：当前生效记忆引擎的日常存储目录（Cognee 实现下仍为 `.local/daily/official-store`，遵守 Cognee 上游源码零侵入与逐文件 SHA-256 校验红线）。
+**存储真相与记忆日期边界**：
+- **内容唯一真相**：当前生效记忆引擎的日常存储目录（Cognee 实现下仍为 `.local/daily/official-store`，遵守 Cognee 上游源码零侵入与逐文件 SHA-256 校验红线）；通用记忆与用户画像按来源独立保存，不自动合并为通用记忆。
 - **Memlane 自有治理状态**：统一收敛为 **1 个由 Go 网关单点独占读写的私有 SQLite**（`memlane.sqlite3`，`0600` + WAL + `journal_size_limit`），消除跨进程多写者竞态与文件锁复杂度（`core/domain/migrate_legacy.go` 负责从早期多文件外置账本一次性平滑迁移）。
+- **记忆日期口径与同键刷新契约**：目录展示日期优先取 `core/domain`（`memlane.sqlite3`）锁定日期（`system_metadata` 优先于用户可编辑 `external_metadata`，GET 目录纯只读无写副作用），其次取原生 `session_date`，缺失时回退 `createdAt` 对应本地日历日（`createdAt` 单独保留）。对同 `doc_id` 重扫/回填锁定该文档自身最早来源日期；对 `state` / `pitfall` 且带 `state_key` 的同键自动替换，新 `doc_id` 采用本次来源证据日期并同步更新 `keyed_provenance`，同时原子平滑迁移旧文档的召回计数（`recall_doc_counts`）与已读状态（`ui_read_items`），避免「新内容、新出处、旧日期」倒挂；其他类型（`convention` / `constraint` / `location` / `change`）自然并存不自动替换。除上述 `state`/`pitfall` 同键自动刷新外，AI 提出的合并、覆盖、删除或跨项目移动，在用户明确确认前不得改变已有有效记忆。
 
 ---
 
