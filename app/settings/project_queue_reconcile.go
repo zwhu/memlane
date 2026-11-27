@@ -82,8 +82,11 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 			rec.ServerUnreadStateRev = snap.readingState.StateRev
 			if snap.unreadPage != nil {
 				for _, row := range snap.unreadPage.Items {
-					if row.DatasetID == p.Dataset && row.DocID != "" {
-						rec.UnreadKnowledge = append(rec.UnreadKnowledge, row.toItem(""))
+					if row.DatasetID != p.Dataset {
+						continue
+					}
+					if item := unreadCatalogItem(row); item.ID != "" {
+						rec.UnreadKnowledge = append(rec.UnreadKnowledge, item)
 					}
 				}
 			}

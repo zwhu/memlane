@@ -4,66 +4,50 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/zwhu/memlane/app/api"
 )
 
+func calendarDate(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if len(v) != 10 {
+		return "", false
+	}
+	t, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		return "", false
+	}
+	return t.Format("2006-01-02"), true
+}
+
+func knowledgeCatalogDate(effectiveDate, createdAt string) string {
+	if day, ok := calendarDate(effectiveDate); ok {
+		return day
+	}
+	if t, ok := api.OfficialTime(strings.TrimSpace(effectiveDate)); ok {
+		return t.In(time.Local).Format("2006-01-02")
+	}
+	if day, ok := calendarDate(createdAt); ok {
+		return day
+	}
+	if t, ok := api.OfficialTime(strings.TrimSpace(createdAt)); ok {
+		return t.In(time.Local).Format("2006-01-02")
+	}
+	return ""
+}
+
 func knowledgePlaceholder(date string) string {
-	if t, ok := api.OfficialTime(date); ok {
+	v := strings.TrimSpace(date)
+	if day, ok := calendarDate(v); ok {
+		return "记忆 · " + day
+	}
+	if t, ok := api.OfficialTime(v); ok {
 		return "记忆 · " + t.In(time.Local).Format("2006-01-02")
 	}
 	return "记忆"
 }
 
-func firstReadingSentenceLimit(body string, limit int) string {
-	var paragraph []string
-	fence := ""
-	for _, line := range strings.Split(body, "\n") {
-		s := strings.TrimSpace(line)
-		if strings.HasPrefix(s, "```") || strings.HasPrefix(s, "~~~") {
-			mark := s[:3]
-			if fence == "" {
-				fence = mark
-			} else if fence == mark {
-				fence = ""
-			}
-			continue
-		}
-		if fence != "" || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		if s == "" {
-			if len(paragraph) > 0 {
-				break
-			}
-			continue
-		}
-		if imageOnly.MatchString(s) {
-			continue
-		}
-		s = strings.TrimLeft(s, "#>*-+ ")
-		if s != "" {
-			paragraph = append(paragraph, s)
-		}
-	}
-	runes := []rune(strings.Join(strings.Fields(strings.Join(paragraph, " ")), " "))
-	end := len(runes)
-	for n, r := range runes {
-		if strings.ContainsRune("。！？", r) || ((r == '.' || r == '!' || r == '?') && (n+1 == len(runes) || unicode.IsSpace(runes[n+1]))) {
-			end = n + 1
-			break
-		}
-	}
-	runes = runes[:end]
-	if len(runes) > limit {
-		return string(runes[:limit]) + "…"
-	}
-	return string(runes)
-}
-
 var machineName = regexp.MustCompile(`^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?|(?:user_context|memory)-[0-9a-fA-F]{32}(?:\.txt)?|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
-var imageOnly = regexp.MustCompile(`^!\[[^\]]*\]\([^)]*\)$`)
 
 func readableName(s string) string {
 	s = strings.TrimSpace(s)
@@ -72,6 +56,7 @@ func readableName(s string) string {
 	}
 	return s
 }
+
 func readableDocumentTitle(d Document) string {
 	if d.Label != nil {
 		if s := readableName(*d.Label); s != "" {

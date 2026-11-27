@@ -83,9 +83,13 @@ func (a *Controller) fetchProjectQueueSummary(ctx context.Context, in projectQue
 			snap.gateway = true
 			snap.readingState, err = fetchGatewayQueueReadingState(summaryCtx, manager, identity, p)
 			if err == nil && snap.readingState.UnreadCount > 10 {
-				page, pageErr := manager.knowledgePage(summaryCtx, identity, api.KnowledgePageOptions{
-					ProjectID: p.ID, Sort: "date", UnreadOnly: true, Limit: 10,
-				})
+				apiClient, pageErr := newAppAPIClient(manager, identity)
+				var page api.KnowledgePage
+				if pageErr == nil {
+					page, pageErr = apiClient.ListKnowledge(summaryCtx, api.KnowledgePageOptions{
+						ProjectID: p.ID, Sort: "date", UnreadOnly: true, Limit: 10,
+					})
+				}
 				if readingAuthDenied(pageErr) {
 					err = pageErr
 				} else if pageErr == nil && page.UnreadStateRev == snap.readingState.StateRev && page.UnreadCount == snap.readingState.UnreadCount {

@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -36,10 +37,11 @@ func TestReadingPresentationStrictWrapperAndRaw(t *testing.T) {
 		func(d *Document, raw *string) { d.Metadata["node_set"] = []any{"session_learnings"} },
 	} {
 		d := lessonDocument()
+		d.FirstSourceDate = "2026-11-13"
 		copy := raw
 		mutate(&d, &copy)
 		p := presentKnowledge(d, copy)
-		if p.WrapperRecognized || p.VisibleBody != copy || !p.Unrecognized || !strings.HasPrefix(p.DisplayTitle, "记忆") {
+		if p.WrapperRecognized || p.VisibleBody != copy || !p.Unrecognized || p.DisplayTitle != "记忆 · 2026-11-13" {
 			t.Fatalf("unsafe cleanup: %+v", p)
 		}
 	}
@@ -99,5 +101,57 @@ func TestReadingSearchSnippetRemainsPartial(t *testing.T) {
 	i.Body = "Lesson-Type: state\n# Session learning (session opaque)\n\nUnknown fragment"
 	if p := itemPresentation(i); p.DisplayTitle != "检索片段" || p.VisibleBody != i.Body {
 		t.Fatal("fragment wrapper mistaken for readable title or stripped")
+	}
+}
+
+func TestKnowledgePlaceholderFormatsCalendarDateAndTimestamp(t *testing.T) {
+	ts := "2026-11-13T12:30:00Z"
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLocalDay := parsed.In(time.Local).Format("2006-01-02")
+
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"2026-11-13", "记忆 · 2026-11-13"},
+		{" 2026-11-13 ", "记忆 · 2026-11-13"},
+		{ts, "记忆 · " + wantLocalDay},
+		{"", "记忆"},
+		{"2026-02-30", "记忆"},
+		{"not-a-date", "记忆"},
+	} {
+		if got := knowledgePlaceholder(tc.in); got != tc.want {
+			t.Errorf("knowledgePlaceholder(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+
+	sessionDoc := lessonDocument()
+	sessionDoc.FirstSourceDate = "2026-11-21"
+	if p := presentKnowledge(sessionDoc, ""); p.DisplayTitle != "记忆 · 2026-11-21" {
+		t.Fatalf("session knowledge placeholder = %q, want 记忆 · 2026-11-21", p.DisplayTitle)
+	}
+
+	directDoc := Document{
+		ID:              "direct-1",
+		Dataset:         "dataset",
+		Name:            "user_context-0123456789abcdef0123456789abcdef.txt",
+		FirstSourceDate: "2026-11-22",
+		Metadata:        map[string]any{"node_set": []any{"user_context"}},
+	}
+	if p := presentKnowledge(directDoc, ""); p.DisplayTitle != "记忆 · 2026-11-22" {
+		t.Fatalf("direct memory placeholder = %q, want 记忆 · 2026-11-22", p.DisplayTitle)
+	}
+
+	commonDoc := Document{
+		ID:       "common-1",
+		Dataset:  "dataset",
+		Name:     "text_0123456789abcdef0123456789abcdef",
+		Created:  ts,
+		Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "规范"},
+	}
+	if p := presentKnowledge(commonDoc, ""); p.DisplayTitle != "记忆 · "+wantLocalDay {
+		t.Fatalf("common knowledge placeholder = %q, want %q", p.DisplayTitle, "记忆 · "+wantLocalDay)
 	}
 }

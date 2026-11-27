@@ -39,7 +39,11 @@ func readableDocumentTitle(d Document) string {
 	return readableName(d.Name)
 }
 func knowledgePlaceholder(date string) string {
-	if t, ok := officialTime(date); ok {
+	v := strings.TrimSpace(date)
+	if day, ok := sourceCalendarDate(v); ok {
+		return "记忆 · " + day
+	}
+	if t, ok := officialTime(v); ok {
 		return "记忆 · " + t.In(time.Local).Format("2006-01-02")
 	}
 	return "记忆"

@@ -336,3 +336,86 @@ func TestProjectQueueActiveInboxTightensNextIntervalAndVisibleStatusRefreshesOpe
 	}
 	drainReading(t, updates, func() bool { return !q.Loading })
 }
+
+func TestProjectQueueGatewayUnreadPreviewAndSummaryDateNormalization(t *testing.T) {
+	createdTS := "2026-11-21T12:30:00Z"
+	parsed, err := time.Parse(time.RFC3339, createdTS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLocalDay := parsed.In(time.Local).Format("2006-01-02")
+
+	var sawKnowledgeQuery string
+	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			fmt.Fprint(w, `{"reading_contract":"catalog-cursor-v1","features":{"async_capture":true}}`)
+		case "/api/reading-state":
+			fmt.Fprint(w, `{"projects":[{"project_id":"p","dataset_id":"ds","unread_count":12,"state_rev":7}]}`)
+		case "/api/knowledge":
+			sawKnowledgeQuery = r.URL.RawQuery
+			_ = json.NewEncoder(w).Encode(api.KnowledgePage{
+				ProjectID:      "p",
+				DatasetID:      "ds",
+				UnreadCount:    12,
+				UnreadStateRev: 7,
+				Items: []api.CatalogItem{
+					{DocID: "k-1", DatasetID: "ds", Kind: "knowledge", Title: "可读标题", EffectiveDate: "2026-11-20", IsUnread: true},
+					{DocumentID: "k-2", DatasetID: "ds", Kind: "direct_memory", Title: "text_0123456789abcdef0123456789abcdef", DocName: "text_0123456789abcdef0123456789abcdef", EffectiveDate: "2026-11-21", IsUnread: true},
+					{DocID: "k-3", DatasetID: "ds", Kind: "knowledge", Title: "", DocName: "user_context-0123456789abcdef0123456789abcdef.txt", CreatedAt: createdTS, IsUnread: true},
+					{DocID: "foreign", DatasetID: "other-ds", Kind: "knowledge", Title: "不应该出现", EffectiveDate: "2026-11-21", IsUnread: true},
+				},
+			})
+		case "/api/projects/p":
+			fmt.Fprint(w, `{"id":"p","dataset_id":"ds","catalog_version":"cv-7"}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+
+	a := newTestHost(Config{ProjectControl: readingControlConfig(t, "http://127.0.0.1:16531")}, nil)
+	a.client.HTTP = &http.Client{Transport: transport}
+	p := AccessProject{ID: "p", Dataset: "ds"}
+	in := projectQueueFetchInput{client: a.client, project: p, control: a.config.ProjectControl}
+	snap := a.fetchProjectQueueSnapshot(context.Background(), in)
+	rec := reconcileProjectQueueState(p, snap)
+
+	if !strings.Contains(sawKnowledgeQuery, "unread_only=true") || !strings.Contains(sawKnowledgeQuery, "limit=10") {
+		t.Fatalf("unexpected /api/knowledge query: %q", sawKnowledgeQuery)
+	}
+	if rec.ServerUnreadCount != 12 || rec.ServerUnreadStateRev != 7 || !rec.UnreadHasMore {
+		t.Fatalf("unexpected unread summary: %+v", rec)
+	}
+	if len(rec.UnreadKnowledge) != 3 {
+		t.Fatalf("expected 3 scoped unread preview items, got %d: %+v", len(rec.UnreadKnowledge), rec.UnreadKnowledge)
+	}
+	if rec.UnreadKnowledge[0].ID != "k-1" || rec.UnreadKnowledge[0].Title != "可读标题" || rec.UnreadKnowledge[0].Date != "2026-11-20" || rec.UnreadKnowledge[0].Kind != "知识" || !rec.UnreadKnowledge[0].ServerUnread {
+		t.Fatalf("unexpected first unread item: %+v", rec.UnreadKnowledge[0])
+	}
+	if rec.UnreadKnowledge[1].ID != "k-2" || rec.UnreadKnowledge[1].Title != "记忆 · 2026-11-21" || rec.UnreadKnowledge[1].Date != "2026-11-21" {
+		t.Fatalf("machine name was not replaced with date placeholder: %+v", rec.UnreadKnowledge[1])
+	}
+	if rec.UnreadKnowledge[2].ID != "k-3" || rec.UnreadKnowledge[2].Date != wantLocalDay || rec.UnreadKnowledge[2].Title != "记忆 · "+wantLocalDay {
+		t.Fatalf("created_at fallback did not normalize to YYYY-MM-DD: %+v", rec.UnreadKnowledge[2])
+	}
+
+	summary := ProjectMessageSummary{
+		ProjectID: "p",
+		DatasetID: "ds",
+		UnreadPreview: []UnreadPreviewItem{
+			{DocID: "s-1", Title: "", EffectiveDate: "", CreatedAt: createdTS},
+			{DocID: "s-2", Title: "text_0123456789abcdef0123456789abcdef", EffectiveDate: "2026-11-22"},
+		},
+	}
+	items := summary.unreadPreviewItems("ds")
+	if len(items) != 2 {
+		t.Fatalf("expected 2 summary preview items, got %d", len(items))
+	}
+	if items[0].Date != wantLocalDay || items[0].Title != "记忆 · "+wantLocalDay {
+		t.Fatalf("summary fallback leaked raw timestamp or dropped date placeholder: %+v", items[0])
+	}
+	if items[1].Date != "2026-11-22" || items[1].Title != "记忆 · 2026-11-22" {
+		t.Fatalf("summary machine title or calendar date placeholder failed: %+v", items[1])
+	}
+}

@@ -284,3 +284,62 @@ func TestSearchPaletteLightDarkAndControls(t *testing.T) {
 		}
 	}
 }
+
+func TestMapCatalogItemKindNormalizationAndMachineNameFiltering(t *testing.T) {
+	allowed := map[string]bool{"ds": true}
+	resp := api.SearchResponse{
+		Items: []api.SearchItem{
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-upper", Kind: "  Knowledge ", Title: "Upper knowledge"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-common", Kind: "common", Title: "Common note"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-direct", Kind: "direct_memory", Title: "Direct save"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-uctx", Kind: "USER_CONTEXT", Title: "User context"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-mem", Kind: "memory", Title: "Memory note"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-cat", Kind: "", CommonCategory: "约定", Title: "Common by category"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "d-raw", Kind: "raw_doc", Title: "", DocName: "README.md"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "d-rawdoc", Kind: " RAW_DOCUMENT ", Title: "", DocName: "text_0123456789abcdef0123456789abcdef.md"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-machine-title", Kind: "knowledge", Title: "text_0123456789abcdef0123456789abcdef", DocName: "text_0123456789abcdef0123456789abcdef"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", DocID: "k-machine-fallback", Kind: "direct_memory", Title: "user_context-0123456789abcdef0123456789abcdef.txt", DocLabel: "Readable label", DocName: "user_context-0123456789abcdef0123456789abcdef.txt"}},
+			{CatalogItem: api.CatalogItem{DatasetID: "ds", SessionID: "sess-1", Kind: " RAW_SESSION ", Title: "b416c2c6-7d13-4ef0-87c4-3b2662aa0a01"}},
+		},
+		SemanticHits: []api.SearchHit{
+			{DatasetID: "ds", DocumentID: "sem-1", Title: "text_0123456789abcdef0123456789abcdef", Snippet: "WAL checkpoint tuning"},
+		},
+	}
+
+	got := MapSearchResponse(resp, "WAL", allowed)
+	byID := make(map[string]ResultItem, len(got))
+	for _, item := range got {
+		byID[item.ID] = item
+	}
+
+	for _, id := range []string{"k-upper", "k-common", "k-direct", "k-uctx", "k-mem", "k-cat", "k-machine-title", "k-machine-fallback"} {
+		item, ok := byID[id]
+		if !ok || item.Kind != "知识" || !item.knowledge() {
+			t.Fatalf("item %s did not normalize to 知识: %+v", id, item)
+		}
+	}
+	if byID["d-raw"].Kind != "文档" || byID["d-raw"].Title != "README.md" {
+		t.Fatalf("raw_doc mapping failed: %+v", byID["d-raw"])
+	}
+	if byID["d-rawdoc"].Kind != "文档" || byID["d-rawdoc"].Title != "" {
+		t.Fatalf("raw_document leaked machine name or wrong kind: %+v", byID["d-rawdoc"])
+	}
+	if byID["k-machine-title"].Title != "" {
+		t.Fatalf("machine title leaked into ResultItem: %+v", byID["k-machine-title"])
+	}
+	if title, _ := resultText(byID["k-machine-title"], ""); title != "记忆" {
+		t.Fatalf("palette fallback leaked machine name: %q", title)
+	}
+	if byID["k-machine-fallback"].Title != "Readable label" {
+		t.Fatalf("readable DocLabel fallback lost: %+v", byID["k-machine-fallback"])
+	}
+	if byID["sess-1"].Kind != "会话" || !byID["sess-1"].IsSession || byID["sess-1"].Title != "" {
+		t.Fatalf("raw_session normalization failed: %+v", byID["sess-1"])
+	}
+	if byID["sem-1"].Title != "" {
+		t.Fatalf("semantic hit leaked machine name: %+v", byID["sem-1"])
+	}
+	if title, _ := resultText(byID["sem-1"], "WAL"); title != "WAL checkpoint tuning" {
+		t.Fatalf("semantic hit fallback did not use snippet: %q", title)
+	}
+}

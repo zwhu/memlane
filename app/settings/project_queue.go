@@ -143,7 +143,7 @@ type projectQueueSnapshot struct {
 	setupOnly             bool
 	gateway               bool
 	readingState          *api.ReadingStateView
-	unreadPage            *v2ProjectKnowledgeResponse
+	unreadPage            *api.KnowledgePage
 	inbox                 *api.ProjectView
 	authDenied            bool
 	v2Summary             ProjectMessageSummary

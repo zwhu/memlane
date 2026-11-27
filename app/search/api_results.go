@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/zwhu/memlane/app/api"
@@ -106,7 +107,7 @@ func MapSearchResponse(resp api.SearchResponse, query string, allowedDatasets ma
 			continue
 		}
 		i := ResultItem{ID: hit.DocumentID, DatasetID: hit.DatasetID, Kind: "知识片段", SourceDocument: hit.DocumentID,
-			Title: hit.Title, Preview: hit.Snippet, SearchMatch: "语义相关"}
+			Title: readableCatalogTitle(hit.Title), Preview: hit.Snippet, SearchMatch: "语义相关"}
 		if KeywordMatch(i.Title, i.Preview, query) {
 			i.SearchMatch = "关键词匹配"
 		}
@@ -127,15 +128,30 @@ func MapRecentResponse(resp api.RecentSearchResponse, allowedDatasets map[string
 	return out
 }
 
+var searchMachineName = regexp.MustCompile(`^(?:text_[0-9a-fA-F]{32}(?:\.(?:md|txt))?|(?:user_context|memory)-[0-9a-fA-F]{32}(?:\.txt)?|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+
+func readableCatalogTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if searchMachineName.MatchString(s) {
+		return ""
+	}
+	return s
+}
+
 func mapCatalogItem(row api.CatalogItem) ResultItem {
-	kind := row.Kind
-	switch kind {
-	case "knowledge", "lesson", "common":
+	rawKind := strings.TrimSpace(row.Kind)
+	kind := rawKind
+	switch strings.ToLower(rawKind) {
+	case "knowledge", "lesson", "common", "direct_memory", "user_context", "memory", "知识":
 		kind = "知识"
-	case "session", "raw_session":
+	case "session", "raw_session", "会话":
 		kind = "会话"
-	case "raw", "raw_doc", "document":
+	case "raw", "raw_doc", "raw_document", "document", "文档":
 		kind = "文档"
+	default:
+		if strings.TrimSpace(row.CommonCategory) != "" {
+			kind = "知识"
+		}
 	}
 	id := row.DocID
 	if id == "" {
@@ -144,9 +160,12 @@ func mapCatalogItem(row api.CatalogItem) ResultItem {
 	if id == "" && kind == "会话" {
 		id = row.SessionID
 	}
-	title := strings.TrimSpace(row.Title)
+	title := readableCatalogTitle(row.Title)
 	if title == "" {
-		title = row.DocName
+		title = readableCatalogTitle(row.DocLabel)
+	}
+	if title == "" {
+		title = readableCatalogTitle(row.DocName)
 	}
 	return ResultItem{ID: id, ProjectID: row.ProjectID, DatasetID: row.DatasetID, Kind: kind,
 		SourceDocument: row.DocumentID, Title: title, Date: row.EffectiveDate, Category: row.Category, Unread: row.IsUnread, IsSession: kind == "会话"}

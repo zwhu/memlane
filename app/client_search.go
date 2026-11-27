@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/zwhu/memlane/app/api"
 )
@@ -61,7 +62,8 @@ func (c Client) searchType(ctx context.Context, projects []Project, q, searchTyp
 		if !validDataset[row.DatasetID] {
 			continue
 		}
-		if row.Kind == "session" || (row.SessionID != "" && row.DocID == "" && row.DocumentID == "") {
+		lowerKind := strings.ToLower(strings.TrimSpace(row.Kind))
+		if lowerKind == "session" || lowerKind == "raw_session" || lowerKind == "会话" || (row.SessionID != "" && row.DocID == "" && row.DocumentID == "") {
 			if filter == "知识" {
 				continue
 			}
@@ -86,16 +88,17 @@ func (c Client) searchType(ctx context.Context, projects []Project, q, searchTyp
 		if catRow.DocID == "" {
 			continue
 		}
-		isKnowledge := catRow.Kind == "knowledge" || catRow.Kind == "common" || catRow.CommonCategory != ""
+		item := catRow.toItem("")
+		isKnowledge := item.Kind == "知识"
 		if filter == "知识" && !isKnowledge {
 			continue
 		}
 		if filter == "原始材料" && isKnowledge {
 			continue
 		}
-		item := catRow.toItem("")
-		if !isKnowledge {
-			item.Kind = "文档"
+		if isKnowledge && catRow.Title != "" && readableName(catRow.Title) == "" {
+			catRow.Title = ""
+			item = catRow.toItem("")
 		}
 		if !seen[item.Key()] {
 			seen[item.Key()] = true
