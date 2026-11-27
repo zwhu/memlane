@@ -86,6 +86,7 @@ func (a *Controller) selectAgentEnvironment(row AgentConnection, profile string)
 			s.Selected = map[string]bool{}
 			s.EnvironmentOpen = map[string]bool{}
 			s.Message = "已选择连接环境，请连接该环境并在 Agent 中新建会话。"
+			s.MessageScope = "connections"
 			if a.initialSetup {
 				a.environment.pinnedPreviewRequested = nil
 				a.preloadPinnedConnectionPreviews()

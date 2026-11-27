@@ -105,7 +105,7 @@ func TestGenerationEditingSeparatesActiveRevisionAndInvalidatesDraftValidation(t
 func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "记忆提炼"
 	ref := &GenerationRef{ID: "api", Revision: 1}
 	row := GenerationRow{Revision: 1, Digest: "same", Profile: GenerationProfile{Mode: "provider", Provider: "custom", Model: "synthetic", Endpoint: "https://example.test/v1"}}
 	g := GenerationDirectory{Profiles: map[string][]GenerationRow{"api": {row}}, Validations: map[string]GenerationValidation{
@@ -207,11 +207,11 @@ func TestGenerationUnknownSaveClearsInputAndDoesNotRepeatMutation(t *testing.T) 
 func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "记忆提炼"
 	a.integrations = IntegrationState{Loaded: true, GenerationLoaded: true, Editor: true, GenerationProviderDialog: true, ProfileID: "api", DraftMode: "provider", ProviderLabel: "OpenAI", Model: "synthetic", Endpoint: "https://example.test/v1", APIKey: "synthetic-secret-never-show",
 		Generation: GenerationDirectory{Active: &GenerationRef{ID: "existing-codex", Revision: 1}, Profiles: map[string][]GenerationRow{"existing-codex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", Model: "old-model"}}}}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	for _, label := range []string{"模型配置", "供应商协议", "API 地址", "API Key", "保存配置"} {
+	for _, label := range []string{"提炼方式", "供应商协议", "API 地址", "API Key", "保存配置"} {
 		if !tt.HasText(label) {
 			t.Fatal("missing", label)
 		}
@@ -230,7 +230,7 @@ func TestIntegrationSettingsUseSeparatePagesAndMaskProviderKey(t *testing.T) {
 func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "Agent 连接"
 	a.integrations = IntegrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "codex", Kind: "codex", Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "pi", Kind: "pi", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},
@@ -259,7 +259,7 @@ func TestIntegrationAgentListShowsDirectActionsAndHostLimits(t *testing.T) {
 func TestHostExecutableChangedShowsClearReviewNoticeAndStatus(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "Agent 连接"
 	a.integrations = IntegrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "antigravity-1", Kind: "antigravity", Detected: true, Status: "requires_review", ErrorCode: "host_executable_changed", HostVersion: "1.5.13"},
 	}}}
@@ -280,7 +280,7 @@ func TestHostExecutableChangedShowsClearReviewNoticeAndStatus(t *testing.T) {
 func TestAgentConnectionRowRegisteredAndHealthyShowBalancedBadges(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "Agent 连接"
 	a.integrations = IntegrationState{
 		Loaded: true,
 		Connections: ConnectionsDirectory{Connections: []AgentConnection{
@@ -406,7 +406,7 @@ func TestAgentRefreshUsesForceAndKeepsLayoutStableWhileSpinning(t *testing.T) {
 func TestIntegrationRecoveryActionsRemainVisibleWithoutAnOpenEditor(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "记忆提炼"
 	a.integrations = IntegrationState{Loaded: true, GenerationLoaded: true, PendingOperations: []generationUIOperation{
 		{Operation: "ui-unconfirmed", Kind: "save", Profile: "saved-before-exit"},
 	}}
@@ -670,7 +670,7 @@ func TestPostUpgradeReceiptNoticeDoesNotClaimUnconfirmedDirectoryLightAndDark(t 
 			a.config.ConfigFile = filepath.Join(t.TempDir(), "runtime.json")
 			a.setAppearancePreference(appearance)
 			a.page = "设置"
-			a.access.SettingsSection = "Agent 与模型"
+			a.access.SettingsSection = "Agent 连接"
 			a.integrations = IntegrationState{
 				Loaded:          true,
 				EnvironmentOpen: map[string]bool{"antigravity-1": true},

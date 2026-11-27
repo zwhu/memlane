@@ -119,7 +119,7 @@ func (a *App) projectCreateDialog(c *ui.Context) {
 								ui.Text(c, "没有发现尚未关联的项目").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3)
 							}
 							if len(s.Suggestions) > 0 {
-								ui.Column(c).FillWidth().Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+								ui.Column(c).FillWidth().Gap(1).Dividers(1, tok.Border).Background(tok.Fill1).Border(1, tok.Border).Radius(radiusMenu).Clip().Children(func() {
 									for _, row := range s.Suggestions {
 										suggestion := row
 										v4Row(c, v4RowOptions{

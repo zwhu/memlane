@@ -8,17 +8,17 @@ import (
 
 // GroupWrap centers configuration groups within the V4 680px reading column.
 func GroupWrap(c *mygoui.Context, content func()) mygoui.Element {
-	return mygoui.Column(c).FillWidth().MaxWidth(ReaderMaxW).AlignSelf(mygoui.Center).Gap(Sp6).Children(content)
+	return mygoui.Column(c).FillWidth().MaxWidth(ReaderMaxW).AlignSelf(mygoui.Center).Gap(Sp8).Children(content)
 }
 
-// Group renders a cardless V4 grouped list section: caption header on top,
-// hairline top border, and rows separated by hairline bottom borders.
+// Group renders a macOS inset-grouped V4 section: primary Text1 heading on top,
+// subtle Fill1 rounded container with hairline dividers strictly between rows.
 func Group(c *mygoui.Context, tok *Tokens, title, desc string, actions func(), rows func()) mygoui.Element {
 	return mygoui.Column(c).FillWidth().Gap(0).Children(func() {
 		if title != "" || desc != "" || actions != nil {
 			mygoui.Row(c).FillWidth().Padding(0, Sp1, Sp2, Sp1).Gap(Sp2).AlignItems(mygoui.Center).Children(func() {
 				if title != "" {
-					mygoui.Text(c, title).Font("system-ui").FontSize(FSCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+					mygoui.Text(c, title).Font("system-ui").FontSize(FSBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
 				}
 				if desc != "" && actions == nil {
 					mygoui.Spacer(c)
@@ -34,7 +34,9 @@ func Group(c *mygoui.Context, tok *Tokens, title, desc string, actions func(), r
 				}
 			})
 		}
-		mygoui.Column(c).FillWidth().Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(rows)
+		mygoui.Column(c).FillWidth().Gap(1).Dividers(1, tok.Border).
+			Background(tok.Fill1).Border(1, tok.Border).Radius(RadiusMenu).
+			Clip().Children(rows)
 	})
 }
 
@@ -146,20 +148,13 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 			label = opts.Title
 		}
 		btn := mygoui.ButtonBase(ctx).Role(mygoui.RoleButton).Label(label).
-			FillWidth().MinHeight(minH).Padding(padV, Sp2).Gap(Sp3).
-			AlignItems(mygoui.Center).Justify(mygoui.Start).Radius(Radius).
+			FillWidth().MinHeight(minH).Padding(padV, Sp4).Gap(Sp3).
+			AlignItems(mygoui.Center).Justify(mygoui.Start).Radius(0).
 			Cursor(mygoui.CursorPointer).Disabled(opts.Disabled)
 		if opts.Tooltip != "" {
 			btn.Tooltip(opts.Tooltip)
 		}
 		hovered := btn.Hovered()
-		if !opts.NoBorder {
-			borderCol := tok.Border
-			if hovered {
-				borderCol = mygoui.Transparent
-			}
-			btn.BorderWidth(0, 0, 1, 0).BorderColor(borderCol)
-		}
 		btn.Background(HoverColor(btn, "v4-row-bg", mygoui.Transparent, tok.Hover))
 		ButtonPress(btn, 0.995)
 		btn.Children(func() { buildContent(hovered) })
@@ -169,11 +164,8 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 		return btn
 	}
 
-	row := mygoui.Row(ctx).FillWidth().MinHeight(minH).Padding(padV, Sp1).Gap(Sp3).
+	row := mygoui.Row(ctx).FillWidth().MinHeight(minH).Padding(padV, Sp4).Gap(Sp3).
 		AlignItems(mygoui.Center)
-	if !opts.NoBorder {
-		row.BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
-	}
 	if opts.Label != "" {
 		row.Label(opts.Label)
 	}

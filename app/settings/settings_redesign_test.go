@@ -60,23 +60,32 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			clickProjectUI(t, tt, "管理")
 			clickProjectUI(t, tt, "设置")
-			if a.access.OpenProject != "" || !tt.HasText("Agent 与模型") {
-				t.Fatal("sidebar settings still project scoped")
+			if a.access.OpenProject != "" || !tt.HasText("Agent 连接") || !tt.HasText("通用") {
+				t.Fatal("sidebar settings still project scoped or missing redesigned tabs")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-global", wh[0], wh[1]))
 			for _, text := range tt.Texts() {
-				if text == "默认规则" || text == "高级" || text == "后台运行" || text == "配置生效" {
-					t.Fatal("removed global policy tab remains")
+				if text == "默认规则" || text == "高级" || text == "后台运行" || text == "配置生效" || text == "Agent 与模型" || text == "管理 Agent 与模型" {
+					t.Fatal("removed global policy tab or jump row remains:", text)
 				}
 			}
 			a.access.SettingsSection = "高级"
 			tt.Frame()
-			if a.access.SettingsSection != "记忆提炼" || !tt.HasText("记忆语言") {
+			if a.access.SettingsSection != "记忆提炼" || !tt.HasText("提炼策略") {
 				t.Fatal("retired tab left the settings page blank after reload")
 			}
+			a.access.SettingsSection = "Agent 与模型"
+			tt.Frame()
+			if a.access.SettingsSection != "Agent 连接" {
+				t.Fatalf("legacy Agent 与模型 tab did not migrate to Agent 连接: %q", a.access.SettingsSection)
+			}
+			clickProjectUI(t, tt, "通用")
+			if !tt.HasText("外观与语言") || !tt.HasText("记忆语言") || !tt.HasText("桌面端运行方式") || tt.HasText("高级") {
+				t.Fatal("general settings tab lost its content")
+			}
 			clickProjectUI(t, tt, "记忆提炼")
-			if !tt.HasText("记忆语言") || tt.HasText("高级") {
-				t.Fatal("retained settings tab lost its content")
+			if !tt.HasText("提炼策略") || tt.HasText("记忆语言") || tt.HasText("外观模式") {
+				t.Fatal("processing settings tab kept general settings or lost strategy")
 			}
 
 		})
@@ -101,16 +110,16 @@ func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
 	a := settingsFixture()
 	a.config.ConfigFile = t.TempDir() + "/runtime.json"
 	a.SetOpenAtLoginFn = func(enable bool) error { return fmt.Errorf("non-.app binary") }
-	a.access.SettingsSection = "服务"
+	a.access.SettingsSection = "通用"
 	a.navigate("设置", 0)
 
 	mainTT := ui.NewTester(a.View, 1200, 820)
 	if !mainTT.HasText("桌面端运行方式") || !mainTT.HasText("退出时保持后台运行") || !mainTT.HasText("登录时静默启动") {
-		t.Fatalf("missing 桌面端运行方式 section in 设置 › 服务; texts=%v", mainTT.Texts())
+		t.Fatalf("missing 桌面端运行方式 section in 设置 › 通用; texts=%v", mainTT.Texts())
 	}
 
 	if err := mainTT.Click("退出时保持后台运行开关"); err != nil {
-		t.Fatalf("failed to click 退出时保持后台运行开关 in 设置 › 服务: %v", err)
+		t.Fatalf("failed to click 退出时保持后台运行开关 in 设置 › 通用: %v", err)
 	}
 	if a.KeepAliveOnQuit() {
 		t.Fatal("expected KeepAliveOnQuit=false after toggling in settings")
@@ -118,7 +127,7 @@ func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
 
 	// Toggling open-at-login in settings records honest error without faking enabled.
 	if err := mainTT.Click("登录时静默启动开关"); err != nil {
-		t.Fatalf("failed to click 登录时静默启动开关 in 设置 › 服务: %v", err)
+		t.Fatalf("failed to click 登录时静默启动开关 in 设置 › 通用: %v", err)
 	}
 	if a.OpenAtLogin() {
 		t.Fatal("OpenAtLogin must stay false when OS hook fails")
@@ -223,6 +232,108 @@ func TestProjectPermissionsUIHonorsDefaultsAgentDefaultAccessAndOverrides(t *tes
 			if !tt.HasText(tc.wantVal) {
 				t.Fatalf("agent %s (default_access=%q): missing expected label %q; texts=%v", tc.agent.ID, tc.agent.DefaultAccess, tc.wantVal, tt.Texts())
 			}
+		})
+	}
+}
+
+func TestSettingsFourTabsPartitioningAndMessageIsolation(t *testing.T) {
+	for _, appearance := range []string{"light", "dark"} {
+		t.Run(appearance, func(t *testing.T) {
+			a := settingsFixture()
+			a.config.ConfigFile = t.TempDir() + "/runtime.json"
+			a.setAppearancePreference(appearance)
+			a.page = "设置"
+			active := GenerationRef{ID: "agent-codex", Revision: 1}
+			a.integrations = IntegrationState{
+				Loaded:           true,
+				GenerationLoaded: true,
+				Message:          "已切换到 Codex CLI",
+				MessageScope:     "generation",
+				Generation: GenerationDirectory{
+					HandoffAvailable: true,
+					Active:           &active,
+					AgentBridges: map[string]GenerationProfile{
+						"codex": {Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-6.2-sol"},
+						"pi":    {Mode: "agent_bridge", BridgeKind: "pi", Model: "deepseek-flash"},
+					},
+					AgentDefaults: map[string]AgentModelDefaults{
+						"codex": {Model: "gpt-6.2-sol", ReasoningEffort: "medium", ServiceTier: "fast"},
+						"pi":    {Model: "deepseek-flash", ThinkingLevel: "high"},
+					},
+					Profiles: map[string][]GenerationRow{
+						"agent-codex": {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-6.2-sol"}}},
+						"agent-pi":    {{Revision: 1, Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "pi", Model: "deepseek-flash"}}},
+						"ollama-1":    {{Revision: 1, Digest: "d1", Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Endpoint: "http://127.0.0.1:11434", Model: "qwen3:4b-instruct"}}},
+						"ollama-2":    {{Revision: 1, Digest: "d2", Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Endpoint: "http://127.0.0.1:11434", Model: "qwen3:4b-thinking"}}},
+					},
+					Validations: map[string]GenerationValidation{
+						"v1": {Digest: "d1", Status: "passed", Plain: true, Schema: true, Quality: true},
+					},
+				},
+				Connections: ConnectionsDirectory{Connections: []AgentConnection{
+					{ID: "agy", Kind: "antigravity", Detected: true, Status: "configured_pending_new_session", HostVersion: "1.150.1", Profile: "/Users/demo/.gemini/config", Capture: &AgentCaptureState{State: "healthy", LastSavedAt: 1795700000}},
+					{ID: "codex", Kind: "codex", Detected: true, Status: "configured_pending_new_session", HostVersion: "26.1120", Profile: "/Users/demo/.codex", Capture: &AgentCaptureState{State: "healthy", LastSavedAt: 1795650000}},
+					{ID: "pi", Kind: "pi", Detected: true, Status: "configured_pending_new_session", HostVersion: "0.84.1", Profile: "/Users/demo/.pi/agent", Capture: &AgentCaptureState{State: "waiting_session"}},
+				}},
+			}
+
+			tt := ui.NewTester(a.View, 1200, 820)
+			// Verify exact tab order: 记忆提炼 | Agent 连接 | 服务 | 通用
+			var prevX float32 = -1
+			for _, tab := range []string{"记忆提炼", "Agent 连接", "服务", "通用"} {
+				rect, ok := tt.Find(tab)
+				if !ok {
+					t.Fatalf("[%s] missing settings tab %q", appearance, tab)
+				}
+				if rect.X <= prevX {
+					t.Fatalf("[%s] tab %q out of order: x=%.1f prevX=%.1f", appearance, tab, rect.X, prevX)
+				}
+				prevX = rect.X
+			}
+
+			// Tab 1 (记忆提炼): no stale switched message, no 管理 Agent 与模型 jump row, no 外观/记忆语言.
+			if tt.HasText("已切换到 Codex CLI") || tt.HasText("管理 Agent 与模型") || tt.HasText("记忆语言") || tt.HasText("外观模式") {
+				t.Fatalf("[%s] 记忆提炼 tab still contains removed or moved items: %v", appearance, tt.Texts())
+			}
+			fixtureImage(t, tt, "settings-tab1-processing-cli-"+appearance)
+
+			// Switch source to 直接调用模型 API -> merged Provider management right in 记忆提炼.
+			clickProjectUI(t, tt, "直接调用模型 API")
+			for _, want := range []string{"添加配置", "qwen3:4b-instruct", "qwen3:4b-thinking", "切换", "配置", "删除"} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] 记忆提炼 API view missing %q; texts=%v", appearance, want, tt.Texts())
+				}
+			}
+			fixtureImage(t, tt, "settings-tab1-processing-api-"+appearance)
+
+			// Tab 2 (Agent 连接): isolated from generation messages and model configuration.
+			clickProjectUI(t, tt, "Agent 连接")
+			if tt.HasText("已切换到 Codex CLI") || tt.HasText("模型配置") || tt.HasText("qwen3:4b-instruct") {
+				t.Fatalf("[%s] Agent 连接 leaked generation state or model config: %v", appearance, tt.Texts())
+			}
+			if !tt.HasText("Gemini App") || !tt.HasText("收起步骤") {
+				t.Fatalf("[%s] Agent 连接 missing expected hosts or checklist toggle: %v", appearance, tt.Texts())
+			}
+			fixtureImage(t, tt, "settings-tab2-agents-"+appearance)
+
+			// Tab 3 (服务): pure service & environment without general settings.
+			clickProjectUI(t, tt, "服务")
+			if !tt.HasText("组件状态") || !tt.HasText("诊断") || !tt.HasText("运行环境") {
+				t.Fatalf("[%s] 服务 tab missing core sections: %v", appearance, tt.Texts())
+			}
+			if tt.HasText("桌面端运行方式") || tt.HasText("外观与语言") {
+				t.Fatalf("[%s] 服务 tab still includes general settings: %v", appearance, tt.Texts())
+			}
+			fixtureImage(t, tt, "settings-tab3-service-"+appearance)
+
+			// Tab 4 (通用): holds 外观与语言 + 桌面端运行方式.
+			clickProjectUI(t, tt, "通用")
+			for _, want := range []string{"外观与语言", "外观模式", "记忆语言", "桌面端运行方式", "退出时保持后台运行", "登录时静默启动"} {
+				if !tt.HasText(want) {
+					t.Fatalf("[%s] 通用 tab missing %q; texts=%v", appearance, want, tt.Texts())
+				}
+			}
+			fixtureImage(t, tt, "settings-tab4-general-"+appearance)
 		})
 	}
 }

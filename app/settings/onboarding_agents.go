@@ -135,7 +135,7 @@ func (a *Controller) initialSelectAgentStep(c *ui.Context) {
 	s := &a.environment
 	hosts := s.detectedOnboardingHosts()
 	if s.HostsLoaded && len(hosts) == 0 {
-		onboardingHeading(tok, c, onboardingAgents, "还没有检测到支持的 Agent", "安装下面任一 Agent 后点「重新检测」；也可以先跳过，环境准备好后再到「设置 › Agent 与模型」接入。")
+		onboardingHeading(tok, c, onboardingAgents, "还没有检测到支持的 Agent", "安装下面任一 Agent 后点「重新检测」；也可以先跳过，环境准备好后再到「设置 › Agent 连接」接入。")
 		kitui.Group(c, tok, "Memlane 支持的 Agent", "", func() {
 			kitui.GhostButton(c, tok, "重新检测", kitui.IconRefresh, a.refreshLocalHosts).Disabled(s.HostsLoading)
 		}, func() { a.onboardingSupportRows(c) })
@@ -189,7 +189,7 @@ func (a *Controller) initialSelectAgentStep(c *ui.Context) {
 				ui.Text(c, fmt.Sprintf("已选 %d 个，第 3 步统一确认接入", selected)).FontSize(fsFootnote).TextColor(tok.Text2)
 			})
 		} else {
-			kitui.Text(c, tok, "不选也可以继续，之后在「设置 › Agent 与模型」里接入", kitui.RoleMeta)
+			kitui.Text(c, tok, "不选也可以继续，之后在「设置 › Agent 连接」里接入", kitui.RoleMeta)
 		}
 	}
 	ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {

@@ -167,6 +167,7 @@ func (a *Controller) saveGeneration() {
 			}
 			s.editProfile(id, row)
 			s.Message = "配置已保存，当前使用未改变"
+			s.MessageScope = "generation"
 		})
 	}()
 }
@@ -209,6 +210,7 @@ func (a *Controller) reviewGenerationSave() {
 			s.editProfile(receipt.Result.ID, row)
 			s.Error = ""
 			s.Message = "原保存结果已核对，当前使用未改变"
+			s.MessageScope = "generation"
 		})
 	}()
 }

@@ -195,7 +195,7 @@ func (a *Controller) generationCandidateStatus(c *ui.Context) {
 	needsValidation := bridge && setup && !s.Generation.validated(s.Saved)
 	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != ""
 	if !current && (!setup || !nextSelected || needsValidation) {
-		ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+		ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp4).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 			available := !bridge || s.availableProcessingBridge(s.BridgeKind)
 			switch {
 			case bridge && !setup:
@@ -222,14 +222,15 @@ func (a *Controller) generationCandidateStatus(c *ui.Context) {
 		})
 	}
 	showValidation := bridge && setup && s.ValidationOperation != ""
-	if bridge && (showValidation || s.Error != "" || s.Message != "") {
-		ui.Column(c).FillWidth().Padding(sp2, sp1).Gap(sp2).Children(func() {
+	showTransientMessage := s.Busy && s.Message != "" && s.MessageScope != "connections"
+	if bridge && (showValidation || s.Error != "" || showTransientMessage) {
+		ui.Column(c).FillWidth().Padding(sp2, sp4).Gap(sp2).Children(func() {
 			if showValidation {
 				a.generationValidationStatus(c)
 			}
 			if s.Error != "" {
 				kitui.Text(c, tok, s.Error, kitui.RoleMeta).TextColor(tok.Danger)
-			} else if s.Message != "" {
+			} else if showTransientMessage {
 				kitui.Text(c, tok, s.Message, kitui.RoleMeta)
 			}
 		})
@@ -278,10 +279,23 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 		sourceDesc = "直连 OpenAI 兼容或 Ollama 接口"
 	}
 	showingEmptyGuide := s.DraftMode == "agent_bridge" && !s.hasAvailableProcessingBridge()
+	var groupActions func()
+	if !edit && s.DraftMode == "provider" {
+		groupActions = func() {
+			kitui.SmallButton(c, tok, "添加配置", kitui.IconPlus, func() {
+				a.newGenerationProfile("provider")
+				s.GenerationProviderDialog = true
+			}).Disabled(s.Busy)
+		}
+	}
 
-	kitui.Group(c, tok, title, desc, nil, func() {
+	if !edit && enable {
+		a.generationPendingOperations(c)
+	}
+
+	kitui.Group(c, tok, title, desc, groupActions, func() {
 		if enable && s.Handoff.Handoff != nil {
-			ui.Row(c).FillWidth().Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+			ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() {
 				a.generationHandoffStatus(c)
 			})
 		}
@@ -305,21 +319,16 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 		})
 		if !edit {
 			a.generationProfileCards(c, false)
-			if enable {
+			if enable && s.DraftMode == "agent_bridge" {
 				a.generationCandidateStatus(c)
 			}
-			kitui.Row(c, tok, kitui.RowOptions{
-				Key:       "settings-goto-agents",
-				Title:     "管理 Agent 与模型",
-				Desc:      "管理本机 Agent 连接与模型 API",
-				Clickable: true,
-				Chevron:   true,
-				OnClick: func() {
-					a.access.SettingsSection = "Agent 与模型"
-				},
-			})
 		}
 	})
+
+	if !edit {
+		a.generationProviderDialog(c)
+		a.generationDeleteModal(c)
+	}
 
 	if enable && edit && s.DraftMode != "agent_bridge" {
 		a.generationCandidateStatus(c)

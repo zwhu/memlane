@@ -44,7 +44,7 @@ func (a *Controller) captureConnectionAction(c *ui.Context, row AgentConnection)
 		if s.CaptureHelpCollapsed[row.ID] {
 			label = "查看步骤"
 		}
-		kitui.TextButton(c, tok, label, func() {
+		kitui.SmallButton(c, tok, label, nil, func() {
 			if s.CaptureHelpCollapsed == nil {
 				s.CaptureHelpCollapsed = make(map[string]bool)
 			}
@@ -73,8 +73,8 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 	reviewed, consentOpen := s.CaptureReview[row.ID]
 	canConsent := s.pendingConnection(row.ID) == nil && connectionActionAllowed(row, "allow_capture")
 	if consentOpen && canConsent {
-		ui.Column(c).FillWidth().Padding(0, 0, 0, 42).Children(func() {
-			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(12).Gap(10).Background(tok.Fill1).Radius(6).Children(func() {
+		ui.Column(c).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(sp3).Gap(10).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 				kitui.Text(c, tok, "允许 Codex 自动采集已授权项目中的会话到 Memlane。", kitui.RoleBody).FontSize(12)
 				ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 					ui.Button(c, "确认允许").Label("确认允许自动采集："+connectionName(row.Kind)).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() {
@@ -89,59 +89,65 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 		})
 	}
 	if row.Capture != nil && row.Capture.State == "check_failed" {
-		kitui.Text(c, tok, "暂时无法读取采集结果，请重新检测。", kitui.RoleMeta).Margin(0, 0, 0, 42)
+		ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() {
+			kitui.Text(c, tok, "暂时无法读取采集结果，请重新检测。", kitui.RoleMeta)
+		})
 	}
 	if row.LastHookError != nil && (row.Capture == nil || row.Capture.State != "healthy") {
-		kitui.Text(c, tok, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError)+" · "+formatUnixTimeLocal(row.LastHookError.At), kitui.RoleMeta).Margin(0, 0, 0, 42).LineHeight(1.5)
+		ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() {
+			kitui.Text(c, tok, "最近一次 Hook 未记录："+hookErrorSummary(row.LastHookError)+" · "+formatUnixTimeLocal(row.LastHookError.At), kitui.RoleMeta).LineHeight(1.5)
+		})
 	}
 	if !shouldExpandChecklist(row) || s.CaptureHelpCollapsed[row.ID] {
 		return
 	}
-	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
-		projectState := ""
-		if row.Capture != nil {
-			projectState = row.Capture.State
-		}
-		message := ""
-		switch projectState {
-		case "project_disabled":
-			message = "最近会话所属项目未开启会话采集。"
-		case "project_pending":
-			message = "最近会话所属项目的权限设置尚未生效。"
-		case "project_write_denied":
-			message = "当前 Agent 没有最近会话所属项目的写入权限。"
-		}
-		if message != "" {
-			kitui.Text(c, tok, message, kitui.RoleMeta)
-			for _, project := range a.config.Projects {
-				if project.ID == row.Capture.ProjectID {
-					kitui.TextButton(c, tok, "项目设置", func() { a.OpenProjectManagement(project.ID) }).AlignSelf(ui.Start)
-					return
+	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(6).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			projectState := ""
+			if row.Capture != nil {
+				projectState = row.Capture.State
+			}
+			message := ""
+			switch projectState {
+			case "project_disabled":
+				message = "最近会话所属项目未开启会话采集。"
+			case "project_pending":
+				message = "最近会话所属项目的权限设置尚未生效。"
+			case "project_write_denied":
+				message = "当前 Agent 没有最近会话所属项目的写入权限。"
+			}
+			if message != "" {
+				kitui.Text(c, tok, message, kitui.RoleMeta)
+				for _, project := range a.config.Projects {
+					if project.ID == row.Capture.ProjectID {
+						kitui.TextButton(c, tok, "项目设置", func() { a.OpenProjectManagement(project.ID) }).AlignSelf(ui.Start)
+						return
+					}
 				}
+				kitui.Text(c, tok, "调整项目设置后，再发送新消息。", kitui.RoleMeta)
+				return
 			}
-			kitui.Text(c, tok, "调整项目设置后，再发送新消息。", kitui.RoleMeta)
-			return
-		}
-		restart := "1. 如果你原本已打开 " + connectionName(row.Kind) + "，请先 ⌘Q 完全退出后重新打开。"
-		if row.Kind == "antigravity" {
-			restart = "1. 如果你原本已打开 Gemini App，请先 ⌘Q 完全退出后重新打开，并在右上角打开 Antigravity。"
-		}
-		kitui.Text(c, tok, restart, kitui.RoleMeta).FontWeight(500).TextColor(tok.Text1)
-		newSessionStep := "打开项目工作区新建会话，发送一条消息；无需等待此处变绿即可继续后续步骤。"
-		if row.Kind == "trae_ide" {
-			kitui.Text(c, tok, "2. 在 TRAE 设置 → Hooks → 全局 中开启开关并确认安全提示。", kitui.RoleMeta)
-			kitui.Text(c, tok, "3. "+newSessionStep, kitui.RoleMeta)
-		} else {
-			kitui.Text(c, tok, "2. "+newSessionStep, kitui.RoleMeta)
-		}
-		ui.Row(c).Gap(6).AlignItems(ui.Center).AlignSelf(ui.Start).Children(func() {
-			if canConsent && !consentOpen && row.Capture.State == "needs_permission" {
-				a.capturePermissionButton(c, row, "允许自动采集")
+			restart := "1. 如果你原本已打开 " + connectionName(row.Kind) + "，请先 ⌘Q 完全退出后重新打开。"
+			if row.Kind == "antigravity" {
+				restart = "1. 如果你原本已打开 Gemini App，请先 ⌘Q 完全退出后重新打开，并在右上角打开 Antigravity。"
 			}
-			kitui.TextButton(c, tok, "重新检测", a.RefreshConnections).Label("重新检测自动采集：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
-			if s.Loading {
-				ui.Spinner(c).Size(13, 13).TextColor(tok.Accent)
+			kitui.Text(c, tok, restart, kitui.RoleMeta).FontWeight(500).TextColor(tok.Text1)
+			newSessionStep := "打开项目工作区新建会话，发送一条消息；无需等待此处变绿即可继续后续步骤。"
+			if row.Kind == "trae_ide" {
+				kitui.Text(c, tok, "2. 在 TRAE 设置 → Hooks → 全局 中开启开关并确认安全提示。", kitui.RoleMeta)
+				kitui.Text(c, tok, "3. "+newSessionStep, kitui.RoleMeta)
+			} else {
+				kitui.Text(c, tok, "2. "+newSessionStep, kitui.RoleMeta)
 			}
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).AlignSelf(ui.Start).Children(func() {
+				if canConsent && !consentOpen && row.Capture.State == "needs_permission" {
+					a.capturePermissionButton(c, row, "允许自动采集")
+				}
+				kitui.SmallButton(c, tok, "重新检测", kitui.IconRefresh, a.RefreshConnections).Label("重新检测自动采集：" + connectionName(row.Kind)).Disabled(s.Busy || s.Loading)
+				if s.Loading {
+					ui.Spinner(c).Size(13, 13).TextColor(tok.Accent)
+				}
+			})
 		})
 	})
 }

@@ -46,7 +46,7 @@ func TestGenerationParameterRoundTripInvalidationAndExplicitZero(t *testing.T) {
 func TestGenerationParameterDraftLabelsSavedValidation(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "记忆提炼"
 	row := GenerationRow{Revision: 1, Digest: "original", Profile: GenerationProfile{Mode: "provider", Provider: "ollama", Model: "synthetic", Endpoint: "http://127.0.0.1:11434"}}
 	a.integrations = IntegrationState{Loaded: true, GenerationLoaded: true, Editor: true, GenerationProviderDialog: true, Generation: GenerationDirectory{Profiles: map[string][]GenerationRow{"local": {row}}, Validations: map[string]GenerationValidation{"v": {Status: "passed", Digest: "original", Plain: true, Schema: true, Quality: true}}}}
 	a.integrations.editProfile("local", row)

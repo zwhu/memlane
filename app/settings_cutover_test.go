@@ -166,16 +166,16 @@ func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
 	a.Config.ConfigFile = t.TempDir() + "/runtime.json"
 	a.initDesktopPreferences()
 	a.SetOpenAtLoginFn = func(enable bool) error { return fmt.Errorf("non-.app binary") }
-	a.access.SettingsSection = "服务"
+	a.access.SettingsSection = "通用"
 	a.navigate("设置", 0)
 
 	mainTT := ui.NewTester(a.View, 1200, 820)
 	if !mainTT.HasText("桌面端运行方式") || !mainTT.HasText("退出时保持后台运行") || !mainTT.HasText("登录时静默启动") {
-		t.Fatalf("missing 桌面端运行方式 section in 设置 › 服务; texts=%v", mainTT.Texts())
+		t.Fatalf("missing 桌面端运行方式 section in 设置 › 通用; texts=%v", mainTT.Texts())
 	}
 
 	if err := mainTT.Click("退出时保持后台运行开关"); err != nil {
-		t.Fatalf("failed to click 退出时保持后台运行开关 in 设置 › 服务: %v", err)
+		t.Fatalf("failed to click 退出时保持后台运行开关 in 设置 › 通用: %v", err)
 	}
 	if a.KeepAliveOnQuit() {
 		t.Fatal("expected KeepAliveOnQuit=false after toggling in settings")
@@ -189,7 +189,7 @@ func TestSettingsServiceDesktopRuntimeSyncWithTray(t *testing.T) {
 
 	// Toggling open-at-login in settings records honest error without faking enabled.
 	if err := mainTT.Click("登录时静默启动开关"); err != nil {
-		t.Fatalf("failed to click 登录时静默启动开关 in 设置 › 服务: %v", err)
+		t.Fatalf("failed to click 登录时静默启动开关 in 设置 › 通用: %v", err)
 	}
 	if a.OpenAtLogin() {
 		t.Fatal("OpenAtLogin must stay false when OS hook fails")
@@ -235,23 +235,23 @@ func TestSettingsProjectPermissionsCardsAndNavigation(t *testing.T) {
 			}
 			clickProjectUI(t, tt, "管理")
 			clickProjectUI(t, tt, "设置")
-			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("Agent 与模型") {
-				t.Fatal("sidebar settings still project scoped")
+			if a.settingsOrigin != nil || a.access.OpenProject != "" || !tt.HasText("Agent 连接") || !tt.HasText("通用") {
+				t.Fatal("sidebar settings still project scoped or missing redesigned tabs")
 			}
 			fixtureImage(t, tt, fmt.Sprintf("settings-%dx%d-global", wh[0], wh[1]))
 			for _, text := range tt.Texts() {
-				if text == "默认规则" || text == "高级" || text == "后台运行" || text == "配置生效" {
+				if text == "默认规则" || text == "高级" || text == "后台运行" || text == "配置生效" || text == "Agent 与模型" {
 					t.Fatal("removed global policy tab remains")
 				}
 			}
 			a.access.SettingsSection = "高级"
 			tt.Frame()
-			if a.access.SettingsSection != "记忆提炼" || !tt.HasText("记忆语言") {
+			if a.access.SettingsSection != "记忆提炼" || !tt.HasText("提炼策略") {
 				t.Fatal("retired tab left the settings page blank after reload")
 			}
-			clickProjectUI(t, tt, "记忆提炼")
-			if !tt.HasText("记忆语言") || tt.HasText("高级") {
-				t.Fatal("retained settings tab lost its content")
+			clickProjectUI(t, tt, "通用")
+			if !tt.HasText("记忆语言") || !tt.HasText("桌面端运行方式") || !tt.HasText("版本与更新") || tt.HasText("高级") {
+				t.Fatal("general settings tab lost its content")
 			}
 
 		})

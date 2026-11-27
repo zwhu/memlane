@@ -133,7 +133,7 @@ func TestAgentConnectionDefaultShowsClearStatusesAndCollapsesUnavailable(t *test
 func TestBetaHiddenHostsStayVisibleWhenAlreadyConfiguredOrPending(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "Agent 连接"
 	a.integrations = IntegrationState{Loaded: true, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "claude-ready", Kind: "claude_code", Detected: true, Status: "configured_pending_new_session", NewSessions: 1},
 		{ID: "cursor-prepared", Kind: "cursor", Detected: true, Status: "prepared", Preview: &CodexConnectionPreview{ProposedSHA: "reviewed"}},

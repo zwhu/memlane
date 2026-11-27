@@ -99,29 +99,33 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 				title = fmt.Sprintf("采集队列有 %d 项失败", q.InboxFailed)
 			}
 			headline, detail, tech := formatInboxFailureUI(q.LastError, q.LastErrorAt, q.RecentFailures)
-			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-failure-" + p.ID, Title: title, Desc: headline + " · " + detail, Error: q.InboxRetryError,
-				Leading: func() { kitui.StatusDot(c, tok, "fail") },
-				Control: func() {
-					if tech != "" {
-						label := "查看技术详情"
-						if q.ShowFailureTech {
-							label = "收起技术详情"
+			ui.Column(c.Key("proj-inbox-failure-item-" + p.ID)).FillWidth().Gap(0).Children(func() {
+				kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-failure-" + p.ID, Title: title, Desc: headline + " · " + detail, Error: q.InboxRetryError,
+					Leading: func() { kitui.StatusDot(c, tok, "fail") },
+					Control: func() {
+						if tech != "" {
+							label := "查看技术详情"
+							if q.ShowFailureTech {
+								label = "收起技术详情"
+							}
+							kitui.SmallButton(c, tok, label, nil, func() { q.ShowFailureTech = !q.ShowFailureTech })
 						}
-						kitui.SmallButton(c, tok, label, nil, func() { q.ShowFailureTech = !q.ShowFailureTech })
-					}
-					kitui.SmallPrimaryButton(c, tok, "一键重试", func() { a.RetryProjectInbox(q, p) }).
-						Disabled(q.InboxRetryBusy || a.access.Busy || a.config.ProjectControl == nil || !a.canDispatch())
-				},
-			})
-			if q.ShowFailureTech && tech != "" {
-				ui.Column(c.Key("proj-inbox-tech-" + p.ID)).FillWidth().Padding(sp2).Gap(sp1).Children(func() {
-					for _, line := range strings.Split(tech, "\n") {
-						if line != "" {
-							kitui.Text(c, tok, line, kitui.RoleMeta)
-						}
-					}
+						kitui.SmallPrimaryButton(c, tok, "一键重试", func() { a.RetryProjectInbox(q, p) }).
+							Disabled(q.InboxRetryBusy || a.access.Busy || a.config.ProjectControl == nil || !a.canDispatch())
+					},
 				})
-			}
+				if q.ShowFailureTech && tech != "" {
+					ui.Column(c.Key("proj-inbox-tech-" + p.ID)).FillWidth().Padding(0, sp4, sp3, sp4+18).Children(func() {
+						ui.Column(c).FillWidth().Padding(sp2, sp3).Gap(sp1).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+							for _, line := range strings.Split(tech, "\n") {
+								if line != "" {
+									kitui.Text(c, tok, line, kitui.RoleMeta)
+								}
+							}
+						})
+					})
+				}
+			})
 		}
 		if q.InboxPending > 0 {
 			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-pending-" + p.ID, Title: fmt.Sprintf("有 %d 条原始记录等待提炼", q.InboxPending),

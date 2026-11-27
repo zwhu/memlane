@@ -36,7 +36,7 @@ type IntegrationState struct {
 	Request                                                                                                     uint64
 	GenerationLoaded, ConnectionsLoaded                                                                         bool
 	GenerationError, ConnectionsError                                                                           string
-	Error, Message                                                                                              string
+	Error, Message, MessageScope                                                                                string
 	Selected                                                                                                    map[string]bool
 	ItemMessages                                                                                                map[string]string
 	BatchStop                                                                                                   *atomic.Bool

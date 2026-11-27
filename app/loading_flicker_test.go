@@ -91,10 +91,10 @@ func TestDesktopPagesSuppressTransientLoadingAndRefreshFlicker(t *testing.T) {
 				t.Fatalf("[%s] loaded project queue flashed 更新中…: %v", appearance, stt.Texts())
 			}
 
-			// 5. 全局设置 -> Agent 与模型 / 服务：按钮不抖动为“检测中…”，未载入不用“正在读取连接状态…”。
+			// 5. 全局设置 -> Agent 连接 / 服务：按钮不抖动为“检测中…”，未载入不用“正在读取连接状态…”。
 			sa.page = "设置"
 			sa.settingsOrigin = nil
-			sa.access.SettingsSection = "Agent 与模型"
+			sa.access.SettingsSection = "Agent 连接"
 			sa.settingsController.IntegrationState().Loaded = false
 			sa.settingsController.IntegrationState().Loading = true
 			sa.settingsController.IntegrationState().Error = ""

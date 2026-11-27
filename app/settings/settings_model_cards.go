@@ -70,133 +70,165 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 		return
 	}
 	groups := generationWorkspaceGroups(s.Generation, s.DraftMode)
-	ui.Column(c).FillWidth().Gap(0).Children(func() {
-		if edit {
-			title := "选择模型"
-			if s.DraftMode == "agent_bridge" {
-				title = "选择本机 Agent CLI"
-			}
-			settingsSectionHeader(tok, c, title, nil, func() {
-				kitui.SmallButton(c, tok, "添加配置", kitui.IconPlus, func() {
-					a.newGenerationProfile(s.DraftMode)
-				}).Disabled(s.Busy || s.SaveOperation != "")
-			})
-		}
+	setup := a.initialSetup || a.canActivateFirstRuntimeFromSettings()
+	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != ""
+
+	renderRows := func() {
 		if len(groups) == 0 {
+			emptyTitle, emptyDesc := "尚未添加配置", "可前往「Agent 连接」检查本机宿主。"
+			if s.DraftMode == "provider" {
+				emptyTitle, emptyDesc = "尚未添加模型 API", "点击右上角「添加配置」接入 OpenAI 兼容或本地 Ollama 服务"
+			}
 			kitui.Row(c, tok, kitui.RowOptions{
-				Title: "尚未添加配置",
-				Desc:  "可前往「Agent 与模型」连接 Agent 或添加模型 Provider。",
+				Title: emptyTitle,
+				Desc:  emptyDesc,
 			})
+			return
 		}
 		for _, group := range groups {
-			if group.Key != "agent" {
-				ui.Row(c).FillWidth().Padding(sp2, sp1, sp1, sp1).Children(func() {
+			if edit && group.Key != "agent" {
+				ui.Row(c).FillWidth().Padding(sp2, sp4, sp1, sp4).Children(func() {
 					ui.Text(c, group.Title).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
 				})
 			}
-			ui.Column(c.Key(group.Key)).FillWidth().Gap(0).Children(func() {
-				for _, item := range group.Items {
-					id, row := item.ID, item.Row
-					ref := &GenerationRef{ID: id, Revision: row.Revision}
-					isActive := s.Generation.Active != nil && *s.Generation.Active == *ref
-					isSelected := s.ProfileID == id
-					if item.Icon != "" {
-						iconKind := item.Icon
-						available := s.availableProcessingBridge(iconKind)
-						kitui.Row(c, tok, kitui.RowOptions{
-							Key:         "model-profile-" + id,
-							Title:       item.Title,
-							Desc:        item.Detail,
-							Label:       "配置模型：" + id,
-							Clickable:   true,
-							HideChevron: true,
-							Disabled:    s.Busy || !available,
-							OnClick:     func() { a.selectGenerationProfile(id, row) },
-							Leading: func() {
-								ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-									agentLogo(tok, c, agentBrandIcon(iconKind), 20)
-								})
-							},
-							Control: func() {
-								setup := a.initialSetup || a.canActivateFirstRuntimeFromSettings()
-								if isActive {
-									kitui.Badge(c, tok, "使用中", "ok")
-								} else if !available {
-									status := "未检测到 CLI"
-									if a.isDetectedProcessingCLI(iconKind) {
-										status = "待登录配置"
-									}
-									kitui.Text(c, tok, status, kitui.RoleMeta).SingleLine()
-								} else if setup {
-									if s.Generation.validated(ref) {
-										kitui.Badge(c, tok, "已验证", "ok")
-									} else {
-										kitui.Badge(c, tok, "未验证", "")
-									}
-								}
-								v4SelectionIndicator(tok, c, isSelected)
-							},
-						})
-					} else {
-						state, tone := "未验证", ""
-						if s.Generation.validated(ref) {
-							state, tone = "已验证", "ok"
-						}
-						if isActive {
-							if edit {
-								state, tone = "当前使用", "ok"
-							} else {
-								state, tone = "使用中", "ok"
-							}
-						}
-						if !edit {
-							kitui.Row(c, tok, kitui.RowOptions{
-								Key:         "model-profile-" + id,
-								Title:       item.Title,
-								Desc:        item.Detail,
-								DescMono:    item.Detail != "",
-								Label:       "配置模型：" + id,
-								Clickable:   true,
-								HideChevron: true,
-								Disabled:    s.Busy,
-								OnClick:     func() { a.selectGenerationProfile(id, row) },
-								Control: func() {
-									kitui.Badge(c, tok, state, tone)
-									v4SelectionIndicator(tok, c, isSelected)
-								},
+			for _, item := range group.Items {
+				id, row := item.ID, item.Row
+				ref := &GenerationRef{ID: id, Revision: row.Revision}
+				isActive := s.Generation.Active != nil && *s.Generation.Active == *ref
+				isSelected := s.ProfileID == id
+				if item.Icon != "" {
+					iconKind := item.Icon
+					available := s.availableProcessingBridge(iconKind)
+					kitui.Row(c, tok, kitui.RowOptions{
+						Key:         "model-profile-" + id,
+						Title:       item.Title,
+						Desc:        item.Detail,
+						Label:       "配置模型：" + id,
+						Clickable:   true,
+						HideChevron: true,
+						Disabled:    s.Busy || !available,
+						OnClick:     func() { a.selectGenerationProfile(id, row) },
+						Leading: func() {
+							ui.Box(c).Size(24, 24).Shrink(0).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+								agentLogo(tok, c, agentBrandIcon(iconKind), 20)
 							})
-							continue
-						}
-						kitui.Row(c, tok, kitui.RowOptions{
-							Key:      "model-profile-" + id,
-							Title:    item.Title,
-							Desc:     item.Detail,
-							DescMono: item.Detail != "",
-							Control: func() {
-								kitui.Badge(c, tok, state, tone)
-								selectLabel := "选择"
-								var selectIcon *ui.SVG
-								if isSelected {
-									selectLabel = "已选"
-									selectIcon = kitui.IconCheck
+						},
+						Control: func() {
+							if isActive {
+								kitui.Badge(c, tok, "使用中", "ok")
+							} else if !available {
+								status := "未检测到 CLI"
+								if a.isDetectedProcessingCLI(iconKind) {
+									status = "待登录配置"
 								}
-								kitui.SmallButton(c, tok, selectLabel, selectIcon, func() { a.selectGenerationProfile(id, row) }).
-									Label("配置模型：" + id).Disabled(s.Busy)
-								if row.Profile.Mode == "provider" {
-									reason := s.generationDeleteBlock(id)
-									kitui.DangerOutlineButton(c, tok, "删除", true, func() {
-										s.DeleteProfile = ref
-										s.DeleteOpen = true
-										s.DeleteError = ""
-									}).Label("删除模型：" + id).Disabled(s.Busy || s.SaveOperation != "" || reason != "").Tooltip(reason)
+								kitui.Text(c, tok, status, kitui.RoleMeta).SingleLine()
+							} else if setup {
+								if s.Generation.validated(ref) {
+									kitui.Badge(c, tok, "已验证", "ok")
+								} else {
+									kitui.Badge(c, tok, "未验证", "")
 								}
-							},
-						})
+							}
+							v4SelectionIndicator(tok, c, isSelected)
+						},
+					})
+					continue
+				}
+				state, tone := "未验证", ""
+				if s.Generation.validated(ref) {
+					state, tone = "已验证", "ok"
+				}
+				if isActive {
+					if edit {
+						state, tone = "当前使用", "ok"
+					} else {
+						state, tone = "使用中", "ok"
 					}
 				}
-			})
+				if !edit {
+					desc := group.Title
+					if item.Detail != "" {
+						desc = group.Title + " · " + item.Detail
+					}
+					canSwitch := !isActive && a.generationCanUse(ref) && !s.pendingGenerationProfile(id)
+					nextSelected := s.Generation.Next != nil && *s.Generation.Next == *ref
+					reason := s.generationDeleteBlock(id)
+					kitui.Row(c, tok, kitui.RowOptions{
+						Key:      "model-profile-" + id,
+						Title:    item.Title,
+						Desc:     desc,
+						DescMono: desc != "",
+						Control: func() {
+							kitui.Badge(c, tok, state, tone)
+							if canSwitch && (!setup || !nextSelected) {
+								switchLabel := "切换"
+								if setup {
+									switchLabel = "设为待启用"
+								}
+								kitui.SmallPrimaryButton(c, tok, switchLabel, func() {
+									a.selectGenerationProfile(id, row)
+									if !setup && s.Generation.HandoffAvailable {
+										a.openGenerationHandoff(ref)
+									} else {
+										a.generationAction("next")
+									}
+								}).Label(switchLabel + "：" + id).Disabled(busy)
+							}
+							kitui.SmallButton(c, tok, "配置", nil, func() {
+								a.selectGenerationProfile(id, row)
+								s.GenerationProviderDialog = true
+							}).Label("配置模型：" + id).Disabled(s.Busy)
+							kitui.DangerOutlineButton(c, tok, "删除", true, func() {
+								s.DeleteProfile = ref
+								s.DeleteOpen = true
+								s.DeleteError = ""
+							}).Label("删除模型：" + id).Disabled(s.Busy || s.SaveOperation != "" || reason != "").Tooltip(reason)
+						},
+					})
+					continue
+				}
+				kitui.Row(c, tok, kitui.RowOptions{
+					Key:      "model-profile-" + id,
+					Title:    item.Title,
+					Desc:     item.Detail,
+					DescMono: item.Detail != "",
+					Control: func() {
+						kitui.Badge(c, tok, state, tone)
+						selectLabel := "选择"
+						var selectIcon *ui.SVG
+						if isSelected {
+							selectLabel = "已选"
+							selectIcon = kitui.IconCheck
+						}
+						kitui.SmallButton(c, tok, selectLabel, selectIcon, func() { a.selectGenerationProfile(id, row) }).
+							Label("配置模型：" + id).Disabled(s.Busy)
+						if row.Profile.Mode == "provider" {
+							reason := s.generationDeleteBlock(id)
+							kitui.DangerOutlineButton(c, tok, "删除", true, func() {
+								s.DeleteProfile = ref
+								s.DeleteOpen = true
+								s.DeleteError = ""
+							}).Label("删除模型：" + id).Disabled(s.Busy || s.SaveOperation != "" || reason != "").Tooltip(reason)
+						}
+					},
+				})
+			}
 		}
-	})
+	}
+
+	if !edit {
+		renderRows()
+		return
+	}
+	title := "选择模型"
+	if s.DraftMode == "agent_bridge" {
+		title = "选择本机 Agent CLI"
+	}
+	kitui.Group(c, tok, title, "", func() {
+		kitui.SmallButton(c, tok, "添加配置", kitui.IconPlus, func() {
+			a.newGenerationProfile(s.DraftMode)
+		}).Disabled(s.Busy || s.SaveOperation != "")
+	}, renderRows)
 }
 
 func (a *Controller) preferredExistingHostName() string {
@@ -242,36 +274,39 @@ func (a *Controller) emptyProcessingCLIGuide(c *ui.Context) {
 	} else if a.initialSetup {
 		desc += "也可以点击「暂不配置提炼，先进入 Memlane」，稍后再配置。"
 	}
-	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Margin(sp2, 0, sp2, 0).Padding(sp3).Gap(sp2).
-		Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
-		kitui.Text(c, tok, heading, kitui.RoleHeading)
-		kitui.Text(c, tok, desc, kitui.RoleMeta).LineHeight(1.5)
-		if len(unconfigured) == 0 {
-			a.recommendedProcessingCLIRows(c, &s.Message)
-		}
-		for _, cli := range unconfigured {
-			hint := strings.TrimPrefix(cli.LoginHint, "安装后")
-			hint = strings.TrimPrefix(hint, "安装并")
-			opts := kitui.RowOptions{Key: "detected-unconfigured-cli-" + cli.Kind, Title: cli.DisplayName, Desc: hint}
-			if cli.DocsURL != "" {
-				opts.Control = func() { a.processingCLIDocsButton(c, cli, &s.Message) }
-			}
-			kitui.Row(c, tok, opts)
-		}
-		ui.Row(c).FillWidth().Gap(sp2).Children(func() {
-			kitui.SmallButton(c, tok, recheck, kitui.IconRefresh, a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
+	ui.Column(c.Key("empty-processing-cli-guide")).FillWidth().Padding(sp3, sp4).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(sp2).
+			Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			kitui.Text(c, tok, heading, kitui.RoleHeading)
+			kitui.Text(c, tok, desc, kitui.RoleMeta).LineHeight(1.5)
 			if len(unconfigured) == 0 {
-				host := a.preferredExistingHostName()
-				kitui.SmallButton(c, tok, "复制指令，让 "+host+" 帮我安装 CLI", kitui.IconCopy, func() {
-					c.WriteClipboard(agentTakeoverInstallCLIPrompt(host))
-					s.Message = "已复制 CLI 安装指令"
-				})
+				a.recommendedProcessingCLIRows(c, &s.Message)
 			}
-			kitui.SmallButton(c, tok, "改用模型 API / Ollama", nil, func() { a.chooseGenerationSource("provider") }).Disabled(s.Busy)
+			for _, cli := range unconfigured {
+				hint := strings.TrimPrefix(cli.LoginHint, "安装后")
+				hint = strings.TrimPrefix(hint, "安装并")
+				opts := kitui.RowOptions{Key: "detected-unconfigured-cli-" + cli.Kind, Title: cli.DisplayName, Desc: hint}
+				if cli.DocsURL != "" {
+					opts.Control = func() { a.processingCLIDocsButton(c, cli, &s.Message) }
+				}
+				kitui.Row(c, tok, opts)
+			}
+			ui.Row(c).FillWidth().Gap(sp2).Children(func() {
+				kitui.SmallButton(c, tok, recheck, kitui.IconRefresh, a.RefreshIntegrations).Disabled(s.Busy || s.Loading)
+				if len(unconfigured) == 0 {
+					host := a.preferredExistingHostName()
+					kitui.SmallButton(c, tok, "复制指令，让 "+host+" 帮我安装 CLI", kitui.IconCopy, func() {
+						c.WriteClipboard(agentTakeoverInstallCLIPrompt(host))
+						s.Message = "已复制 CLI 安装指令"
+						s.MessageScope = "generation"
+					})
+				}
+				kitui.SmallButton(c, tok, "改用模型 API / Ollama", nil, func() { a.chooseGenerationSource("provider") }).Disabled(s.Busy)
+			})
+			if s.Message != "" && s.MessageScope != "connections" {
+				kitui.Text(c, tok, s.Message, kitui.RoleMeta)
+			}
 		})
-		if s.Message != "" {
-			kitui.Text(c, tok, s.Message, kitui.RoleMeta)
-		}
 	})
 }
 

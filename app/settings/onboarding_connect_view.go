@@ -28,7 +28,7 @@ func (a *Controller) onboardingConnect(c *ui.Context) {
 			ui.Image(c, kitui.IconSettings).Size(32, 32).TextColor(tok.Accent)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 				kitui.Text(c, tok, "暂不接入也可以", kitui.RoleBody).FontWeight(600)
-				kitui.Text(c, tok, "记忆提炼仍可先配置好。之后在「设置 › Agent 与模型」随时接入。", kitui.RoleMeta)
+				kitui.Text(c, tok, "记忆提炼仍可先配置好。之后在「设置 › Agent 连接」随时接入。", kitui.RoleMeta)
 			})
 			kitui.SmallButton(c, tok, "返回选择", nil, func() { a.navigateOnboarding(onboardingAgents) }).Disabled(a.onboardingConnectionBusy())
 		})
@@ -105,61 +105,63 @@ func (a *Controller) onboardingConnectRow(c *ui.Context, row AgentConnection) {
 		version = s.HostVersions[row.Kind]
 	}
 	locked := a.onboardingConnectionBusy()
-	kitui.Row(c, tok, kitui.RowOptions{
-		Key: "onboarding-connect-" + row.Kind, Title: name, Desc: path, DescMono: true, Tooltip: path,
-		TitleExtra: func() {
-			if version != "" {
-				kitui.Text(c, tok, version, kitui.RoleMeta).Font("ui-monospace").Label(name + " 版本：" + version).SingleLine()
-			}
-		},
-		Leading: func() {
-			logo := agentLogo(tok, c, agentOriginalIcon(row.Kind), 22)
-			if status == "已跳过" {
-				logo.Opacity(0.5)
-			}
-		},
-		DescExtra: func() {
-			note := ""
-			switch status {
-			case "待新会话":
-				note = "已写入配置 · 等你在新会话里发一条消息"
-				if row.Status == "environment_receipt_unconfirmed" {
-					note = "已检测到会话，等待确认使用了此配置目录"
+	ui.Column(c.Key("onboarding-connect-item-"+row.Kind)).FillWidth().Gap(0).Children(func() {
+		kitui.Row(c, tok, kitui.RowOptions{
+			Key: "onboarding-connect-" + row.Kind, Title: name, Desc: path, DescMono: true, Tooltip: path,
+			TitleExtra: func() {
+				if version != "" {
+					kitui.Text(c, tok, version, kitui.RoleMeta).Font("ui-monospace").Label(name + " 版本：" + version).SingleLine()
 				}
-			case "已生效":
-				note = "已收到新会话的接入回执"
-			case "已跳过":
-				note = "之后可在「设置 › Agent 与模型」接入"
-			}
-			if note != "" || previewPresent {
-				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-					if note != "" {
-						kitui.Text(c, tok, note, kitui.RoleMeta)
+			},
+			Leading: func() {
+				logo := agentLogo(tok, c, agentOriginalIcon(row.Kind), 22)
+				if status == "已跳过" {
+					logo.Opacity(0.5)
+				}
+			},
+			DescExtra: func() {
+				note := ""
+				switch status {
+				case "待新会话":
+					note = "已写入配置 · 等你在新会话里发一条消息"
+					if row.Status == "environment_receipt_unconfirmed" {
+						note = "已检测到会话，等待确认使用了此配置目录"
 					}
-					if previewPresent {
-						label := "查看变更预览"
-						if a.onboardingConnection.PreviewOpen[row.ID] || a.onboardingConnection.previewNeedsDisplay(preview) {
-							label = "收起变更预览"
+				case "已生效":
+					note = "已收到新会话的接入回执"
+				case "已跳过":
+					note = "之后可在「设置 › Agent 连接」接入"
+				}
+				if note != "" || previewPresent {
+					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
+						if note != "" {
+							kitui.Text(c, tok, note, kitui.RoleMeta)
 						}
-						kitui.TextButton(c, tok, label, func() { a.toggleOnboardingConnectionPreview(row.ID) }).
-							Label(label + "：" + name).Shrink(0)
-					}
-				})
-			}
-			if status == "待新会话" && row.Kind == "trae_ide" {
-				kitui.Text(c, tok, "在 TRAE CN「设置 → Hooks → 全局」打开开关并确认安全提示。", kitui.RoleMeta).TextColor(tok.Warning)
-			}
-		},
-		Control: func() {
-			onboardingConnectionBadge(tok, c, status, tone)
-			btn := ui.ButtonBase(c.Key("onboarding-connect-menu-"+row.Kind)).Label(name+" 更多操作").Size(26, 26).
-				Radius(radius).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center).Disabled(locked)
-			btn.Background(kitui.HoverColor(btn, "onboarding-connect-menu-bg", ui.Transparent, tok.Hover))
-			btn.Children(func() { ui.Icon(c, onboardingMoreIcon).FontSize(14).TextColor(tok.Text3) })
-			btn.PopoverMenuButton(func(m *ui.Menu) { a.onboardingConnectionMenu(m, row, status) })
-		},
-	})
-	ui.Column(c.Key("onboarding-connect-details-"+row.Kind)).FillWidth().Padding(0, 0, 0, 34).Gap(sp1).Children(func() {
-		a.onboardingConnectionRowDetails(c, row, preview, status)
+						if previewPresent {
+							label := "查看变更预览"
+							if a.onboardingConnection.PreviewOpen[row.ID] || a.onboardingConnection.previewNeedsDisplay(preview) {
+								label = "收起变更预览"
+							}
+							kitui.TextButton(c, tok, label, func() { a.toggleOnboardingConnectionPreview(row.ID) }).
+								Label(label + "：" + name).Shrink(0)
+						}
+					})
+				}
+				if status == "待新会话" && row.Kind == "trae_ide" {
+					kitui.Text(c, tok, "在 TRAE CN「设置 → Hooks → 全局」打开开关并确认安全提示。", kitui.RoleMeta).TextColor(tok.Warning)
+				}
+			},
+			Control: func() {
+				onboardingConnectionBadge(tok, c, status, tone)
+				btn := ui.ButtonBase(c.Key("onboarding-connect-menu-"+row.Kind)).Label(name+" 更多操作").Size(26, 26).
+					Radius(radius).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center).Disabled(locked)
+				btn.Background(kitui.HoverColor(btn, "onboarding-connect-menu-bg", ui.Transparent, tok.Hover))
+				btn.Children(func() { ui.Icon(c, onboardingMoreIcon).FontSize(14).TextColor(tok.Text3) })
+				btn.PopoverMenuButton(func(m *ui.Menu) { a.onboardingConnectionMenu(m, row, status) })
+			},
+		})
+		ui.Column(c.Key("onboarding-connect-details-"+row.Kind)).FillWidth().Padding(0, sp4, 0, sp4+34).Gap(sp1).Children(func() {
+			a.onboardingConnectionRowDetails(c, row, preview, status)
+		})
 	})
 }

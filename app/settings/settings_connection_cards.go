@@ -392,14 +392,9 @@ func (a *Controller) ServiceCogneeStatus() (dotState, status string, color ui.Co
 	return dotState, status, serviceStatusColor(tok, dotState)
 }
 
-// All rows share one stable surface; expanding one Agent never stretches others.
+// All rows render as direct group children so expanding one Agent keeps dividers intact.
 func (a *Controller) agentConnectionGrid(c *ui.Context, rows []AgentConnection) {
-	if len(rows) == 0 {
-		return
+	for _, row := range rows {
+		a.agentConnectionRow(c, row)
 	}
-	ui.Column(c).FillWidth().Gap(0).Children(func() {
-		for _, row := range rows {
-			a.agentConnectionRow(c, row)
-		}
-	})
 }

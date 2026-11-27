@@ -54,7 +54,7 @@ func New(c Config, err error, host Host) *Controller {
 	}
 	a.refreshBaseIdentity()
 	if c.GenerationSetupOnly {
-		a.access.SettingsSection = "Agent 与模型"
+		a.access.SettingsSection = "Agent 连接"
 	}
 	if err != nil {
 		a.initialSetup = c.ConfigFile == "" || (c.FirstInstallDefault && errors.Is(err, os.ErrNotExist))

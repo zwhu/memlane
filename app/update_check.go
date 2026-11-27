@@ -296,7 +296,7 @@ func (a *App) OpenUpdateDownloadPage() {
 
 func (a *App) versionUpdateSettings(c *ui.Context) {
 	u := &a.updateCheck
-	v4Group(c, "版本与更新", "仅在点击「检查更新」时向 GitHub Releases 查询新版信息（含公测预发布版本）", func() {
+	v4Group(c, "版本与更新", "", func() {
 		if u.Checking {
 			v4Spinner(c)
 		} else if u.Checked && u.Error == "" {
@@ -313,7 +313,7 @@ func (a *App) versionUpdateSettings(c *ui.Context) {
 			v4SmallButton(c, "查看发布页", nil, a.OpenUpdateDownloadPage)
 		}
 	}, func() {
-		desc := "点击「检查更新」可比对 GitHub Releases 上的最新公测或正式版本"
+		desc := "仅在点击「检查更新」时向 GitHub Releases 查询新版信息（含公测预发布版本）"
 		valCol := tok.Text2
 		if u.Checking {
 			desc = "正在向 GitHub Releases 查询最新版本…"

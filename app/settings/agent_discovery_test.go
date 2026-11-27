@@ -9,7 +9,7 @@ import (
 func TestLocalAgentDetectionSettingsShowsRefreshAndUnavailableBinding(t *testing.T) {
 	a := settingsFixture()
 	a.page = "设置"
-	a.access.SettingsSection = "Agent 与模型"
+	a.access.SettingsSection = "Agent 连接"
 	a.integrations = IntegrationState{Loaded: true, Selected: map[string]bool{}, Connections: ConnectionsDirectory{Connections: []AgentConnection{
 		{ID: "pi", Kind: "pi", Detected: true, Status: "not_connected"},
 		{ID: "traex-discovery", Kind: "traex", Detected: true, Status: "component_unavailable"},

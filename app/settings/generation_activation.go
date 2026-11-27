@@ -78,13 +78,16 @@ func (a *Controller) generationAction(action string) {
 				}
 				s.NextOperation = ""
 				s.Message = "已设为下次启动使用"
+				s.MessageScope = "generation"
 			} else if validationReceipt.Status == "passed" || validationReceipt.Status == "failed" || validationReceipt.Status == "result_unknown" {
 				s.Validation = validationReceipt
 				s.Message = ""
+				s.MessageScope = ""
 				a.finishGenerationOperation(op)
 				return
 			} else {
 				s.Message = "正在验证…"
+				s.MessageScope = "generation"
 			}
 			if action == "validations" {
 				var rejected *ControlResponseError
@@ -137,6 +140,7 @@ func (a *Controller) switchAgentBridge() {
 	s.Busy = true
 	s.Error = ""
 	s.Message = "正在切换到 " + label + "…"
+	s.MessageScope = "generation"
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -199,9 +203,11 @@ func (a *Controller) switchAgentBridge() {
 			s.Handoff = GenerationHandoffDirectory{}
 			s.Error = ""
 			if handoffAvailable {
-				s.Message = "已切换到 " + label
+				s.Message = ""
+				s.MessageScope = ""
 			} else {
 				s.Message = "已设为下次启动使用"
+				s.MessageScope = "generation"
 			}
 			a.refreshServiceMonitor()
 		})
@@ -243,6 +249,7 @@ func (a *Controller) reviewGenerationNext() {
 			s.NextOperation = ""
 			s.Error = ""
 			s.Message = "原待应用设置已核对"
+			s.MessageScope = "generation"
 		})
 	}()
 }

@@ -106,6 +106,7 @@ func (a *Controller) cancelGenerationValidation() {
 				s.Error = "停止验证的结果未确认，请核对原验证"
 			} else {
 				s.Message = "已请求停止验证；远端请求结果仍以回执为准"
+				s.MessageScope = "generation"
 			}
 			a.pollGenerationValidation(operation)
 		})

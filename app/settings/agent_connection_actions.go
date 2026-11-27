@@ -32,12 +32,14 @@ func (a *Controller) connectAgentsReviewed(action string, identifiers []string, 
 	}
 	if len(eligible) == 0 {
 		s.Message = "请先核对 Agent 原操作；未重新提交"
+		s.MessageScope = "connections"
 		return
 	}
 	identifiers = eligible
 	s.Busy = true
 	s.Error = ""
 	s.Message = ""
+	s.MessageScope = ""
 	stop := &atomic.Bool{}
 	s.BatchStop = stop
 	if s.ItemMessages == nil {

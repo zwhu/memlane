@@ -214,7 +214,7 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			},
 		})
 		if row.Status == "prepared" && row.Preview != nil && !previewOpen && !repair {
-			ui.Column(c).FillWidth().Padding(sp2, sp1, sp3, 34).Gap(5).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+			ui.Column(c).FillWidth().Padding(0, sp4, sp3, sp4+36).Gap(5).Children(func() {
 				kitui.Text(c, tok, "将为 "+name+" 添加 Memlane 连接，确认后生效。", kitui.RoleMeta)
 				if len(row.Preview.DisabledPlugins) > 0 {
 					kitui.Text(c, tok, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(row.Preview.DisabledPlugins)), kitui.RoleMeta)
@@ -225,13 +225,15 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			a.captureConnectionDetails(c, row)
 		}
 		if notice := connectionReviewNotice(name, row); notice != "" {
-			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { kitui.Text(c, tok, notice, kitui.RoleMeta).LineHeight(1.5) })
+			ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() { kitui.Text(c, tok, notice, kitui.RoleMeta).LineHeight(1.5) })
 		}
 		if repair && pending == nil && !unknownReview {
 			if repairPreviewOpen {
 				a.traeHooksRepairDetails(c, row.ID, repairPreview, review)
 			} else if row.RepairSummary != "" {
-				kitui.Text(c, tok, row.RepairSummary, kitui.RoleMeta).TextColor(tok.Warning).Margin(0, 0, sp2, 34)
+				ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() {
+					kitui.Text(c, tok, row.RepairSummary, kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
+				})
 			}
 		}
 		if previewOpen && pending == nil && !repair && allowed {
@@ -243,7 +245,7 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 		}
 		if !ambiguityAction && (repair || review || row.ErrorCode != "" || s.ItemMessages[row.ID] != "" || row.Status == "check_failed" ||
 			(row.Capture != nil && row.Capture.State == "check_failed") || row.LastHookError != nil && !captureVerifiedHealthy(row)) {
-			ui.Row(c).Padding(0, 0, sp2, 34).Children(func() { copyConnectionTroubleshooting(tok, c, row.Kind) })
+			ui.Row(c).Padding(0, sp4, sp2, sp4+36).Children(func() { copyConnectionTroubleshooting(tok, c, row.Kind) })
 		}
 		if row.Profile != "" || row.EnvironmentIssue != "" || len(row.Environments) > 0 {
 			a.agentEnvironmentDetails(c, row)
@@ -253,10 +255,10 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			if row.AwaitingPostUpgradeReceipt {
 				msg = "应用更新后等待新一次会话回执，原有插件配置正常。"
 			}
-			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { kitui.Text(c, tok, msg, kitui.RoleMeta) })
+			ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() { kitui.Text(c, tok, msg, kitui.RoleMeta) })
 		}
 		if message := s.ItemMessages[row.ID]; message != "" {
-			ui.Row(c).FillWidth().Padding(sp1, sp1, sp2, 34).Children(func() { kitui.Text(c, tok, message, kitui.RoleMeta).LineHeight(1.5) })
+			ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() { kitui.Text(c, tok, message, kitui.RoleMeta).LineHeight(1.5) })
 		}
 	})
 }
@@ -282,19 +284,21 @@ func (a *Controller) pendingConnectionReconcileDetails(c *ui.Context, pending ge
 			break
 		}
 	}
-	ui.Column(c.Key("reconcile-"+pending.Operation)).FillWidth().Padding(sp2, sp2, sp2, 34).Gap(sp1).Children(func() {
-		if safe {
-			kitui.Text(c, tok, "服务端已确认未写入宿主文件。", kitui.RoleMeta)
-			kitui.SmallPrimaryButton(c, tok, "安全解锁", func() { a.reconcilePendingConnectionOperation(pending) }).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
-		} else {
-			kitui.Text(c, tok, "该待核对操作存在写入风险，需人工核对", kitui.RoleMeta).TextColor(tok.Warning)
-			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-				if reviewHost {
-					kitui.SmallButton(c, tok, "核对连接状态", nil, func() { a.reviewHostStateForPendingOperation(pending) }).Disabled(s.Busy || s.Loading)
-				}
-				copyConnectionTroubleshooting(tok, c, kind)
-			})
-		}
+	ui.Column(c.Key("reconcile-"+pending.Operation)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(sp2).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			if safe {
+				kitui.Text(c, tok, "服务端已确认未写入宿主文件。", kitui.RoleMeta)
+				kitui.SmallPrimaryButton(c, tok, "安全解锁", func() { a.reconcilePendingConnectionOperation(pending) }).AlignSelf(ui.Start).Disabled(s.Busy || s.Loading)
+			} else {
+				kitui.Text(c, tok, "该待核对操作存在写入风险，需人工核对", kitui.RoleMeta).TextColor(tok.Warning)
+				ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+					if reviewHost {
+						kitui.SmallButton(c, tok, "核对连接状态", nil, func() { a.reviewHostStateForPendingOperation(pending) }).Disabled(s.Busy || s.Loading)
+					}
+					copyConnectionTroubleshooting(tok, c, kind)
+				})
+			}
+		})
 	})
 	return !safe
 }
@@ -302,33 +306,35 @@ func (a *Controller) pendingConnectionReconcileDetails(c *ui.Context, pending ge
 func (a *Controller) traeHooksRepairDetails(c *ui.Context, id string, preview controlplane.TraeHooksRepairResult, review bool) {
 	tok := a.tokens()
 	s := &a.integrations
-	ui.Column(c.Key("repair-preview-"+id)).FillWidth().Padding(sp2, sp2, sp2, 34).Gap(sp1).Background(tok.Fill1).Radius(6).Children(func() {
-		summary := preview.Summary
-		if summary == "" {
-			summary = preview.RepairSummary
-		}
-		if summary != "" {
-			kitui.Text(c, tok, summary, kitui.RoleBody).FontWeight(500)
-		}
-		if len(preview.RemovedEvents) != 0 {
-			kitui.Text(c, tok, "移除事件 "+strings.Join(preview.RemovedEvents, "、"), kitui.RoleMeta)
-		}
-		if len(preview.RetainedEvents) != 0 {
-			kitui.Text(c, tok, "保留事件 "+strings.Join(preview.RetainedEvents, "、"), kitui.RoleMeta)
-		}
-		kitui.Text(c, tok, fmt.Sprintf("保留 %d 组第三方 Hooks", preview.PreservedThirdPartyGroups), kitui.RoleMeta)
-		if preview.BackupPlan != "" {
-			kitui.Text(c, tok, "备份原配置为 "+preview.BackupPlan, kitui.RoleMeta)
-		}
-		for _, blocker := range preview.Blockers {
-			kitui.Text(c, tok, formatControlConflictMessage(blocker.Code, blocker.Phase), kitui.RoleMeta).TextColor(tok.Warning)
-		}
-		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-			kitui.SmallPrimaryButton(c, tok, "确认修复", func() { a.applyTraeHooksRepair(id) }).Disabled(s.Busy || s.Loading || !preview.Repairable || preview.ReviewedSHA == "" || len(preview.Blockers) != 0)
-			if review && (!preview.Repairable || len(preview.Blockers) != 0) {
-				kitui.SmallButton(c, tok, "核对连接状态", nil, func() { a.connectAgents("review", []string{id}) }).Disabled(s.Busy || s.Loading)
+	ui.Column(c.Key("repair-preview-"+id)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(sp1).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			summary := preview.Summary
+			if summary == "" {
+				summary = preview.RepairSummary
 			}
-			kitui.TextButton(c, tok, "取消", func() { s.clearTraeRepairPreview(id) })
+			if summary != "" {
+				kitui.Text(c, tok, summary, kitui.RoleBody).FontWeight(500)
+			}
+			if len(preview.RemovedEvents) != 0 {
+				kitui.Text(c, tok, "移除事件 "+strings.Join(preview.RemovedEvents, "、"), kitui.RoleMeta)
+			}
+			if len(preview.RetainedEvents) != 0 {
+				kitui.Text(c, tok, "保留事件 "+strings.Join(preview.RetainedEvents, "、"), kitui.RoleMeta)
+			}
+			kitui.Text(c, tok, fmt.Sprintf("保留 %d 组第三方 Hooks", preview.PreservedThirdPartyGroups), kitui.RoleMeta)
+			if preview.BackupPlan != "" {
+				kitui.Text(c, tok, "备份原配置为 "+preview.BackupPlan, kitui.RoleMeta)
+			}
+			for _, blocker := range preview.Blockers {
+				kitui.Text(c, tok, formatControlConflictMessage(blocker.Code, blocker.Phase), kitui.RoleMeta).TextColor(tok.Warning)
+			}
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+				kitui.SmallPrimaryButton(c, tok, "确认修复", func() { a.applyTraeHooksRepair(id) }).Disabled(s.Busy || s.Loading || !preview.Repairable || preview.ReviewedSHA == "" || len(preview.Blockers) != 0)
+				if review && (!preview.Repairable || len(preview.Blockers) != 0) {
+					kitui.SmallButton(c, tok, "核对连接状态", nil, func() { a.connectAgents("review", []string{id}) }).Disabled(s.Busy || s.Loading)
+				}
+				kitui.TextButton(c, tok, "取消", func() { s.clearTraeRepairPreview(id) })
+			})
 		})
 	})
 }
@@ -337,38 +343,40 @@ func (a *Controller) connectionPreviewDetails(c *ui.Context, row AgentConnection
 	tok := a.tokens()
 	s := &a.integrations
 	sha := preview.EffectiveProposedSHA()
-	ui.Column(c.Key("connection-preview-"+row.ID)).FillWidth().Padding(sp2, sp2, sp2, 34).Gap(sp1).Background(tok.Fill1).Radius(6).Children(func() {
-		kitui.Text(c, tok, "将为 "+connectionName(row.Kind)+" 添加 Memlane 连接。", kitui.RoleBody).FontWeight(500)
-		if preview.NeedsHookRepair {
-			kitui.Text(c, tok, "请重新检测连接，然后打开「一键修复 TRAE Hooks」预览。", kitui.RoleMeta).TextColor(tok.Warning)
-		}
-		if preview.Target != "" {
-			kitui.Text(c, tok, "配置文件 "+preview.Target, kitui.RoleMeta)
-		}
-		if len(preview.DisabledPlugins) > 0 {
-			kitui.Text(c, tok, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(preview.DisabledPlugins)), kitui.RoleMeta)
-		}
-		for _, blocker := range preview.BlockerDetails {
-			kitui.Text(c, tok, formatControlConflictMessage(blocker.Code, blocker.Phase), kitui.RoleMeta).TextColor(tok.Warning)
-		}
-		if len(preview.BlockerDetails) == 0 {
-			for _, code := range preview.Blockers {
-				kitui.Text(c, tok, formatControlConflictMessage(code, ""), kitui.RoleMeta).TextColor(tok.Warning)
+	ui.Column(c.Key("connection-preview-"+row.ID)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(sp1).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			kitui.Text(c, tok, "将为 "+connectionName(row.Kind)+" 添加 Memlane 连接。", kitui.RoleBody).FontWeight(500)
+			if preview.NeedsHookRepair {
+				kitui.Text(c, tok, "请重新检测连接，然后打开「一键修复 TRAE Hooks」预览。", kitui.RoleMeta).TextColor(tok.Warning)
 			}
-		}
-		label := "确认连接"
-		prepared := preview.Status == "prepared"
-		if prepared && preview.OK && sha == "" {
-			kitui.Text(c, tok, "接入预览缺少确认信息，请重新预览。", kitui.RoleMeta).TextColor(tok.Warning)
-		}
-		if !prepared && (sha == "" || preview.Kind == "opencode") {
-			label = "准备连接"
-		} else if !prepared && slices.Contains(s.PinnedAgentKinds, row.Kind) && preview.OK && !preview.NeedsHookRepair {
-			label = "一键确认接入"
-		}
-		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-			kitui.SmallPrimaryButton(c, tok, label, func() { a.confirmPrepareAndActivateConnection(row.ID, sha) }).Disabled(s.Busy || s.Loading || !previewEligibleForConfirm(preview) || !preview.OK || preview.NeedsHookRepair || (prepared && sha == ""))
-			kitui.TextButton(c, tok, "取消", func() { delete(s.ConnectionPreviews, row.ID) })
+			if preview.Target != "" {
+				kitui.Text(c, tok, "配置文件 "+preview.Target, kitui.RoleMeta)
+			}
+			if len(preview.DisabledPlugins) > 0 {
+				kitui.Text(c, tok, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(preview.DisabledPlugins)), kitui.RoleMeta)
+			}
+			for _, blocker := range preview.BlockerDetails {
+				kitui.Text(c, tok, formatControlConflictMessage(blocker.Code, blocker.Phase), kitui.RoleMeta).TextColor(tok.Warning)
+			}
+			if len(preview.BlockerDetails) == 0 {
+				for _, code := range preview.Blockers {
+					kitui.Text(c, tok, formatControlConflictMessage(code, ""), kitui.RoleMeta).TextColor(tok.Warning)
+				}
+			}
+			label := "确认连接"
+			prepared := preview.Status == "prepared"
+			if prepared && preview.OK && sha == "" {
+				kitui.Text(c, tok, "接入预览缺少确认信息，请重新预览。", kitui.RoleMeta).TextColor(tok.Warning)
+			}
+			if !prepared && (sha == "" || preview.Kind == "opencode") {
+				label = "准备连接"
+			} else if !prepared && slices.Contains(s.PinnedAgentKinds, row.Kind) && preview.OK && !preview.NeedsHookRepair {
+				label = "一键确认接入"
+			}
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+				kitui.SmallPrimaryButton(c, tok, label, func() { a.confirmPrepareAndActivateConnection(row.ID, sha) }).Disabled(s.Busy || s.Loading || !previewEligibleForConfirm(preview) || !preview.OK || preview.NeedsHookRepair || (prepared && sha == ""))
+				kitui.TextButton(c, tok, "取消", func() { delete(s.ConnectionPreviews, row.ID) })
+			})
 		})
 	})
 }
@@ -381,53 +389,57 @@ func (a *Controller) agentEnvironmentDetails(c *ui.Context, row AgentConnection)
 		if row.EnvironmentIssue == "verification_environment" {
 			message = "当前是测试目录，请换成日常使用的配置目录。"
 		}
-		kitui.Text(c, tok, message, kitui.RoleMeta).Margin(0, 0, 0, 42)
+		ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() {
+			kitui.Text(c, tok, message, kitui.RoleMeta)
+		})
 	}
 	if !s.EnvironmentOpen[row.ID] {
 		return
 	}
 	// Inset inside the measured width. FillWidth plus an external left margin
 	// made the expanded directory escape the shared list surface.
-	ui.Column(c.Key("environment-"+row.ID)).Label("Agent目录详情："+connectionName(row.Kind)).FillWidth().Padding(0, 0, 12, 46).Gap(6).Children(func() {
-		if row.Profile != "" {
-			kitui.Text(c, tok, "配置目录："+row.Profile, kitui.RoleMeta).FillWidth().MinWidth(0).SingleLine().Tooltip(row.Profile)
-		}
-		if row.EnvironmentVerified {
-			kitui.Text(c, tok, "插件已确认 · "+row.PluginVersion, kitui.RoleMeta)
-		} else if row.AwaitingPostUpgradeReceipt {
-			kitui.Text(c, tok, "配置目录已确认，等待应用更新后的新一次会话回执。", kitui.RoleMeta)
-		} else if row.LastReceiptAt > 0 {
-			kitui.Text(c, tok, "检测到会话活动，尚未确认来自此目录。", kitui.RoleMeta)
-		}
-		for _, candidate := range row.Environments {
-			option := candidate
-			if option.Profile == row.Profile {
-				continue
+	ui.Column(c.Key("environment-"+row.ID)).Label("Agent目录详情："+connectionName(row.Kind)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(6).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			if row.Profile != "" {
+				kitui.Text(c, tok, "配置目录："+row.Profile, kitui.RoleMeta).FillWidth().MinWidth(0).SingleLine().Tooltip(row.Profile)
 			}
-			label := "其他目录"
-			if option.Source == "default" {
-				label = "默认目录"
+			if row.EnvironmentVerified {
+				kitui.Text(c, tok, "插件已确认 · "+row.PluginVersion, kitui.RoleMeta)
+			} else if row.AwaitingPostUpgradeReceipt {
+				kitui.Text(c, tok, "配置目录已确认，等待应用更新后的新一次会话回执。", kitui.RoleMeta)
+			} else if row.LastReceiptAt > 0 {
+				kitui.Text(c, tok, "检测到会话活动，尚未确认来自此目录。", kitui.RoleMeta)
 			}
-			if option.Source == "environment" {
-				label = "启动时指定的目录"
-			}
-			if option.Verification {
-				label = "测试目录 · 不可用于日常连接"
-			}
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
-				kitui.Text(c, tok, label+"："+option.Profile, kitui.RoleMeta).Grow(1).MinWidth(0)
-				if option.Exists && !option.Verification {
-					kitui.TextButton(c, tok, "使用此目录", func() { a.selectAgentEnvironment(row, option.Profile) }).Label("使用目录：" + option.Profile).Disabled(s.Busy || s.Loading)
+			for _, candidate := range row.Environments {
+				option := candidate
+				if option.Profile == row.Profile {
+					continue
 				}
-			})
-		}
-		if a.host.ChooseProjectFolder != nil {
-			kitui.TextButton(c, tok, "更换目录", func() {
-				path, err := a.host.ChooseProjectFolder()
-				if err == nil && path != "" {
-					a.selectAgentEnvironment(row, path)
+				label := "其他目录"
+				if option.Source == "default" {
+					label = "默认目录"
 				}
-			}).Disabled(s.Busy || s.Loading).AlignSelf(ui.Start)
-		}
+				if option.Source == "environment" {
+					label = "启动时指定的目录"
+				}
+				if option.Verification {
+					label = "测试目录 · 不可用于日常连接"
+				}
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(12).Children(func() {
+					kitui.Text(c, tok, label+"："+option.Profile, kitui.RoleMeta).Grow(1).MinWidth(0)
+					if option.Exists && !option.Verification {
+						kitui.TextButton(c, tok, "使用此目录", func() { a.selectAgentEnvironment(row, option.Profile) }).Label("使用目录：" + option.Profile).Disabled(s.Busy || s.Loading)
+					}
+				})
+			}
+			if a.host.ChooseProjectFolder != nil {
+				kitui.TextButton(c, tok, "更换目录", func() {
+					path, err := a.host.ChooseProjectFolder()
+					if err == nil && path != "" {
+						a.selectAgentEnvironment(row, path)
+					}
+				}).Disabled(s.Busy || s.Loading).AlignSelf(ui.Start)
+			}
+		})
 	})
 }

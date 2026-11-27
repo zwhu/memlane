@@ -120,28 +120,34 @@ func TestSettingsSeparateProcessingSelectionFromConfigurationAndService(t *testi
 			"api": {{Revision: 1, Profile: GenerationProfile{Mode: "provider", Provider: "openai", Model: "fixture-model"}}},
 		}}}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if a.access.SettingsSection != "记忆提炼" || (!tt.HasText("切换") && !tt.HasText("使用中")) || tt.HasText("API Key") || tt.HasText("下次启动") {
-		t.Fatal("first tab mixes selection with configuration")
+	if a.access.SettingsSection != "记忆提炼" || !tt.HasText("使用中") || !tt.HasText("添加配置") || tt.HasText("API Key") || tt.HasText("下次启动") || tt.HasText("管理 Agent 与模型") {
+		t.Fatalf("first tab mixes inline editor or missing merged provider controls: %v", tt.Texts())
 	}
 	fixtureImage(t, tt, "settings-processing-selection")
-	clickProjectUI(t, tt, "Agent 与模型")
-	if tt.HasText("API Key") {
-		t.Fatal("management page rendered the editor inline")
-	}
 	clickProjectUI(t, tt, "配置模型：api")
 	if !a.integrations.GenerationProviderDialog {
 		t.Fatal("model configuration did not open a dialog")
 	}
-	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("用本机 Agent CLI 提炼") || tt.HasText("选择本机 Agent CLI") || tt.HasText("直接调用模型 API") {
-		t.Fatal("configuration tab mixes activation or hides editable fields")
+	if !tt.HasText("保存配置") || !tt.HasText("API Key") || tt.HasText("切换") || tt.HasText("选择本机 Agent CLI") {
+		t.Fatalf("provider dialog mixes activation or hides editable fields: %v", tt.Texts())
 	}
-	fixtureImage(t, tt, "settings-agent-model-management")
+	fixtureImage(t, tt, "settings-provider-dialog")
 	clickProjectUI(t, tt, "关闭 Provider 配置")
+	clickProjectUI(t, tt, "Agent 连接")
+	if !tt.HasText("Agent 连接") || tt.HasText("模型配置") || tt.HasText("API Key") {
+		t.Fatalf("agent connection tab should not embed model configuration: %v", tt.Texts())
+	}
+	fixtureImage(t, tt, "settings-agent-connections")
 	clickProjectUI(t, tt, "服务")
-	if !tt.HasText("运行环境") || !tt.HasText("组件状态") || tt.HasText("API Key") || tt.HasText("切换") {
-		t.Fatal("service tab includes processing controls")
+	if !tt.HasText("运行环境") || !tt.HasText("组件状态") || tt.HasText("API Key") || tt.HasText("桌面端运行方式") {
+		t.Fatalf("service tab includes unrelated controls: %v", tt.Texts())
 	}
 	fixtureImage(t, tt, "settings-service")
+	clickProjectUI(t, tt, "通用")
+	if !tt.HasText("外观与语言") || !tt.HasText("外观模式") || !tt.HasText("记忆语言") || !tt.HasText("桌面端运行方式") {
+		t.Fatalf("general tab missing expected controls: %v", tt.Texts())
+	}
+	fixtureImage(t, tt, "settings-general")
 	if a.integrations.Generation.Active.ID != "api" {
 		t.Fatal("tab browsing changed active configuration")
 	}

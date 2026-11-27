@@ -8,10 +8,14 @@ import (
 
 // SmallButton renders a compact 24px V4 outlined button for inline row/header actions.
 func SmallButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG, fn func()) mygoui.Element {
+	bgNormal := mygoui.Transparent
+	if !tok.Dark {
+		bgNormal = tok.BgElevated
+	}
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
 		Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp2).Gap(5).
 		Radius(Radius).Border(1, tok.BorderStrong).AlignItems(mygoui.Center).Shrink(0)
-	b.Background(HoverColor(b, "sbtn-bg", mygoui.Transparent, tok.Hover))
+	b.Background(HoverColor(b, "sbtn-bg", bgNormal, tok.Hover))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
 		if icon != nil {
@@ -63,10 +67,14 @@ func DangerOutlineButton(c *mygoui.Context, tok *Tokens, label string, small boo
 	if small {
 		h, padX, fs = 24, Sp2, FSCaption
 	}
+	bgNormal := mygoui.Transparent
+	if !tok.Dark {
+		bgNormal = tok.BgElevated
+	}
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
 		Cursor(mygoui.CursorPointer).Height(h).Padding(0, padX).Gap(5).
 		Radius(Radius).Border(1, tok.Danger).AlignItems(mygoui.Center).Shrink(0)
-	b.Background(HoverColor(b, "dobtn-bg", mygoui.Transparent, tok.Danger.Alpha(0.10)))
+	b.Background(HoverColor(b, "dobtn-bg", bgNormal, tok.Danger.Alpha(0.10)))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
 		mygoui.Text(c, label).Font("system-ui").FontSize(fs).FontWeight(500).TextColor(tok.Danger).SingleLine()
@@ -187,11 +195,15 @@ func Select(c *mygoui.Context, tok *Tokens, key, label, value string, options []
 	if errState {
 		borderCol = tok.Danger
 	}
+	bgNormal := mygoui.Transparent
+	if !tok.Dark {
+		bgNormal = tok.BgElevated
+	}
 	btn := mygoui.ButtonBase(c.Key(key)).Role(mygoui.RoleButton).Label(label).
 		Cursor(mygoui.CursorPointer).Height(26).MinWidth(96).Padding(0, Sp2).Gap(6).
 		Radius(Radius).Border(1, borderCol).AlignItems(mygoui.Center).Justify(mygoui.SpaceBetween).
 		Shrink(0).Disabled(disabled)
-	btn.Background(HoverColor(btn, "v4-sel-bg", mygoui.Transparent, tok.Hover))
+	btn.Background(HoverColor(btn, "v4-sel-bg", bgNormal, tok.Hover))
 	ButtonPress(btn, 0.97)
 	btn.Children(func() {
 		mygoui.Text(c, display).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
@@ -227,8 +239,8 @@ func SkeletonRow(c *mygoui.Context, tok *Tokens, lines int, avatar, rightPill bo
 		minH = 54
 		padV = 10
 	}
-	return mygoui.Row(c).FillWidth().MinHeight(minH).Padding(padV, Sp1).Gap(Sp3).
-		AlignItems(mygoui.Center).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
+	return mygoui.Row(c).FillWidth().MinHeight(minH).Padding(padV, Sp4).Gap(Sp3).
+		AlignItems(mygoui.Center).Children(func() {
 		if avatar {
 			SkeletonBar(c, tok, 20, 20, RadiusSmall)
 		}
@@ -246,7 +258,7 @@ func SkeletonRow(c *mygoui.Context, tok *Tokens, lines int, avatar, rightPill bo
 
 // SkeletonGroup renders count V4 skeleton rows.
 func SkeletonGroup(c *mygoui.Context, tok *Tokens, count, lines int, avatar, rightPill bool) mygoui.Element {
-	return mygoui.Column(c).FillWidth().Gap(0).Children(func() {
+	return mygoui.Column(c).FillWidth().Gap(1).Dividers(1, tok.Border).Children(func() {
 		for i := 0; i < count; i++ {
 			SkeletonRow(c, tok, lines, avatar, rightPill)
 		}

@@ -169,6 +169,7 @@ func (a *Controller) reviewGenerationDelete(o generationUIOperation) {
 			}
 			a.applyGenerationDeletion(o)
 			s.Message = "模型配置已删除"
+			s.MessageScope = "generation"
 		})
 	}()
 }

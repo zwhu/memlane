@@ -71,7 +71,7 @@ func DescribeFailureClass(class string) FailureExplanation {
 		return FailureExplanation{
 			Label:   "请求频率受限",
 			Summary: "触发了模型接口的请求频率或额度限制。",
-			Hint:    "请稍后重试，或在「设置 › Agent 与模型」核对当前模型额度。",
+			Hint:    "请稍后重试，或在「设置 › 记忆提炼」核对当前模型额度。",
 		}
 	case "":
 		return FailureExplanation{

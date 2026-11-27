@@ -48,7 +48,7 @@ func settingsTabs(tok *kitui.Tokens, c *ui.Context, current *string, labels []st
 
 func settingsCard(tok *kitui.Tokens, c *ui.Context, title, description string, content func()) {
 	kitui.Group(c, tok, title, description, nil, func() {
-		ui.Column(c).FillWidth().Gap(sp2).Padding(sp2, sp1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(content)
+		ui.Column(c).FillWidth().Gap(sp2).Padding(sp3, sp4).Children(content)
 	})
 }
 
@@ -59,8 +59,10 @@ func (a *Controller) globalSettingsPage(c *ui.Context) {
 		a.access.SettingsSection = "服务"
 	case "知识处理", "记忆处理":
 		a.access.SettingsSection = "记忆提炼"
+	case "Agent 与模型":
+		a.access.SettingsSection = "Agent 连接"
 	}
-	settingsTabs(tok, c, &a.access.SettingsSection, []string{"记忆提炼", "Agent 与模型", "服务"})
+	settingsTabs(tok, c, &a.access.SettingsSection, []string{"记忆提炼", "Agent 连接", "服务", "通用"})
 	ui.Scroll(c.Key("global-settings-"+a.access.SettingsSection)).Grow(1).MinHeight(0).Padding(sp6, sp8, sp10, sp8).Background(tok.Bg).Children(func() {
 		kitui.GroupWrap(c, func() {
 			a.setupDeferredGenerationBanner(c, false)
@@ -71,19 +73,16 @@ func (a *Controller) globalSettingsPage(c *ui.Context) {
 					a.settingsFirstActivationBar(c)
 				}
 				a.generationConfigurationFor(c, setup, true)
-				kitui.Group(c, tok, "提炼与记忆策略", "", nil, func() {
+				kitui.Group(c, tok, "提炼策略", "", nil, func() {
 					a.globalToolGraphSettings(c)
-					languageSettingsCard(tok, c)
 				})
-				a.v4AppearanceSettingsGroup(c)
-			case "Agent 与模型":
+			case "Agent 连接":
 				if a.config.ProjectControl != nil {
 					if !a.windowIsHidden() && !a.windowIsInactive() && a.integrations.hasPendingAgentReceipts() {
 						c.After(2 * time.Second)
 					}
 					a.agentConnectionSettings(c)
 				}
-				a.generationManagement(c)
 			case "服务":
 				a.staleDaemonBanner(c)
 				a.dailyRuntimeStartupError(c)
@@ -92,11 +91,13 @@ func (a *Controller) globalSettingsPage(c *ui.Context) {
 				} else {
 					a.ViewServiceOverview(c)
 				}
+				a.environmentSetup(c, false)
+			case "通用":
+				a.generalAppearanceAndLanguageSettings(c)
 				a.desktopRuntimeSettings(c)
 				if a.host.RenderVersionUpdate != nil {
 					a.host.RenderVersionUpdate(c)
 				}
-				a.environmentSetup(c, false)
 			}
 		})
 	})
@@ -135,11 +136,11 @@ func (a *Controller) desktopRuntimeSettings(c *ui.Context) {
 	})
 }
 
-func (a *Controller) v4AppearanceSettingsGroup(c *ui.Context) {
+func (a *Controller) generalAppearanceAndLanguageSettings(c *ui.Context) {
 	tok := a.tokens()
 	mode := a.AppearancePreference()
 	selected := appearanceModeIndex(mode)
-	kitui.Group(c, tok, "外观", "", nil, func() {
+	kitui.Group(c, tok, "外观与语言", "", nil, func() {
 		kitui.Row(c, tok, kitui.RowOptions{
 			Key:   "settings-appearance-row",
 			Title: "外观模式",
@@ -150,6 +151,7 @@ func (a *Controller) v4AppearanceSettingsGroup(c *ui.Context) {
 				})
 			},
 		})
+		languageSettingsCard(tok, c)
 	})
 }
 
@@ -254,12 +256,12 @@ func (a *Controller) projectSettingsPage(c *ui.Context) {
 					a.projectPermissionCard(c, p, row)
 				}
 				if len(a.access.CheckboxPending) == 0 && a.access.Message != "" && a.access.Message != "设置已保存；生效状态以官方核对结果为准" {
-					ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+					ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() {
 						kitui.Text(c, tok, a.access.Message, kitui.RoleMeta).LineHeight(1.5)
 					})
 				}
 				if a.access.DirectoryError != "" {
-					ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() {
+					ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() {
 						kitui.Text(c, tok, a.access.DirectoryError, kitui.RoleMeta).TextColor(tok.Danger).LineHeight(1.5)
 					})
 				}
@@ -274,9 +276,9 @@ func (a *Controller) projectSettingsPage(c *ui.Context) {
 func (a *Controller) settingsFirstActivationBar(c *ui.Context) {
 	tok := a.tokens()
 	blocker := a.settingsFirstActivationBlocker()
-	ui.Column(c.Key("settings-first-generation-activation")).FillWidth().Gap(sp1).Children(func() {
+	kitui.Group(c.Key("settings-first-generation-activation"), tok, "首次启用记忆提炼", "", nil, func() {
 		kitui.Row(c, tok, kitui.RowOptions{
-			Title: "首次启用记忆提炼", Desc: blocker,
+			Title: "启用记忆提炼服务", Desc: blocker, Error: a.environment.Error,
 			Control: func() {
 				if a.canRetryDailyRuntimeStartup() {
 					kitui.SmallButton(c, tok, a.environment.dailyRuntimeRecoveryAction(), kitui.IconRefresh, a.retryDailyRuntimeStartup).
@@ -288,8 +290,5 @@ func (a *Controller) settingsFirstActivationBar(c *ui.Context) {
 				kitui.SmallPrimaryButton(c, tok, "启用记忆提炼", a.activateFirstRuntimeFromSettings).Disabled(blocker != "")
 			},
 		})
-		if a.environment.Error != "" {
-			kitui.Text(c, tok, a.environment.Error, kitui.RoleMeta).TextColor(tok.Danger)
-		}
 	})
 }

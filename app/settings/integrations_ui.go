@@ -131,23 +131,25 @@ func (a *Controller) agentConnectionSettingsContent(c *ui.Context) {
 			}
 			o := pending
 			name := "Agent"
-			kitui.Row(c, tok, kitui.RowOptions{
-				Key:   "pending-connection-" + o.Operation,
-				Title: name + " 的连接结果尚未确认",
-				Leading: func() {
-					agentLogo(tok, c, AgentBrandIconFor("", name), 16)
-				},
-				Control: func() {
-					kitui.SmallButton(c, tok, "检查连接", nil, func() { a.reviewConnectionOperation(o) }).Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy)
-				},
+			ui.Column(c.Key("pending-connection-item-" + o.Operation)).FillWidth().Gap(0).Children(func() {
+				kitui.Row(c, tok, kitui.RowOptions{
+					Key:   "pending-connection-" + o.Operation,
+					Title: name + " 的连接结果尚未确认",
+					Leading: func() {
+						agentLogo(tok, c, AgentBrandIconFor("", name), 16)
+					},
+					Control: func() {
+						kitui.SmallButton(c, tok, "检查连接", nil, func() { a.reviewConnectionOperation(o) }).Label("检查连接：" + name + " " + o.Operation).Disabled(s.Busy)
+					},
+				})
+				a.pendingConnectionReconcileDetails(c, o, "")
 			})
-			a.pendingConnectionReconcileDetails(c, o, "")
 		}
-		if s.Message != "" {
-			ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() { kitui.Text(c, tok, s.Message, kitui.RoleMeta) })
+		if s.Message != "" && s.MessageScope != "generation" {
+			ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() { kitui.Text(c, tok, s.Message, kitui.RoleMeta) })
 		}
 		if s.Error != "" && (s.Error != connectionsError || len(s.Connections.Connections) != 0) {
-			ui.Row(c).FillWidth().Padding(sp2, sp1).Children(func() { kitui.Text(c, tok, s.Error, kitui.RoleMeta).TextColor(tok.Danger) })
+			ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() { kitui.Text(c, tok, s.Error, kitui.RoleMeta).TextColor(tok.Danger) })
 		}
 	})
 }
