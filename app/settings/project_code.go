@@ -26,7 +26,12 @@ func (a *Controller) SetCodeIndexEnabled(p Project, enabled bool) {
 		a.reportCodeStatus("", "项目尚未登记，未开始代码索引")
 		return
 	}
-	revision := a.access.Directory.Revision
+	if p.ID == "" {
+		p.ID = identifier
+	}
+	a.access.Request++
+	a.access.Loading = false
+	reqID := a.access.Request
 	a.access.Busy, a.codeBusy = true, true
 	a.reportCodeStatus("正在核对代码组及项目权限…", "")
 	official := a.client
@@ -40,8 +45,14 @@ func (a *Controller) SetCodeIndexEnabled(p Project, enabled bool) {
 		}
 		var directory AccessDirectory
 		if err == nil {
-			err = client.request(ctx, "PUT", "/v1/projects/"+url.PathEscape(identifier)+"/code",
-				map[string]any{"expected_revision": revision, "dataset_id": dataset, "enabled": enabled}, &directory)
+			payload := map[string]any{"code_enabled": enabled}
+			if dataset != "" {
+				payload["code_dataset_id"] = dataset
+			}
+			err = client.request(ctx, "PATCH", "/v1/projects/"+url.PathEscape(identifier), payload, nil)
+		}
+		if err == nil {
+			err = client.request(ctx, "GET", "/v1/projects", nil, &directory)
 		}
 		a.dispatch(func() {
 			a.access.Busy, a.codeBusy = false, false
@@ -49,7 +60,10 @@ func (a *Controller) SetCodeIndexEnabled(p Project, enabled bool) {
 				a.reportCodeStatus("", fmt.Sprintf("代码设置未确认，未开始索引：%v", err))
 				return
 			}
-			a.ApplyAccessDirectory(directory)
+			a.reportCodeStatus("", "")
+			if reqID == a.access.Request {
+				a.ApplyAccessDirectory(directory)
+			}
 			for _, record := range directory.Projects {
 				if record.ID != identifier {
 					continue

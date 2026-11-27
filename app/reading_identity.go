@@ -4,26 +4,29 @@ import (
 	"time"
 
 	"github.com/zwhu/memlane/app/reading"
+	"github.com/zwhu/memlane/app/settings"
 	"github.com/zwhu/memlane/app/shell"
 )
 
 func (a *App) cachedBaseReadingIdentity() string {
+	endpointURL, tokenFile, _ := settings.EffectiveReadingEndpoint(a.Client.Config)
 	if a.baseReadingIdentity != "" &&
-		a.baseIdentityURL == a.Client.Config.ServiceURL &&
-		a.baseIdentityTokenFile == a.Client.Config.TokenFile {
+		a.baseIdentityURL == endpointURL &&
+		a.baseIdentityTokenFile == tokenFile {
 		return a.baseReadingIdentity
 	}
 	_, base, err := readingIdentityPair(a.Client)
 	if err != nil {
 		return ""
 	}
-	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
+	a.updateBaseReadingIdentity(base, endpointURL, tokenFile)
 	return base
 }
 
 // Poll token changes on the existing view cadence without statting token files in View.
 func (a *App) pollViewReadingIdentity(now time.Time) {
-	if a.Update == nil || a.Client.Config.TokenFile == "" || now.Before(a.nextViewIdentityCheck) {
+	_, tokenFile, usingControl := settings.EffectiveReadingEndpoint(a.Client.Config)
+	if a.Update == nil || (!usingControl && tokenFile == "") || now.Before(a.nextViewIdentityCheck) {
 		return
 	}
 	a.nextViewIdentityCheck = now.Add(2 * time.Second)
@@ -55,7 +58,8 @@ func (a *App) applyReadingIdentity(identity, base string, err error) bool {
 		identity = "unavailable"
 		base = ""
 	}
-	a.updateBaseReadingIdentity(base, a.Client.Config.ServiceURL, a.Client.Config.TokenFile)
+	endpointURL, tokenFile, _ := settings.EffectiveReadingEndpoint(a.Client.Config)
+	a.updateBaseReadingIdentity(base, endpointURL, tokenFile)
 	if identity != a.readingIdentity {
 		if a.commonEdit.Existing != nil {
 			a.withdrawCommonEditor("")

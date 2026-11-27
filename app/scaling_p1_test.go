@@ -628,6 +628,28 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 					{DocID: "meta-raw-1", DatasetID: "ds-1", ProjectID: "p1", Title: "WAL 原始文档", EffectiveDate: "2026-11-21", Kind: "raw_doc", PreviewText: "raw doc preview", MatchField: "doc_name"},
 				},
 			})
+		case "/api/search":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if sem, _ := body["semantic"].(bool); !sem {
+				lexicalCalls.Add(1)
+				select {
+				case <-r.Context().Done():
+					return
+				case <-time.After(300 * time.Millisecond):
+					_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}, "semantic_hits": []any{}})
+				}
+				return
+			}
+			semanticCalls.Add(1)
+			<-semanticGate
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":    true,
+				"items": []any{},
+				"semantic_hits": []map[string]any{
+					{"dataset_id": "ds-1", "document_id": "doc-sem-1", "title": "WAL 讨论", "snippet": "语义命中 WAL 相关讨论", "metadata": map[string]any{"node_set": []any{"session_learnings"}}},
+				},
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -637,31 +659,6 @@ func TestScalingP1ThreeLaneProgressiveSearchAndLexicalSoftTimeout(t *testing.T) 
 	cognee := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/data") {
 			overviewDocsCalls.Add(1)
-		}
-		if r.URL.Path == "/api/v1/search" {
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["search_type"] == "CHUNKS_LEXICAL" {
-				lexicalCalls.Add(1)
-				select {
-				case <-r.Context().Done():
-					return
-				case <-time.After(300 * time.Millisecond):
-					_ = json.NewEncoder(w).Encode([]any{})
-				}
-				return
-			}
-			semanticCalls.Add(1)
-			<-semanticGate
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{
-					"dataset_id": "ds-1",
-					"search_result": []map[string]any{
-						{"id": "sem-chunk-1", "text": "语义命中 WAL 相关讨论", "document_id": "doc-sem-1", "metadata": map[string]any{"node_set": []any{"session_learnings"}}},
-					},
-				},
-			})
-			return
 		}
 		http.NotFound(w, r)
 	}))

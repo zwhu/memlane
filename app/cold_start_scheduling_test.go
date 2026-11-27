@@ -63,17 +63,25 @@ func TestColdStartGraphVerificationFailsClosed(t *testing.T) {
 
 func TestColdStartGraphAttachesOnceAndAppliesWaitingHTTPResult(t *testing.T) {
 	transport := queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/visualize/json" || r.URL.Query().Get("dataset_id") != "ds" {
+		switch r.URL.Path {
+		case "/api/graph":
+			if r.URL.Query().Get("dataset_id") != "ds" {
+				t.Errorf("unexpected graph query %s", r.URL)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"dataset_id":"ds","nodes":[{"id":"n"}],"edges":[]}`))
+		case "/v1/projects/p/tool-graph/preview", "/v1/generation", "/v1/connections":
+			_, _ = w.Write([]byte(`{}`))
+		default:
 			t.Errorf("unexpected graph request %s", r.URL)
+			http.NotFound(w, r)
 		}
-		_, _ = w.Write([]byte(`{"nodes":[{"id":"n"}],"links":[],"color_maps":{}}`))
 	})
 
 	for _, scenario := range []string{"attach", "closed", "navigate", "reset", "invalidate", "sync attach"} {
 		t.Run(scenario, func(t *testing.T) {
-			a := New(Config{ServiceURL: coldStartTestURL, Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
+			a := New(Config{ProjectControl: readingControlConfig(t, coldStartTestURL), Projects: []Project{{ID: "p", Dataset: "ds"}}}, nil)
 			a.Client.HTTP = &http.Client{Transport: transport}
-			updates := make(chan func(), 8)
+			updates := make(chan func(), 16)
 			a.Update = func(fn func()) { updates <- fn }
 			attaches := 0
 			a.graphController.AttachHost = func(*GraphHost) error { attaches++; return nil }
@@ -86,7 +94,7 @@ func TestColdStartGraphAttachesOnceAndAppliesWaitingHTTPResult(t *testing.T) {
 			}
 			publishAssets := nextStartupUpdate(t, updates)
 			a.loadGraph()
-			nextStartupUpdate(t, updates)()
+			drainReading(t, updates, func() bool { return a.graphController.PendingLoad != nil })
 			if a.graphController.PendingLoad == nil || !a.graphController.Loading || a.graphController.Host != nil {
 				t.Fatal("HTTP result was lost before asset publication")
 			}
@@ -371,7 +379,7 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 		a.View(c)
 	}, 1200, 820)
 	tt.SetPreferences(ui.Preferences{ReduceMotion: true})
-	if err := os.Remove(readingToken); err != nil {
+	if err := os.Remove(managementToken); err != nil {
 		t.Fatal(err)
 	}
 	builds = 0
@@ -382,7 +390,7 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 	}
 
 	// Restore token, then hide the window (⌘W): all periodic polling must stop.
-	if err := os.WriteFile(readingToken, []byte("rotated-token-value-12345678901234567890"), 0600); err != nil {
+	if err := os.WriteFile(managementToken, []byte("rotated-token-value-12345678901234567890"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	a.SetWindowActive(true)
@@ -393,9 +401,11 @@ func TestColdStartHiddenWindowStopsPollingAndRevalidatesOnFocus(t *testing.T) {
 	p.Selected = &p.Items[0]
 	a.SetWindowHidden(true)
 	a.access.Next = time.Now().Add(time.Hour) // Still within normal throttle window.
-	if err := os.Remove(readingToken); err != nil {
+	if err := os.WriteFile(managementToken, []byte("rotated-again-token-0123456789abcdef012345"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	future := time.Now().Add(2 * time.Second)
+	_ = os.Chtimes(managementToken, future, future)
 	tt.Frame()
 	builds = 0
 	tt.Advance(20 * time.Second)

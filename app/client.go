@@ -8,10 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zwhu/memlane/app/reading"
 	"github.com/zwhu/memlane/app/settings"
@@ -132,50 +130,125 @@ func documentSession(d Document) string {
 }
 
 func (c Client) documents(ctx context.Context, p Project, offset int, raw bool) ([]Item, bool, error) {
-	var rows []Document
-	e := c.get(ctx, "/api/v1/datasets/"+url.PathEscape(p.Dataset)+"/data?limit=31&offset="+strconv.Itoa(offset), &rows)
-	if e != nil {
-		return nil, false, e
+	control, ok := c.controlClient()
+	if !ok {
+		return nil, false, fmt.Errorf("本地网关尚未配置")
 	}
-	if e := c.rememberKnowledgeDays(rows); e != nil {
-		return nil, false, e
+	if offset < 0 {
+		offset = 0
 	}
-	more := len(rows) > 30
-	if more {
-		rows = rows[:30]
-	}
-	items := []Item{}
-	for _, d := range rows {
-		if d.Dataset != p.Dataset {
-			return nil, false, fmt.Errorf("official document dataset changed")
+	const pageSize = 30
+	if raw {
+		cursor := ""
+		seenCursors := map[string]bool{}
+		collected := make([]Item, 0, offset+pageSize)
+		hasMore := false
+		for page := 0; page <= offset/pageSize+10; page++ {
+			resp, err := control.rawPage(ctx, p.ID, "文档", cursor)
+			if err != nil {
+				return nil, false, err
+			}
+			items, err := v2RawRecordsToItems(p.Dataset, resp)
+			if err != nil {
+				return nil, false, err
+			}
+			collected = append(collected, items...)
+			hasMore = resp.HasMore
+			if len(collected) >= offset+pageSize || !resp.HasMore {
+				break
+			}
+			if resp.NextCursor == "" || seenCursors[resp.NextCursor] {
+				return nil, false, fmt.Errorf("分页游标无效或重复，无法继续翻页")
+			}
+			seenCursors[resp.NextCursor] = true
+			cursor = resp.NextCursor
 		}
-		if documentKnowledge(d) == raw {
-			continue
+		if offset >= len(collected) {
+			return []Item{}, hasMore, nil
 		}
-		kind := "知识"
-		if raw {
-			kind = "文档"
-		}
-		copy := d
-		items = append(items, Item{ID: d.ID, Dataset: d.Dataset, Kind: kind, Title: documentTitle(d), Date: documentDate(d), Source: documentSession(d), Document: &copy})
+		end := min(offset+pageSize, len(collected))
+		more := end < len(collected) || hasMore
+		return collected[offset:end], more, nil
 	}
-	return items, more, nil
+	_, baseIdentity, _ := readingIdentityPair(c)
+	cursor := ""
+	seenCursors := map[string]bool{}
+	collected := make([]Item, 0, offset+pageSize)
+	hasMore := false
+	for page := 0; page <= offset/pageSize+10; page++ {
+		resp, err := control.listKnowledgePage(ctx, baseIdentity, p.ID, "date", "", false, "", "", pageSize, v2KnowledgePageOpts{Cursor: cursor})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, row := range resp.Items {
+			if row.DocID == "" {
+				continue
+			}
+			if row.DatasetID != "" && p.Dataset != "" && row.DatasetID != p.Dataset {
+				return nil, false, fmt.Errorf("official document dataset changed")
+			}
+			item := row.toItem("")
+			if row.Title == "" && row.PreviewText == "" && row.DocLabel == "" {
+				item.ReadingState = ""
+			}
+			collected = append(collected, item)
+		}
+		hasMore = resp.HasMore
+		if len(collected) >= offset+pageSize || !resp.HasMore {
+			break
+		}
+		if resp.NextCursor == "" || seenCursors[resp.NextCursor] {
+			return nil, false, fmt.Errorf("分页游标无效或重复，无法继续翻页")
+		}
+		seenCursors[resp.NextCursor] = true
+		cursor = resp.NextCursor
+	}
+	if offset >= len(collected) {
+		return []Item{}, hasMore, nil
+	}
+	end := min(offset+pageSize, len(collected))
+	more := end < len(collected) || hasMore
+	return collected[offset:end], more, nil
 }
 func (c Client) sessions(ctx context.Context, p Project, offset int) ([]Item, bool, error) {
-	var page struct {
-		Sessions []Session `json:"sessions"`
-		HasMore  bool      `json:"has_more"`
+	control, ok := c.controlClient()
+	if !ok {
+		return nil, false, fmt.Errorf("本地网关尚未配置")
 	}
-	e := c.get(ctx, "/api/v1/sessions?range=all&limit=30&offset="+strconv.Itoa(offset)+"&order_by=last_activity_at&descending=true", &page)
-	items := []Item{}
-	for _, s := range page.Sessions {
-		if s.Dataset != p.Dataset {
-			continue
+	if offset < 0 {
+		offset = 0
+	}
+	const pageSize = 30
+	cursor := ""
+	seenCursors := map[string]bool{}
+	collected := make([]Item, 0, offset+pageSize)
+	hasMore := false
+	for page := 0; page <= offset/pageSize+10; page++ {
+		resp, err := control.rawPage(ctx, p.ID, "会话", cursor)
+		if err != nil {
+			return nil, false, err
 		}
-		copy := s
-		items = append(items, Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &copy})
+		items, err := v2RawRecordsToItems(p.Dataset, resp)
+		if err != nil {
+			return nil, false, err
+		}
+		collected = append(collected, items...)
+		hasMore = resp.HasMore
+		if len(collected) >= offset+pageSize || !resp.HasMore {
+			break
+		}
+		if resp.NextCursor == "" || seenCursors[resp.NextCursor] {
+			return nil, false, fmt.Errorf("分页游标无效或重复，无法继续翻页")
+		}
+		seenCursors[resp.NextCursor] = true
+		cursor = resp.NextCursor
 	}
-	return items, page.HasMore, e
+	if offset >= len(collected) {
+		return []Item{}, hasMore, nil
+	}
+	end := min(offset+pageSize, len(collected))
+	more := end < len(collected) || hasMore
+	return collected[offset:end], more, nil
 }
 func canonicalIDMatch(a, b string) bool {
 	if a == "" || b == "" {
@@ -189,48 +262,39 @@ func canonicalIDMatch(a, b string) bool {
 
 func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	if i.Document != nil {
-		if control, ok := c.controlClient(); ok && i.Dataset != "" && i.ID != "" {
-			res, err := control.readingBody(ctx, i.Dataset, i.ID)
-			if err == nil {
-				if err := reading.ValidateBody(i.Dataset, i.ID, res.DatasetID, res.ID, res.Body); err != nil {
-					return i, err
-				}
-				body := *res.Body
-				i.Body = body
-				i.BodyLoaded = true
-				i.BodyTruncated = res.Truncated
-				if res.ContentHash != "" && i.Document.ContentHash == "" {
-					docCopy := *i.Document
-					docCopy.ContentHash = res.ContentHash
-					i.Document = &docCopy
-				}
-				if i.Kind == "知识" {
-					i.Title = itemPresentation(i).DisplayTitle
-				}
-				return i, nil
-			}
-			if settings.IsControlAuthDenied(err) {
+		control, ok := c.controlClient()
+		if !ok {
+			return i, fmt.Errorf("本地网关尚未配置")
+		}
+		if i.Dataset == "" || i.ID == "" {
+			return i, fmt.Errorf("文档身份缺失")
+		}
+		res, err := control.readingBody(ctx, i.Dataset, i.ID)
+		if err == nil {
+			if err := reading.ValidateBody(i.Dataset, i.ID, res.DatasetID, res.ID, res.Body); err != nil {
 				return i, err
 			}
-			if settings.IsControlErrorCode(err, http.StatusNotFound, "document_not_found") {
-				return i, &OfficialHTTPError{Status: http.StatusNotFound, Body: "document_not_found"}
+			body := *res.Body
+			i.Body = body
+			i.BodyLoaded = true
+			i.BodyTruncated = res.Truncated
+			if res.ContentHash != "" && i.Document.ContentHash == "" {
+				docCopy := *i.Document
+				docCopy.ContentHash = res.ContentHash
+				i.Document = &docCopy
 			}
+			if i.Kind == "知识" {
+				i.Title = itemPresentation(i).DisplayTitle
+			}
+			return i, nil
+		}
+		if settings.IsControlAuthDenied(err) {
 			return i, err
 		}
-		b, e := c.request(ctx, "GET", "/api/v1/datasets/"+url.PathEscape(i.Dataset)+"/data/"+url.PathEscape(i.ID)+"/raw", nil)
-		if e != nil {
-			return i, e
+		if settings.IsControlErrorCode(err, http.StatusNotFound, "document_not_found") {
+			return i, &OfficialHTTPError{Status: http.StatusNotFound, Body: "document_not_found"}
 		}
-		if !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0 {
-			return i, fmt.Errorf("此官方文档不是 UTF-8 文本: %w", reading.ErrInvalidBody)
-		}
-		i.Body = string(b)
-		i.BodyLoaded = true
-		i.BodyTruncated = false
-		if i.Kind == "知识" {
-			i.Title = itemPresentation(i).DisplayTitle
-		}
-		return i, nil
+		return i, err
 	}
 	if i.Session != nil {
 		item, _, err := c.readSessionHistory(ctx, i)
@@ -239,45 +303,32 @@ func (c Client) read(ctx context.Context, i Item) (Item, error) {
 	return i, nil
 }
 func (c Client) source(ctx context.Context, i Item) (Item, error) {
-	if control, ok := c.controlClient(); ok && i.Dataset != "" && i.Source != "" {
-		userID := ""
-		if i.Session != nil {
-			userID = i.Session.User
+	control, ok := c.controlClient()
+	if !ok {
+		return i, fmt.Errorf("本地网关尚未配置")
+	}
+	if i.Dataset == "" || i.Source == "" {
+		return i, fmt.Errorf("官方未保留此记忆关联的会话")
+	}
+	userID := ""
+	if i.Session != nil {
+		userID = i.Session.User
+	}
+	s, err := control.readingSourceSession(ctx, i.Dataset, i.Source, userID)
+	if err == nil {
+		if s.ID != i.Source || (s.Dataset != "" && s.Dataset != i.Dataset) {
+			return i, fmt.Errorf("官方会话身份不匹配")
 		}
-		s, err := control.readingSourceSession(ctx, i.Dataset, i.Source, userID)
-		if err == nil {
-			if s.ID != i.Source || (s.Dataset != "" && s.Dataset != i.Dataset) {
-				return i, fmt.Errorf("官方会话身份不匹配")
-			}
-			if s.Dataset == "" {
-				s.Dataset = i.Dataset
-			}
-			return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
+		if s.Dataset == "" {
+			s.Dataset = i.Dataset
 		}
-		if settings.IsControlAuthDenied(err) {
-			return i, err
-		}
-		if reading.Status(err, http.StatusNotFound) || settings.IsControlErrorCode(err, http.StatusNotFound, "session_not_found") {
-			return i, fmt.Errorf("官方未保留此记忆关联的会话")
-		}
+		return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
+	}
+	if settings.IsControlAuthDenied(err) {
 		return i, err
 	}
-	var page struct {
-		Sessions []Session `json:"sessions"`
-		HasMore  bool      `json:"has_more"`
+	if reading.Status(err, http.StatusNotFound) || settings.IsControlErrorCode(err, http.StatusNotFound, "session_not_found") {
+		return i, fmt.Errorf("官方未保留此记忆关联的会话")
 	}
-	for offset := 0; offset <= 100000; offset += 100 {
-		if e := c.get(ctx, "/api/v1/sessions?range=all&limit=100&offset="+strconv.Itoa(offset), &page); e != nil {
-			return i, e
-		}
-		for _, s := range page.Sessions {
-			if s.Dataset == i.Dataset && s.ID == i.Source {
-				return Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Title: s.ID, Date: s.Updated, Session: &s}, nil
-			}
-		}
-		if !page.HasMore {
-			break
-		}
-	}
-	return i, fmt.Errorf("官方未保留此记忆关联的会话")
+	return i, err
 }

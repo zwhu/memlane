@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,20 @@ import (
 	"testing"
 	"time"
 )
+
+func readingBodyJSON(w http.ResponseWriter, req *http.Request, content string) {
+	parts := strings.Split(strings.TrimPrefix(req.URL.Path, "/api/knowledge/"), "/")
+	ds, docID := "dataset", ""
+	if len(parts) >= 2 {
+		ds, docID = parts[0], parts[1]
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"dataset_id":  ds,
+		"document_id": docID,
+		"content":     content,
+		"mime_type":   "text/markdown",
+	})
+}
 
 func readingTestItem(id, version string) Item {
 	d := lessonDocument()
@@ -34,11 +49,11 @@ func TestReadingSchedulerConcurrencyDedupAndCache(t *testing.T) {
 			}
 		}
 		<-gate
-		fmt.Fprint(w, "# Session learning (session s)\n\nReadable content.")
+		readingBodyJSON(w, req, "# Session learning (session s)\n\nReadable content.")
 	}))
 	defer server.Close()
 	r := newReadingTitles()
-	c := Client{Config: Config{ServiceURL: server.URL}}
+	c := Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}
 	var wg sync.WaitGroup
 	for n := 0; n < 30; n++ {
 		wg.Add(1)
@@ -98,11 +113,11 @@ func TestReadingMergeCancelTimeoutAndDenied(t *testing.T) {
 			w.WriteHeader(int(s))
 			return
 		}
-		fmt.Fprint(w, "raw")
+		readingBodyJSON(w, req, "raw")
 	}))
 	defer server.Close()
 	r := newReadingTitles()
-	c := Client{Config: Config{ServiceURL: server.URL}}
+	c := Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}
 	i := readingTestItem("same", "v")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 2)
@@ -158,15 +173,18 @@ func TestReadingMergeCancelTimeoutAndDenied(t *testing.T) {
 }
 func TestReadingCredentialAndInvalidationBounds(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(token, []byte("first"), 0600)
+	os.WriteFile(token, []byte("first-management-token-0123456789abcdef"), 0600)
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { calls.Add(1); fmt.Fprint(w, "raw") }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		readingBodyJSON(w, req, "raw")
+	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL, TokenFile: token}}
+	c := Client{Config: Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}}
 	r := newReadingTitles()
 	i := readingTestItem("d", "v")
 	r.read(context.Background(), c, i, "1", false, true)
-	os.WriteFile(token, []byte("second"), 0600)
+	os.WriteFile(token, []byte("second-management-token-9876543210fedcba"), 0600)
 	r.read(context.Background(), c, i, "1", false, true)
 	if calls.Load() != 2 {
 		t.Fatal("credentials reused cache")
@@ -191,23 +209,23 @@ func TestReadingCredentialAndInvalidationBounds(t *testing.T) {
 
 func TestReadingCredentialRotationRejectsInflightRaw(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(token, []byte("first"), 0600)
+	os.WriteFile(token, []byte("first-management-token-0123456789abcdef"), 0600)
 	entered, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		close(entered)
 		<-release
-		fmt.Fprint(w, "old identity raw")
+		readingBodyJSON(w, req, "old identity raw")
 	}))
 	defer server.Close()
 	r := newReadingTitles()
-	c := Client{Config: Config{ServiceURL: server.URL, TokenFile: token}}
+	c := Client{Config: Config{ProjectControl: &ProjectControlConfig{URL: server.URL, ManagementTokenFile: token}}}
 	done := make(chan error, 1)
 	go func() {
 		_, err := r.read(context.Background(), c, readingTestItem("d", "v"), "1", false, false)
 		done <- err
 	}()
 	<-entered
-	os.WriteFile(token, []byte("second"), 0600)
+	os.WriteFile(token, []byte("second-management-token-9876543210fedcba"), 0600)
 	close(release)
 	if err := <-done; err == nil || !readingUnavailable(err) {
 		t.Fatal("old identity response accepted", err)

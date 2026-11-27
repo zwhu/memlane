@@ -22,15 +22,11 @@ func TestSourceHistoryStartsAtFirstPageAndReturnsToKnowledge(t *testing.T) {
 	originalBody := strings.Repeat("Original knowledge body with enough saved content to scroll.\n\n", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/datasets/ds/data":
-			fmt.Fprint(w, `[]`)
-		case "/api/v1/datasets/ds/data/k/raw":
-			fmt.Fprint(w, originalBody)
-		case "/api/v1/sessions":
-			fmt.Fprint(w, `{"sessions":[{"session_id":"session","dataset_id":"ds","user_id":"owner"}]}`)
-		case "/api/v1/sessions/session":
-			fmt.Fprint(w, `{"session_id":"session","dataset_id":"ds","user_id":"owner","msg_count":43,"tool_calls":997,"qas":[{"qa_id":"tail","question":"recent unrelated question"}]}`)
-		case "/api/v1/sessions/session/history":
+		case "/api/knowledge/ds/k/body":
+			json.NewEncoder(w).Encode(map[string]any{"dataset_id": "ds", "document_id": "k", "content": originalBody, "mime_type": "text/markdown"})
+		case "/api/datasets/ds/sessions/session":
+			fmt.Fprint(w, `{"session_id":"session","dataset_id":"ds","user_id":"owner"}`)
+		case "/v1/raw-records/session-history":
 			offset := 0
 			fmt.Sscan(r.URL.Query().Get("qa_offset"), &offset)
 			traceOffset := 0
@@ -51,7 +47,8 @@ func TestSourceHistoryStartsAtFirstPageAndReturnsToKnowledge(t *testing.T) {
 	}))
 	defer server.Close()
 	a := projectUIFixture()
-	a.Client = Client{Config: Config{ServiceURL: server.URL}}
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
+	a.Client = Client{Config: a.Config}
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 8)
 	a.Update = func(fn func()) { updates <- fn }
@@ -114,7 +111,7 @@ func TestHistoryPageRejectsDifferentIdentity(t *testing.T) {
 		fmt.Fprint(w, `{"session_id":"session","dataset_id":"another","user_id":"owner","history_paging":true}`)
 	}))
 	defer s.Close()
-	c := Client{Config: Config{ServiceURL: s.URL}}
+	c := Client{Config: Config{ProjectControl: readingControlConfig(t, s.URL)}}
 	_, err := c.sessionHistory(context.Background(), Item{ID: "session", Dataset: "ds", Session: &Session{User: "owner"}}, 0, 0)
 	if err == nil {
 		t.Fatal("history accepted another dataset")
@@ -124,7 +121,7 @@ func TestHistoryPageRejectsDifferentIdentity(t *testing.T) {
 func TestHistoryRevocationClearsPagedContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 4)
 	a.Update = func(fn func()) { updates <- fn }
@@ -158,7 +155,7 @@ func TestHistoryReadIgnoredAfterReturningToKnowledge(t *testing.T) {
 		fmt.Fprint(w, `{"session_id":"session","dataset_id":"ds","user_id":"owner","history_paging":true}`)
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 4)
 	a.Update = func(fn func()) { updates <- fn }
@@ -199,9 +196,9 @@ func TestSourceReturnsToKnowledgeFeedForAnotherSelection(t *testing.T) {
 func TestSessionListAndSourceUseSameHistoryReader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/sessions":
-			fmt.Fprint(w, `{"sessions":[{"session_id":"session","dataset_id":"ds","user_id":"owner"}]}`)
-		case "/api/v1/sessions/session/history":
+		case "/api/datasets/ds/sessions/session":
+			fmt.Fprint(w, `{"session_id":"session","dataset_id":"ds","user_id":"owner"}`)
+		case "/v1/raw-records/session-history":
 			fmt.Fprint(w, `{"session_id":"session","dataset_id":"ds","user_id":"owner","msg_count":1,"tool_calls":0,"history_paging":true,"page_limit":20,"qas":[{"qa_id":"q","question":"same first question"}]}`)
 		default:
 			t.Errorf("legacy detail endpoint still used: %s", r.URL.Path)
@@ -210,7 +207,8 @@ func TestSessionListAndSourceUseSameHistoryReader(t *testing.T) {
 	}))
 	defer server.Close()
 	a := projectUIFixture()
-	a.Client = Client{Config: Config{ServiceURL: server.URL}}
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
+	a.Client = Client{Config: a.Config}
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 8)
 	a.Update = func(fn func()) { updates <- fn }

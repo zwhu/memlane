@@ -88,10 +88,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		for _, ref := range refs {
 			scopes = append(scopes, engine.Scope{DatasetID: ref.ID})
 		}
+		engineLimit := in.Limit
+		if in.Filter != "all" {
+			engineLimit = min(max(in.Limit*4, 50), 200)
+		}
 		searchCtx, cancel := context.WithTimeout(ctx, s.cfg.SearchTimeout)
 		defer cancel()
-		res, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{Scopes: scopes, Query: in.Query, Limit: in.Limit,
-			Filters: engine.SearchFilters{Kind: in.Filter, Limit: in.Limit}})
+		res, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{Scopes: scopes, Query: in.Query, Limit: engineLimit,
+			Filters: engine.SearchFilters{Limit: engineLimit}})
 		if err == nil {
 			err = searchCtx.Err()
 		}
@@ -102,11 +106,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 			writeEngineError(w, err)
 			return
 		}
-		hits = authorizedHits(res.Hits, scopes, in.Limit)
+		hits = authorizedHits(res.Hits, scopes, max(len(res.Hits), engineLimit))
 		hits, err = s.filterSemanticHits(searchCtx, in.Filter, hits)
 		if err != nil {
 			writeDomainError(w, err)
 			return
+		}
+		if len(hits) > in.Limit {
+			hits = hits[:in.Limit]
 		}
 	}
 	if r.Method == http.MethodPost {

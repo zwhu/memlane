@@ -200,7 +200,7 @@ func TestOverviewActivityReadsBeyondOnePageAndFiltersScope(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	}))
 	defer server.Close()
-	events, more, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p", Name: "P"}}}}).overviewActivity(context.Background(), 20)
+	events, more, err := (Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{Dataset: "p", Name: "P"}}}}).overviewActivity(context.Background(), 20)
 	if err != nil || calls != 2 || len(events) != 20 || !more {
 		t.Fatalf("events=%d calls=%d more=%v err=%v", len(events), calls, more, err)
 	}
@@ -251,7 +251,7 @@ func TestOverviewActivityUsesSingleLargePageAndLinearAggregation(t *testing.T) {
 		json.NewEncoder(w).Encode(rows)
 	}))
 	defer server.Close()
-	events, more, err := (Client{Config: Config{ServiceURL: server.URL, Projects: []Project{{Dataset: "p", Name: "P"}}}}).overviewActivity(context.Background(), 50)
+	events, more, err := (Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{Dataset: "p", Name: "P"}}}}).overviewActivity(context.Background(), 50)
 	if err != nil || calls != 1 || gotLimit != "250" || len(events) != 50 || !more {
 		t.Fatalf("expected 1 single page with limit=250: calls=%d limit=%q events=%d more=%v err=%v", calls, gotLimit, len(events), more, err)
 	}

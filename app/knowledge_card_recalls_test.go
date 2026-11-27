@@ -44,9 +44,9 @@ func TestKnowledgeCardRecallsUseExistingReceiptsAndDistinguishUnknown(t *testing
 	s.Items = []Item{{ID: "hit", Dataset: "ds", Kind: "知识"}, {ID: "zero", Dataset: "ds", Kind: "知识"}, {ID: "failed", Dataset: "ds", Kind: "知识"}}
 	a.loadKnowledgeCardRecalls(s)
 	drainReading(t, updates, func() bool { return s.Knowledge.RecallPending == 0 })
-	for n, want := range []string{"召回 7 次", "召回 0 次", "召回 —"} {
+	for n, want := range []string{"已记录检索命中 7 次", "已记录检索命中 0 次", "已记录检索命中 —"} {
 		label, tip := knowledgeCardRecall(s.Items[n])
-		if n == 2 && tip != "召回次数尚未读到，请稍后重试。" {
+		if n == 2 && tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
 			t.Fatal("missing default-value explanation")
 		}
 		if label != want {

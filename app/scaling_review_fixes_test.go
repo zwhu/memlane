@@ -1033,8 +1033,8 @@ func TestReviewFixSearchEmptyScopeIdentityAndMonotonicMerge(t *testing.T) {
 					{DocID: "m-1", DatasetID: "ds-1", ProjectID: "p1", Title: "命中记忆 1", Kind: "knowledge", PreviewText: "命中内容"},
 				},
 			})
-		case "/api/v1/search":
-			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}, "semantic_hits": []any{}})
 		default:
 			http.NotFound(w, r)
 		}
@@ -1360,8 +1360,8 @@ func TestReviewFixR2ProvenanceReadErrorMidModifyAndCommonSearch(t *testing.T) {
 				Query: r.URL.Query().Get("q"),
 				Items: []v2KnowledgeItem{{DocID: "c-2", DatasetID: "ds-common", Title: "通用命中", Kind: "knowledge"}},
 			})
-		case "/api/v1/search":
-			_ = json.NewEncoder(w).Encode([]any{})
+		case "/api/search":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}, "semantic_hits": []any{}})
 		case "/v1/datasets/" + canonicalUUID + "/documents/" + canonicalUUID + "/body":
 			_ = json.NewEncoder(w).Encode(v2DocumentBodyResponse{
 				ID: hexUUID, DatasetID: hexUUID, Body: strPtr("canonical uuid body"), Source: "local_fastpath",

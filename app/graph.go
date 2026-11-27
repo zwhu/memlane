@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -21,61 +20,12 @@ func (a *App) toggleCode(enabled bool) {
 	if enabled && a.codeIndexBlocked() {
 		return
 	}
-	if a.Config.ProjectControl != nil {
-		a.syncSettingsTransport()
-		a.settingsController.SetCodeIndexEnabled(p, enabled)
+	if a.Config.ProjectControl == nil || strings.TrimSpace(a.Config.ProjectControl.URL) == "" {
+		a.graphController.Error = "本地网关尚未配置"
 		return
 	}
-	if enabled && p.CodeDataset == "" {
-		a.graphController.CodeBusy = true
-		a.graphController.CodeStatus = "正在准备本项目的官方代码数据组…"
-		client := a.Client
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			defer cancel()
-			dataset, err := client.ensureCodeDataset(ctx, p)
-			a.Update(func() {
-				a.graphController.CodeBusy = false
-				if err != nil {
-					a.graphController.CodeStatus = "代码数据组准备失败：" + err.Error()
-					return
-				}
-				index := -1
-				for idx, current := range a.Config.Projects {
-					if current.ID == p.ID && current.Path == p.Path && current.Dataset == p.Dataset {
-						index = idx
-						break
-					}
-				}
-				if index < 0 {
-					a.graphController.CodeStatus = "项目关联已改变；已保留官方数据组，未开始索引"
-					return
-				}
-				before := a.Config.Projects[index]
-				p.CodeDataset = dataset
-				p.CodeEnabled = true
-				a.Config.Projects[index] = p
-				if err := a.saveProjects(); err != nil {
-					a.Config.Projects[index] = before
-					a.graphController.CodeStatus = "代码关联保存失败；未开始索引：" + err.Error()
-					return
-				}
-				a.indexProjectCode(p)
-			})
-		}()
-		return
-	}
-	a.Config.Projects[a.project].CodeEnabled = enabled
-	if err := a.saveProjects(); err != nil {
-		a.Config.Projects[a.project].CodeEnabled = !enabled
-		a.graphController.Error = err.Error()
-		return
-	}
-	if enabled {
-		a.indexCode()
-	} else {
-		a.graphController.CodeStatus = "已停止发起新扫描；已有官方任务未请求取消"
-	}
+	a.syncSettingsTransport()
+	a.settingsController.SetCodeIndexEnabled(p, enabled)
 }
 func (a *App) saveProjects() error {
 	b, e := os.ReadFile(a.Config.ConfigFile)
@@ -149,21 +99,27 @@ type codeIndexResult struct {
 }
 
 func (c Client) ensureCodeDataset(ctx context.Context, p Project) (string, error) {
-	name := p.ID + "-code"
-	b, err := c.request(ctx, "POST", "/api/v1/datasets", map[string]string{"name": name})
+	control, ok := c.controlClient()
+	if !ok {
+		return "", fmt.Errorf("本地网关尚未配置")
+	}
+	if strings.TrimSpace(p.ID) == "" {
+		return "", fmt.Errorf("项目身份缺失，无法准备代码数据组")
+	}
+	dataset, err := control.ensureProjectCodeDatasetV2(ctx, p.ID)
 	if err != nil {
 		return "", err
 	}
-	var dataset struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if json.Unmarshal(b, &dataset) != nil || dataset.ID == "" || dataset.Name != name || dataset.ID == p.Dataset {
+	if dataset.ID == "" || dataset.ID == p.Dataset || (dataset.ProjectID != "" && dataset.ProjectID != p.ID) {
 		return "", fmt.Errorf("官方代码数据组身份不匹配")
 	}
 	return dataset.ID, nil
 }
 func (c Client) indexProject(ctx context.Context, p Project) (codeIndexResult, error) {
+	control, ok := c.controlClient()
+	if !ok {
+		return codeIndexResult{}, fmt.Errorf("本地网关尚未配置")
+	}
 	state, err := c.codeActivity(ctx, p)
 	if err != nil {
 		return codeIndexResult{}, err
@@ -171,13 +127,11 @@ func (c Client) indexProject(ctx context.Context, p Project) (codeIndexResult, e
 	if state.Active {
 		return codeIndexResult{}, errOfficialCodeActive
 	}
-	c.HTTP = &http.Client{Timeout: 30 * time.Minute, Transport: sharedHTTPTransport, CheckRedirect: noRedirectFunc}
-	b, err := c.request(ctx, "POST", "/api/v1/remember", url.Values{"raw_data": {p.Path}, "datasetId": {p.CodeDataset}, "content_type": {"code"}, "run_in_background": {"false"}, "index_vectors": {"false"}, "self_improvement": {"false"}})
-	var result codeIndexResult
+	result, err := control.triggerProjectCodeIndexV2(ctx, p.ID, p.Path)
 	if err != nil {
-		return result, err
+		return codeIndexResult{}, err
 	}
-	if json.Unmarshal(b, &result) != nil || result.Dataset != p.CodeDataset || result.Status == "" {
+	if result.Dataset == "" || (p.CodeDataset != "" && result.Dataset != p.CodeDataset) || result.Status == "" {
 		return result, fmt.Errorf("官方索引回执身份或结构不匹配")
 	}
 	if result.Status != "completed" && result.Status != "errored" {

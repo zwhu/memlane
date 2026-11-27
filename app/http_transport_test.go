@@ -204,13 +204,20 @@ func TestClientGetDoesNotPersistKnowledgeDaysSideEffect(t *testing.T) {
 		},
 	}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/knowledge" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"project_id": "p1", "dataset_id": "ds",
+				"items": []map[string]any{{"doc_id": "d1", "dataset_id": "ds", "kind": "knowledge", "doc_name": "记忆 1", "effective_date": "2026-11-18"}},
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(docs)
 	}))
 	defer server.Close()
 
-	c := Client{Config: Config{ServiceURL: server.URL, TokenFile: token, ClientStateFile: stateFile}}
+	c := Client{Config: Config{ServiceURL: server.URL, TokenFile: token, ClientStateFile: stateFile, ProjectControl: readingControlConfig(t, server.URL)}}
 	var raw []Document
-	if err := c.get(context.Background(), "/api/v1/datasets/ds/data", &raw); err != nil {
+	if err := c.get(context.Background(), "/datasets/ds/data", &raw); err != nil {
 		t.Fatal(err)
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, "knowledge-source-dates-*.json"))
@@ -220,9 +227,12 @@ func TestClientGetDoesNotPersistKnowledgeDaysSideEffect(t *testing.T) {
 	if _, _, err := c.documents(context.Background(), Project{ID: "p1", Dataset: "ds"}, 0, false); err != nil {
 		t.Fatal(err)
 	}
+	if err := c.rememberKnowledgeDays(docs); err != nil {
+		t.Fatal(err)
+	}
 	matches, _ = filepath.Glob(filepath.Join(root, "knowledge-source-dates-*.json"))
 	if len(matches) != 1 {
-		t.Fatalf("expected Client.documents to record knowledge dates, got %v", matches)
+		t.Fatalf("expected rememberKnowledgeDays to record knowledge dates, got %v", matches)
 	}
 }
 

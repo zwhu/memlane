@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,10 +76,20 @@ func TestOverviewTitlesCoverAllTwentyDisplayedRows(t *testing.T) {
 	var reads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reads.Add(1)
-		fmt.Fprint(w, "A real readable knowledge title.")
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/knowledge/"), "/")
+		docID := ""
+		if len(parts) >= 2 {
+			docID = parts[1]
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dataset_id":  "ds",
+			"document_id": docID,
+			"content":     "A real readable knowledge title.",
+			"mime_type":   "text/plain",
+		})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	updates := make(chan func(), 25)
 	a.Update = func(fn func()) { updates <- fn }
 	for n := 0; n < 20; n++ {
@@ -100,9 +111,16 @@ func TestOverviewTitlesCoverAllTwentyDisplayedRows(t *testing.T) {
 }
 
 func TestDetailTitleBackfillsOnlyMatchingOverviewVersion(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "Resolved title from the body.") }))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"dataset_id":  "ds",
+			"document_id": "k",
+			"content":     "Resolved title from the body.",
+			"mime_type":   "text/plain",
+		})
+	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	updates := make(chan func(), 4)
 	a.Update = func(fn func()) { updates <- fn }
 	d := Document{ID: "k", Dataset: "ds", Name: "text_0123456789abcdef0123456789abcdef", ContentHash: "version-a"}

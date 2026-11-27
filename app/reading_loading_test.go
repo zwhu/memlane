@@ -54,29 +54,38 @@ func TestReadingPaneAutomaticBoundedAndContinuous(t *testing.T) {
 	var rawCalls atomic.Int32
 	var deny atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasSuffix(req.URL.Path, "/raw") {
+		if strings.HasSuffix(req.URL.Path, "/body") {
 			rawCalls.Add(1)
 			if deny.Load() {
 				w.WriteHeader(403)
 				return
 			}
-			fmt.Fprint(w, "# Session learning (session s)\n\nReadable knowledge. More content.")
+			parts := strings.Split(strings.TrimPrefix(req.URL.Path, "/api/knowledge/"), "/")
+			docID := ""
+			if len(parts) >= 2 {
+				docID = parts[1]
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"dataset_id":  "dataset",
+				"document_id": docID,
+				"content":     "# Session learning (session s)\n\nReadable knowledge. More content.",
+				"mime_type":   "text/markdown",
+			})
 			return
 		}
-		if req.URL.Query().Get("limit") != "31" {
-			t.Errorf("catalog unbounded: %s", req.URL.RawQuery)
+		items := make([]map[string]any, 0, 30)
+		for n := 0; n < 30; n++ {
+			items = append(items, map[string]any{
+				"doc_id": fmt.Sprint(n), "dataset_id": "dataset", "kind": "knowledge",
+				"doc_name": "text_0123456789abcdef0123456789abcdef", "content_hash": "v", "session_id": "s",
+			})
 		}
-		rows := []Document{}
-		for n := 0; n < 31; n++ {
-			d := lessonDocument()
-			d.ID = fmt.Sprint(n)
-			d.ContentHash = "v"
-			rows = append(rows, d)
-		}
-		json.NewEncoder(w).Encode(rows)
+		json.NewEncoder(w).Encode(map[string]any{
+			"project_id": "p", "dataset_id": "dataset", "has_more": true, "items": items,
+		})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
 	updates := make(chan func(), 100)
 	a.Update = func(fn func()) { updates <- fn }
 	a.page = "知识"
@@ -133,10 +142,10 @@ func TestReadingLateReplyDoesNotCrossPaneOrRefillCache(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		entered <- struct{}{}
 		<-release
-		fmt.Fprint(w, "# Session learning (session s)\n\nOld content.")
+		json.NewEncoder(w).Encode(map[string]any{"dataset_id": "dataset", "document_id": "old", "content": "# Session learning (session s)\n\nOld content."})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	s := a.state()
@@ -173,11 +182,11 @@ func TestReadingVersionlessRefreshAndOversize(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		calls.Add(1)
-		fmt.Fprint(w, strings.Repeat("x", 256*1024+1))
+		json.NewEncoder(w).Encode(map[string]any{"dataset_id": "dataset", "document_id": "d", "content": strings.Repeat("x", 256*1024+1)})
 	}))
 	defer server.Close()
 	r := newReadingTitles()
-	c := Client{Config: Config{ServiceURL: server.URL}}
+	c := Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}
 	i := readingTestItem("d", "")
 	i.Document.Updated = ""
 	if keyForReading("s", i, "1") == keyForReading("s", i, "2") {
@@ -196,7 +205,7 @@ func TestReadingVersionlessRefreshAndOversize(t *testing.T) {
 func TestReadingTimeoutKeepsConfirmedBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { <-req.Context().Done() }))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL)}, nil)
 	a.titles.timeout = 5 * time.Millisecond
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
@@ -590,12 +599,12 @@ func TestRevocationCancelsInFlightOverviewAndDropsLateCallbacks(t *testing.T) {
 			t.Fatal("bootstrap callback not queued")
 		}
 
-		// Rotate credential file on disk (different size + mtime) without calling InvalidateReading manually.
-		if err := os.WriteFile(officialToken, []byte("token-v2-rotated-credential"), 0600); err != nil {
+		// Rotate management credential file on disk (different size + mtime) without calling InvalidateReading manually.
+		if err := os.WriteFile(controlToken, []byte(strings.Repeat("r", 48)), 0600); err != nil {
 			t.Fatal(err)
 		}
 		future := time.Now().Add(2 * time.Second)
-		_ = os.Chtimes(officialToken, future, future)
+		_ = os.Chtimes(controlToken, future, future)
 
 		queued()
 

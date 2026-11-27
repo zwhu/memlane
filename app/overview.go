@@ -77,15 +77,16 @@ func (c Client) overviewActivity(ctx context.Context, want int) ([]overviewEvent
 	if len(projects) == 0 {
 		return nil, false, nil
 	}
-	// Official pipeline-runs has ~85ms fixed per-request auth overhead regardless
-	// of limit (1..500), so fetching want*5 (up to 500) resolves 50+ root events
-	// in a single HTTP round-trip instead of 2-5 sequential pages.
+	control, ok := c.controlClient()
+	if !ok {
+		return nil, false, fmt.Errorf("本地网关尚未配置")
+	}
 	pageSize := min(500, max(100, want*5))
 	rows := []activityRow{}
 	known := map[string]bool{}
-	for offset := 0; offset <= 1000000; {
-		var page []activityRow
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/activity/pipeline-runs?limit=%d&offset=%d", pageSize, offset), &page); err != nil {
+	for offset := 0; offset <= 100000; {
+		page, err := control.pipelineRunsV2(ctx, "", pageSize, offset)
+		if err != nil {
 			return nil, false, err
 		}
 		rows = append(rows, page...)

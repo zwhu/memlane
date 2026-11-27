@@ -33,8 +33,8 @@ func TestDesignV3RetryOnlyFailedLaneIncludingEmptySuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input map[string]any
 		json.NewDecoder(r.Body).Decode(&input)
-		rows := []map[string]any{}
-		if input["search_type"] == "CHUNKS_LEXICAL" {
+		hits := []map[string]any{}
+		if sem, _ := input["semantic"].(bool); !sem {
 			lexical.Add(1)
 		} else {
 			semantic.Add(1)
@@ -42,12 +42,12 @@ func TestDesignV3RetryOnlyFailedLaneIncludingEmptySuccess(t *testing.T) {
 				http.Error(w, "fixture unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			rows = append(rows, map[string]any{"id": "recovered", "text": "semantic result"})
+			hits = append(hits, map[string]any{"dataset_id": "p", "document_id": "recovered", "snippet": "semantic result"})
 		}
-		json.NewEncoder(w).Encode([]map[string]any{{"dataset_id": "p", "search_result": rows}})
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}, "semantic_hits": hits})
 	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL}}
+	c := Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}
 	first := c.searchLanes(context.Background(), []Project{{Dataset: "p"}}, "query", searchLaneResult{})
 	if !first.KeywordOK || first.SemanticOK || first.message() != "暂时只能按关键词查找" {
 		t.Fatal("incorrect partial result", first)
@@ -88,15 +88,20 @@ func TestDesignV3SearchRetainsSuccessfulLane(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var input map[string]any
 				json.NewDecoder(r.Body).Decode(&input)
-				if input["search_type"] == failed {
+				sem, _ := input["semantic"].(bool)
+				if (failed == "CHUNKS_LEXICAL" && !sem) || (failed == "CHUNKS" && sem) {
 					http.Error(w, "fixture unavailable", http.StatusServiceUnavailable)
 					return
 				}
-				json.NewEncoder(w).Encode([]map[string]any{{"dataset_id": "p", "search_result": []map[string]any{{"id": "kept", "text": "库存扣减使用原子更新", "document_id": "official-doc"}}}})
+				json.NewEncoder(w).Encode(map[string]any{
+					"ok":            true,
+					"items":         []any{},
+					"semantic_hits": []map[string]any{{"dataset_id": "p", "document_id": "official-doc", "title": "kept", "snippet": "库存扣减使用原子更新"}},
+				})
 			}))
 			defer server.Close()
-			rows, err := (Client{Config: Config{ServiceURL: server.URL}}).searchBoth(context.Background(), []Project{{Dataset: "p"}}, "库存")
-			if err == nil || len(rows) != 1 || rows[0].ID != "kept" || rows[0].SourceDocument != "official-doc" {
+			rows, err := (Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}).searchBoth(context.Background(), []Project{{Dataset: "p"}}, "库存")
+			if err == nil || len(rows) != 1 || rows[0].SourceDocument != "official-doc" {
 				t.Fatalf("lost successful lane or its official identity: %+v %v", rows, err)
 			}
 		})

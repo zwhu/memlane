@@ -38,7 +38,8 @@ func (a *App) selectReadingItem(s *pane, i Item, human bool) {
 	s.SourceReturn = nil
 	a.resetOverviewFloor(s)
 	s.Error = ""
-	if s.Selected == nil || s.Selected.Key() != i.Key() || keyForReading("", *s.Selected, generation) != keyForReading("", i, generation) {
+	sameSelected := s.Selected != nil && s.Selected.Key() == i.Key()
+	if !sameSelected || keyForReading("", *s.Selected, generation) != keyForReading("", i, generation) {
 		s.Selected = &i
 	}
 	client, titles := a.Client, a.titles
@@ -50,7 +51,16 @@ func (a *App) selectReadingItem(s *pane, i Item, human bool) {
 		var sessionPage *SessionHistoryPage
 		var err error
 		if i.Document != nil {
-			result, err = titles.read(ctx, client, i, generation, true, false)
+			if i.BodyLoaded && !sameSelected {
+				if _, idErr := readingIdentity(client); idErr != nil {
+					err = idErr
+				} else {
+					result = i
+					result.ReadingState = "ready"
+				}
+			} else {
+				result, err = titles.read(ctx, client, i, generation, true, false)
+			}
 		} else if i.Session != nil {
 			result, sessionPage, err = fetchSessionHistoryPage(ctx, control, hasControl, client, i)
 		} else {

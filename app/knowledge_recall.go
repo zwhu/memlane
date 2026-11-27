@@ -14,7 +14,7 @@ func (c ProjectControlClient) knowledgeRecall(ctx context.Context, i Item) (*Kno
 	if err != nil {
 		return nil, err
 	}
-	if result.Count < 0 || result.StartedAt == "" {
+	if result.Count < 0 || (result.Count > 0 && result.StartedAt == "") {
 		return nil, fmt.Errorf("召回统计尚未确认")
 	}
 	return &result, nil

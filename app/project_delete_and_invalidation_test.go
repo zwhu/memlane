@@ -35,6 +35,7 @@ func TestProjectDetailDeleteDialogFailureAndSuccessSync(t *testing.T) {
 	a := projectUIFixture()
 	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Client.Config = a.Config
+	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 32)
 	a.Update = func(fn func()) { updates <- fn }
 	s := a.state()
@@ -317,6 +318,7 @@ func TestProjectDelete403ShowsErrorAfterInvalidation(t *testing.T) {
 	a := projectUIFixture()
 	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Client.Config = a.Config
+	a.readingIdentity, _ = readingIdentity(a.Client)
 	a.syncReadingIdentity()
 	updates := make(chan func(), 16)
 	a.Update = func(fn func()) { updates <- fn }
@@ -368,7 +370,7 @@ func TestCredentialRotationAbortsConfirmAndDeletesWithoutPanic(t *testing.T) {
 	a.commonEdit.DeleteSubmitted = true
 	a.commonEdit.Delete = &commonDoc
 	a.commonEdit.DeleteTarget = Project{Dataset: "common-ds"}
-	a.Client.Config.ServiceURL = "http://127.0.0.1:19991" // rotate endpoint/identity
+	a.Client.Config.ProjectControl.URL = "http://127.0.0.1:19991" // rotate endpoint/identity
 	a.confirmCommonDeletion()
 	if a.commonEdit.Busy || a.commonEdit.Delete != nil || requests.Load() != 0 {
 		t.Fatalf("R2-02: confirmCommonDeletion did not abort safely on rotation: busy=%v del=%v reqs=%d", a.commonEdit.Busy, a.commonEdit.Delete, requests.Load())
@@ -376,7 +378,7 @@ func TestCredentialRotationAbortsConfirmAndDeletesWithoutPanic(t *testing.T) {
 
 	// Case 2: deleteCommonKnowledge after rotation must not send DELETE.
 	a.page = "通用知识"
-	a.Client.Config.ServiceURL = "http://127.0.0.1:19992"
+	a.Client.Config.ProjectControl.URL = "http://127.0.0.1:19992"
 	a.deleteCommonKnowledge(commonDoc)
 	if a.commonEdit.Busy || requests.Load() != 0 {
 		t.Fatalf("R2-03: deleteCommonKnowledge sent DELETE after rotation: busy=%v reqs=%d", a.commonEdit.Busy, requests.Load())
@@ -387,7 +389,7 @@ func TestCredentialRotationAbortsConfirmAndDeletesWithoutPanic(t *testing.T) {
 	projDoc := Document{ID: "k-rot", Dataset: "ds", Name: "note.md"}
 	target := Item{ID: "k-rot", Dataset: "ds", Kind: "知识", Document: &projDoc}
 	a.projectUI.DeleteTarget = &target
-	a.Client.Config.ServiceURL = "http://127.0.0.1:19993"
+	a.Client.Config.ProjectControl.URL = "http://127.0.0.1:19993"
 	a.deleteProjectKnowledge(a.state(), target)
 	if a.projectUI.DeleteBusy || a.projectUI.DeleteTarget != nil || requests.Load() != 0 {
 		t.Fatalf("R2-03: deleteProjectKnowledge sent DELETE after rotation: busy=%v target=%v reqs=%d", a.projectUI.DeleteBusy, a.projectUI.DeleteTarget, requests.Load())

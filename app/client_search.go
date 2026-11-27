@@ -2,8 +2,9 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+
+	"github.com/zwhu/memlane/app/api"
 )
 
 func (c Client) search(ctx context.Context, projects []Project, q string, filters ...string) ([]Item, error) {
@@ -13,67 +14,129 @@ func (c Client) search(ctx context.Context, projects []Project, q string, filter
 func (c Client) searchType(ctx context.Context, projects []Project, q, searchType string, filters ...string) ([]Item, error) {
 	ids := []string{}
 	for _, p := range projects {
-		ids = append(ids, p.Dataset)
+		if p.Dataset != "" {
+			ids = append(ids, p.Dataset)
+		}
 	}
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("请先配置项目与官方数据组关联")
 	}
-	input := map[string]any{"query": q, "search_type": searchType, "dataset_ids": ids, "only_context": false, "top_k": 30}
+	control, ok := c.controlClient()
+	if !ok {
+		return nil, fmt.Errorf("本地网关尚未配置")
+	}
+	_, baseIdentity, _ := readingIdentityPair(c)
+	apiClient, err := newAppAPIClient(control, baseIdentity)
+	if err != nil {
+		return nil, err
+	}
 	filter := ""
 	if len(filters) > 0 {
 		filter = filters[0]
 	}
-	if filter == "知识" {
-		input["node_name"] = []string{"session_learnings", "memlane_common", "user_context", "memory"}
-		input["node_name_filter_operator"] = "OR"
+	apiFilter := "all"
+	if filter == "原始材料" {
+		apiFilter = "raw"
 	}
-	b, e := c.request(ctx, "POST", "/api/v1/search", input)
-	if e != nil {
-		return nil, e
+	req := api.SearchRequest{
+		Query:    q,
+		Filter:   apiFilter,
+		Limit:    30,
+		Semantic: searchType != "CHUNKS_LEXICAL",
 	}
-	var groups []struct {
-		Dataset string           `json:"dataset_id"`
-		Results []map[string]any `json:"search_result"`
+	if len(projects) == 1 {
+		req.DatasetID = projects[0].Dataset
 	}
-	if e = json.Unmarshal(b, &groups); e != nil {
-		return nil, e
+	resp, err := apiClient.Search(ctx, req)
+	if err != nil {
+		return nil, err
 	}
-	items := []Item{}
 	validDataset := map[string]bool{}
 	for _, id := range ids {
 		validDataset[id] = true
 	}
-	for _, g := range groups {
-		if !validDataset[g.Dataset] {
+	items := []Item{}
+	seen := map[string]bool{}
+	for _, row := range resp.Items {
+		if !validDataset[row.DatasetID] {
+			continue
+		}
+		if row.Kind == "session" || (row.SessionID != "" && row.DocID == "" && row.DocumentID == "") {
+			if filter == "知识" {
+				continue
+			}
+			sess := Session{
+				ID: row.SessionID, Dataset: row.DatasetID, User: row.UserID, Agent: row.AgentID,
+				Started: row.StartedAt, Updated: row.LastActivityAt,
+				IsSubagent: row.ParentSessionID != "", ParentSessionID: row.ParentSessionID,
+				SubagentRole: row.SubagentRole, NestingDepth: row.NestingDepth,
+			}
+			title := row.Title
+			if title == "" {
+				title = row.SessionID
+			}
+			item := Item{ID: row.SessionID, Dataset: row.DatasetID, Kind: "会话", Title: title, Date: row.LastActivityAt, Session: &sess}
+			if !seen[item.Key()] {
+				seen[item.Key()] = true
+				items = append(items, item)
+			}
+			continue
+		}
+		catRow := catalogRowFromAPI(row.CatalogItem)
+		if catRow.DocID == "" {
+			continue
+		}
+		isKnowledge := catRow.Kind == "knowledge" || catRow.Kind == "common" || catRow.CommonCategory != ""
+		if filter == "知识" && !isKnowledge {
+			continue
+		}
+		if filter == "原始材料" && isKnowledge {
+			continue
+		}
+		item := catRow.toItem("")
+		if !isKnowledge {
+			item.Kind = "文档"
+		}
+		if !seen[item.Key()] {
+			seen[item.Key()] = true
+			items = append(items, item)
+		}
+	}
+	for _, hit := range resp.SemanticHits {
+		if !validDataset[hit.DatasetID] {
 			return nil, fmt.Errorf("official search dataset changed")
 		}
-		for _, r := range g.Results {
-			stringField := func(k string) string { s, _ := r[k].(string); return s }
-			id := stringField("id")
-			text := stringField("text")
-			if id == "" || text == "" {
-				continue
-			}
-			title := stringField("document_name")
-			if title == "" {
-				title = "检索片段"
-			}
-			contentType := "原始材料片段"
-			var metadata map[string]any
-			if raw := stringField("external_metadata"); raw != "" {
-				_ = json.Unmarshal([]byte(raw), &metadata)
-			} else if m, ok := r["external_metadata"].(map[string]any); ok {
-				metadata = m
-			}
-			if documentKnowledge((Document{Metadata: metadata})) {
-				contentType = "知识片段"
-			}
-			if filter == "原始材料" && contentType == "知识片段" {
-				continue
-			}
-			item := Item{ID: id, Dataset: g.Dataset, Kind: contentType, Title: title, Body: text, Preview: text, SourceDocument: stringField("document_id"), BodyLoaded: true}
-			item.CommonCategory = commonCategory(Document{Metadata: metadata})
-			item.Title = itemPresentation(item).DisplayTitle
+		if hit.DocumentID == "" || hit.Snippet == "" {
+			continue
+		}
+		title := hit.Title
+		if title == "" {
+			title = "检索片段"
+		}
+		contentType := "原始材料片段"
+		if documentKnowledge(Document{Metadata: hit.Metadata}) {
+			contentType = "知识片段"
+		}
+		if filter == "知识" && contentType != "知识片段" {
+			continue
+		}
+		if filter == "原始材料" && contentType == "知识片段" {
+			continue
+		}
+		item := Item{
+			ID:             hit.DocumentID,
+			Dataset:        hit.DatasetID,
+			Kind:           contentType,
+			Title:          title,
+			Body:           hit.Snippet,
+			Preview:        hit.Snippet,
+			SourceDocument: hit.DocumentID,
+			BodyLoaded:     true,
+		}
+		item.CommonCategory = commonCategory(Document{Metadata: hit.Metadata})
+		item.Title = itemPresentation(item).DisplayTitle
+		if !seen[item.Key()] {
+			seen[item.Key()] = true
 			items = append(items, item)
 		}
 	}

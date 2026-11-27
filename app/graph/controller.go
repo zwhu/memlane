@@ -18,8 +18,6 @@ const (
 	ModeCode   = "代码结构"
 )
 
-type RawFetcher func(ctx context.Context, project shell.ProjectRef, dataset string) (json.RawMessage, error)
-
 type Deps struct {
 	Dispatcher                              shell.Dispatcher
 	Router                                  shell.Router
@@ -27,7 +25,6 @@ type Deps struct {
 	Theme                                   shell.ThemeProvider
 	Client                                  *api.Client
 	ClientFactory                           func() (*api.Client, error)
-	RawFetcher                              RawFetcher
 	CurrentProject                          func() (shell.ProjectRef, bool)
 	IsSetupOnly, IsWindowHidden, HasControl func() bool
 	AssetsDir                               string
@@ -271,7 +268,7 @@ func (g *Controller) Load() {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	g.cancelLoad = cancel
 	result := LoadResult{fence: shell.CaptureFence(g.Fence), request: g.LoadRequest, project: project, dataset: dataset}
-	client, makeClient, fetch, dispatch := g.Client, g.ClientFactory, g.RawFetcher, g.Dispatcher
+	client, makeClient, dispatch := g.Client, g.ClientFactory, g.Dispatcher
 	var ticket *uint64
 	if g.Host != nil {
 		epoch := g.Host.Epoch()
@@ -285,7 +282,7 @@ func (g *Controller) Load() {
 			client, err = makeClient()
 		}
 		if err == nil {
-			data, err = loadPayload(ctx, client, fetch, project, dataset)
+			data, err = loadPayload(ctx, client, project, dataset)
 		}
 		result.data = data
 		dispatch.Dispatch(func() {
@@ -313,31 +310,21 @@ func (g *Controller) Load() {
 	}()
 }
 
-func loadPayload(ctx context.Context, client *api.Client, fetch RawFetcher, p shell.ProjectRef, dataset string) (Payload, error) {
-	if client != nil {
-		resp, err := client.Graph(ctx, p.ID, dataset, "")
-		if err == nil {
-			if resp.Nodes == nil || resp.Edges == nil {
-				return Payload{}, fmt.Errorf("官方图数据结构不匹配")
-			}
-			if resp.DatasetID != "" && resp.DatasetID != dataset {
-				return Payload{}, fmt.Errorf("官方图数据集身份不匹配")
-			}
-			return NormalizeGraphResponse(resp)
-		}
-		var apiErr *api.APIError
-		if fetch == nil || !errors.As(err, &apiErr) || !apiErr.IsNotFound() {
-			return Payload{}, err
-		}
+func loadPayload(ctx context.Context, client *api.Client, p shell.ProjectRef, dataset string) (Payload, error) {
+	if client == nil {
+		return Payload{}, fmt.Errorf("本地网关尚未配置，官方图服务不可用")
 	}
-	if fetch == nil {
-		return Payload{}, fmt.Errorf("官方图服务不可用")
-	}
-	raw, err := fetch(ctx, p, dataset)
+	resp, err := client.Graph(ctx, p.ID, dataset, "")
 	if err != nil {
 		return Payload{}, err
 	}
-	return DecodePayload(raw)
+	if resp.Nodes == nil || resp.Edges == nil {
+		return Payload{}, fmt.Errorf("官方图数据结构不匹配")
+	}
+	if resp.DatasetID != "" && resp.DatasetID != dataset {
+		return Payload{}, fmt.Errorf("官方图数据集身份不匹配")
+	}
+	return NormalizeGraphResponse(resp)
 }
 
 func (g *Controller) currentLoad(result LoadResult) bool {

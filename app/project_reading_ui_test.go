@@ -101,34 +101,38 @@ func TestUnifiedSearchRequestsAndNestedReturn(t *testing.T) {
 	var requests atomic.Int32
 	var started sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/search" {
-			json.NewEncoder(w).Encode([]Document{})
-			return
+		switch r.URL.Path {
+		case "/v1/capabilities":
+			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
+		case "/v1/search/metadata":
+			json.NewEncoder(w).Encode(v2SearchMetadataResponse{})
+		case "/api/search":
+			requests.Add(1)
+			var in struct {
+				Query string `json:"q"`
+			}
+			json.NewDecoder(r.Body).Decode(&in)
+			if in.Query == "old" {
+				started.Do(func() { close(oldStarted) })
+				<-oldRelease
+			}
+			if in.Query == "failure" {
+				w.WriteHeader(503)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": true, "items": []any{},
+				"semantic_hits": []map[string]any{{"dataset_id": "ds", "document_id": in.Query, "title": in.Query, "snippet": "A real official snippet"}},
+			})
+		default:
+			json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		}
-		requests.Add(1)
-		var in struct {
-			Query    string   `json:"query"`
-			Datasets []string `json:"dataset_ids"`
-		}
-		json.NewDecoder(r.Body).Decode(&in)
-		if len(in.Datasets) != 2 || in.Datasets[0] != "ds" || in.Datasets[1] != "other" {
-			t.Errorf("global search catalog changed: %v", in.Datasets)
-		}
-		if in.Query == "old" {
-			started.Do(func() { close(oldStarted) })
-			<-oldRelease
-		}
-		if in.Query == "failure" {
-			w.WriteHeader(503)
-			return
-		}
-		json.NewEncoder(w).Encode([]any{map[string]any{"dataset_id": "ds", "search_result": []any{map[string]any{"id": in.Query, "text": "A real official snippet", "document_name": in.Query, "document_id": "source"}}}})
 	}))
 	defer server.Close()
 	var release sync.Once
 	defer release.Do(func() { close(oldRelease) })
 	a := projectUIFixture()
-	a.Config.ServiceURL = server.URL
+	a.Config.ProjectControl = readingControlConfig(t, server.URL)
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 30)
@@ -364,10 +368,15 @@ func TestProjectCodeGraphEmptyDoesNotStartWork(t *testing.T) {
 func TestProjectTitlePreparationKeepsFullSentenceWithoutRawRows(t *testing.T) {
 	title := strings.Repeat("Long technical sentence ", 15) + "ends here."
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "# Session learning (session s)\n\n"+title)
+		json.NewEncoder(w).Encode(map[string]any{
+			"dataset_id":  "dataset",
+			"document_id": "doc",
+			"content":     "# Session learning (session s)\n\n" + title,
+			"mime_type":   "text/markdown",
+		})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
 	a.page = "知识"
 	updates := make(chan func(), 10)
 	a.Update = func(fn func()) { updates <- fn }
@@ -388,7 +397,7 @@ func TestSessionTitlesPreloadBeforeSelectionAndReuseTitleOnlyCache(t *testing.T)
 		json.NewEncoder(w).Encode(SessionHistoryPage{Paging: true, Limit: 20, SessionDetail: SessionDetail{Session: Session{ID: "codex_session", Dataset: "dataset", User: "owner"}, Count: 1, ToolCount: 1, QAs: []QA{{Question: "自动载入会话的可读标题", Answer: "Private answer"}}, Traces: []Trace{{ID: "private-tool"}}}})
 	}))
 	defer server.Close()
-	a := New(Config{ServiceURL: server.URL, Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
+	a := New(Config{ProjectControl: readingControlConfig(t, server.URL), Projects: []Project{{ID: "p", Dataset: "dataset"}}}, nil)
 	a.page = "知识"
 	a.kind = "原始记录"
 	updates := make(chan func(), 10)

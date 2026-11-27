@@ -77,9 +77,9 @@ func TestSearchSessionHeaderIsNotTheHitTitle(t *testing.T) {
 func TestSearchRecentDefaultsAndTypeSwitchUseOneCompletedCatalog(t *testing.T) {
 	var searches atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/v1/search" {
+		if r.URL.Path == "/api/search" {
 			searches.Add(1)
-			json.NewEncoder(w).Encode([]any{})
+			json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}, "semantic_hits": []any{}})
 			return
 		}
 		switch r.URL.Path {

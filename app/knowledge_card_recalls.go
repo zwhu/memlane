@@ -10,13 +10,16 @@ import (
 
 func knowledgeCardRecall(i Item) (string, string) {
 	if i.RecallStats == nil {
-		return "召回 —", "召回次数尚未读到，请稍后重试。"
+		return "已记录检索命中 —", "已记录的检索命中次数尚未读到，请稍后重试。"
 	}
-	tip := "Agent 召回次数，人工阅读不计入。自 " + displayDate(i.RecallStats.StartedAt) + " 起记录，旧历史不补算。"
+	tip := "已记录的检索命中次数（仅统计已落账的 Agent 检索命中，人工阅读不计入；统计写入失败不阻断召回）。"
+	if i.RecallStats.StartedAt != "" {
+		tip += "自 " + displayDate(i.RecallStats.StartedAt) + " 起记录，旧历史不补算。"
+	}
 	if i.RecallStats.LastRecalledAt != "" {
-		tip += " 最近召回：" + displayDate(i.RecallStats.LastRecalledAt)
+		tip += " 最近命中：" + displayDate(i.RecallStats.LastRecalledAt)
 	}
-	return fmt.Sprintf("召回 %d 次", i.RecallStats.Count), tip
+	return fmt.Sprintf("已记录检索命中 %d 次", i.RecallStats.Count), tip
 }
 
 func knowledgeRecallBadge(c *ui.Context, i Item) {

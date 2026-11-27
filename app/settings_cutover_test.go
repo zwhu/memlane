@@ -75,6 +75,7 @@ func TestBeta3OwnerSwitchHostReverifiesReloadedGraphAssets(t *testing.T) {
 		}
 	}
 	config.GraphAssets = assetsDir
+	config.ProjectControl = readingControlConfig(t, "http://127.0.0.1:61255")
 	for _, scenario := range []string{"asset_error", "attach_error_same_dir", "attached_host_changed_dir"} {
 		t.Run(scenario, func(t *testing.T) {
 			previous := config
@@ -105,12 +106,8 @@ func TestBeta3OwnerSwitchHostReverifiesReloadedGraphAssets(t *testing.T) {
 			updates := make(chan func(), 16)
 			a.Update = func(fn func()) { updates <- fn }
 			a.Client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/api/v1/visualize/json" && r.URL.Query().Get("dataset_id") == "code-dataset" {
-					w.Write([]byte(`{"nodes":[{"id":"reloaded"}],"links":[],"color_maps":{}}`))
-					return
-				}
-				if r.URL.Path == "/api/graph" {
-					http.NotFound(w, r)
+				if r.URL.Path == "/api/graph" && r.URL.Query().Get("dataset_id") == "code-dataset" {
+					w.Write([]byte(`{"ok":true,"dataset_id":"code-dataset","nodes":[{"id":"reloaded"}],"edges":[]}`))
 					return
 				}
 				w.Write([]byte("{}"))

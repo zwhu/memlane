@@ -44,15 +44,38 @@ func cachedReadingPrefix(serviceURL, tokenFile, token string) string {
 	return prefix
 }
 
+// EffectiveReadingEndpoint returns the single authoritative (url, tokenFile)
+// pair used for desktop reading identity and token-rotation polling.
+// When ProjectControl is configured, all desktop reading goes through the local
+// gateway using ManagementTokenFile; ServiceURL/TokenFile are used only when
+// ProjectControl is absent.
+func EffectiveReadingEndpoint(cfg Config) (endpointURL, tokenFile string, usingControl bool) {
+	if cfg.ProjectControl != nil && strings.TrimSpace(cfg.ProjectControl.URL) != "" {
+		return strings.TrimSpace(cfg.ProjectControl.URL), strings.TrimSpace(cfg.ProjectControl.ManagementTokenFile), true
+	}
+	return strings.TrimSpace(cfg.ServiceURL), strings.TrimSpace(cfg.TokenFile), false
+}
+
 func readingIdentityPair(c Client) (full, base string, err error) {
+	serviceURL, tokenFile, usingControl := EffectiveReadingEndpoint(c.Config)
+	if usingControl && tokenFile == "" {
+		return "", "", fmt.Errorf("local gateway credential unavailable")
+	}
 	var token string
-	if c.Config.TokenFile != "" {
-		token, err = readCachedToken(c.Config.TokenFile, 0, false)
+	if tokenFile != "" {
+		if usingControl {
+			token, err = readCachedToken(tokenFile, 32, true)
+		} else {
+			token, err = readCachedToken(tokenFile, 0, false)
+		}
 		if err != nil {
+			if usingControl {
+				return "", "", fmt.Errorf("local gateway credential unavailable")
+			}
 			return "", "", fmt.Errorf("official credential unavailable")
 		}
 	}
-	prefix := cachedReadingPrefix(c.Config.ServiceURL, c.Config.TokenFile, token)
+	prefix := cachedReadingPrefix(serviceURL, tokenFile, token)
 	if c.PolicyRevision == "" {
 		return prefix, prefix, nil
 	}

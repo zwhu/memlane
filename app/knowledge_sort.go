@@ -27,12 +27,12 @@ func (c ProjectControlClient) knowledgeRecallCounts(ctx context.Context, dataset
 	if err := c.request(ctx, "GET", "/v1/knowledge/recall-counts?dataset_id="+url.QueryEscape(dataset), nil, &out); err != nil {
 		return nil, err
 	}
-	if out.StartedAt == "" {
-		return nil, fmt.Errorf("召回次数尚未确认")
+	if len(out.Items) > 0 && out.StartedAt == "" {
+		return nil, fmt.Errorf("已记录的检索命中次数尚未确认")
 	}
 	for _, row := range out.Items {
 		if row.Count < 0 || row.Document == "" {
-			return nil, fmt.Errorf("召回次数尚未确认")
+			return nil, fmt.Errorf("已记录的检索命中次数尚未确认")
 		}
 	}
 	return &out, nil
@@ -173,7 +173,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 
 			sortLabel := "按时间"
 			if s.Knowledge.SortByRecalls {
-				sortLabel = "按召回次数"
+				sortLabel = "按已记录检索命中"
 			}
 			v4DropdownButton(c, "knowledge-sort-btn", "记忆排序", "", sortLabel, false).PopoverMenuButton(func(m *ui.Menu) {
 				timeLabel := "按时间"
@@ -184,7 +184,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 					s.Knowledge.SortByRecalls = false
 					a.reorderKnowledge(s)
 				}
-				recallLabel := "按召回次数"
+				recallLabel := "按已记录检索命中"
 				if s.Knowledge.SortByRecalls {
 					recallLabel = "✓ " + recallLabel
 				}
@@ -227,7 +227,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 
 		if s.Knowledge.CountsError != "" {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-				homeText(c, "召回次数读取失败", homeMeta)
+				homeText(c, "已记录的检索命中次数读取失败", homeMeta)
 				homeLink(c, "重试", func() { a.loadKnowledgeFeed(s) })
 				if s.Knowledge.SortByRecalls {
 					homeLink(c, "改按时间", func() { s.Knowledge.SortByRecalls = false; a.reorderKnowledge(s) })

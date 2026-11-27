@@ -25,7 +25,7 @@ func TestSessionSubjectUsesOfficialFirstLabelNotRecentTail(t *testing.T) {
 	}))
 	defer server.Close()
 	s := Session{ID: "codex_real-session", Dataset: "ds", User: "owner"}
-	i, err := (Client{Config: Config{ServiceURL: server.URL}}).read(context.Background(), Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Session: &s})
+	i, err := (Client{Config: Config{ProjectControl: readingControlConfig(t, server.URL)}}).read(context.Background(), Item{ID: s.ID, Dataset: s.Dataset, Kind: "会话", Session: &s})
 	if err != nil || i.Title != "会话最初的问题" {
 		t.Fatalf("session subject followed a moving tail: %q %v", i.Title, err)
 	}

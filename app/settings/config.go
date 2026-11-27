@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/zwhu/memlane/internal/bootstrap"
+	"github.com/zwhu/memlane/internal/controlplane"
 )
 
 type Project struct {
@@ -48,6 +49,11 @@ type Config struct {
 	Common                 []Project                    `json:"common_datasets"`
 }
 
+func validHTTPURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https")
+}
+
 func LoadConfig(path string) (Config, error) {
 	var c Config
 	c.ConfigFile = path
@@ -59,9 +65,13 @@ func LoadConfig(path string) (Config, error) {
 	if e != nil {
 		return c, e
 	}
-	u, e := url.Parse(c.ServiceURL)
-	if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return c, fmt.Errorf("official service_url required")
+	hasControl := false
+	if c.ProjectControl != nil {
+		_, controlErr := controlplane.ValidateLoopbackOrigin(c.ProjectControl.URL)
+		hasControl = controlErr == nil
+	}
+	if !hasControl && !validHTTPURL(c.ServiceURL) {
+		return c, fmt.Errorf("project_control.url or service_url required")
 	}
 	return c, nil
 }

@@ -73,11 +73,11 @@ func (a *App) deleteCommonKnowledge(document Document) {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		controller, managed, err := client.commonAPI()
-		if err == nil && managed {
-			err = controller.Delete(ctx, document.ID)
+		if err == nil && !managed {
+			err = fmt.Errorf("本地网关尚未配置")
 		}
-		if !managed || legacyReadingRouteMissing(err) {
-			err = client.deleteCommon(ctx, p, document)
+		if err == nil {
+			err = controller.Delete(ctx, document.ID)
 		}
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
@@ -175,30 +175,19 @@ func saveCommonDraft(ctx context.Context, client Client, p Project, draft Common
 	if err != nil {
 		return CommonWriteReceipt{}, err
 	}
-	if managed {
-		id := ""
-		if existing != nil {
-			id = existing.ID
-		}
-		out, err := controller.Save(ctx, id, draft, baseline)
-		if !legacyReadingRouteMissing(err) {
-			receipt := CommonWriteReceipt{Gateway: true, DatasetID: p.Dataset, DataID: out.DocumentID}
-			if err == nil && (!out.OK || out.DocumentID == "" || out.DatasetID != p.Dataset) {
-				err = fmt.Errorf("保存回执不完整，请核对原操作")
-			}
-			return receipt, err
-		}
+	if !managed {
+		return CommonWriteReceipt{}, fmt.Errorf("本地网关尚未配置")
 	}
+	id := ""
 	if existing != nil {
-		current, err := client.read(ctx, Item{ID: existing.ID, Dataset: existing.Dataset, Kind: "知识", Document: existing})
-		if readingUnavailable(err) {
-			return CommonWriteReceipt{}, err
-		}
-		if err != nil || reading.BaselineSHA256(current.Body) != baseline {
-			return CommonWriteReceipt{}, reading.ErrCommonChanged
-		}
+		id = existing.ID
 	}
-	return client.writeCommon(ctx, p, draft, existing)
+	out, err := controller.Save(ctx, id, draft, baseline)
+	receipt := CommonWriteReceipt{Gateway: true, DatasetID: p.Dataset, DataID: out.DocumentID}
+	if err == nil && (!out.OK || out.DocumentID == "" || out.DatasetID != p.Dataset) {
+		err = fmt.Errorf("保存回执不完整，请核对原操作")
+	}
+	return receipt, err
 }
 
 func confirmGatewayCommon(ctx context.Context, client Client, p Project, receipt CommonWriteReceipt, draft CommonDraft) (Document, string, error) {

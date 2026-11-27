@@ -1,10 +1,7 @@
 package app
 
 import (
-	"context"
-	"encoding/json"
 	"io/fs"
-	"net/url"
 	"sync"
 
 	"github.com/egoist/mygo"
@@ -66,9 +63,6 @@ func (a *App) configureGraphTransport() {
 	}
 	g.Dispatcher = shell.DispatchFunc(a.Update)
 	client := a.Client
-	g.RawFetcher = func(ctx context.Context, _ shell.ProjectRef, dataset string) (json.RawMessage, error) {
-		return client.request(ctx, "GET", "/api/v1/visualize/json?dataset_id="+url.QueryEscape(dataset)+"&max_nodes=1000&include_session_events=false", nil)
-	}
 	if control, ok := a.accessClient(); ok {
 		g.ClientFactory = func() (*api.Client, error) {
 			identity, err := readingIdentity(Client{Config: client.Config})

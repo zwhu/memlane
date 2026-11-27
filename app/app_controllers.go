@@ -10,6 +10,7 @@ import (
 	appgraph "github.com/zwhu/memlane/app/graph"
 	appoverview "github.com/zwhu/memlane/app/overview"
 	appsearch "github.com/zwhu/memlane/app/search"
+	"github.com/zwhu/memlane/app/settings"
 	"github.com/zwhu/memlane/app/shell"
 	kitui "github.com/zwhu/memlane/kit/ui"
 )
@@ -81,7 +82,8 @@ func (c *readingController) initReading(client Client) {
 	c.detailChunks = newDetailChunkCache()
 	if full, base, err := readingIdentityPair(client); err == nil {
 		c.readingIdentity = full
-		c.updateBaseReadingIdentity(base, client.Config.ServiceURL, client.Config.TokenFile)
+		endpointURL, tokenFile, _ := settings.EffectiveReadingEndpoint(client.Config)
+		c.updateBaseReadingIdentity(base, endpointURL, tokenFile)
 	}
 }
 

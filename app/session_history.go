@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -125,33 +124,24 @@ func subagentDefaultTools(item Item, page *SessionHistoryPage) bool {
 	return item.Session != nil && item.Session.IsSubagent && page != nil && page.Count == 0 && page.ToolCount > 0
 }
 
-func fetchSessionHistoryPage(ctx context.Context, control ProjectControlClient, hasControl bool, client Client, item Item) (Item, *SessionHistoryPage, error) {
-	if hasControl {
-		page, fastErr := control.rawSessionHistory(ctx, item, 0, 0)
-		if fastErr == nil {
-			result, sessionPage := sessionItemFromHistoryPage(item, page)
-			return result, sessionPage, nil
-		}
-		if !shouldFallbackFromRawControlError(ctx, fastErr) {
-			return Item{}, nil, fastErr
-		}
+func fetchSessionHistoryPage(ctx context.Context, control ProjectControlClient, hasControl bool, _ Client, item Item) (Item, *SessionHistoryPage, error) {
+	if !hasControl {
+		return Item{}, nil, fmt.Errorf("本地网关尚未配置")
 	}
-	return client.readSessionHistory(ctx, item)
+	page, err := control.rawSessionHistory(ctx, item, 0, 0)
+	if err != nil {
+		return Item{}, nil, err
+	}
+	result, sessionPage := sessionItemFromHistoryPage(item, page)
+	return result, sessionPage, nil
 }
 
 func (c Client) sessionHistory(ctx context.Context, item Item, qa, trace int) (SessionHistoryPage, error) {
-	var page SessionHistoryPage
-	if item.Session == nil || qa < 0 || trace < 0 {
-		return page, fmt.Errorf("来源会话身份无效")
+	control, ok := c.controlClient()
+	if !ok {
+		return SessionHistoryPage{}, fmt.Errorf("本地网关尚未配置")
 	}
-	path := fmt.Sprintf("/api/v1/sessions/%s/history?qa_offset=%d&trace_offset=%d&limit=20", url.PathEscape(item.ID), qa, trace)
-	if err := c.get(ctx, path, &page); err != nil {
-		return page, err
-	}
-	if err := validateSessionHistoryPage(page, item.Dataset, item.ID, item.Session.User, qa, trace); err != nil {
-		return SessionHistoryPage{}, err
-	}
-	return page, nil
+	return control.rawSessionHistory(ctx, item, qa, trace)
 }
 
 func (c Client) sourceWithHistory(ctx context.Context, original Item) (Item, *SessionHistoryPage, error) {
@@ -190,24 +180,15 @@ func (a *App) readSessionBatch(s *pane, qa, trace int, appendRows bool) {
 	s.readRequest++
 	request, epoch, authEpoch := s.readRequest, a.epoch, a.authEpoch
 	s.Reading, s.Error = true, ""
-	client := a.Client
 	control, hasControl := a.accessClient()
 	go func() {
 		defer cancel()
 		var page SessionHistoryPage
 		var err error
 		if hasControl {
-			var fastErr error
-			page, fastErr = control.rawSessionHistory(ctx, item, qa, trace)
-			if fastErr != nil {
-				if !shouldFallbackFromRawControlError(ctx, fastErr) {
-					err = fastErr
-				} else {
-					page, err = client.sessionHistory(ctx, item, qa, trace)
-				}
-			}
+			page, err = control.rawSessionHistory(ctx, item, qa, trace)
 		} else {
-			page, err = client.sessionHistory(ctx, item, qa, trace)
+			err = fmt.Errorf("本地网关尚未配置")
 		}
 		a.Update(func() {
 			if epoch != a.epoch || authEpoch != a.authEpoch || request != s.readRequest || s.Selected == nil || s.Selected.Key() != item.Key() || !a.syncReadingIdentity() {

@@ -204,19 +204,17 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	var writes atomic.Int32
 	draft := CommonDraft{Title: "A reusable preference", Body: "Use the applicable project command.", Category: "preference"}
 	body, _ := draft.FormatDocument()
-	d := Document{ID: "saved", Dataset: "common", Name: "Saved preference", Metadata: map[string]any{"memlane_kind": "common_knowledge", "category": "preference"}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "POST" && r.URL.Path == "/api/v1/remember":
+		case r.Method == "POST" && r.URL.Path == "/api/common":
 			writes.Add(1)
-			json.NewEncoder(w).Encode(CommonWriteReceipt{Status: "running", DatasetID: "common", DataID: "saved", PipelineRunID: "same-run"})
-		case r.URL.Path == "/v1/datasets/common/documents/saved/body":
-			json.NewEncoder(w).Encode(v2DocumentBodyResponse{ID: d.ID, DatasetID: d.Dataset, Body: &body})
-		case strings.Contains(r.URL.Path, "pipeline-runs"):
-			json.NewEncoder(w).Encode([]map[string]string{{"kind": "pipeline", "dataset_id": "common", "pipeline_run_id": "same-run", "status": "STARTED"}})
-		case r.URL.Path == "/v1/datasets/common/documents/saved":
-			json.NewEncoder(w).Encode(documentLookupV2Response{Document: d})
-		case r.URL.Path == "/v1/common/knowledge":
+			json.NewEncoder(w).Encode(map[string]any{"ok": true, "dataset_id": "common", "document_id": "saved", "doc_id": "saved", "common_category": "preference"})
+		case r.Method == "GET" && r.URL.Path == "/api/common/saved":
+			json.NewEncoder(w).Encode(map[string]any{
+				"dataset_id": "common", "doc_id": "saved", "document_id": "saved",
+				"common_category": "preference", "content": body, "pipeline_status": "running",
+			})
+		case r.URL.Path == "/v1/common/knowledge", r.URL.Path == "/api/common":
 			json.NewEncoder(w).Encode(v2CommonKnowledgeResponse{})
 		case r.URL.Path == "/v1/capabilities":
 			json.NewEncoder(w).Encode(ControlCapabilities{ReadingContract: readingContract})
@@ -226,11 +224,7 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	}))
 	defer server.Close()
 	a := commonUIFixture()
-	credential := filepath.Join(t.TempDir(), "official.key")
-	os.WriteFile(credential, []byte("synthetic-key"), 0600)
-	a.Config.ServiceURL = server.URL
 	a.Config.ProjectControl = readingControlConfig(t, server.URL)
-	a.Config.TokenFile = credential
 	a.Client.Config = a.Config
 	a.readingIdentity, _ = readingIdentity(a.Client)
 	updates := make(chan func(), 100)
@@ -245,7 +239,7 @@ func TestCommonSaveAndConfirmPreserveOriginalOperation(t *testing.T) {
 	}
 	a.confirmCommonKnowledge()
 	drainReading(t, updates, func() bool { return !a.commonEdit.Busy })
-	if !a.commonEdit.SaveVerified || a.commonEdit.Processing != "STARTED" || writes.Load() != 1 {
+	if !a.commonEdit.SaveVerified || a.commonEdit.Processing == "已完成" || writes.Load() != 1 {
 		t.Fatalf("confirmation resubmitted or confused processing with saved content: writes=%d message=%q processing=%q", writes.Load(), a.commonEdit.Message, a.commonEdit.Processing)
 	}
 }
@@ -280,8 +274,8 @@ func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
 	}))
 	defer server.Close()
 	a := commonUIFixture()
-	a.Client.Config.ServiceURL = server.URL
 	a.Config.ProjectControl = readingControlConfig(t, server.URL)
+	a.Client.Config = a.Config
 	a.syncReadingIdentity()
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
@@ -316,9 +310,9 @@ func TestCommonConfirmKnownOlderDocumentOutsideFirstPage(t *testing.T) {
 		if r.Method != "GET" {
 			t.Error("confirmation wrote data")
 		}
-		if strings.HasSuffix(r.URL.Path, "/raw") {
+		if strings.HasSuffix(r.URL.Path, "/body") {
 			rawReads++
-			w.Write([]byte(body))
+			json.NewEncoder(w).Encode(map[string]any{"dataset_id": "common", "document_id": "d44", "content": body, "mime_type": "text/markdown"})
 			return
 		}
 		switch r.URL.Path {
@@ -335,8 +329,9 @@ func TestCommonConfirmKnownOlderDocumentOutsideFirstPage(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	c := Client{Config: Config{ServiceURL: server.URL}}
-	d, _, err := c.confirmCommon(context.Background(), ProjectControlClient{Config: *readingControlConfig(t, server.URL)}, true, Project{Dataset: "common"}, CommonWriteReceipt{DataID: "d44", Status: "completed"}, draft)
+	ctrl := readingControlConfig(t, server.URL)
+	c := Client{Config: Config{ProjectControl: ctrl}}
+	d, _, err := c.confirmCommon(context.Background(), ProjectControlClient{Config: *ctrl}, true, Project{Dataset: "common"}, CommonWriteReceipt{DataID: "d44", Status: "completed"}, draft)
 	if err != nil || d.ID != "d44" || rawReads != 1 {
 		t.Fatalf("known saved ID lost beyond first list page: %s %d %v", d.ID, rawReads, err)
 	}
