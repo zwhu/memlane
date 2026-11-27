@@ -594,3 +594,165 @@ func TestWorkerRunPublishesReceiptAndClassifiesErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestClaimComponentRoot(t *testing.T) {
+	const marker = ".component-owner.json"
+	identity := []byte(`{"id":"tool","version":"1.0"}`)
+
+	t.Run("creates private directory and marker and allows idempotent reentry", func(t *testing.T) {
+		base := installerRoot(t)
+		dest := filepath.Join(base, "nested", "component")
+		if err := ClaimComponentRoot(dest, marker, identity); err != nil {
+			t.Fatalf("initial ClaimComponentRoot failed: %v", err)
+		}
+		dirInfo, err := os.Lstat(dest)
+		if err != nil || !dirInfo.IsDir() || dirInfo.Mode().Perm() != 0700 {
+			t.Fatalf("directory info = %v, %v; want dir with 0700", dirInfo, err)
+		}
+		markerPath := filepath.Join(dest, marker)
+		markerInfo, err := os.Lstat(markerPath)
+		if err != nil || !markerInfo.Mode().IsRegular() || markerInfo.Mode().Perm() != 0600 {
+			t.Fatalf("marker info = %v, %v; want regular file with 0600", markerInfo, err)
+		}
+		got, err := os.ReadFile(markerPath)
+		if err != nil || !bytes.Equal(got, identity) {
+			t.Fatalf("marker content = %q, %v; want %q", got, err, identity)
+		}
+		payload := filepath.Join(dest, "payload.txt")
+		if err := os.WriteFile(payload, []byte("keep"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(dest, marker, identity); err != nil {
+			t.Fatalf("idempotent reentry failed: %v", err)
+		}
+		if kept, err := os.ReadFile(payload); err != nil || string(kept) != "keep" {
+			t.Fatalf("reentry altered payload: %q, %v", kept, err)
+		}
+	})
+
+	t.Run("rejects existing directory without marker or with mismatched identity", func(t *testing.T) {
+		base := installerRoot(t)
+		noMarker := filepath.Join(base, "unowned")
+		if err := os.Mkdir(noMarker, 0700); err != nil {
+			t.Fatal(err)
+		}
+		userFile := filepath.Join(noMarker, "user.txt")
+		if err := os.WriteFile(userFile, []byte("retain"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(noMarker, marker, identity); err == nil {
+			t.Fatal("accepted existing directory without marker")
+		}
+		if entries, err := os.ReadDir(noMarker); err != nil || len(entries) != 1 || entries[0].Name() != "user.txt" {
+			t.Fatalf("unowned directory modified: %v, %v", entries, err)
+		}
+
+		mismatch := filepath.Join(base, "mismatch")
+		if err := os.Mkdir(mismatch, 0700); err != nil {
+			t.Fatal(err)
+		}
+		other := []byte(`{"id":"tool","version":"0.9"}`)
+		if err := os.WriteFile(filepath.Join(mismatch, marker), other, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(mismatch, marker, identity); err == nil {
+			t.Fatal("accepted existing directory with mismatched identity")
+		}
+		if got, err := os.ReadFile(filepath.Join(mismatch, marker)); err != nil || !bytes.Equal(got, other) {
+			t.Fatalf("mismatched marker overwritten: %q, %v", got, err)
+		}
+	})
+
+	t.Run("rejects non-directory, non-private directory, non-private marker, and symlink marker", func(t *testing.T) {
+		base := installerRoot(t)
+
+		regularFile := filepath.Join(base, "not-a-dir")
+		if err := os.WriteFile(regularFile, []byte("file"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(regularFile, marker, identity); err == nil {
+			t.Fatal("accepted regular file as component destination")
+		}
+
+		publicDir := filepath.Join(base, "public-dir")
+		if err := os.Mkdir(publicDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(publicDir, marker), identity, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(publicDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(publicDir, marker, identity); err == nil {
+			t.Fatal("accepted non-private existing directory")
+		}
+
+		publicMarkerDir := filepath.Join(base, "public-marker")
+		if err := os.Mkdir(publicMarkerDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		publicMarker := filepath.Join(publicMarkerDir, marker)
+		if err := os.WriteFile(publicMarker, identity, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(publicMarker, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(publicMarkerDir, marker, identity); err == nil {
+			t.Fatal("accepted non-private marker file")
+		}
+
+		symlinkMarkerDir := filepath.Join(base, "symlink-marker")
+		if err := os.Mkdir(symlinkMarkerDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		externalMarker := filepath.Join(base, "real-marker.json")
+		if err := os.WriteFile(externalMarker, identity, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(externalMarker, filepath.Join(symlinkMarkerDir, marker)); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(symlinkMarkerDir, marker, identity); err == nil {
+			t.Fatal("accepted symlink marker file")
+		}
+	})
+
+	t.Run("rejects relative paths and ancestor or target symlinks", func(t *testing.T) {
+		base := installerRoot(t)
+		if err := ClaimComponentRoot("relative/component", marker, identity); err == nil {
+			t.Fatal("accepted relative destination")
+		}
+
+		realParent := filepath.Join(base, "real-parent")
+		if err := os.Mkdir(realParent, 0700); err != nil {
+			t.Fatal(err)
+		}
+		linkedParent := filepath.Join(base, "linked-parent")
+		if err := os.Symlink(realParent, linkedParent); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(filepath.Join(linkedParent, "child"), marker, identity); err == nil {
+			t.Fatal("accepted destination traversing symlink ancestor")
+		}
+
+		realTarget := filepath.Join(base, "real-target")
+		if err := os.Mkdir(realTarget, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(realTarget, marker), identity, 0600); err != nil {
+			t.Fatal(err)
+		}
+		linkedTarget := filepath.Join(base, "linked-target")
+		if err := os.Symlink(realTarget, linkedTarget); err != nil {
+			t.Fatal(err)
+		}
+		if err := ClaimComponentRoot(linkedTarget, marker, identity); err == nil {
+			t.Fatal("accepted symlink destination")
+		}
+		if err := ClaimComponentRoot(linkedTarget+string(filepath.Separator), marker, identity); err == nil {
+			t.Fatal("accepted symlink destination with trailing slash")
+		}
+	})
+}

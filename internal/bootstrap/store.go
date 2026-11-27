@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 type StoreIdentity struct {
@@ -110,7 +112,7 @@ func (e *Environment) InitializeStore(ctx context.Context, root string, assets f
 		if err != nil {
 			return err
 		}
-		if err := claimComponentRoot(root, ".memlane-first-store.json", b); err != nil {
+		if err := aiinstaller.ClaimComponentRoot(root, ".memlane-first-store.json", b); err != nil {
 			return err
 		}
 		spec := firstStoreInput{StoreIdentity: identity, Root: root, Source: sourcePath, Archive: archive, ModelCache: model.Path}

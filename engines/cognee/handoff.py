@@ -5,7 +5,6 @@ import copy
 import json
 import os
 import re
-from pathlib import Path
 import sys
 import time
 
@@ -29,19 +28,6 @@ def _clear_cognify_config_cache():
         clear()
 
 
-def _local_litellm_baseline():
-    import litellm
-    backup = Path(litellm.__file__).with_name('model_prices_and_context_window_backup.json')
-    if backup.is_file():
-        try:
-            data = json.loads(backup.read_text(encoding='utf-8'))
-            if isinstance(data, dict):
-                return data
-        except (OSError, ValueError):
-            pass
-    return {}
-
-
 def _register_bridge_model(model):
     import litellm
     bare = model.split('/', 1)[1] if model.startswith('openai/') else model
@@ -62,38 +48,6 @@ def _register_bridge_model(model):
     except BaseException:
         restore()
         raise
-    return restore
-
-
-def _initial_model_restore(profile, environment):
-    mode = (profile or {}).get('mode')
-    provider = (profile or {}).get('provider')
-    model = (environment or {}).get('LLM_MODEL')
-    if not isinstance(model, str) or not model:
-        return None
-    if mode == 'agent_bridge':
-        bare = model.split('/', 1)[1] if model.startswith('openai/') else model
-        aliases = {model, bare, 'openai/' + bare}
-    elif provider == 'ollama':
-        bare = model.split('/', 1)[1] if model.startswith(('ollama/', 'ollama_chat/')) else model
-        aliases = {model, bare, 'ollama/' + bare, 'ollama_chat/' + bare}
-    else:
-        return None
-
-    def restore():
-        try:
-            import litellm
-        except ImportError:
-            return
-        baseline = _local_litellm_baseline()
-        for key in aliases:
-            if key in baseline:
-                litellm.model_cost[key] = copy.deepcopy(baseline[key])
-            else:
-                litellm.model_cost.pop(key, None)
-        from litellm.utils import _invalidate_model_cost_lowercase_map
-        _invalidate_model_cost_lowercase_map()
-
     return restore
 
 

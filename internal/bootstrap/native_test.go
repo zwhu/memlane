@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 func TestPinnedNativeSupportIsPrivateResumableAndTamperEvident(t *testing.T) {
@@ -44,7 +46,7 @@ func TestPinnedNativeSupportIsPrivateResumableAndTamperEvident(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity, _ := json.Marshal(pins.Native)
-	if err = claimComponentRoot(filepath.Join(root, "native"), ".memlane-native.json", identity); err != nil {
+	if err = aiinstaller.ClaimComponentRoot(filepath.Join(root, "native"), ".memlane-native.json", identity); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(filepath.Join(root, "native/artifact.tar.gz"), archive, 0600); err != nil {

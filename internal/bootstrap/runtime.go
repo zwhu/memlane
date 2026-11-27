@@ -87,7 +87,7 @@ func (d RuntimeDriver) Install(ctx context.Context, r Requirement) error {
 		return err
 	}
 	identity, _ := json.Marshal(struct{ Lock, Python string }{d.Digest(), base})
-	if err := claimComponentRoot(r.Destination, ".memlane-runtime.json", identity); err != nil {
+	if err := aiinstaller.ClaimComponentRoot(r.Destination, ".memlane-runtime.json", identity); err != nil {
 		return err
 	}
 	lock := filepath.Join(r.Destination, "requirements.lock")

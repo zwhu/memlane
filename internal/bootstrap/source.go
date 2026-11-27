@@ -58,40 +58,9 @@ func (d SourceDriver) Install(ctx context.Context, r Requirement) error {
 	}
 	// State ownership must be established before network use. Never replace an
 	// existing user source tree, even if a user approved installing another copy.
-	if !filepath.IsAbs(r.Destination) {
-		return errors.New("absolute source destination required")
-	}
-	for p := filepath.Clean(r.Destination); ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("source destination traverses symlink")
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-	marker := filepath.Join(r.Destination, ".memlane-source.json")
 	expected, _ := json.Marshal(d.Spec)
-	if _, err := os.Stat(r.Destination); err == nil {
-		b, err := os.ReadFile(marker)
-		if err != nil || string(b) != string(expected) {
-			return errors.New("existing source directory is not owned by this installation; retained")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := aiinstaller.ClaimComponentRoot(r.Destination, ".memlane-source.json", expected); err != nil {
 		return err
-	} else {
-		if err := os.MkdirAll(filepath.Dir(r.Destination), 0700); err != nil {
-			return err
-		}
-		if err := os.Mkdir(r.Destination, 0700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(marker, expected, 0600); err != nil {
-			return err
-		}
 	}
 	archive := filepath.Join(r.Destination, "service.tar.gz")
 	if d.DownloadSource != "" {

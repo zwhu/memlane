@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 // PrepareRuntimeResources materializes only code and manifests. Nothing is
@@ -117,11 +119,8 @@ var runtimeWritableDirs = [...]string{".cache", "build", "build/disk-cleanup"}
 func materializeRuntimeResources(ctx context.Context, destination, id string, data map[string][]byte, names []string) error {
 	marker := ".memlane-runtime.json"
 	identity, _ := json.Marshal(map[string]string{"sha256": id})
-	if err := claimComponentRoot(destination, marker, identity); err != nil {
+	if err := aiinstaller.ClaimComponentRoot(destination, marker, identity); err != nil {
 		return err
-	}
-	if b, err := privateRead(filepath.Join(destination, marker)); err != nil || string(b) != string(identity) {
-		return errors.New("runtime resource ownership differs; original files retained")
 	}
 	if err := checkRuntimeResourceTree(destination, marker, data); err != nil {
 		return err

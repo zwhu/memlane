@@ -207,6 +207,33 @@ class ScanTests(unittest.TestCase):
                             'app/untested.go:1: ML008', 'docs/guide.md:1: ML018'):
                 self.assertIn(snippet, output.getvalue())
 
+    def test_ml023_counts_nested_py_and_skips_pycache_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel, source in {
+                'engines/cognee/runner.py': '# adapter\n' * 3499,
+                'engines/cognee/__pycache__/cached.py': 'import sqlite3\n' * 10,
+                'engines/cognee/sub/__pycache__/cached.py': 'import sqlite3\n' * 10,
+                'engines/cognee/sub/test_helper.py': 'import sqlite3\n' * 10,
+                'engines/cognee/sub/helper.py': 'VALUE = 1\n',
+                'external.py': 'import sqlite3\n' * 10,
+            }.items():
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(source, encoding='utf-8')
+            (root / 'engines/cognee/linked.py').symlink_to(root / 'external.py')
+            (root / 'engines/cognee/sub/linked.py').symlink_to(root / 'external.py')
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(lint.main(root), output.getvalue())
+            (root / 'engines/cognee/sub/helper.py').write_text('VALUE = 1\nimport sqlite3\n', encoding='utf-8')
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertTrue(lint.main(root))
+            self.assertIn('engines/cognee:1: ML023 3501', output.getvalue())
+            self.assertIn('engines/cognee/sub/helper.py:2: ML023', output.getvalue())
+            self.assertNotIn('__pycache__', output.getvalue())
+            self.assertNotIn('linked.py', output.getvalue())
+
     def test_real_repository_passes(self):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             failed = lint.main()

@@ -450,8 +450,14 @@ def main(root=ROOT):
         return len(source.splitlines())
 
     cognee = root / 'engines/cognee'
-    loc = sum(scan(path, check_source) for path in sorted(cognee.glob('*.py'))
-              if not path.name.startswith('test_'))
+    loc = sum(
+        scan(path, check_source)
+        for path in sorted(cognee.rglob('*.py'))
+        if not path.name.startswith('test_')
+        and '__pycache__' not in path.parts
+        and not path.is_symlink()
+        and path.is_file()
+    )
     if loc > COGNEE_LOC_LIMIT:
         print(f'engines/cognee:1: ML023 {loc} non-test LOC exceeds {COGNEE_LOC_LIMIT}')
         failures += 1

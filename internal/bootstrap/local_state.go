@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
-	"syscall"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 func ComponentRoot(root string) (string, error) {
@@ -26,62 +26,15 @@ func ComponentRoot(root string) (string, error) {
 }
 
 func privateRead(path string) ([]byte, error) {
-	return privateReadBounded(path, 2<<20)
+	return aiinstaller.PrivateRead(path)
 }
 
 func privateReadBounded(path string, maxBytes int64) ([]byte, error) {
-	for p := filepath.Dir(path); ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, errors.New("private state parent must not be a symlink")
-		}
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > maxBytes {
-		return nil, errors.New("private state must be a bounded private regular file")
-	}
-	return io.ReadAll(f)
+	return aiinstaller.PrivateReadBounded(path, maxBytes)
 }
 
 func atomicPrivateFile(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".memlane-state-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if _, err := f.Write(data); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(f.Name(), path); err != nil {
-		return err
-	}
-	d, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
+	return aiinstaller.AtomicPrivateFile(path, data)
 }
 
 // Selections contains only user-selected dependency paths, never environment

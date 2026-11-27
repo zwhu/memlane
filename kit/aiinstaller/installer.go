@@ -463,7 +463,8 @@ func ClaimComponentRoot(root, marker string, identity []byte) error {
 	if !filepath.IsAbs(root) {
 		return errors.New("absolute managed component destination required")
 	}
-	for p := filepath.Clean(root); ; p = filepath.Dir(p) {
+	root = filepath.Clean(root)
+	for p := root; ; p = filepath.Dir(p) {
 		info, err := os.Lstat(p)
 		if err == nil && info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("component destination traverses symlink")
@@ -475,8 +476,11 @@ func ClaimComponentRoot(root, marker string, identity []byte) error {
 			break
 		}
 	}
-	if _, err := os.Stat(root); err == nil {
-		b, err := os.ReadFile(filepath.Join(root, marker))
+	if info, err := os.Lstat(root); err == nil {
+		if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+			return errors.New("component destination must be a private directory")
+		}
+		b, err := PrivateRead(filepath.Join(root, marker))
 		if err != nil || string(b) != string(identity) {
 			return errors.New("unowned component destination retained unchanged")
 		}

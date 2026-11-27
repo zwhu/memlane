@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 type ModelFile struct {
@@ -140,7 +142,7 @@ func (d ModelDriver) Install(ctx context.Context, r Requirement) error {
 		return nil
 	}
 	identity, _ := json.Marshal(d.Spec)
-	if err := claimComponentRoot(r.Destination, ".memlane-model.json", identity); err != nil {
+	if err := aiinstaller.ClaimComponentRoot(r.Destination, ".memlane-model.json", identity); err != nil {
 		return err
 	}
 	progressBatch(ctx, d.Spec.Bytes())

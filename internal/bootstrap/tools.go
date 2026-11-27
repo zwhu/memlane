@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 type Artifact struct {
@@ -118,7 +120,7 @@ func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
 		ID, Version, Executable string
 		Artifact                Artifact
 	}{d.ID, d.Version, d.Executable, d.Artifact})
-	if err := claimComponentRoot(r.Destination, ".memlane-tool.json", identity); err != nil {
+	if err := aiinstaller.ClaimComponentRoot(r.Destination, ".memlane-tool.json", identity); err != nil {
 		return err
 	}
 	archivePathFor := func(cand ArtifactCandidate) string {
@@ -168,40 +170,6 @@ func (d ToolDriver) Install(ctx context.Context, r Requirement) error {
 	// Standalone distributions are installed at the final path before probing.
 	// A venv is never created in staging and moved afterwards.
 	return os.Rename(staging, payload)
-}
-
-func claimComponentRoot(root, marker string, identity []byte) error {
-	if !filepath.IsAbs(root) {
-		return errors.New("absolute managed component destination required")
-	}
-	for p := filepath.Clean(root); ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("component destination traverses symlink")
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if p == filepath.Dir(p) {
-			break
-		}
-	}
-	if _, err := os.Stat(root); err == nil {
-		b, err := os.ReadFile(filepath.Join(root, marker))
-		if err != nil || string(b) != string(identity) {
-			return errors.New("unowned component destination retained unchanged")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(root), 0700); err != nil {
-		return err
-	}
-	if err := os.Mkdir(root, 0700); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(root, marker), identity, 0600)
 }
 
 func runToolProbe(ctx context.Context, executable string, args ...string) ([]byte, error) {

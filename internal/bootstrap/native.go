@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/zwhu/memlane/kit/aiinstaller"
 )
 
 // NativeSupport is a pinned, separately downloaded runtime dependency. Only the
@@ -136,7 +138,7 @@ func (n NativeSupport) install(ctx context.Context, root string) error {
 	progressDetail(ctx, "OpenSSL")
 	dir := filepath.Join(root, "native")
 	identity, _ := json.Marshal(n)
-	if err := claimComponentRoot(dir, ".memlane-native.json", identity); err != nil {
+	if err := aiinstaller.ClaimComponentRoot(dir, ".memlane-native.json", identity); err != nil {
 		return err
 	}
 	archive := filepath.Join(dir, "artifact.tar.gz")
