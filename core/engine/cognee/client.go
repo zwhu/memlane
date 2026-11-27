@@ -212,6 +212,15 @@ func runnerStatusError(resp *http.Response) error {
 		if responseContainsCode(resp.Body, modelDigestMismatchCode) {
 			code, cause = modelDigestMismatchCode, engine.ErrModelDigestMismatch
 		}
+	case http.StatusServiceUnavailable:
+		if data, err := io.ReadAll(io.LimitReader(resp.Body, maxRunnerErrorBytes+1)); err == nil && len(data) <= maxRunnerErrorBytes {
+			switch {
+			case bytes.Contains(data, []byte("generation_not_configured")):
+				code = "generation_not_configured"
+			case bytes.Contains(data, []byte("official_extract_failed")):
+				code = "official_extract_failed"
+			}
+		}
 	}
 	return &engine.EngineError{
 		StatusCode: resp.StatusCode,

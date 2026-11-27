@@ -359,12 +359,16 @@ func agySettings(home string) string {
 	return filepath.Join(filepath.Dir(home), "antigravity-cli", "settings.json")
 }
 
-type BridgeRuntimeInfo struct{ Kind, Executable, Home, AuthHome, AuthFile string }
+type BridgeRuntimeInfo struct{ Kind, Executable, LauncherDir, Home, AuthHome, AuthFile string }
 
 func CheckBridgeRuntime(kind, executable, home string, opts ModelDefaultsOptions) (BridgeRuntimeInfo, error) {
 	invalid := agentError("generation_bridge_authentication_required")
 	if !filepath.IsAbs(home) || !filepath.IsAbs(executable) {
 		return BridgeRuntimeInfo{}, invalid
+	}
+	launcherDir := filepath.Dir(filepath.Clean(executable))
+	if resolvedDir, err := filepath.EvalSymlinks(launcherDir); err == nil && filepath.IsAbs(resolvedDir) {
+		launcherDir = resolvedDir
 	}
 	executable, err := filepath.EvalSymlinks(executable)
 	if err != nil || !isHostExecutable(executable) {
@@ -377,7 +381,7 @@ func CheckBridgeRuntime(kind, executable, home string, opts ModelDefaultsOptions
 	if st, err := os.Stat(home); err != nil || !st.IsDir() {
 		return BridgeRuntimeInfo{}, invalid
 	}
-	result := BridgeRuntimeInfo{Kind: kind, Executable: executable, Home: home, AuthHome: home}
+	result := BridgeRuntimeInfo{Kind: kind, Executable: executable, LauncherDir: launcherDir, Home: home, AuthHome: home}
 	switch kind {
 	case HostCodex, HostPi:
 		result.AuthFile = filepath.Join(home, "auth.json")

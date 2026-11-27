@@ -703,3 +703,80 @@ func TestPerDatasetPreferFlushAndFailedRerunRecovery(t *testing.T) {
 		t.Fatalf("unexpected final job after failed-then-rerun: %+v", finalJob)
 	}
 }
+
+func TestInboxHTTP500AndOfficialExtractFailedMarkFailedInsteadOfInfiniteRetry(t *testing.T) {
+	s, store, fake := testServer(t, nil)
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	enqueueQA := func(msgID string) string {
+		res := agentRequest(t, s, "/ingest", fmt.Sprintf(`{
+			"project_id":"p","session_id":"s-500","message_id":%q,"kind":"capture_qa",
+			"content":{"question":"q-%s","answer":"a-%s"}
+		}`, msgID, msgID, msgID), http.StatusAccepted)
+		return res["inbox_id"].(string)
+	}
+
+	// 1. HTTP 500 from engine extract must mark item failed immediately instead of requeuing forever.
+	id500 := enqueueQA("m-500")
+	fake.mu.Lock()
+	fake.extractErr = &engine.EngineError{
+		StatusCode: http.StatusInternalServerError,
+		Code:       "unavailable",
+		Message:    "engine runner rejected the request",
+		Err:        engine.ErrUnavailable,
+	}
+	fake.mu.Unlock()
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected HTTP 500 extract error to finalize attempt (worked=true)")
+	}
+	item500, err := store.GetInboxItem(ctx, id500)
+	must(t, err)
+	if item500.Status != "failed" || item500.Attempts != 1 {
+		t.Fatalf("HTTP 500 must mark failed on attempt 1, got %+v", item500)
+	}
+
+	// 2. HTTP 503 official_extract_failed must also mark item failed (not pause/requeue forever).
+	id503Extract := enqueueQA("m-503-extract")
+	fake.mu.Lock()
+	fake.extractErr = &engine.EngineError{
+		StatusCode: http.StatusServiceUnavailable,
+		Code:       "official_extract_failed",
+		Message:    "engine runner rejected the request",
+		Err:        engine.ErrUnavailable,
+	}
+	fake.mu.Unlock()
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected 503 official_extract_failed to finalize attempt")
+	}
+	item503, err := store.GetInboxItem(ctx, id503Extract)
+	must(t, err)
+	if item503.Status != "failed" || item503.Attempts != 1 {
+		t.Fatalf("503 official_extract_failed must mark failed, got %+v", item503)
+	}
+
+	// 3. Transport-level unavailable (StatusCode 0) must still pause and keep item pending.
+	idDown := enqueueQA("m-down")
+	fake.mu.Lock()
+	fake.extractErr = &engine.EngineError{
+		StatusCode: 0,
+		Code:       "unavailable",
+		Message:    "contact engine runner",
+		Err:        engine.ErrUnavailable,
+	}
+	fake.mu.Unlock()
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if worked {
+		t.Fatal("expected transport-level unavailable to pause (worked=false)")
+	}
+	itemDown, err := store.GetInboxItem(ctx, idDown)
+	must(t, err)
+	if itemDown.Status != "pending" {
+		t.Fatalf("transport-level unavailable must keep item pending, got %+v", itemDown)
+	}
+}

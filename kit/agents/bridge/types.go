@@ -62,13 +62,13 @@ type TraceEvent struct {
 	WillRetry                          bool
 }
 type ExecOptions struct {
-	RequestID, BridgeKind, Executable, AuthHome, Model, BridgeProvider        string
-	Defaults                                                                  *agents.ModelDefaults
-	IdleTimeout                                                               time.Duration
-	WorkspaceRoot, ClientName, PermissionProfile, AgentName, ProcessingEnvKey string
-	SchemaEventPrefix, SchemaName, TempPrefix                                 string
-	Environ                                                                   func(string) string
-	OnTrace                                                                   func(TraceEvent)
+	RequestID, BridgeKind, Executable, LauncherDir, AuthHome, Model, BridgeProvider string
+	Defaults                                                                        *agents.ModelDefaults
+	IdleTimeout                                                                     time.Duration
+	WorkspaceRoot, ClientName, PermissionProfile, AgentName, ProcessingEnvKey       string
+	SchemaEventPrefix, SchemaName, TempPrefix                                       string
+	Environ                                                                         func(string) string
+	OnTrace                                                                         func(TraceEvent)
 }
 
 func decode(raw []byte, dest any) error {
@@ -289,6 +289,9 @@ func prepareOptions(opts ExecOptions, req *ParsedRequest) (ExecOptions, error) {
 			return opts, fault("bridge_profile_mismatch", 409)
 		}
 		opts.BridgeProvider = opts.Defaults.Provider
+	}
+	if opts.LauncherDir == "" {
+		opts.LauncherDir = runtime.LauncherDir
 	}
 	opts.Executable, opts.AuthHome = runtime.Executable, runtime.Home
 	return opts, nil

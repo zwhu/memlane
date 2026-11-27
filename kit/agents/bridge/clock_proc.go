@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -304,7 +305,7 @@ func createWorkspace(opts ExecOptions, privateName string) (workspace, error) {
 }
 
 func (w workspace) environment(opts ExecOptions, extra ...string) []string {
-	env := []string{"HOME=" + w.home, "TMPDIR=" + w.root, "PATH=" + filepath.Dir(opts.Executable) + ":/usr/bin:/bin"}
+	env := []string{"HOME=" + w.home, "TMPDIR=" + w.root, "PATH=" + buildChildPath(opts)}
 	for _, key := range []string{"LANG", "LC_ALL", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"} {
 		if value := opts.Environ(key); value != "" {
 			env = append(env, key+"="+value)
@@ -312,6 +313,105 @@ func (w workspace) environment(opts ExecOptions, extra ...string) []string {
 	}
 	env = append(env, extra...)
 	return append(env, opts.ProcessingEnvKey+"=1")
+}
+
+// buildChildPath keeps the isolated bridge PATH minimal while preserving the
+// pre-symlink launcher directory (e.g. nvm/volta/Homebrew bin holding `node`)
+// and, for `#!/usr/bin/env <interp>` scripts, the single directory owning that
+// interpreter if it is not already reachable in the minimal PATH.
+func buildChildPath(opts ExecOptions) string {
+	seen := make(map[string]bool, 6)
+	dirs := make([]string, 0, 6)
+	addDir := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || !filepath.IsAbs(dir) {
+			return
+		}
+		dir = filepath.Clean(dir)
+		if seen[dir] {
+			return
+		}
+		seen[dir] = true
+		dirs = append(dirs, dir)
+	}
+	if opts.Executable != "" {
+		addDir(filepath.Dir(opts.Executable))
+	}
+	addDir(opts.LauncherDir)
+	if interp := envShebangInterpreter(opts.Executable); interp != "" {
+		if !executableInDirs(interp, append(append([]string(nil), dirs...), "/usr/bin", "/bin")) && opts.Environ != nil {
+			if dir := findInterpreterDir(interp, opts.Environ("PATH")); dir != "" {
+				addDir(dir)
+			}
+		}
+	}
+	addDir("/usr/bin")
+	addDir("/bin")
+	return strings.Join(dirs, string(os.PathListSeparator))
+}
+
+func envShebangInterpreter(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	var buf [256]byte
+	n, _ := f.Read(buf[:])
+	header := buf[:n]
+	if !bytes.HasPrefix(header, []byte("#!")) {
+		return ""
+	}
+	if idx := bytes.IndexByte(header, '\n'); idx >= 0 {
+		header = header[:idx]
+	}
+	fields := strings.Fields(strings.TrimSpace(string(header[2:])))
+	if len(fields) < 2 || (fields[0] != "/usr/bin/env" && fields[0] != "/bin/env") {
+		return ""
+	}
+	for _, token := range fields[1:] {
+		if strings.HasPrefix(token, "-") || strings.Contains(token, "=") {
+			continue
+		}
+		if strings.ContainsAny(token, "/\\\x00") {
+			return ""
+		}
+		return token
+	}
+	return ""
+}
+
+func isExecutableRegular(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+func executableInDirs(name string, dirs []string) bool {
+	for _, dir := range dirs {
+		if dir != "" && isExecutableRegular(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func findInterpreterDir(name, rawPath string) string {
+	for _, dir := range filepath.SplitList(rawPath) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		if isExecutableRegular(filepath.Join(dir, name)) {
+			if resolved, err := filepath.EvalSymlinks(dir); err == nil && filepath.IsAbs(resolved) {
+				return filepath.Clean(resolved)
+			}
+			return filepath.Clean(dir)
+		}
+	}
+	return ""
 }
 
 type transport struct {

@@ -734,16 +734,24 @@ func isRetryableEnginePause(err error) bool {
 	if isRetryableModelConflict(err) {
 		return true
 	}
-	if errors.Is(err, engine.ErrUnavailable) {
-		return true
-	}
 	var engErr *engine.EngineError
 	if errors.As(err, &engErr) && engErr != nil {
+		if engErr.Code == "official_extract_failed" {
+			return false
+		}
 		if engErr.StatusCode == http.StatusServiceUnavailable ||
 			engErr.Code == "generation_not_configured" ||
 			engErr.Code == "engine_unavailable" {
 			return true
 		}
+		// HTTP 500 (e.g. CogneeSystemError during extraction) and other non-503 HTTP errors
+		// must transition the item to failed rather than spinning forever in pending.
+		if engErr.StatusCode > 0 {
+			return false
+		}
+	}
+	if errors.Is(err, engine.ErrUnavailable) {
+		return true
 	}
 	return strings.Contains(err.Error(), "generation_not_configured")
 }

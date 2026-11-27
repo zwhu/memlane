@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zwhu/memlane/kit/agents"
 )
 
 func TestStrictifyAndValidate(t *testing.T) {
@@ -141,5 +145,84 @@ func TestActivityAcrossStdoutAndStderr(t *testing.T) {
 	}
 	if scrubbed := ScrubSecrets(`Authorization: Bearer hidden, "api_key": "sk-mytoken", plain Bearer pretend`); strings.Contains(scrubbed, "hidden") || strings.Contains(scrubbed, "mytoken") || strings.Contains(scrubbed, "pretend") {
 		t.Fatal(scrubbed)
+	}
+}
+
+func TestChildPathPreservesSymlinkLauncherDirAndShebangInterpreter(t *testing.T) {
+	root := t.TempDir()
+	nvmBin := filepath.Join(root, "nvm", "bin")
+	pkgBin := filepath.Join(root, "nvm", "lib", "node_modules", "pkg", "bin")
+	authHome := filepath.Join(root, "codex-home")
+	for _, dir := range []string{nvmBin, pkgBin, authHome} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(authHome, "auth.json"), []byte(`{"tokens":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeNode := filepath.Join(nvmBin, "fake_node_interp")
+	if err := os.WriteFile(fakeNode, []byte("#!/bin/sh\necho fake-node-ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	scriptTarget := filepath.Join(pkgBin, "cli.js")
+	if err := os.WriteFile(scriptTarget, []byte("#!/usr/bin/env fake_node_interp\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	symlinkLauncher := filepath.Join(nvmBin, "codex")
+	if err := os.Symlink(filepath.Join("..", "lib", "node_modules", "pkg", "bin", "cli.js"), symlinkLauncher); err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := agents.CheckBridgeRuntime(agents.HostCodex, symlinkLauncher, authHome, agents.ModelDefaultsOptions{})
+	if err != nil {
+		t.Fatalf("CheckBridgeRuntime: %v", err)
+	}
+	resolvedNvmBin, _ := filepath.EvalSymlinks(nvmBin)
+	if rt.LauncherDir != resolvedNvmBin {
+		t.Fatalf("LauncherDir = %q, want %q", rt.LauncherDir, resolvedNvmBin)
+	}
+	childPath := buildChildPath(ExecOptions{Executable: rt.Executable, LauncherDir: rt.LauncherDir})
+	if !strings.Contains(childPath, resolvedNvmBin) {
+		t.Fatalf("buildChildPath %q missing symlink launcher dir %q", childPath, resolvedNvmBin)
+	}
+	cmd := exec.Command(rt.Executable)
+	cmd.Env = []string{"PATH=" + childPath}
+	out, err := cmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "fake-node-ok" {
+		t.Fatalf("executing symlinked env-shebang CLI failed: out=%q err=%v", out, err)
+	}
+
+	// Case 2: interpreter sits in a separate directory (e.g. Homebrew bin) discovered strictly from host PATH.
+	brewBin := filepath.Join(root, "brew", "bin")
+	unrelatedBin := filepath.Join(root, "unrelated", "bin")
+	for _, dir := range []string{brewBin, unrelatedBin} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(brewBin, "custom_env_interp"), []byte("#!/bin/sh\necho brew-ok\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	standaloneScript := filepath.Join(pkgBin, "standalone.js")
+	if err := os.WriteFile(standaloneScript, []byte("#!/usr/bin/env custom_env_interp\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolvedBrewBin, _ := filepath.EvalSymlinks(brewBin)
+	resolvedUnrelated, _ := filepath.EvalSymlinks(unrelatedBin)
+	pathWithFallback := buildChildPath(ExecOptions{
+		Executable: standaloneScript,
+		Environ: func(key string) string {
+			if key == "PATH" {
+				return unrelatedBin + string(os.PathListSeparator) + brewBin
+			}
+			return ""
+		},
+	})
+	if !strings.Contains(pathWithFallback, resolvedBrewBin) {
+		t.Fatalf("buildChildPath %q missing shebang interpreter dir %q", pathWithFallback, resolvedBrewBin)
+	}
+	if strings.Contains(pathWithFallback, resolvedUnrelated) {
+		t.Fatalf("buildChildPath %q leaked unrelated host PATH dir %q", pathWithFallback, resolvedUnrelated)
 	}
 }

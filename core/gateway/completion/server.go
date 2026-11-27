@@ -24,10 +24,10 @@ import (
 const MaxBridgeConcurrencyLimit = 32
 
 type ActiveProfile struct {
-	Mode, BridgeKind, BridgeProvider, Model, RouteModel, Executable, AuthHome, ExpectedFingerprint string
-	FollowAgentDefaults                                                                            bool
-	Defaults                                                                                       *agents.ModelDefaults
-	ExtensionBytes                                                                                 []byte
+	Mode, BridgeKind, BridgeProvider, Model, RouteModel, Executable, LauncherDir, AuthHome, ExpectedFingerprint string
+	FollowAgentDefaults                                                                                         bool
+	Defaults                                                                                                    *agents.ModelDefaults
+	ExtensionBytes                                                                                              []byte
 }
 
 type ActiveProfileGate interface {
@@ -182,6 +182,9 @@ func checkProfile(input *ActiveProfile) (*ActiveProfile, string, error) {
 	if !active.FollowAgentDefaults && active.BridgeProvider != "" && active.BridgeProvider != provider {
 		return nil, "", gatewayError("bridge_profile_mismatch", 409)
 	}
+	if active.LauncherDir == "" {
+		active.LauncherDir = runtime.LauncherDir
+	}
 	active.Executable, active.AuthHome, active.BridgeProvider = runtime.Executable, runtime.Home, provider
 	active.Defaults = &defaults
 	return &active, fingerprint, nil
@@ -330,7 +333,7 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	id := randomID()
-	opts := bridge.ExecOptions{RequestID: id, BridgeKind: active.BridgeKind, Executable: active.Executable, AuthHome: active.AuthHome,
+	opts := bridge.ExecOptions{RequestID: id, BridgeKind: active.BridgeKind, Executable: active.Executable, LauncherDir: active.LauncherDir, AuthHome: active.AuthHome,
 		Model: active.Model, BridgeProvider: active.BridgeProvider, Defaults: active.Defaults, IdleTimeout: s.cfg.IdleTimeout, OnTrace: s.cfg.OnTrace}
 	s.cfg.BridgeOptionsCustomizer(&opts)
 	content, err := s.cfg.Executor(ctx, opts, req)
