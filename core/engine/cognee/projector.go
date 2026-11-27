@@ -3,19 +3,16 @@ package cognee
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
 
@@ -23,7 +20,6 @@ type Projector struct {
 	storePath  string
 	loc        *time.Location
 	bodyReader *BodyReader
-	syncMu     sync.Mutex
 }
 
 func NewProjector(storePath string, loc *time.Location) *Projector {
@@ -40,6 +36,10 @@ func (p *Projector) database(name string) string {
 type DatasetInfo struct {
 	ID, Name  string
 	Protected bool
+}
+
+func isProtectedDatasetName(name string) bool {
+	return name == "ml-user-profiles"
 }
 
 func (p *Projector) DiscoverDatasets(ctx context.Context) ([]DatasetInfo, error) {
@@ -65,7 +65,7 @@ func discoverDatasets(ctx context.Context, tx *sql.Tx) ([]DatasetInfo, error) {
 			return nil, err
 		}
 		ds.ID = uuidText(ds.ID)
-		ds.Protected = domain.IsProtectedProject("", ds.Name)
+		ds.Protected = isProtectedDatasetName(ds.Name)
 		if ds.ID != "" {
 			datasets = append(datasets, ds)
 		}
@@ -73,26 +73,18 @@ func discoverDatasets(ctx context.Context, tx *sql.Tx) ([]DatasetInfo, error) {
 	return datasets, rows.Err()
 }
 
-type managedDataset struct {
+type targetDataset struct {
 	variants  []string
 	protected bool
 }
 
-func managedDatasets(ctx context.Context, store *domain.Store) (map[string]managedDataset, error) {
-	projects, err := store.ListProjects(ctx)
-	if err != nil {
-		return nil, err
-	}
-	common, err := store.GetCommonConfig(ctx)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		return nil, err
-	}
-	datasets := map[string]managedDataset{}
-	add := func(raw string, protected bool) {
-		if id := uuidText(raw); id != "" {
+func normalizeTargets(targets []engine.CatalogDatasetTarget) map[string]targetDataset {
+	datasets := make(map[string]targetDataset, len(targets))
+	for _, target := range targets {
+		if id := uuidText(target.DatasetID); id != "" {
 			ds := datasets[id]
-			ds.protected = ds.protected || protected
-			for _, v := range idVariants(raw) {
+			ds.protected = ds.protected || target.Protected
+			for _, v := range idVariants(target.DatasetID) {
 				if !slices.Contains(ds.variants, v) {
 					ds.variants = append(ds.variants, v)
 				}
@@ -100,142 +92,100 @@ func managedDatasets(ctx context.Context, store *domain.Store) (map[string]manag
 			datasets[id] = ds
 		}
 	}
-	for _, project := range projects {
-		add(project.DatasetID, domain.IsProtectedProject(project.Name, project.DatasetName))
-		add(project.CodeDatasetID, false)
+	return datasets
+}
+
+func (p *Projector) SnapshotCatalog(ctx context.Context, targets []engine.CatalogDatasetTarget, opts engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
+	datasets := normalizeTargets(targets)
+	if len(datasets) == 0 {
+		return &engine.CatalogSnapshot{}, nil
 	}
-	add(common.DatasetID, domain.IsProtectedProject(common.Name, common.DatasetName))
-	return datasets, nil
-}
-
-type projection struct {
-	docs     []projectedDoc
-	sessions []domain.CatalogSession
-	states   []domain.CatalogSyncState
-}
-
-type projectedDoc struct {
-	domain.CatalogDoc
-	provenance *domain.DocumentProvenance
-}
-
-func (p *Projector) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
-	if store == nil {
-		return nil, fmt.Errorf("catalog store: %w", domain.ErrInvalidArgument)
-	}
-	started := time.Now()
-	p.syncMu.Lock()
-	defer p.syncMu.Unlock()
-	datasets, err := managedDatasets(ctx, store)
+	snapshot, err := readSQLiteSnapshot(ctx, p.database("cognee_db"), func(tx *sql.Tx) (*engine.CatalogSnapshot, error) {
+		return p.readSnapshot(ctx, tx, datasets, opts.SessionsOnly)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("load managed datasets: %w", err)
+		return nil, fmt.Errorf("read official catalog snapshot: %w", err)
 	}
-	snapshot := projection{}
-	if len(datasets) != 0 {
-		snapshot, err = readSQLiteSnapshot(ctx, p.database("cognee_db"), func(tx *sql.Tx) (projection, error) {
-			return p.readProjection(ctx, tx, datasets)
-		})
-		if err != nil {
-			return nil, fmt.Errorf("read official catalog snapshot: %w", err)
+	if !opts.SessionsOnly {
+		if err := p.resolveDocumentTitles(ctx, snapshot, opts.TitleHints); err != nil {
+			return nil, fmt.Errorf("resolve catalog titles: %w", err)
 		}
 	}
-	if err := p.resolveDocumentTitles(ctx, store, snapshot.docs); err != nil {
-		return nil, fmt.Errorf("resolve catalog titles: %w", err)
-	}
-	relations, err := store.ListSessionRelations(ctx, "")
-	if err != nil {
-		return nil, fmt.Errorf("load session relations: %w", err)
-	}
-	applySessionRelations(snapshot.sessions, relations)
-	stats := &engine.SyncStats{
-		Datasets: len(snapshot.states), DocsProjected: len(snapshot.docs), SessionsProjected: len(snapshot.sessions),
-	}
-	if stats.ProvenanceLocked, err = lockLessonProvenance(ctx, store, snapshot.docs); err != nil {
-		return nil, fmt.Errorf("lock lesson provenance: %w", err)
-	}
-	counts, err := recallCounts(ctx, store, snapshot.states)
-	if err != nil {
-		return nil, fmt.Errorf("read catalog recall counts: %w", err)
-	}
-	if err := store.WithTx(ctx, func(tx *sql.Tx) error {
-		return publishCatalog(ctx, tx, snapshot, counts, stats)
-	}); err != nil {
-		return nil, fmt.Errorf("publish catalog: %w", err)
-	}
-	users := map[string]struct{}{}
-	for _, session := range snapshot.sessions {
-		if session.UserID != "" {
-			users[session.UserID] = struct{}{}
-		}
-	}
-	stats.DistinctSessionUsers = len(users)
-	stats.Duration = time.Since(started)
-	return stats, nil
+	return snapshot, nil
 }
 
-func (p *Projector) readProjection(ctx context.Context, tx *sql.Tx, datasets map[string]managedDataset) (projection, error) {
+func (p *Projector) readSnapshot(ctx context.Context, tx *sql.Tx, datasets map[string]targetDataset, sessionsOnly bool) (*engine.CatalogSnapshot, error) {
 	discovered, err := discoverDatasets(ctx, tx)
 	if err != nil {
-		return projection{}, err
+		return nil, err
 	}
 	sources := make(map[string]bool, len(discovered))
 	for _, source := range discovered {
 		sources[source.ID] = sources[source.ID] || source.Protected
 	}
-	dataCols, err := columns(ctx, tx, "data")
-	if err != nil {
-		return projection{}, err
+	var dataCols map[string]bool
+	if !sessionsOnly {
+		dataCols, err = columns(ctx, tx, "data")
+		if err != nil {
+			return nil, err
+		}
 	}
 	sessionCols, err := columns(ctx, tx, "session_records")
 	if err != nil {
-		return projection{}, err
+		return nil, err
 	}
 	ids := make([]string, 0, len(datasets))
 	for id := range datasets {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	result := projection{}
+	result := &engine.CatalogSnapshot{Datasets: make([]engine.CatalogDatasetSnapshot, 0, len(ids))}
 	for _, id := range ids {
 		ds := datasets[id]
 		args := make([]any, len(ds.variants))
 		for i, variant := range ds.variants {
 			args[i] = variant
 		}
-		docs, err := p.readDocuments(ctx, tx, id, ds.protected || sources[id], dataCols, args)
-		if err != nil {
-			return projection{}, err
+		var docs []engine.CatalogSnapshotDoc
+		if !sessionsOnly {
+			docs, err = p.readDocuments(ctx, tx, id, ds.protected || sources[id], dataCols, args)
+			if err != nil {
+				return nil, err
+			}
 		}
 		sessions, err := readSessions(ctx, tx, id, sessionCols, args)
 		if err != nil {
-			return projection{}, err
+			return nil, err
 		}
-		result.docs = append(result.docs, docs...)
-		result.sessions = append(result.sessions, sessions...)
-		if _, exists := sources[id]; discovered == nil || exists || len(docs)+len(sessions) != 0 {
-			result.states = append(result.states, syncState(id, docs, sessions))
-		}
+		_, inDiscovered := sources[id]
+		exists := discovered == nil || inDiscovered || len(docs)+len(sessions) != 0
+		result.Datasets = append(result.Datasets, engine.CatalogDatasetSnapshot{
+			DatasetID: id,
+			Exists:    exists,
+			Docs:      docs,
+			Sessions:  sessions,
+		})
 	}
 	return result, nil
 }
 
-func (p *Projector) readDocuments(ctx context.Context, tx *sql.Tx, id string, protected bool, cols map[string]bool, args []any) ([]projectedDoc, error) {
+func (p *Projector) readDocuments(ctx context.Context, tx *sql.Tx, id string, protected bool, cols map[string]bool, args []any) ([]engine.CatalogSnapshotDoc, error) {
 	if len(cols) == 0 {
 		return nil, nil
 	}
-	query := "SELECT rowid," + textColumns(cols, "id", "name", "label", "raw_data_location", "content_hash",
+	query := "SELECT " + textColumns(cols, "id", "name", "label", "raw_data_location", "content_hash",
 		"created_at", "updated_at", "system_metadata", "external_metadata", "node_set", "pipeline_status")
 	rows, err := tx.QueryContext(ctx, query+" FROM data WHERE dataset_id IN ("+placeholders(len(args))+") ORDER BY rowid", args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	docs := []projectedDoc{}
+	docs := []engine.CatalogSnapshotDoc{}
 	positions := map[string]int{}
 	for rows.Next() {
-		d := projectedDoc{CatalogDoc: domain.CatalogDoc{DatasetID: id}}
+		d := engine.CatalogSnapshotDoc{DatasetID: id}
 		var sys, ext, tags, pipeline string
-		if err := rows.Scan(&d.CogneeRowID, &d.DocID, &d.DocName, &d.DocLabel, &d.RawDataLocation, &d.ContentHash,
+		if err := rows.Scan(&d.DocID, &d.DocName, &d.DocLabel, &d.RawDataLocation, &d.ContentHash,
 			&d.CreatedAtRaw, &d.SourceUpdatedAt, &sys, &ext, &tags, &pipeline); err != nil {
 			return nil, err
 		}
@@ -253,7 +203,7 @@ func (p *Projector) readDocuments(ctx context.Context, tx *sql.Tx, id string, pr
 	return docs, rows.Err()
 }
 
-func (p *Projector) projectDocument(d *projectedDoc, protected bool, sys, ext, tags, pipeline string) bool {
+func (p *Projector) projectDocument(d *engine.CatalogSnapshotDoc, protected bool, sys, ext, tags, pipeline string) bool {
 	meta := extractTrustedMetadata(sys, ext, tags)
 	nodeSet := decodeNodeSet(meta["node_set"])
 	d.PipelineStatus = extractCognifyStatus(pipeline, d.DatasetID)
@@ -343,51 +293,29 @@ func bodyTitle(body string) string {
 	return ""
 }
 
-func (p *Projector) resolveDocumentTitles(ctx context.Context, store *domain.Store, docs []projectedDoc) error {
-	candidates := make(map[docKey]*projectedDoc)
-	for i := range docs {
-		d := &docs[i]
-		if d.IsKnowledge && !readableTitle(d.DocLabel) && !readableTitle(d.DocName) && d.RawDataLocation != "" {
-			candidates[docKey{d.DatasetID, d.DocID}] = d
-		}
-	}
-	if len(candidates) == 0 {
-		return nil
-	}
-	if err := reuseDocumentTitles(ctx, store, candidates); err != nil {
-		return err
-	}
-	for _, d := range candidates {
-		result, err := p.bodyReader.ReadBody(ctx, engine.LocalBodyRef{Location: d.RawDataLocation, MaxBytes: 4096})
-		if err == nil {
-			d.DocLabel = bodyTitle(result.Body)
+func (p *Projector) resolveDocumentTitles(ctx context.Context, snapshot *engine.CatalogSnapshot, hints map[engine.CatalogDocKey]engine.CatalogTitleHint) error {
+	for i := range snapshot.Datasets {
+		docs := snapshot.Datasets[i].Docs
+		for j := range docs {
+			d := &docs[j]
+			if !d.IsKnowledge || readableTitle(d.DocLabel) || readableTitle(d.DocName) || d.RawDataLocation == "" {
+				continue
+			}
+			key := engine.CatalogDocKey{DatasetID: d.DatasetID, DocID: d.DocID}
+			if hint, ok := hints[key]; ok && d.ContentHash == hint.ContentHash && d.RawDataLocation == hint.RawDataLocation && readableTitle(hint.DocLabel) {
+				d.DocLabel = hint.DocLabel
+				continue
+			}
+			result, err := p.bodyReader.ReadBody(ctx, engine.LocalBodyRef{Location: d.RawDataLocation, MaxBytes: 4096})
+			if err == nil {
+				d.DocLabel = bodyTitle(result.Body)
+			}
 		}
 	}
 	return ctx.Err()
 }
 
-func reuseDocumentTitles(ctx context.Context, store *domain.Store, candidates map[docKey]*projectedDoc) error {
-	rows, err := store.DB().QueryContext(ctx, `SELECT dataset_id,doc_id,doc_label,content_hash,raw_data_location
-		FROM catalog_docs WHERE is_knowledge=1 AND doc_label<>''`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key docKey
-		var label, hash, location string
-		if err := rows.Scan(&key.dataset, &key.doc, &label, &hash, &location); err != nil {
-			return err
-		}
-		if d := candidates[key]; d != nil && d.ContentHash == hash && d.RawDataLocation == location && readableTitle(label) {
-			d.DocLabel = label
-			delete(candidates, key)
-		}
-	}
-	return rows.Err()
-}
-
-func readSessions(ctx context.Context, tx *sql.Tx, id string, cols map[string]bool, args []any) ([]domain.CatalogSession, error) {
+func readSessions(ctx context.Context, tx *sql.Tx, id string, cols map[string]bool, args []any) ([]engine.CatalogSnapshotSession, error) {
 	if len(cols) == 0 {
 		return nil, nil
 	}
@@ -398,10 +326,10 @@ func readSessions(ctx context.Context, tx *sql.Tx, id string, cols map[string]bo
 		return nil, err
 	}
 	defer rows.Close()
-	sessions := []domain.CatalogSession{}
+	sessions := []engine.CatalogSnapshotSession{}
 	positions := map[SessionKey]int{}
 	for rows.Next() {
-		s := domain.CatalogSession{DatasetID: id}
+		s := engine.CatalogSnapshotSession{DatasetID: id}
 		if err := rows.Scan(&s.SessionID, &s.UserID, &s.AgentID, &s.Status, &s.StartedAt, &s.LastActivityAt,
 			&s.ParentSessionID, &s.RootSessionID, &s.SubagentRole, &s.NestingDepth, &s.IsTopLevel, &s.ChildCount); err != nil {
 			return nil, err
@@ -438,312 +366,4 @@ func sessionRelationColumns(cols map[string]bool) string {
 		expressions[1] = "(COALESCE(parent_session_id,'')='')"
 	}
 	return strings.Join(expressions, ",")
-}
-
-type sessionRelKey struct{ dataset, session string }
-
-func applySessionRelations(sessions []domain.CatalogSession, relations []domain.SessionRelation) {
-	if len(sessions) == 0 {
-		return
-	}
-	relMap := make(map[sessionRelKey]domain.SessionRelation, len(relations))
-	for _, rel := range relations {
-		ds := uuidText(rel.DatasetID)
-		sid := strings.TrimSpace(rel.SessionID)
-		if ds == "" || sid == "" {
-			continue
-		}
-		rel.DatasetID = ds
-		rel.SessionID = sid
-		rel.ParentSessionID = strings.TrimSpace(rel.ParentSessionID)
-		rel.RootSessionID = strings.TrimSpace(rel.RootSessionID)
-		rel.SubagentRole = strings.TrimSpace(rel.SubagentRole)
-		relMap[sessionRelKey{ds, sid}] = rel
-	}
-
-	byDataset := make(map[string][]int)
-	for i := range sessions {
-		s := &sessions[i]
-		s.ParentSessionID = strings.TrimSpace(s.ParentSessionID)
-		s.RootSessionID = strings.TrimSpace(s.RootSessionID)
-		s.SubagentRole = strings.TrimSpace(s.SubagentRole)
-		if rel, ok := relMap[sessionRelKey{s.DatasetID, s.SessionID}]; ok {
-			if s.ParentSessionID == "" && rel.ParentSessionID != "" && rel.ParentSessionID != s.SessionID {
-				s.ParentSessionID = rel.ParentSessionID
-			}
-			if s.RootSessionID == "" && rel.RootSessionID != "" {
-				s.RootSessionID = rel.RootSessionID
-			}
-			if s.SubagentRole == "" && rel.SubagentRole != "" {
-				s.SubagentRole = rel.SubagentRole
-			}
-		}
-		if s.ParentSessionID == s.SessionID {
-			s.ParentSessionID = ""
-		}
-		s.ChildCount = 0
-		byDataset[s.DatasetID] = append(byDataset[s.DatasetID], i)
-	}
-
-	for _, idxs := range byDataset {
-		byUserSession := make(map[SessionKey]int, len(idxs))
-		bySession := make(map[string]int, len(idxs))
-		for _, idx := range idxs {
-			s := sessions[idx]
-			byUserSession[SessionKey{UserID: s.UserID, SessionID: s.SessionID}] = idx
-			if _, exists := bySession[s.SessionID]; !exists {
-				bySession[s.SessionID] = idx
-			}
-		}
-		rawParent := func(idx int) (int, bool) {
-			pid := sessions[idx].ParentSessionID
-			if pid == "" || pid == sessions[idx].SessionID {
-				return -1, false
-			}
-			if p, ok := byUserSession[SessionKey{UserID: sessions[idx].UserID, SessionID: pid}]; ok && p != idx {
-				return p, true
-			}
-			if p, ok := bySession[pid]; ok && p != idx {
-				return p, true
-			}
-			return -1, false
-		}
-		inCycle := make(map[int]bool)
-		for _, idx := range idxs {
-			visited := map[int]bool{idx: true}
-			curr := idx
-			for {
-				p, ok := rawParent(curr)
-				if !ok {
-					break
-				}
-				if p == idx {
-					inCycle[idx] = true
-					break
-				}
-				if visited[p] {
-					break
-				}
-				visited[p] = true
-				curr = p
-			}
-		}
-		findParent := func(idx int) (int, bool) {
-			if inCycle[idx] {
-				return -1, false
-			}
-			return rawParent(idx)
-		}
-		for _, idx := range idxs {
-			s := &sessions[idx]
-			if inCycle[idx] {
-				s.ParentSessionID = ""
-				s.SubagentRole = ""
-				s.IsTopLevel = true
-				s.NestingDepth = 0
-				if s.RootSessionID == "" {
-					s.RootSessionID = s.SessionID
-				}
-				continue
-			}
-			directParent, hasParent := findParent(idx)
-			if !hasParent {
-				s.IsTopLevel = true
-				if s.ParentSessionID != "" || s.SubagentRole != "" {
-					if s.NestingDepth < 1 {
-						s.NestingDepth = 1
-					}
-					if s.RootSessionID == "" && s.ParentSessionID != "" {
-						s.RootSessionID = s.ParentSessionID
-					}
-				} else {
-					s.NestingDepth = 0
-				}
-				continue
-			}
-			visited := map[int]bool{idx: true}
-			depth := 0
-			curr := idx
-			for {
-				p, ok := findParent(curr)
-				if !ok || visited[p] {
-					break
-				}
-				visited[p] = true
-				depth++
-				curr = p
-			}
-			s.IsTopLevel = false
-			root := sessions[curr]
-			if root.ParentSessionID != "" && !inCycle[curr] {
-				s.NestingDepth = depth + 1
-				if root.RootSessionID != "" {
-					s.RootSessionID = root.RootSessionID
-				} else {
-					s.RootSessionID = root.ParentSessionID
-				}
-			} else {
-				s.NestingDepth = depth
-				s.RootSessionID = root.SessionID
-			}
-			sessions[directParent].ChildCount++
-		}
-	}
-}
-
-func syncState(id string, docs []projectedDoc, sessions []domain.CatalogSession) domain.CatalogSyncState {
-	state := domain.CatalogSyncState{DatasetID: id, DatasetHex: uuidHex(id), DocCount: len(docs),
-		SessionCount: len(sessions), CatalogVersion: "1", SyncedAt: domain.NowUTCNS()}
-	for _, d := range docs {
-		state.MaxRowID = max(state.MaxRowID, d.CogneeRowID)
-		state.SumRowID += d.CogneeRowID
-		state.MaxUpdatedAt = max(state.MaxUpdatedAt, d.SourceUpdatedAt)
-		switch d.Kind {
-		case "knowledge":
-			state.KnowledgeCount++
-		case "common":
-			state.CommonCount++
-		case "raw_doc":
-			state.RawDocCount++
-		}
-	}
-	return state
-}
-
-type docKey struct{ dataset, doc string }
-
-func publishCatalog(ctx context.Context, tx *sql.Tx, snapshot projection, counts map[docKey]int, stats *engine.SyncStats) error {
-	sequences, maxSeq, err := existingSequences(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_docs; DELETE FROM catalog_sessions; DELETE FROM catalog_sync_state;"); err != nil {
-		return err
-	}
-	if err := publishDocs(ctx, tx, snapshot.docs, sequences, maxSeq, counts, stats); err != nil {
-		return err
-	}
-	sessionStmt, err := tx.PrepareContext(ctx, `INSERT INTO catalog_sessions(dataset_id,user_id,session_id,agent_id,status,
-		started_at,last_activity_at,sort_ts_desc_key,parent_session_id,root_session_id,subagent_role,nesting_depth,is_top_level,child_count)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer sessionStmt.Close()
-	for _, s := range snapshot.sessions {
-		if _, err := sessionStmt.ExecContext(ctx, s.DatasetID, s.UserID, s.SessionID, s.AgentID, s.Status,
-			s.StartedAt, s.LastActivityAt, s.SortTSDescKey, s.ParentSessionID, s.RootSessionID, s.SubagentRole, s.NestingDepth, s.IsTopLevel, s.ChildCount); err != nil {
-			return err
-		}
-	}
-	for _, state := range snapshot.states {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO catalog_sync_state(dataset_id,dataset_hex,doc_count,max_rowid,sum_rowid,
-			max_updated_at,knowledge_count,raw_doc_count,common_count,session_count,catalog_version,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			state.DatasetID, state.DatasetHex, state.DocCount, state.MaxRowID, state.SumRowID, state.MaxUpdatedAt,
-			state.KnowledgeCount, state.RawDocCount, state.CommonCount, state.SessionCount, state.CatalogVersion, state.SyncedAt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func existingSequences(ctx context.Context, tx *sql.Tx) (map[docKey]int64, int64, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT dataset_id,doc_id,doc_seq FROM catalog_docs")
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	sequences := map[docKey]int64{}
-	var maxSeq int64
-	for rows.Next() {
-		var key docKey
-		var seq int64
-		if err := rows.Scan(&key.dataset, &key.doc, &seq); err != nil {
-			return nil, 0, err
-		}
-		sequences[key] = seq
-		maxSeq = max(maxSeq, seq)
-	}
-	return sequences, maxSeq, rows.Err()
-}
-
-func recallCounts(ctx context.Context, store *domain.Store, states []domain.CatalogSyncState) (map[docKey]int, error) {
-	counts := map[docKey]int{}
-	for _, state := range states {
-		for _, ds := range idVariants(state.DatasetID) {
-			items, err := store.ListRecallDocCounts(ctx, ds)
-			if err != nil {
-				return nil, err
-			}
-			for _, item := range items {
-				counts[docKey{state.DatasetID, uuidText(item.DocumentID)}] += item.TotalHits
-			}
-		}
-	}
-	return counts, nil
-}
-
-func publishDocs(ctx context.Context, tx *sql.Tx, docs []projectedDoc, sequences map[docKey]int64, maxSeq int64, counts map[docKey]int, stats *engine.SyncStats) error {
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO catalog_docs(dataset_id,doc_id,cognee_rowid,kind,is_knowledge,
-		common_category,lesson_type,state_key,category,session_id,doc_name,doc_label,raw_data_location,content_hash,
-		created_at_raw,created_at_ns,created_at_invalid,updated_at_ns,effective_date,effective_date_source,day_desc_key,
-		sort_ts_desc_key,recall_count,recall_desc_key,pipeline_status,source_updated_at,doc_seq)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, d := range docs {
-		key := docKey{d.DatasetID, d.DocID}
-		d.DocSeq = sequences[key]
-		if d.DocSeq == 0 {
-			maxSeq++
-			d.DocSeq = maxSeq
-		}
-		d.RecallCount = counts[key]
-		d.RecallDescKey = -int64(d.RecallCount)
-		if d.provenance != nil {
-			if err := applyLockedDate(ctx, tx, &d); err != nil {
-				return err
-			}
-		}
-		switch d.Kind {
-		case "knowledge":
-			stats.KnowledgeCount++
-		case "common":
-			stats.CommonCount++
-		case "raw_doc":
-			stats.RawDocCount++
-			if d.PipelineStatus != "DATA_ITEM_PROCESSING_COMPLETED" && d.PipelineStatus != "not_applicable" {
-				stats.PendingRawCount++
-			}
-		}
-		if _, err := stmt.ExecContext(ctx, d.DatasetID, d.DocID, d.CogneeRowID, d.Kind, d.IsKnowledge, d.CommonCategory,
-			d.LessonType, d.StateKey, d.Category, d.SessionID, d.DocName, d.DocLabel, d.RawDataLocation, d.ContentHash,
-			d.CreatedAtRaw, d.CreatedAtNS, d.CreatedAtInvalid, d.UpdatedAtNS, d.EffectiveDate, d.EffectiveDateSource,
-			d.DayDescKey, d.SortTSDescKey, d.RecallCount, d.RecallDescKey, d.PipelineStatus, d.SourceUpdatedAt, d.DocSeq); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func applyLockedDate(ctx context.Context, tx *sql.Tx, d *projectedDoc) error {
-	p := d.provenance
-	day := p.FirstSourceDate
-	if p.LessonType != "" && p.StateKey != "" {
-		var keyDay string
-		err := tx.QueryRowContext(ctx, "SELECT first_source_date FROM keyed_provenance WHERE dataset_id=? AND lesson_type=? AND state_key=?",
-			p.DatasetID, p.LessonType, p.StateKey).Scan(&keyDay)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if keyDay != "" && (day == "" || keyDay < day) {
-			day = keyDay
-		}
-	}
-	if day != "" {
-		d.EffectiveDate, d.EffectiveDateSource, d.DayDescKey = day, "provenance", dayToDescKey(day)
-	}
-	return nil
 }

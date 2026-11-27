@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 )
 
@@ -174,4 +175,124 @@ func (s *Store) CountUnreadInScope(ctx context.Context, scopeHash string) (int, 
 		 WHERE i.scope_hash=s.scope_hash AND i.is_read=0 AND d.is_knowledge=1)
 		FROM ui_read_scopes s WHERE s.scope_hash=?`, scopeHash).Scan(&count)
 	return count, rowError(err)
+}
+
+// MarkCatalogDocsRead atomically validates doc eligibility (following catalog_doc_redirects for
+// auto-replaced docs) and marks all resolved docs as read in a single transaction.
+func (s *Store) MarkCatalogDocsRead(ctx context.Context, scopeHash, datasetID string, docIDs []string) error {
+	if err := requireIDs(scopeHash, datasetID); err != nil {
+		return err
+	}
+	if len(docIDs) == 0 {
+		return fmt.Errorf("doc_ids required: %w", ErrInvalidArgument)
+	}
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		resolved := make([]string, 0, len(docIDs))
+		for _, docID := range docIDs {
+			var found string
+			err := tx.QueryRowContext(ctx,
+				`SELECT doc_id FROM catalog_docs WHERE dataset_id=? AND doc_id=? AND is_knowledge=1`,
+				datasetID, docID).Scan(&found)
+			if errors.Is(err, sql.ErrNoRows) {
+				_, redirectedDoc, rErr := resolveDocRedirectTx(ctx, tx, datasetID, docID)
+				if rErr != nil {
+					return rErr
+				}
+				if redirectedDoc != docID {
+					err = tx.QueryRowContext(ctx,
+						`SELECT doc_id FROM catalog_docs WHERE dataset_id=? AND doc_id=? AND is_knowledge=1`,
+						datasetID, redirectedDoc).Scan(&found)
+				}
+			}
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			resolved = append(resolved, found)
+		}
+		now := NowUTCMicro()
+		if err := requireAffected(tx.ExecContext(ctx,
+			`UPDATE ui_read_scopes SET state_rev=state_rev+1,updated_at=? WHERE scope_hash=?`,
+			now, scopeHash)); err != nil {
+			return err
+		}
+		for _, id := range resolved {
+			if err := execSQL(ctx, tx,
+				`INSERT INTO ui_read_items VALUES(?,?,1,?) ON CONFLICT(scope_hash,doc_id) DO UPDATE SET
+				 is_read=1,updated_at=excluded.updated_at`,
+				scopeHash, id, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// migrateReadStateTx carries explicit, horizon-implicit read, or invalid-date-implicit unread state
+// from an auto-replaced oldDocID to newDocID across all ui_read_scopes belonging to datasetID.
+func migrateReadStateTx(ctx context.Context, tx *sql.Tx, datasetID, oldDocID, newDocID, oldCreatedAtNS string, oldCreatedAtInvalid bool, newCreatedAtNS string, newCreatedAtInvalid bool) error {
+	if datasetID == "" || oldDocID == "" || newDocID == "" || oldDocID == newDocID {
+		return nil
+	}
+	type scopeRow struct {
+		hash        string
+		initialized bool
+		horizonNS   string
+	}
+	scopes, err := queryList(ctx, tx, func(row scanner) (scopeRow, error) {
+		var s scopeRow
+		err := row.Scan(&s.hash, &s.initialized, &s.horizonNS)
+		return s, err
+	}, `SELECT scope_hash,initialized,read_horizon_at_ns FROM ui_read_scopes WHERE dataset_id=?`, datasetID)
+	if err != nil {
+		return err
+	}
+	now := NowUTCMicro()
+	for _, sc := range scopes {
+		var oldIsRead int
+		err := tx.QueryRowContext(ctx, `SELECT is_read FROM ui_read_items WHERE scope_hash=? AND doc_id=?`, sc.hash, oldDocID).Scan(&oldIsRead)
+		switch {
+		case err == nil:
+			if err := execSQL(ctx, tx, `INSERT INTO ui_read_items(scope_hash,doc_id,is_read,updated_at) VALUES(?,?,?,?)
+				ON CONFLICT(scope_hash,doc_id) DO NOTHING`, sc.hash, newDocID, oldIsRead, now); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM ui_read_items WHERE scope_hash=? AND doc_id=?`, sc.hash, oldDocID); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `UPDATE ui_read_scopes SET state_rev=state_rev+1,updated_at=? WHERE scope_hash=?`, now, sc.hash); err != nil {
+				return err
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			if !sc.initialized {
+				continue
+			}
+			oldWasRead := !oldCreatedAtInvalid && oldCreatedAtNS != "" && oldCreatedAtNS <= sc.horizonNS
+			newWouldBeRead := !newCreatedAtInvalid && newCreatedAtNS != "" && newCreatedAtNS <= sc.horizonNS
+			if oldWasRead && !newWouldBeRead {
+				if err := execSQL(ctx, tx, `INSERT INTO ui_read_items(scope_hash,doc_id,is_read,updated_at) VALUES(?,?,1,?)
+					ON CONFLICT(scope_hash,doc_id) DO NOTHING`, sc.hash, newDocID, now); err != nil {
+					return err
+				}
+				if err := execSQL(ctx, tx, `UPDATE ui_read_scopes SET state_rev=state_rev+1,updated_at=? WHERE scope_hash=?`, now, sc.hash); err != nil {
+					return err
+				}
+			} else if !oldWasRead && newWouldBeRead {
+				// Preserve implicit unread when old doc was unread (> horizon or invalid date)
+				// and the replacing doc falls <= horizon.
+				if err := execSQL(ctx, tx, `INSERT INTO ui_read_items(scope_hash,doc_id,is_read,updated_at) VALUES(?,?,0,?)
+					ON CONFLICT(scope_hash,doc_id) DO NOTHING`, sc.hash, newDocID, now); err != nil {
+					return err
+				}
+				if err := execSQL(ctx, tx, `UPDATE ui_read_scopes SET state_rev=state_rev+1,updated_at=? WHERE scope_hash=?`, now, sc.hash); err != nil {
+					return err
+				}
+			}
+		default:
+			return err
+		}
+	}
+	return nil
 }

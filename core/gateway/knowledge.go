@@ -315,7 +315,7 @@ func (s *Server) removeDocument(ctx context.Context, ds, doc string) error {
 
 func (s *Server) syncDocumentDeletion(ctx context.Context, ds, doc string) error {
 	if s.cfg.Projector != nil {
-		_, err := s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
+		_, err := s.SyncDatasetCatalog(ctx, ds)
 		return err
 	}
 	return s.cfg.Store.DeleteCatalogDoc(ctx, ds, doc)

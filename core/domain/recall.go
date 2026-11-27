@@ -107,14 +107,35 @@ func (s *Store) RecordRecallEvent(ctx context.Context, in RecallEventInput) (boo
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rev),0)+1 FROM recall_doc_counts`).Scan(&rev); err != nil {
 			return err
 		}
+		bumpedDatasets := map[string]bool{}
 		for _, hit := range hits {
 			if err := execSQL(ctx, tx, `INSERT INTO recall_hits VALUES(?,?,?,?)`, in.AgentID, in.EventID, hit.DatasetID, hit.DocumentID); err != nil {
 				return err
 			}
+			targetDS, targetDoc, err := resolveDocRedirectTx(ctx, tx, hit.DatasetID, hit.DocumentID)
+			if err != nil {
+				return err
+			}
+			targetDS = catalogUUIDText(targetDS)
+			targetDoc = catalogUUIDText(targetDoc)
 			if err := execSQL(ctx, tx, `INSERT INTO recall_doc_counts VALUES(?,?,1,?,?,?,?)
 				ON CONFLICT(dataset_id,document_id) DO UPDATE SET total_hits=total_hits+1,auto_hits=auto_hits+excluded.auto_hits,
 				explicit_hits=explicit_hits+excluded.explicit_hits,last_recalled_at=MAX(COALESCE(last_recalled_at,''),excluded.last_recalled_at),rev=excluded.rev`,
-				hit.DatasetID, hit.DocumentID, boolToInt(in.Channel == "automatic"), boolToInt(in.Channel == "explicit"), at, rev); err != nil {
+				targetDS, targetDoc, boolToInt(in.Channel == "automatic"), boolToInt(in.Channel == "explicit"), at, rev); err != nil {
+				return err
+			}
+			var catalogDS string
+			err = tx.QueryRowContext(ctx, `UPDATE catalog_docs SET recall_count=recall_count+1,recall_desc_key=-(recall_count+1)
+				WHERE LOWER(REPLACE(dataset_id,'-',''))=? AND LOWER(REPLACE(doc_id,'-',''))=? RETURNING dataset_id`,
+				normalizedUUIDHex(targetDS), normalizedUUIDHex(targetDoc)).Scan(&catalogDS)
+			if err == nil && catalogDS != "" {
+				bumpedDatasets[catalogDS] = true
+			} else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+		for ds := range bumpedDatasets {
+			if err := bumpCatalogVersionTx(ctx, tx, ds); err != nil {
 				return err
 			}
 		}
@@ -189,4 +210,78 @@ func (s *Store) GetRecallQueryStats(ctx context.Context) ([]RecallQueryStat, err
 		stat.LastQueryAt = last.String
 		return stat, rowError(err)
 	}, `SELECT channel,total_queries,hit_queries,empty_queries,total_hits,last_query_at FROM recall_query_stats ORDER BY channel`)
+}
+
+// migrateRecallDocCountTx merges recall counters from an auto-replaced old doc_id (and any
+// non-canonical variant rows of newDocID) into canonical (datasetID, newDocID) and deletes the
+// old/non-canonical rows to avoid double counting, while leaving historical recall_events and
+// recall_hits untouched.
+func migrateRecallDocCountTx(ctx context.Context, tx *sql.Tx, datasetID, oldDocID, newDocID string) error {
+	datasetID = catalogUUIDText(datasetID)
+	newDocID = catalogUUIDText(newDocID)
+	if oldDocID == "" || newDocID == "" || normalizedUUIDHex(oldDocID) == normalizedUUIDHex(newDocID) {
+		return nil
+	}
+	normDS := normalizedUUIDHex(datasetID)
+	normOldDoc := normalizedUUIDHex(oldDocID)
+	normNewDoc := normalizedUUIDHex(newDocID)
+	if normDS == "" || normOldDoc == "" || normNewDoc == "" {
+		return nil
+	}
+	type rawRow struct {
+		ds, doc        string
+		total, a, e    int
+		lastRecalledAt string
+	}
+	rows, err := queryList(ctx, tx, func(row scanner) (rawRow, error) {
+		var r rawRow
+		var last sql.NullString
+		err := row.Scan(&r.ds, &r.doc, &r.total, &r.a, &r.e, &last)
+		r.lastRecalledAt = last.String
+		return r, err
+	}, `SELECT dataset_id,document_id,total_hits,auto_hits,explicit_hits,last_recalled_at
+		FROM recall_doc_counts
+		WHERE LOWER(REPLACE(dataset_id,'-',''))=?
+		  AND (LOWER(REPLACE(document_id,'-',''))=?
+		       OR (LOWER(REPLACE(document_id,'-',''))=? AND (dataset_id<>? OR document_id<>?)))`,
+		normDS, normOldDoc, normNewDoc, datasetID, newDocID)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	var totalHits, autoHits, explicitHits int
+	var lastRecalledAt string
+	for _, r := range rows {
+		totalHits += r.total
+		autoHits += r.a
+		explicitHits += r.e
+		if r.lastRecalledAt > lastRecalledAt {
+			lastRecalledAt = r.lastRecalledAt
+		}
+	}
+	var rev int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rev),0)+1 FROM recall_doc_counts`).Scan(&rev); err != nil {
+		return err
+	}
+	if err := execSQL(ctx, tx, `INSERT INTO recall_doc_counts VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(dataset_id,document_id) DO UPDATE SET
+		total_hits=total_hits+excluded.total_hits,
+		auto_hits=auto_hits+excluded.auto_hits,
+		explicit_hits=explicit_hits+excluded.explicit_hits,
+		last_recalled_at=MAX(COALESCE(last_recalled_at,''),excluded.last_recalled_at),
+		rev=excluded.rev`,
+		datasetID, newDocID, totalHits, autoHits, explicitHits, lastRecalledAt, rev); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r.ds == datasetID && r.doc == newDocID {
+			continue
+		}
+		if err := execSQL(ctx, tx, `DELETE FROM recall_doc_counts WHERE dataset_id=? AND document_id=?`, r.ds, r.doc); err != nil {
+			return err
+		}
+	}
+	return nil
 }

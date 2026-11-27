@@ -14,9 +14,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/zwhu/memlane/core/domain"
+	"github.com/zwhu/memlane/core/engine"
 	"modernc.org/sqlite"
 	sqliteLib "modernc.org/sqlite/lib"
 )
@@ -316,7 +317,7 @@ var lessonLabels = map[string]string{
 	"location": "代码位置与关联", "change": "代码变更", "constraint": "约束条件", "other": "其他",
 }
 
-func classifyDocument(d *projectedDoc, meta map[string]any, tags []string) {
+func classifyDocument(d *engine.CatalogSnapshotDoc, meta map[string]any, tags []string) {
 	d.Kind = "raw_doc"
 	if metadataText(meta, "memlane_kind") == "common_knowledge" {
 		if cat := metadataText(meta, "category"); cat == "preference" || cat == "experience" {
@@ -379,9 +380,36 @@ func uniqueLearningSession(meta map[string]any) string {
 	return session
 }
 
-func applyLessonEvidence(d *projectedDoc, meta map[string]any, systemPresent, sessionLesson bool) {
-	firstDay := domain.CalendarDate(metadataText(meta, "first_source_date"))
-	sessionDay := domain.CalendarDate(metadataText(meta, "session_date"))
+func calendarDate(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 10 {
+		return ""
+	}
+	head := raw[:10]
+	day, err := time.Parse(time.DateOnly, head)
+	if err != nil || day.Year() == 0 {
+		return ""
+	}
+	if len(raw) == 10 {
+		return head
+	}
+	_, separatorSize := utf8.DecodeRuneInString(raw[10:])
+	normalized := head + "T" + raw[10+separatorSize:]
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05Z0700", "2006-01-02T15:04:05", "2006-01-02T15:04Z07:00", "2006-01-02T15:04", "2006-01-02T15"} {
+		if _, err := time.Parse(layout, normalized); err == nil {
+			return head
+		}
+	}
+	return ""
+}
+
+func formatUTCNS(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
+func applyLessonEvidence(d *engine.CatalogSnapshotDoc, meta map[string]any, systemPresent, sessionLesson bool) {
+	firstDay := calendarDate(metadataText(meta, "first_source_date"))
+	sessionDay := calendarDate(metadataText(meta, "session_date"))
 	status := d.EffectiveDateSource
 	var qaIDs []string
 	switch {
@@ -408,7 +436,7 @@ func applyLessonEvidence(d *projectedDoc, meta map[string]any, systemPresent, se
 		d.EffectiveDate, d.EffectiveDateSource, status = firstDay, "meta", "unconfirmed"
 	}
 	if sessionLesson || d.LessonType != "" || firstDay != "" || metadataText(meta, "source_date_status") != "" {
-		d.provenance = &domain.DocumentProvenance{DatasetID: d.DatasetID, DocumentID: d.DocID, LessonType: d.LessonType,
+		d.Provenance = &engine.CatalogSnapshotProvenance{DatasetID: d.DatasetID, DocumentID: d.DocID, LessonType: d.LessonType,
 			StateKey: d.StateKey, FirstSourceDate: d.EffectiveDate, SourceDateStatus: status, SourceQAIDs: qaIDs}
 	}
 }
@@ -436,7 +464,7 @@ func normalizeUTCNS(raw string) (string, int64, bool) {
 	if stamp.After(time.Unix(0, math.MaxInt64)) {
 		epoch = math.MaxInt64
 	}
-	return domain.FormatUTCNS(stamp), epoch, false
+	return formatUTCNS(stamp), epoch, false
 }
 
 func localDayFromUTCNS(raw string, loc *time.Location) string {

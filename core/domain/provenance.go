@@ -48,6 +48,10 @@ type ResolvedLessonDate struct {
 	SourceQAIDs  []string
 }
 
+func IsAutoReplaceableLessonType(lessonType string) bool {
+	return lessonType == "state" || lessonType == "pitfall"
+}
+
 func ProvenanceStatusRank(status string) int {
 	switch status {
 	case "created_at", "created_at_fallback":
@@ -162,52 +166,119 @@ func (s *Store) GetKeyedProvenance(ctx context.Context, datasetID, lessonType, s
 	return getKeyedProvenance(ctx, s.db, datasetID, lessonType, stateKey)
 }
 
+func lockDocumentProvenanceTx(ctx context.Context, tx *sql.Tx, p DocumentProvenance) (DocumentProvenance, bool, error) {
+	if err := requireIDs(p.DatasetID, p.DocumentID); err != nil {
+		return DocumentProvenance{}, false, err
+	}
+	doc, err := getDocumentProvenance(ctx, tx, p.DatasetID, p.DocumentID)
+	docExists := err == nil
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return DocumentProvenance{}, false, err
+	}
+	p.LessonType, p.StateKey = defaultText(p.LessonType, doc.LessonType), defaultText(p.StateKey, doc.StateKey)
+	var key KeyedProvenance
+	keyExists := false
+	if p.LessonType != "" && p.StateKey != "" {
+		key, err = getKeyedProvenance(ctx, tx, p.DatasetID, p.LessonType, p.StateKey)
+		if err == nil {
+			keyExists = true
+		} else if !errors.Is(err, ErrNotFound) {
+			return DocumentProvenance{}, false, err
+		}
+	}
+
+	autoReplaceable := IsAutoReplaceableLessonType(p.LessonType) && p.StateKey != ""
+	healedLegacyCrossDate := false
+	if autoReplaceable {
+		// Gate 1-1: for state/pitfall keyed lessons, re-scanning the same doc_id locks its own
+		// earliest evidence, while a newly replacing doc_id uses its own fresh source evidence
+		// instead of inheriting the superseded doc's older date.
+		// Also self-heal v5 legacy records where a superseded doc's date polluted the replacing doc.
+		if docExists {
+			incomingDay := CalendarDate(p.FirstSourceDate)
+			incomingAuthoritative := p.SourceDateStatus == "linked_qa" || p.SourceDateStatus == "session_date"
+			if keyExists && incomingAuthoritative && incomingDay != "" &&
+				doc.FirstSourceDate != "" && doc.FirstSourceDate < incomingDay &&
+				doc.FirstSourceDate == key.FirstSourceDate {
+				p.FirstSourceDate = incomingDay
+				healedLegacyCrossDate = true
+			} else {
+				p.FirstSourceDate, p.SourceDateStatus = SelectBestDateEvidence([]DateEvidence{
+					{doc.FirstSourceDate, doc.SourceDateStatus}, {p.FirstSourceDate, p.SourceDateStatus},
+				})
+			}
+		} else {
+			p.FirstSourceDate, p.SourceDateStatus = SelectBestDateEvidence([]DateEvidence{
+				{p.FirstSourceDate, p.SourceDateStatus},
+			})
+		}
+	} else {
+		p.FirstSourceDate, p.SourceDateStatus = SelectBestDateEvidence([]DateEvidence{
+			{doc.FirstSourceDate, doc.SourceDateStatus}, {key.FirstSourceDate, key.SourceDateStatus}, {p.FirstSourceDate, p.SourceDateStatus},
+		})
+	}
+	p.SourceQAIDs = mergeQAIDs(doc.SourceQAIDs, p.SourceQAIDs)
+
+	needKeyUpdate := false
+	if p.LessonType != "" && p.StateKey != "" && p.FirstSourceDate != "" {
+		if autoReplaceable && (!docExists || healedLegacyCrossDate) {
+			needKeyUpdate = !keyExists || key.FirstSourceDate != p.FirstSourceDate || key.SourceDateStatus != p.SourceDateStatus
+		} else if CalendarDate(key.FirstSourceDate) == "" || p.FirstSourceDate < key.FirstSourceDate ||
+			(p.FirstSourceDate == key.FirstSourceDate && ProvenanceStatusRank(p.SourceDateStatus) > ProvenanceStatusRank(key.SourceDateStatus)) {
+			needKeyUpdate = true
+		}
+	}
+	needDocUpdate := !docExists ||
+		doc.LessonType != p.LessonType ||
+		doc.StateKey != p.StateKey ||
+		doc.FirstSourceDate != p.FirstSourceDate ||
+		doc.SourceDateStatus != p.SourceDateStatus ||
+		!slices.Equal(doc.SourceQAIDs, p.SourceQAIDs)
+
+	if !needDocUpdate && !needKeyUpdate {
+		return doc, false, nil
+	}
+
+	p.UpdatedAt = NowUTCMicro()
+	if needKeyUpdate {
+		if err := execSQL(ctx, tx, `INSERT INTO keyed_provenance VALUES(?,?,?,?,?,?)
+			ON CONFLICT(dataset_id,lesson_type,state_key) DO UPDATE SET first_source_date=excluded.first_source_date,
+			source_date_status=excluded.source_date_status,updated_at=excluded.updated_at`,
+			p.DatasetID, p.LessonType, p.StateKey, p.FirstSourceDate, p.SourceDateStatus, p.UpdatedAt); err != nil {
+			return DocumentProvenance{}, false, err
+		}
+	}
+	if !needDocUpdate {
+		return doc, true, nil
+	}
+	qaJSON, err := json.Marshal(p.SourceQAIDs)
+	if err != nil {
+		return DocumentProvenance{}, false, err
+	}
+	if err := tx.QueryRowContext(ctx, `INSERT INTO document_provenance VALUES(?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(sync_seq),0)+1 FROM document_provenance))
+		ON CONFLICT(dataset_id,document_id) DO UPDATE SET lesson_type=excluded.lesson_type,state_key=excluded.state_key,
+		first_source_date=excluded.first_source_date,source_date_status=excluded.source_date_status,source_qa_ids_json=excluded.source_qa_ids_json,
+		updated_at=excluded.updated_at,sync_seq=excluded.sync_seq RETURNING sync_seq`,
+		p.DatasetID, p.DocumentID, p.LessonType, p.StateKey, p.FirstSourceDate, p.SourceDateStatus, string(qaJSON), p.UpdatedAt).Scan(&p.SyncSeq); err != nil {
+		return DocumentProvenance{}, false, err
+	}
+	return p, true, nil
+}
+
 func (s *Store) LockDocumentProvenance(ctx context.Context, p DocumentProvenance) (DocumentProvenance, error) {
 	if err := requireIDs(p.DatasetID, p.DocumentID); err != nil {
 		return DocumentProvenance{}, err
 	}
+	var out DocumentProvenance
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
-		doc, err := getDocumentProvenance(ctx, tx, p.DatasetID, p.DocumentID)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		p.LessonType, p.StateKey = defaultText(p.LessonType, doc.LessonType), defaultText(p.StateKey, doc.StateKey)
-		var key KeyedProvenance
-		if p.LessonType != "" && p.StateKey != "" {
-			key, err = getKeyedProvenance(ctx, tx, p.DatasetID, p.LessonType, p.StateKey)
-			if err != nil && !errors.Is(err, ErrNotFound) {
-				return err
-			}
-		}
-		p.FirstSourceDate, p.SourceDateStatus = SelectBestDateEvidence([]DateEvidence{
-			{doc.FirstSourceDate, doc.SourceDateStatus}, {key.FirstSourceDate, key.SourceDateStatus}, {p.FirstSourceDate, p.SourceDateStatus},
-		})
-		p.SourceQAIDs = mergeQAIDs(doc.SourceQAIDs, p.SourceQAIDs)
-		p.UpdatedAt = NowUTCMicro()
-		if p.LessonType != "" && p.StateKey != "" && p.FirstSourceDate != "" &&
-			(CalendarDate(key.FirstSourceDate) == "" || p.FirstSourceDate < key.FirstSourceDate ||
-				p.FirstSourceDate == key.FirstSourceDate && ProvenanceStatusRank(p.SourceDateStatus) > ProvenanceStatusRank(key.SourceDateStatus)) {
-			if err := execSQL(ctx, tx, `INSERT INTO keyed_provenance VALUES(?,?,?,?,?,?)
-				ON CONFLICT(dataset_id,lesson_type,state_key) DO UPDATE SET first_source_date=excluded.first_source_date,
-				source_date_status=excluded.source_date_status,updated_at=excluded.updated_at`,
-				p.DatasetID, p.LessonType, p.StateKey, p.FirstSourceDate, p.SourceDateStatus, p.UpdatedAt); err != nil {
-				return err
-			}
-		}
-		qaJSON, err := json.Marshal(p.SourceQAIDs)
-		if err != nil {
-			return err
-		}
-		return tx.QueryRowContext(ctx, `INSERT INTO document_provenance VALUES(?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(sync_seq),0)+1 FROM document_provenance))
-			ON CONFLICT(dataset_id,document_id) DO UPDATE SET lesson_type=excluded.lesson_type,state_key=excluded.state_key,
-			first_source_date=excluded.first_source_date,source_date_status=excluded.source_date_status,source_qa_ids_json=excluded.source_qa_ids_json,
-			updated_at=excluded.updated_at,sync_seq=excluded.sync_seq RETURNING sync_seq`,
-			p.DatasetID, p.DocumentID, p.LessonType, p.StateKey, p.FirstSourceDate, p.SourceDateStatus, string(qaJSON), p.UpdatedAt).Scan(&p.SyncSeq)
+		var txErr error
+		out, _, txErr = lockDocumentProvenanceTx(ctx, tx, p)
+		return txErr
 	})
 	if err != nil {
 		return DocumentProvenance{}, err
 	}
-	return p, nil
+	return out, nil
 }
 
 func (s *Store) ResolveLessonDate(ctx context.Context, in ResolveLessonDateInput) (ResolvedLessonDate, error) {
@@ -223,6 +294,11 @@ func (s *Store) ResolveLessonDate(ctx context.Context, in ResolveLessonDateInput
 		}
 		lt := defaultText(in.LessonType, defaultText(metadataString(meta, "lesson_type"), doc.LessonType))
 		sk := defaultText(in.StateKey, defaultText(metadataString(meta, "state_key"), doc.StateKey))
+		if IsAutoReplaceableLessonType(lt) && sk != "" && doc.FirstSourceDate != "" {
+			result.Date, result.Status = doc.FirstSourceDate, doc.SourceDateStatus
+			result.SourceQAIDs = doc.SourceQAIDs
+			return nil
+		}
 		var key KeyedProvenance
 		if lt != "" && sk != "" {
 			key, err = getKeyedProvenance(ctx, tx, in.DatasetID, lt, sk)

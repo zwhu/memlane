@@ -20,10 +20,10 @@ import (
 
 type mcpFastPathEngine struct {
 	*fakeEngine
-	ingestFn      func(context.Context, engine.IngestRequest) (engine.IngestResult, error)
-	extractFn     func(context.Context, engine.ExtractRequest) (engine.ExtractResult, error)
-	searchFn      func(context.Context, engine.SearchRequest) (engine.SearchResult, error)
-	syncCatalogFn func(context.Context, *domain.Store) (*engine.SyncStats, error)
+	ingestFn          func(context.Context, engine.IngestRequest) (engine.IngestResult, error)
+	extractFn         func(context.Context, engine.ExtractRequest) (engine.ExtractResult, error)
+	searchFn          func(context.Context, engine.SearchRequest) (engine.SearchResult, error)
+	snapshotCatalogFn func(context.Context, []engine.CatalogDatasetTarget, engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error)
 }
 
 func (e *mcpFastPathEngine) Ingest(ctx context.Context, req engine.IngestRequest) (engine.IngestResult, error) {
@@ -47,11 +47,11 @@ func (e *mcpFastPathEngine) Search(ctx context.Context, req engine.SearchRequest
 	return e.fakeEngine.Search(ctx, req)
 }
 
-func (e *mcpFastPathEngine) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
-	if e.syncCatalogFn != nil {
-		return e.syncCatalogFn(ctx, store)
+func (e *mcpFastPathEngine) SnapshotCatalog(ctx context.Context, targets []engine.CatalogDatasetTarget, opts engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
+	if e.snapshotCatalogFn != nil {
+		return e.snapshotCatalogFn(ctx, targets, opts)
 	}
-	return &engine.SyncStats{}, nil
+	return &engine.CatalogSnapshot{}, nil
 }
 
 func setupMCPGateway(t *testing.T, activateModel bool, eng *mcpFastPathEngine) (*Server, *domain.Store, http.Handler, string) {
@@ -171,9 +171,9 @@ func TestMCPRememberFastPathSyncAndRecallable(t *testing.T) {
 		}
 		return engine.SearchResult{OK: true, Hits: hits}, nil
 	}
-	eng.syncCatalogFn = func(_ context.Context, _ *domain.Store) (*engine.SyncStats, error) {
+	eng.snapshotCatalogFn = func(_ context.Context, _ []engine.CatalogDatasetTarget, _ engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 		syncCalls++
-		return &engine.SyncStats{DocsProjected: 1}, nil
+		return &engine.CatalogSnapshot{}, nil
 	}
 
 	srv, store, h, token := setupMCPGateway(t, true, eng)
@@ -583,7 +583,7 @@ func TestMCPRememberR1Fixes(t *testing.T) {
 		eng.extractFn = func(_ context.Context, req engine.ExtractRequest) (engine.ExtractResult, error) {
 			return engine.ExtractResult{OK: true, TouchedDocIDs: req.DocIDs}, nil
 		}
-		eng.syncCatalogFn = func(_ context.Context, _ *domain.Store) (*engine.SyncStats, error) {
+		eng.snapshotCatalogFn = func(_ context.Context, _ []engine.CatalogDatasetTarget, _ engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 			return nil, fmt.Errorf("official db missing: %w", os.ErrNotExist)
 		}
 		_, store, h, token := setupMCPGateway(t, true, eng)
@@ -598,8 +598,13 @@ func TestMCPRememberR1Fixes(t *testing.T) {
 		}
 		item, err := store.GetInboxItem(ctx, fmt.Sprint(res["task_id"]))
 		must(t, err)
-		if item.Status != "pending" {
-			t.Fatalf("expected inbox pending after SyncCatalog failure, got %q", item.Status)
+		if item.Status != "succeeded" {
+			t.Fatalf("expected inbox succeeded after Extract+SyncCatalog failure (no LLM retry), got %q", item.Status)
+		}
+		pubSt, err := store.GetCatalogPublishState(ctx, "ds")
+		must(t, err)
+		if pubSt.Status != "pending" {
+			t.Fatalf("expected catalog_publish_state pending after SyncCatalog failure, got %+v", pubSt)
 		}
 	})
 
@@ -699,10 +704,10 @@ func TestMCPRememberR1Fixes(t *testing.T) {
 			return engine.ExtractResult{OK: true, TouchedDocIDs: req.DocIDs}, nil
 		}
 		releaseSync := make(chan struct{})
-		eng.syncCatalogFn = func(_ context.Context, _ *domain.Store) (*engine.SyncStats, error) {
+		eng.snapshotCatalogFn = func(_ context.Context, _ []engine.CatalogDatasetTarget, _ engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 			// Simulate blocking on p.syncMu.Lock() which ignores ctx until released.
 			<-releaseSync
-			return &engine.SyncStats{}, nil
+			return &engine.CatalogSnapshot{}, nil
 		}
 		t.Cleanup(func() { close(releaseSync) })
 

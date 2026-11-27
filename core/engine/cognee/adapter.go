@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
 
@@ -38,6 +37,7 @@ var (
 	_ engine.MemoryEngine         = (*Adapter)(nil)
 	_ engine.ModelController      = (*Adapter)(nil)
 	_ engine.CatalogProjector     = (*Adapter)(nil)
+	_ engine.DatasetDiscoverer    = (*Adapter)(nil)
 	_ engine.SessionHistoryReader = (*Adapter)(nil)
 )
 
@@ -256,8 +256,20 @@ func (a *Adapter) ProbeModel(ctx context.Context, req engine.ProbeRequest) (engi
 	return a.runner.ProbeModel(ctx, req)
 }
 
-func (a *Adapter) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
-	return a.projector.SyncCatalog(ctx, store)
+func (a *Adapter) SnapshotCatalog(ctx context.Context, targets []engine.CatalogDatasetTarget, opts engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
+	return a.projector.SnapshotCatalog(ctx, targets, opts)
+}
+
+func (a *Adapter) DiscoverDatasets(ctx context.Context) ([]engine.DiscoveredDataset, error) {
+	found, err := a.projector.DiscoverDatasets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]engine.DiscoveredDataset, 0, len(found))
+	for _, ds := range found {
+		out = append(out, engine.DiscoveredDataset{ID: ds.ID, Name: ds.Name, Protected: ds.Protected})
+	}
+	return out, nil
 }
 
 func (a *Adapter) ReadLocalBody(ctx context.Context, ref engine.LocalBodyRef) (string, error) {

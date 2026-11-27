@@ -108,7 +108,7 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 			if _, err := s.cfg.Engine.GetItem(ctx, scope, doc); err != nil {
 				syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				defer cancel()
-				if syncErr := s.syncCommonCatalog(syncCtx); syncErr != nil {
+				if syncErr := s.syncCommonCatalog(syncCtx, scope.DatasetID); syncErr != nil {
 					err = errors.Join(err, syncErr)
 				}
 				writeEngineError(w, err)
@@ -117,7 +117,7 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 		} else if err != nil {
 			syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			if syncErr := s.syncCommonCatalog(syncCtx); syncErr != nil {
+			if syncErr := s.syncCommonCatalog(syncCtx, scope.DatasetID); syncErr != nil {
 				err = errors.Join(err, syncErr)
 			}
 			writeEngineError(w, err)
@@ -132,7 +132,7 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 			// in flight and commit later: never blind-delete the new doc.
 			if isExplicitDeleteRejection(err) {
 				rollbackErr := s.cfg.Engine.DeleteItem(rollbackCtx, scope, doc)
-				syncErr := s.syncCommonCatalog(rollbackCtx)
+				syncErr := s.syncCommonCatalog(rollbackCtx, scope.DatasetID)
 				if rollbackErr != nil && !errors.Is(rollbackErr, engine.ErrNotFound) {
 					msg := "更新通用记忆失败：旧版本删除失败且新版本回滚未成功，请刷新核对是否存在重复条目"
 					if syncErr != nil {
@@ -163,7 +163,7 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 					"common_category": category, "title": title, "content": content})
 				return
 			}
-			syncErr := s.syncCommonCatalog(rollbackCtx)
+			syncErr := s.syncCommonCatalog(rollbackCtx, scope.DatasetID)
 			msg := "更新通用记忆结果未确认：旧版本删除结果未知，已保留新版本以避免数据丢失，请刷新核对"
 			if syncErr != nil {
 				msg += "；目录同步失败：" + syncErr.Error()
@@ -225,17 +225,17 @@ func isExplicitDeleteRejection(err error) bool {
 		errors.Is(err, engine.ErrContentTooLarge)
 }
 
-func (s *Server) syncCommonCatalog(ctx context.Context) error {
+func (s *Server) syncCommonCatalog(ctx context.Context, ds string) error {
 	if s.cfg.Projector == nil {
 		return nil
 	}
-	_, err := s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
+	_, err := s.SyncDatasetCatalog(ctx, ds)
 	return err
 }
 
 func (s *Server) publishCommon(ctx context.Context, ds, doc, old, category, title string) error {
 	if s.cfg.Projector != nil {
-		_, err := s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
+		_, err := s.SyncDatasetCatalog(ctx, ds)
 		return err
 	}
 	now := time.Now()

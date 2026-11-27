@@ -3,52 +3,14 @@ package cognee
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
-	"github.com/zwhu/memlane/core/gateway"
 )
-
-type contractProjectorAdapter struct {
-	*Projector
-}
-
-func (a contractProjectorAdapter) ReadLocalBody(ctx context.Context, ref engine.LocalBodyRef) (string, error) {
-	res, err := a.bodyReader.ReadBody(ctx, ref)
-	return res.Body, err
-}
-
-type noopContractEngine struct{}
-
-func (noopContractEngine) Health(context.Context) (engine.HealthStatus, error) {
-	return engine.HealthStatus{OK: true, Engine: "cognee", Version: "1", Mode: engine.HealthModeReady}, nil
-}
-func (noopContractEngine) Ingest(context.Context, engine.IngestRequest) (engine.IngestResult, error) {
-	return engine.IngestResult{OK: true}, nil
-}
-func (noopContractEngine) Extract(context.Context, engine.ExtractRequest) (engine.ExtractResult, error) {
-	return engine.ExtractResult{OK: true}, nil
-}
-func (noopContractEngine) Search(context.Context, engine.SearchRequest) (engine.SearchResult, error) {
-	return engine.SearchResult{OK: true}, nil
-}
-func (noopContractEngine) ListItems(context.Context, engine.ListRequest) (engine.ListResult, error) {
-	return engine.ListResult{OK: true}, nil
-}
-func (noopContractEngine) GetItem(context.Context, engine.Scope, string) (engine.Item, error) {
-	return engine.Item{}, engine.ErrNotFound
-}
-func (noopContractEngine) DeleteItem(context.Context, engine.Scope, string) error { return nil }
-func (noopContractEngine) Graph(context.Context, engine.GraphRequest) (engine.GraphPayload, error) {
-	return engine.GraphPayload{OK: true}, nil
-}
 
 func TestContractCleanSessionLabel(t *testing.T) {
 	longText := strings.Repeat("甲", 140)
@@ -104,28 +66,15 @@ func TestContractProjectorCacheHydrationSubagentFoldingAndHistory(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(projector.database("cognee_db")), 0o700); err != nil {
 		t.Fatalf("mkdir cognee databases: %v", err)
 	}
-	store := openProjectionStore(t)
 
 	const (
-		dsID         = "11111111-2222-4333-8444-555555555555"
-		userID       = "aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-		parentSID    = "antigravity-parent-001"
-		verifierSID  = "antigravity-worker-verifier"
-		monitorSID   = "antigravity-worker-monitor"
-		orphanSID    = "antigravity-worker-orphan"
-		missingParID = "antigravity-parent-missing"
-		mgmtToken    = "cognee-contract-management-token-2026"
+		dsID        = "11111111-2222-4333-8444-555555555555"
+		userID      = "aaaa1111-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+		parentSID   = "antigravity-parent-001"
+		verifierSID = "antigravity-worker-verifier"
+		monitorSID  = "antigravity-worker-monitor"
+		orphanSID   = "antigravity-worker-orphan"
 	)
-
-	if err := store.UpsertProject(ctx, domain.Project{
-		ID:          "proj-cognee",
-		Name:        "memlane",
-		DatasetID:   dsID,
-		DatasetName: "memlane",
-		AutoCapture: true,
-	}); err != nil {
-		t.Fatalf("UpsertProject: %v", err)
-	}
 
 	// Seed real cognee_db with datasets, data, and session_records.
 	cogneeDB := openProjectionTestDB(t, projector.database("cognee_db"), `
@@ -147,25 +96,8 @@ func TestContractProjectorCacheHydrationSubagentFoldingAndHistory(t *testing.T) 
 		uuidHex(dsID), orphanSID, uuidHex(userID),
 	)
 
-	// Record real session_relations in Memlane store (2 attached Swarm workers + 1 orphan worker).
-	for _, rel := range []domain.SessionRelation{
-		{DatasetID: dsID, SessionID: verifierSID, ParentSessionID: parentSID, SubagentRole: "verifier"},
-		{DatasetID: dsID, SessionID: monitorSID, ParentSessionID: parentSID, SubagentRole: "monitor"},
-		{DatasetID: dsID, SessionID: orphanSID, ParentSessionID: missingParID, SubagentRole: "explorer"},
-	} {
-		if err := store.UpsertSessionRelation(ctx, rel); err != nil {
-			t.Fatalf("UpsertSessionRelation %s: %v", rel.SessionID, err)
-		}
-	}
-
 	// Seed real cache.db with wrapped XML question on parent and tool traces on subagents.
-	cacheDB, err := domain.OpenPrivateSQLite(filepath.Join(storeRoot, "system", "databases", "cache.db"))
-	if err != nil {
-		t.Fatalf("open cache.db: %v", err)
-	}
-	t.Cleanup(func() { _ = cacheDB.Close() })
-
-	execProjectionTestSQL(t, cacheDB, `
+	cacheDB := openProjectionTestDB(t, filepath.Join(storeRoot, "system", "databases", "cache.db"), `
 		CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, qa_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
 		CREATE TABLE cache_trace_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
 	`)
@@ -206,33 +138,14 @@ func TestContractProjectorCacheHydrationSubagentFoldingAndHistory(t *testing.T) 
 	insertTraces(monitorSID, 3, "read_file")
 	insertTraces(orphanSID, 1, "search_web")
 
-	// 1. Real Projector.SyncCatalog writes folded catalog_sessions from cognee_db + session_relations.
-	stats, err := projector.SyncCatalog(ctx, store)
+	// 1. Real Projector.SnapshotCatalog returns all 4 sessions without importing core/domain.
+	snap, err := projector.SnapshotCatalog(ctx, []engine.CatalogDatasetTarget{{DatasetID: dsID}}, engine.CatalogSnapshotOptions{})
 	if err != nil {
-		t.Fatalf("SyncCatalog: %v", err)
+		t.Fatalf("SnapshotCatalog: %v", err)
 	}
-	if stats.SessionsProjected != 4 {
-		t.Fatalf("SessionsProjected = %d, want 4", stats.SessionsProjected)
-	}
-	projected, err := store.ListCatalogSessions(ctx, dsID, 20)
-	if err != nil {
-		t.Fatalf("ListCatalogSessions: %v", err)
-	}
-	bySession := map[string]domain.CatalogSession{}
-	for _, s := range projected {
-		bySession[s.SessionID] = s
-	}
-	if p := bySession[parentSID]; !p.IsTopLevel || p.ChildCount != 2 || p.NestingDepth != 0 {
-		t.Fatalf("unexpected parent projection: %+v", p)
-	}
-	if v := bySession[verifierSID]; v.IsTopLevel || v.ParentSessionID != parentSID || v.RootSessionID != parentSID || v.SubagentRole != "verifier" || v.NestingDepth != 1 {
-		t.Fatalf("unexpected verifier projection: %+v", v)
-	}
-	if m := bySession[monitorSID]; m.IsTopLevel || m.ParentSessionID != parentSID || m.RootSessionID != parentSID || m.SubagentRole != "monitor" || m.NestingDepth != 1 {
-		t.Fatalf("unexpected monitor projection: %+v", m)
-	}
-	if o := bySession[orphanSID]; !o.IsTopLevel || o.ParentSessionID != missingParID || o.SubagentRole != "explorer" || o.NestingDepth != 1 {
-		t.Fatalf("unexpected orphan projection: %+v", o)
+	dsSnap := findDatasetSnapshot(t, snap, dsID)
+	if len(dsSnap.Sessions) != 4 {
+		t.Fatalf("Sessions = %d, want 4", len(dsSnap.Sessions))
 	}
 
 	// 2. Real Projector.HydrateSessionsFromCache strips XML tags and counts QAs & tool traces.
@@ -272,72 +185,5 @@ func TestContractProjectorCacheHydrationSubagentFoldingAndHistory(t *testing.T) 
 	}
 	if verifierHist.Label != "验证子会话回放" || verifierHist.ToolCalls != 5 || len(verifierHist.Traces) != 5 || verifierHist.Traces[0].Name != "run_command" {
 		t.Fatalf("unexpected verifier subagent history: %+v", verifierHist)
-	}
-
-	// 4. End-to-end real Projector + real gateway.NewServer GET /api/raw-records projects
-	// top-level folding, clean parent label, child_count, and children_preview.
-	srv, err := gateway.NewServer(gateway.Config{
-		Store:           store,
-		Engine:          noopContractEngine{},
-		Projector:       contractProjectorAdapter{Projector: projector},
-		ManagementToken: mgmtToken,
-	})
-	if err != nil {
-		t.Fatalf("gateway.NewServer: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/api/projects/proj-cognee/raw-records", nil)
-	req.Header.Set("Authorization", "Bearer "+mgmtToken)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/projects/proj-cognee/raw-records = %d: %s", rec.Code, rec.Body.String())
-	}
-	var payload struct {
-		Items []struct {
-			SessionID       string `json:"session_id"`
-			Label           string `json:"label"`
-			IsTopLevel      bool   `json:"is_top_level"`
-			IsSubagent      bool   `json:"is_subagent"`
-			SubagentRole    string `json:"subagent_role"`
-			ChildCount      int    `json:"child_count"`
-			ChildrenPreview []struct {
-				SessionID    string `json:"session_id"`
-				SubagentRole string `json:"subagent_role"`
-				ToolCalls    int    `json:"tool_calls"`
-			} `json:"children_preview"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode raw-records: %v", err)
-	}
-	if len(payload.Items) != 2 {
-		t.Fatalf("expected 2 top-level sessions (parent + orphan), got %d: %s", len(payload.Items), rec.Body.String())
-	}
-	var sawParent, sawOrphan bool
-	for _, item := range payload.Items {
-		switch item.SessionID {
-		case parentSID:
-			sawParent = true
-			if item.Label != "/swarm 修复问题" || item.ChildCount != 2 || len(item.ChildrenPreview) != 2 {
-				t.Fatalf("unexpected parent wire item: %+v", item)
-			}
-			childTools := map[string]int{}
-			for _, ch := range item.ChildrenPreview {
-				childTools[ch.SubagentRole] = ch.ToolCalls
-			}
-			if childTools["verifier"] != 5 || childTools["monitor"] != 3 {
-				t.Fatalf("unexpected children_preview roles/traces: %+v", item.ChildrenPreview)
-			}
-		case orphanSID:
-			sawOrphan = true
-			if !item.IsSubagent || item.SubagentRole != "explorer" {
-				t.Fatalf("unexpected orphan wire item: %+v", item)
-			}
-		default:
-			t.Fatalf("nested worker %s leaked into top-level raw-records", item.SessionID)
-		}
-	}
-	if !sawParent || !sawOrphan {
-		t.Fatalf("missing parent=%v or orphan=%v in raw-records", sawParent, sawOrphan)
 	}
 }

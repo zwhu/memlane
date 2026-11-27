@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"time"
-
-	"github.com/zwhu/memlane/core/domain"
 )
 
 type ModelController interface {
@@ -56,8 +54,94 @@ type ProbeResult struct {
 }
 
 type CatalogProjector interface {
-	SyncCatalog(ctx context.Context, store *domain.Store) (*SyncStats, error)
+	SnapshotCatalog(ctx context.Context, targets []CatalogDatasetTarget, opts CatalogSnapshotOptions) (*CatalogSnapshot, error)
 	ReadLocalBody(ctx context.Context, ref LocalBodyRef) (string, error)
+}
+
+type CatalogDatasetTarget struct {
+	DatasetID string
+	Protected bool
+}
+
+type CatalogDocKey struct {
+	DatasetID string
+	DocID     string
+}
+
+type CatalogTitleHint struct {
+	DocLabel        string
+	ContentHash     string
+	RawDataLocation string
+}
+
+type CatalogSnapshotOptions struct {
+	SessionsOnly bool
+	TitleHints   map[CatalogDocKey]CatalogTitleHint
+}
+
+type CatalogSnapshot struct {
+	Datasets []CatalogDatasetSnapshot
+}
+
+type CatalogDatasetSnapshot struct {
+	DatasetID string
+	Exists    bool
+	Docs      []CatalogSnapshotDoc
+	Sessions  []CatalogSnapshotSession
+}
+
+type CatalogSnapshotDoc struct {
+	DatasetID           string
+	DocID               string
+	Kind                string
+	IsKnowledge         bool
+	CommonCategory      string
+	LessonType          string
+	StateKey            string
+	Category            string
+	SessionID           string
+	DocName             string
+	DocLabel            string
+	RawDataLocation     string
+	ContentHash         string
+	CreatedAtRaw        string
+	CreatedAtNS         string
+	CreatedAtInvalid    bool
+	UpdatedAtNS         string
+	EffectiveDate       string
+	EffectiveDateSource string
+	DayDescKey          int64
+	SortTSDescKey       int64
+	PipelineStatus      string
+	SourceUpdatedAt     string
+	Provenance          *CatalogSnapshotProvenance
+}
+
+type CatalogSnapshotProvenance struct {
+	DatasetID        string
+	DocumentID       string
+	LessonType       string
+	StateKey         string
+	FirstSourceDate  string
+	SourceDateStatus string
+	SourceQAIDs      []string
+}
+
+type CatalogSnapshotSession struct {
+	DatasetID       string
+	UserID          string
+	SessionID       string
+	AgentID         string
+	Status          string
+	StartedAt       string
+	LastActivityAt  string
+	SortTSDescKey   int64
+	ParentSessionID string
+	RootSessionID   string
+	SubagentRole    string
+	NestingDepth    int
+	IsTopLevel      bool
+	ChildCount      int
 }
 
 type LocalBodyRef struct {
@@ -89,6 +173,21 @@ func AsModelController(e MemoryEngine) (ModelController, bool) {
 func AsCatalogProjector(e MemoryEngine) (CatalogProjector, bool) {
 	projector, ok := e.(CatalogProjector)
 	return projector, ok
+}
+
+type DiscoveredDataset struct {
+	ID        string
+	Name      string
+	Protected bool
+}
+
+type DatasetDiscoverer interface {
+	DiscoverDatasets(ctx context.Context) ([]DiscoveredDataset, error)
+}
+
+func AsDatasetDiscoverer(e MemoryEngine) (DatasetDiscoverer, bool) {
+	discoverer, ok := e.(DatasetDiscoverer)
+	return discoverer, ok
 }
 
 type SessionRef struct {

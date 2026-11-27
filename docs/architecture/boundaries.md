@@ -15,15 +15,15 @@
 
 1. **进程与语言边界（Go 单一主二进制，Python 退回无状态引擎薄壳）**
    - Go 收口为单一多模式二进制入口（`cmd/memlane`）：`memlane app`（桌面端）| `memlane daemon`（M1 保活后台与接入网关）| `memlane hook`（宿主事件薄转发）| `memlane setup`（安装自举、诊断修复）| `memlane dev`（开发启停），已彻底退役旧 `scripts/dev.py` 与 `engine/python/` 业务双轨。
-   - **Python 唯一存在理由**：仅限 `engines/cognee/` 下直接 `import cognee / litellm / ladybug` 的无状态引擎胶水代码（现行 ~2.6k 非测 LOC，硬上限 ≤3,500，由 `ML023` 守卫，禁导 `sqlite3`/`aiosqlite`/`engine`）；其余全部控制面、网关、SQLite 存储、Agent 模型代理、宿主适配与开发运维统一归 Go。
+   - **Python 唯一存在理由**：仅限 `engines/cognee/` 下直接 `import cognee / litellm / ladybug` 的无状态引擎胶水代码（现行 ~3.2k 非测 LOC，硬上限 ≤3,500，由 `ML023` 守卫，禁导 `sqlite3`/`aiosqlite`/`engine`）；其余全部控制面、网关、SQLite 存储、Agent 模型代理、宿主适配与开发运维统一归 Go。
 2. **宿主接入负边界（方案 C：统一 Go `memlane hook` + 极简扩展 + 标准 MCP）**
    - 宿主侧彻底与 Cognee 官方插件及跨代旧插件兼容脱钩，不再向宿主分发 Python Hook 脚本、本地补采队列或运行时补丁。
    - 支持 Shell Hook 的核心宿主（TRAE CN、TraeX、Codex、Antigravity 等）统一配置调用本机 Go 子命令 `memlane hook`（`core/hooks`）；无 Shell Hook 的宿主（`pi`）仅保留极薄无状态事件转发扩展（`engine/agents/pi/`）；其余长尾宿主统一走 Go 网关原生暴露的标准 `/mcp`（`core/gateway/mcp`）。
    - 升级 Memlane 二进制即自动升级全部 Hook 逻辑，彻底消灭多代旧插件降级兼容分支与历史插件清单快照。
 3. **产品与状态模型边界（极简两层模型，砍掉重型消息/补采状态机）**
    - 内容流收敛为极简两层：**原始采集记录（Capture） → 结构化记忆（Memory）**。
-   - 采集流收敛为单向实时流水线：**项目开启自动采集 → 宿主实时上报 → Go 网关单事务落本地轻量收件箱（`capture_inbox` 与持久化 `session_flush_jobs`，统一有界四态 `pending` / `processing` / `succeeded` / `failed`，按 `dataset_id` 同项目串行、跨项目并行）→ 异步提炼写入记忆引擎**；放弃本地历史 rollout 补采队列、手动勾选待采集消息、暂停/审阅/恢复多代任务状态机与跨进程消息版本仲裁。
-   - 异常仅表达“最近失败原因 + 一键重试”，不再维护重型消息运营后台。
+   - 采集流收敛为单向实时流水线：**项目开启自动采集 → 宿主实时上报 → Go 网关单事务落本地轻量收件箱（`capture_inbox` 与持久化 `session_flush_jobs`，统一有界状态 `pending` / `processing` / `succeeded` / `failed` 及项目移除取消终态 `cancelled_project_removed`，按 `dataset_id` 同项目串行、跨项目并行）→ 异步提炼写入记忆引擎 → 按目标 `dataset_id` 单事务增量发布目录投影（`capture_trace` 仅轻量刷新会话，不重写 `catalog_docs`）**；放弃本地历史 rollout 补采队列、手动勾选待采集消息、暂停/审阅/恢复多代任务状态机与跨进程消息版本仲裁。
+   - 异常仅表达“最近失败原因 + 一键重试”，不再维护重型消息运营后台；当 `Ingest` + `Extract` 已全部成功、仅最后的目录发布失败时，独立记录至 `catalog_publish_state`（重试仅重跑目录发布，零重调 LLM）。
 4. **记忆引擎边界（引擎无关 6 原语接口，保留替换 Cognee 能力）**
    - Go 领域层与接入网关不向上暴露 Cognee 的原生路由、Dataset 内部结构或私有概念；所有引擎交互经由统一的 `core/engine` `MemoryEngine` 接口完成。
    - Cognee `1.6.7`（继续遵守上游源码零侵入与逐文件 SHA-256 校验红线）仅作为 `MemoryEngine` 的 1 号实现（`core/engine/cognee` + `engines/cognee`），未来可无缝替换为其他本地或远程记忆引擎，而不影响 Go 领域层、桌面 UI 与任何宿主接入。
@@ -69,7 +69,7 @@
 | **通用层零业务污染** | `kit/*` 下任何包**严禁** `import` 根模块、`core/*`、`app/*` 或 `internal/*` | `arch_guard_test.go` + `DG006` |
 | **领域层无 UI 依赖** | `core/*` **严禁** `import` `app/*` 或 `kit/ui` | `arch_guard_test.go` + `DG006` |
 | **UI 层无环隔离** | `app/shell` 禁止导入 `app` 控制器；`overview`/`reading`/`search`/`graph`/`settings` 禁止互相导入或反向导入 `app` 根包；`app/settings` 仅允许白名单依赖 | `arch_guard_test.go` |
-| **引擎隔离** | 除 `core/engine/cognee`、`core/engine` 工厂与 `cmd/` 外，全仓任何 Go 包不得导入 `core/engine/cognee` | `arch_guard_test.go` + `DG006` |
+| **引擎隔离** | 除 `core/engine/cognee`、`core/engine` 工厂与 `cmd/` 外，全仓任何 Go 包不得导入 `core/engine/cognee`；`core/engine/...` 严禁反向导入 `core/domain` | `arch_guard_test.go` + `DG006` |
 | **Python 无状态与冻结边界** | 禁止随意新增非 Cognee `.py` 文件；`engines/cognee` 非测试代码严格 `<= 3,500` 行且禁止导入 `engine`/`sqlite3`/`aiosqlite` | `DG005` + `ML023` |
 | **SQLite WAL 限额** | Tier-A Go 与 Python 生产代码凡开启 SQLite WAL 必须显式配置 `PRAGMA journal_size_limit`（或经共享 opener） | `TestGoSQLiteWALJournalSizeLimit` + `ML016` |
 

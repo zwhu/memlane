@@ -8,8 +8,6 @@ import (
 	"reflect"
 	"slices"
 	"testing"
-
-	"github.com/zwhu/memlane/core/domain"
 )
 
 type basicEngine struct{ MemoryEngine }
@@ -25,8 +23,8 @@ func (capableEngine) ModelStatus(context.Context) (ModelStatusResult, error) {
 func (capableEngine) ProbeModel(context.Context, ProbeRequest) (ProbeResult, error) {
 	return ProbeResult{}, nil
 }
-func (capableEngine) SyncCatalog(context.Context, *domain.Store) (*SyncStats, error) {
-	return &SyncStats{}, nil
+func (capableEngine) SnapshotCatalog(context.Context, []CatalogDatasetTarget, CatalogSnapshotOptions) (*CatalogSnapshot, error) {
+	return &CatalogSnapshot{}, nil
 }
 func (capableEngine) ReadLocalBody(context.Context, LocalBodyRef) (string, error) {
 	return "", nil

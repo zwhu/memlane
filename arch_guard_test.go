@@ -54,6 +54,8 @@ func checkGoFileArchitecture(relPath string, src []byte) []string {
 			reason = "kit cannot depend on Memlane business packages"
 		case strings.HasPrefix(relPath, "core/") && (inPackage("app") || inPackage("kit/ui")):
 			reason = "core cannot depend on UI packages"
+		case strings.HasPrefix(relPath, "core/engine/") && inPackage("core/domain"):
+			reason = "engine cannot depend on domain"
 		}
 		if reason != "" {
 			violations = append(violations, fmt.Sprintf("%s: %s: %q", position, reason, importPath))
@@ -287,6 +289,10 @@ func TestArchitectureGuardSelfTest(t *testing.T) {
 		{"core/engine/cognee/file.go", cognee + "/client", false},
 		{"core/engine/cognee/client/file.go", cognee, false},
 		{"core/engine/factory.go", cognee, false},
+		{"core/engine/capabilities.go", module + "/core/domain", true},
+		{"core/engine/cognee/projector.go", module + "/core/domain", true},
+		{"core/engine/cognee/projector_test.go", module + "/core/domain", true},
+		{"core/engine/cognee/adapter.go", module + "/core/engine", false},
 		{"cmd/memlane/file.go", cognee + "/client", false},
 	} {
 		t.Run(tc.file+"/"+tc.imported, func(t *testing.T) {

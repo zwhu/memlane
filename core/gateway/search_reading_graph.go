@@ -324,24 +324,6 @@ func (s *Server) markReading(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.Sort(in.DocIDs)
 	ids := slices.Compact(in.DocIDs)
-	if !all {
-		raw, err := json.Marshal(ids)
-		if err != nil {
-			writeDomainError(w, err)
-			return
-		}
-		var eligible int
-		err = s.cfg.Store.DB().QueryRowContext(ctx, `SELECT count(*) FROM json_each(?) x JOIN catalog_docs d ON d.doc_id=x.value
-			WHERE d.dataset_id=? AND d.is_knowledge=1`, string(raw), in.DatasetID).Scan(&eligible)
-		if err != nil {
-			writeDomainError(w, err)
-			return
-		}
-		if eligible != len(ids) {
-			writeDomainError(w, domain.ErrNotFound)
-			return
-		}
-	}
 	scope, err := s.cfg.Store.EnsureReadScope(ctx, in.Identity, in.ProjectID, in.DatasetID)
 	if err != nil {
 		writeDomainError(w, err)
@@ -351,7 +333,7 @@ func (s *Server) markReading(w http.ResponseWriter, r *http.Request) {
 		var horizon string
 		var rowID int64
 		err = s.cfg.Store.DB().QueryRowContext(ctx, `SELECT MAX(?,COALESCE(MAX(created_at_ns) FILTER(WHERE created_at_invalid=0),'')),
-			COALESCE(MAX(cognee_rowid),0) FROM catalog_docs WHERE dataset_id=? AND is_knowledge=1`,
+			COALESCE(MAX(doc_seq),0) FROM catalog_docs WHERE dataset_id=? AND is_knowledge=1`,
 			domain.NowUTCNS(), in.DatasetID).Scan(&horizon, &rowID)
 		if err == nil {
 			err = s.cfg.Store.MarkAllReadInScope(ctx, scope.ScopeHash, horizon, max(0, rowID))
@@ -361,11 +343,9 @@ func (s *Server) markReading(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		for _, id := range ids {
-			if err := s.cfg.Store.SetReadItem(ctx, scope.ScopeHash, id, true); err != nil {
-				writeDomainError(w, err)
-				return
-			}
+		if err := s.cfg.Store.MarkCatalogDocsRead(ctx, scope.ScopeHash, in.DatasetID, ids); err != nil {
+			writeDomainError(w, err)
+			return
 		}
 	}
 	view, err := readStateFor(ctx, s.cfg.Store.DB(), datasetRef{ID: in.DatasetID, ProjectID: in.ProjectID, ScopeHash: scope.ScopeHash})

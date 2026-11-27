@@ -208,7 +208,7 @@ func TestCaptureQAContextDate(t *testing.T) {
 func TestInboxFailureAndRetry(t *testing.T) {
 	s, store, fake := testServer(t, func(c *Config) { c.OutputLanguage = "fr" })
 	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
-	fake.syncErr = errors.New("publish rejected Authorization: Bearer confidential-secret")
+	fake.extractErr = errors.New("extract rejected Authorization: Bearer confidential-secret")
 	out := agentRequest(t, s, "/ingest", `{"project_id":"p","session_id":"s","message_id":"m","content":{"question":"q","answer":"a"}}`, http.StatusAccepted)
 	id := out["inbox_id"].(string)
 	ctx := context.Background()
@@ -228,7 +228,7 @@ func TestInboxFailureAndRetry(t *testing.T) {
 	if receipt.Status != "saved" || receipt.EntryID == "" {
 		t.Fatal(receipt)
 	}
-	if fmt.Sprint(fake.calls) != "[ingest extract sync]" {
+	if fmt.Sprint(fake.calls) != "[ingest extract]" {
 		t.Fatal(fake.calls)
 	}
 	wantDigest, err := s.expectedActiveModelDigest(ctx)
@@ -236,7 +236,7 @@ func TestInboxFailureAndRetry(t *testing.T) {
 	if d := fake.extract[0]; d.OutputLanguage != "fr" || d.ExpectedModelDigest != wantDigest || d.ExpectedModelDigest == "live-digest" || len(d.DocIDs) != 1 {
 		t.Fatal(d)
 	}
-	fake.syncErr = nil
+	fake.extractErr = nil
 	if got := decodeResponse[map[string]any](t, manage(t, s, "POST", "/api/projects/p/retry", "", 200)); got["retried_count"] != float64(1) {
 		t.Fatal(got)
 	}
@@ -403,11 +403,12 @@ func TestIngestPersistsSessionRelations(t *testing.T) {
 }
 
 type relationCheckProjector struct {
+	store    *domain.Store
 	syncDone chan []domain.SessionRelation
 }
 
-func (p *relationCheckProjector) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
-	rels, err := store.ListSessionRelations(ctx, "ds")
+func (p *relationCheckProjector) SnapshotCatalog(ctx context.Context, _ []engine.CatalogDatasetTarget, _ engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
+	rels, err := p.store.ListSessionRelations(ctx, "ds")
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +416,7 @@ func (p *relationCheckProjector) SyncCatalog(ctx context.Context, store *domain.
 	case p.syncDone <- rels:
 	default:
 	}
-	return &engine.SyncStats{}, nil
+	return &engine.CatalogSnapshot{}, nil
 }
 
 func (p *relationCheckProjector) ReadLocalBody(context.Context, engine.LocalBodyRef) (string, error) {
@@ -424,9 +425,10 @@ func (p *relationCheckProjector) ReadLocalBody(context.Context, engine.LocalBody
 
 func TestIngestPersistsSessionRelationBeforeInboxWorkerSync(t *testing.T) {
 	proj := &relationCheckProjector{syncDone: make(chan []domain.SessionRelation, 1)}
-	s, _, _ := testServer(t, func(c *Config) {
+	s, store, _ := testServer(t, func(c *Config) {
 		c.Projector = proj
 	})
+	proj.store = store
 	ctx := context.Background()
 	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
 	s.Inbox().Start(ctx)
@@ -619,7 +621,8 @@ func TestInboxRetrySavedCaptureTraceSkipsIngestAndExtract(t *testing.T) {
 	ctx := context.Background()
 	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
 
-	// Attempt 1: capture_trace ingests + saves receipt, skips Extract, then fails in SyncCatalog.
+	// Attempt 1: capture_trace ingests + saves receipt, skips Extract, then fails in catalog publish.
+	// Catalog publish failure is tracked independently in catalog_publish_state while inbox succeeds.
 	fake.syncErr = errors.New("temporary catalog sync error")
 	out := agentRequest(t, s, "/ingest", `{
 		"project_id":"p","session_id":"sess-trace","message_id":"m-trace",
@@ -632,27 +635,32 @@ func TestInboxRetrySavedCaptureTraceSkipsIngestAndExtract(t *testing.T) {
 	if !worked || eng.ingestCalls != 1 || len(fake.extract) != 0 {
 		t.Fatalf("attempt 1 trace: worked=%v ingest=%d extract=%d", worked, eng.ingestCalls, len(fake.extract))
 	}
+	item, err := store.GetInboxItem(ctx, inboxID)
+	must(t, err)
+	if item.Status != "succeeded" {
+		t.Fatalf("trace inbox item should succeed when only catalog publish fails: %+v", item)
+	}
+	pubState, err := store.GetCatalogPublishState(ctx, "ds")
+	must(t, err)
+	if pubState.Status != "failed" || pubState.Attempts != 1 {
+		t.Fatalf("catalog_publish_state = %+v, want failed attempts=1", pubState)
+	}
 
-	// Attempt 2: skips both Ingest and Extract, runs SyncCatalog, and succeeds.
+	// Attempt 2: RetryFailed retries catalog publish directly with zero Ingest and zero Extract calls.
 	fake.syncErr = nil
 	fake.calls = nil
 	retried, err := s.Inbox().RetryFailed(ctx, "p")
 	must(t, err)
-	if len(retried) != 1 || retried[0] != inboxID {
-		t.Fatalf("RetryFailed = %v, want [%s]", retried, inboxID)
-	}
-	worked, err = s.Inbox().ProcessOnce(ctx)
-	must(t, err)
-	if !worked {
-		t.Fatal("expected retried trace item to be claimed")
+	if len(retried) != 1 || retried[0] != "catalog:ds" {
+		t.Fatalf("RetryFailed = %v, want [catalog:ds]", retried)
 	}
 	if eng.ingestCalls != 1 || len(fake.extract) != 0 || fmt.Sprint(fake.calls) != "[sync]" {
-		t.Fatalf("retried trace should skip Ingest and Extract: ingest=%d extract=%d calls=%v", eng.ingestCalls, len(fake.extract), fake.calls)
+		t.Fatalf("retried catalog publish should skip Ingest and Extract: ingest=%d extract=%d calls=%v", eng.ingestCalls, len(fake.extract), fake.calls)
 	}
-	item, err := store.GetInboxItem(ctx, inboxID)
+	pubStateAfter, err := store.GetCatalogPublishState(ctx, "ds")
 	must(t, err)
-	if item.Status != "succeeded" || item.Attempts != 2 || item.LastError != "" {
-		t.Fatalf("retried trace item = %+v", item)
+	if pubStateAfter.Status != "ok" || pubStateAfter.LastError != "" {
+		t.Fatalf("catalog_publish_state after retry = %+v, want ok", pubStateAfter)
 	}
 }
 

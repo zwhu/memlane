@@ -2,23 +2,20 @@ package cognee
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
 )
 
 func TestReadSessionHistoryPaginatesQAAndTraces(t *testing.T) {
 	storeRoot := t.TempDir()
 	cachePath := filepath.Join(storeRoot, "system", "databases", "cache.db")
-	db, err := domain.OpenPrivateSQLite(cachePath)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-
-	_, err = db.Exec(`
+	db := openProjectionTestDB(t, cachePath, `
 		CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, qa_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
 		CREATE TABLE cache_trace_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
 		INSERT INTO cache_qa_entries VALUES
@@ -29,9 +26,7 @@ func TestReadSessionHistoryPaginatesQAAndTraces(t *testing.T) {
 			(1, 'cfff15f2-b69c-4f02-bfb3-6e64ea5de031', 'antigravity-s1', '{"trace_id":"t1","origin_function":"Bash","status":"success","method_params":{"command":"pwd"},"method_return_value":"/tmp"}', '2026-11-26', '2099-01-01 00:00:00'),
 			(2, 'cfff15f2-b69c-4f02-bfb3-6e64ea5de031', 'antigravity-s1', '{"trace_id":"t2","origin_function":"Edit","status":"error","error_message":"failed"}', '2026-11-26', '2099-01-01 00:00:00');
 	`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_ = db
 
 	projector := NewProjector(storeRoot, nil)
 	page, err := projector.ReadSessionHistory(context.Background(), engine.SessionHistoryRequest{
@@ -58,16 +53,15 @@ func TestReadSessionHistoryPaginatesQAAndTraces(t *testing.T) {
 func TestCacheStripsAntigravityRequestTagsFromSessionLabel(t *testing.T) {
 	storeRoot := t.TempDir()
 	cachePath := filepath.Join(storeRoot, "system", "databases", "cache.db")
-	db, err := domain.OpenPrivateSQLite(cachePath)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-
-	uid := "cfff15f2-b69c-4f02-bfb3-6e64ea5de031"
-	_, err = db.Exec(`
+	db := openProjectionTestDB(t, cachePath, `
 		CREATE TABLE cache_qa_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, qa_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
 		CREATE TABLE cache_trace_entries (seq INTEGER PRIMARY KEY, user_id TEXT, session_id TEXT, payload TEXT, created_at TEXT, expires_at TEXT);
+	`)
+	uid := "cfff15f2-b69c-4f02-bfb3-6e64ea5de031"
+	_, err := db.Exec(`
 		INSERT INTO cache_qa_entries VALUES
 			(1, ?, 's-wrapped', 'q1', '{"question":"<USER_REQUEST>\n实现子会话聚合后端\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nworkspace: /tmp\n</ADDITIONAL_METADATA>","answer":"好的"}', '2026-11-26', '2099-01-01 00:00:00'),
 			(2, ?, 's-meta-first', 'q2', '{"question":"<ADDITIONAL_METADATA>\nfoo: bar\n</ADDITIONAL_METADATA>\n<USER_REQUEST>\n  排查缓存标签  \n</USER_REQUEST>","answer":"ok"}', '2026-11-26', '2099-01-01 00:00:00'),

@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS catalog_sync_state (
  raw_doc_count INTEGER NOT NULL DEFAULT 0, common_count INTEGER NOT NULL DEFAULT 0, session_count INTEGER NOT NULL DEFAULT 0,
  session_sig TEXT NOT NULL DEFAULT '', catalog_version TEXT NOT NULL DEFAULT '', synced_at TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS catalog_publish_state (
+ dataset_id TEXT PRIMARY KEY, project_id TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL CHECK(status IN ('ok','pending','failed')),
+ last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
+ attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_publish_state_status ON catalog_publish_state(status,project_id);
+CREATE TABLE IF NOT EXISTS catalog_doc_redirects (
+ dataset_id TEXT NOT NULL, old_doc_id TEXT NOT NULL, new_doc_id TEXT NOT NULL,
+ updated_at TEXT NOT NULL DEFAULT '', PRIMARY KEY(dataset_id,old_doc_id)
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_doc_redirects_new ON catalog_doc_redirects(dataset_id,new_doc_id);
 ` + sessionRelationsDDL
 
 func (s *Store) ClearCatalogProjection(ctx context.Context) error {
@@ -86,7 +98,6 @@ func (s *Store) GetCatalogSyncState(ctx context.Context, datasetID string) (Cata
 type CatalogDoc struct {
 	DatasetID           string
 	DocID               string
-	CogneeRowID         int64
 	Kind                string
 	IsKnowledge         bool
 	CommonCategory      string
@@ -113,14 +124,14 @@ type CatalogDoc struct {
 	DocSeq              int64
 }
 
-const catalogDocColumns = `dataset_id, doc_id, cognee_rowid, kind, is_knowledge, common_category, lesson_type,
+const catalogDocColumns = `dataset_id, doc_id, kind, is_knowledge, common_category, lesson_type,
 		state_key, category, session_id, doc_name, doc_label, raw_data_location, content_hash,
 		created_at_raw, created_at_ns, created_at_invalid, updated_at_ns, effective_date, effective_date_source, day_desc_key,
 		sort_ts_desc_key, recall_count, recall_desc_key, pipeline_status, source_updated_at, doc_seq`
 
 func scanCatalogDoc(row scanner) (CatalogDoc, error) {
 	var p CatalogDoc
-	err := row.Scan(&p.DatasetID, &p.DocID, &p.CogneeRowID, &p.Kind, &p.IsKnowledge, &p.CommonCategory, &p.LessonType,
+	err := row.Scan(&p.DatasetID, &p.DocID, &p.Kind, &p.IsKnowledge, &p.CommonCategory, &p.LessonType,
 		&p.StateKey, &p.Category, &p.SessionID, &p.DocName, &p.DocLabel, &p.RawDataLocation, &p.ContentHash,
 		&p.CreatedAtRaw, &p.CreatedAtNS, &p.CreatedAtInvalid, &p.UpdatedAtNS, &p.EffectiveDate, &p.EffectiveDateSource, &p.DayDescKey,
 		&p.SortTSDescKey, &p.RecallCount, &p.RecallDescKey, &p.PipelineStatus, &p.SourceUpdatedAt, &p.DocSeq)
@@ -132,9 +143,9 @@ func (s *Store) UpsertCatalogDoc(ctx context.Context, p CatalogDoc) error {
 		return err
 	}
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		return execSQL(ctx, tx, `INSERT INTO catalog_docs (`+catalogDocColumns+`)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,doc_id) DO UPDATE SET
-			cognee_rowid=excluded.cognee_rowid, kind=excluded.kind, is_knowledge=excluded.is_knowledge,
+		return execSQL(ctx, tx, `INSERT INTO catalog_docs (cognee_rowid, `+catalogDocColumns+`)
+			VALUES(0,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dataset_id,doc_id) DO UPDATE SET
+			cognee_rowid=0, kind=excluded.kind, is_knowledge=excluded.is_knowledge,
 			common_category=excluded.common_category, lesson_type=excluded.lesson_type, state_key=excluded.state_key,
 			category=excluded.category, session_id=excluded.session_id, doc_name=excluded.doc_name,
 			doc_label=excluded.doc_label, raw_data_location=excluded.raw_data_location, content_hash=excluded.content_hash,
@@ -143,7 +154,7 @@ func (s *Store) UpsertCatalogDoc(ctx context.Context, p CatalogDoc) error {
 			day_desc_key=excluded.day_desc_key, sort_ts_desc_key=excluded.sort_ts_desc_key, recall_count=excluded.recall_count,
 			recall_desc_key=excluded.recall_desc_key, pipeline_status=excluded.pipeline_status, source_updated_at=excluded.source_updated_at,
 			doc_seq=excluded.doc_seq`,
-			p.DatasetID, p.DocID, p.CogneeRowID, p.Kind, boolToInt(p.IsKnowledge), p.CommonCategory, p.LessonType,
+			p.DatasetID, p.DocID, p.Kind, boolToInt(p.IsKnowledge), p.CommonCategory, p.LessonType,
 			p.StateKey, p.Category, p.SessionID, p.DocName, p.DocLabel, p.RawDataLocation, p.ContentHash,
 			p.CreatedAtRaw, p.CreatedAtNS, boolToInt(p.CreatedAtInvalid), p.UpdatedAtNS, p.EffectiveDate, p.EffectiveDateSource, p.DayDescKey,
 			p.SortTSDescKey, p.RecallCount, p.RecallDescKey, p.PipelineStatus, p.SourceUpdatedAt, p.DocSeq)

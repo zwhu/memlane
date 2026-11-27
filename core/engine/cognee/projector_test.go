@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zwhu/memlane/core/domain"
+	"github.com/zwhu/memlane/core/engine"
 )
 
 const (
@@ -52,20 +52,6 @@ func openProjectionTestDB(t *testing.T, path string, ddl string) *sql.DB {
 	return db
 }
 
-func openProjectionStore(t *testing.T) *domain.Store {
-	t.Helper()
-	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "memlane.sqlite3"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	return store
-}
-
 func execProjectionTestSQL(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(), query, args...); err != nil {
@@ -73,16 +59,20 @@ func execProjectionTestSQL(t *testing.T, db *sql.DB, query string, args ...any) 
 	}
 }
 
-func registerProjectionProject(t *testing.T, store *domain.Store, id, datasetID, name string) {
+func findDatasetSnapshot(t *testing.T, snap *engine.CatalogSnapshot, datasetID string) engine.CatalogDatasetSnapshot {
 	t.Helper()
-	if err := store.UpsertProject(context.Background(), domain.Project{ID: id, Name: name, DatasetID: datasetID}); err != nil {
-		t.Fatal(err)
+	for _, ds := range snap.Datasets {
+		if ds.DatasetID == datasetID {
+			return ds
+		}
 	}
+	t.Fatalf("dataset %s not found in snapshot", datasetID)
+	return engine.CatalogDatasetSnapshot{}
 }
 
-func TestProjectorCatalogAndProvenance(t *testing.T) {
+func TestProjectorSnapshotCatalogAndProvenance(t *testing.T) {
 	ctx := context.Background()
-	p, store := testProjector(t), openProjectionStore(t)
+	p := testProjector(t)
 	src := openProjectionTestDB(t, p.database("cognee_db"), `
 		CREATE TABLE datasets(id TEXT,name TEXT);
 		CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT,system_metadata TEXT,external_metadata TEXT,node_set TEXT,
@@ -90,11 +80,6 @@ func TestProjectorCatalogAndProvenance(t *testing.T) {
 		CREATE TABLE session_records(dataset_id TEXT,session_id TEXT,user_id TEXT,status TEXT,started_at DATETIME,
 			last_activity_at DATETIME, parent_session_id TEXT);
 	`)
-	registerProjectionProject(t, store, "project", projectDS, "project")
-	registerProjectionProject(t, store, "profile-alias", profileDS, "alias")
-	if err := store.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "common", Name: "common", DatasetID: commonDS}); err != nil {
-		t.Fatal(err)
-	}
 	for id, name := range map[string]string{projectDS: "project", profileDS: "ml-user-profiles", commonDS: "common", unmanaged: "unmanaged"} {
 		execProjectionTestSQL(t, src, "INSERT INTO datasets VALUES(?,?)", uuidHex(id), name)
 	}
@@ -114,94 +99,68 @@ func TestProjectorCatalogAndProvenance(t *testing.T) {
 		"active", "2026-11-16 10:00:00", "2026-11-16 10:15:00", "")
 	execProjectionTestSQL(t, src, "INSERT INTO session_records VALUES(?,?,?,?,?,?,?)", projectDS, "child", userTwo,
 		"closed", "2026-11-16 10:00:00", "invalid", "root")
-	if _, err := store.RecordRecallEvent(ctx, domain.RecallEventInput{AgentID: "agent", EventID: "event", Channel: "explicit",
-		Hits: []domain.RecallHit{{DatasetID: uuidHex(projectDS), DocumentID: uuidHex(firstDoc)}}}); err != nil {
-		t.Fatal(err)
-	}
 
 	discovered, err := p.DiscoverDatasets(ctx)
 	if err != nil || len(discovered) != 4 || discovered[1] != (DatasetInfo{ID: profileDS, Name: "ml-user-profiles", Protected: true}) {
 		t.Fatalf("dataset discovery = %+v, %v", discovered, err)
 	}
-	stats, err := p.SyncCatalog(ctx, store)
+
+	targets := []engine.CatalogDatasetTarget{
+		{DatasetID: projectDS},
+		{DatasetID: profileDS},
+		{DatasetID: commonDS},
+	}
+	snap, err := p.SnapshotCatalog(ctx, targets, engine.CatalogSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Datasets != 3 || stats.DocsProjected != 4 || stats.KnowledgeCount != 1 || stats.CommonCount != 1 ||
-		stats.RawDocCount != 2 || stats.PendingRawCount != 0 || stats.SessionsProjected != 2 || stats.DistinctSessionUsers != 2 || stats.ProvenanceLocked != 1 {
-		t.Fatalf("sync stats = %+v", stats)
+	if len(snap.Datasets) != 3 {
+		t.Fatalf("snapshot datasets = %d, want 3", len(snap.Datasets))
 	}
-	knowledge := projectionDocs(t, store, projectDS, "knowledge")
-	if len(knowledge) != 1 {
-		t.Fatalf("knowledge = %+v", knowledge)
+
+	projSnap := findDatasetSnapshot(t, snap, projectDS)
+	if !projSnap.Exists || len(projSnap.Docs) != 2 || len(projSnap.Sessions) != 2 {
+		t.Fatalf("project snapshot = %+v", projSnap)
 	}
-	d := knowledge[0]
-	if d.DocID != firstDoc || d.LessonType != "state" || d.Category != "项目状态" || d.SessionID != "root" ||
-		d.CreatedAtNS != "2026-11-16T20:08:09.123456789Z" || d.UpdatedAtNS != "" || d.EffectiveDate != "2026-10-01" ||
-		d.EffectiveDateSource != "provenance" || d.DayDescKey != -20261001 || d.RecallCount != 1 || d.RecallDescKey != -1 {
-		t.Fatalf("projected lesson = %+v", d)
-	}
-	for _, id := range []string{profileDS, projectDS} {
-		raw := projectionDocs(t, store, id, "raw_doc")
-		if len(raw) != 1 || raw[0].PipelineStatus != "not_applicable" || raw[0].EffectiveDate != "2026-11-17" {
-			t.Fatalf("profile raw = %+v", raw)
+	var lesson engine.CatalogSnapshotDoc
+	var rawProfile engine.CatalogSnapshotDoc
+	for _, d := range projSnap.Docs {
+		switch d.DocID {
+		case firstDoc:
+			lesson = d
+		case "raw-profile":
+			rawProfile = d
 		}
 	}
-	sessions, err := store.ListCatalogSessions(ctx, projectDS, 10)
-	if err != nil || len(sessions) != 2 || sessions[0].UserID != userOne || sessions[1].UserID != userTwo ||
-		sessions[1].ParentSessionID != "root" || sessions[1].IsTopLevel || sessions[1].SortTSDescKey == 0 {
-		t.Fatalf("sessions = %+v, %v", sessions, err)
+	if lesson.DocID != firstDoc || lesson.LessonType != "state" || lesson.StateKey != "stable" ||
+		lesson.Category != "项目状态" || lesson.SessionID != "root" ||
+		lesson.CreatedAtNS != "2026-11-16T20:08:09.123456789Z" || lesson.UpdatedAtNS != "" ||
+		lesson.EffectiveDate != "2026-10-01" || lesson.DayDescKey != -20261001 ||
+		lesson.Provenance == nil || lesson.Provenance.SourceDateStatus != "linked_qa" {
+		t.Fatalf("projected lesson = %+v", lesson)
 	}
-	provenance, err := store.GetDocumentProvenance(ctx, projectDS, firstDoc)
+	if rawProfile.PipelineStatus != "not_applicable" || rawProfile.EffectiveDate != "2026-11-17" {
+		t.Fatalf("raw profile doc = %+v", rawProfile)
+	}
+
+	profSnap := findDatasetSnapshot(t, snap, profileDS)
+	if !profSnap.Exists || len(profSnap.Docs) != 1 || profSnap.Docs[0].PipelineStatus != "not_applicable" {
+		t.Fatalf("profile snapshot = %+v", profSnap)
+	}
+
+	commonSnap := findDatasetSnapshot(t, snap, commonDS)
+	if !commonSnap.Exists || len(commonSnap.Docs) != 1 || commonSnap.Docs[0].Kind != "common" || commonSnap.Docs[0].CommonCategory != "preference" {
+		t.Fatalf("common snapshot = %+v", commonSnap)
+	}
+
+	// SessionsOnly must skip reading docs while returning sessions.
+	sessionsSnap, err := p.SnapshotCatalog(ctx, []engine.CatalogDatasetTarget{{DatasetID: projectDS}}, engine.CatalogSnapshotOptions{SessionsOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err = p.SyncCatalog(ctx, store)
-	if err != nil || stats.ProvenanceLocked != 0 {
-		t.Fatalf("unchanged catalog sync = %+v, %v", stats, err)
+	if len(sessionsSnap.Datasets) != 1 || len(sessionsSnap.Datasets[0].Docs) != 0 || len(sessionsSnap.Datasets[0].Sessions) != 2 {
+		t.Fatalf("sessions-only snapshot = %+v", sessionsSnap)
 	}
-	knowledge = projectionDocs(t, store, projectDS, "knowledge")
-	if len(knowledge) != 1 || knowledge[0].EffectiveDate != d.EffectiveDate || knowledge[0].EffectiveDateSource != "provenance" {
-		t.Fatalf("unchanged catalog knowledge = %+v", knowledge)
-	}
-	if got, err := store.GetDocumentProvenance(ctx, projectDS, firstDoc); err != nil || got.SyncSeq != provenance.SyncSeq {
-		t.Fatalf("unchanged document provenance = %+v, %v", got, err)
-	}
-
-	execProjectionTestSQL(t, src, "DELETE FROM data WHERE id IN (?,?)", uuidHex(firstDoc), "protected")
-	execProjectionTestSQL(t, src, "DELETE FROM datasets WHERE id=?", uuidHex(profileDS))
-	insertDoc(nextDoc, projectDS, `{"lesson_type":"state","state_key":"stable","session_date":"2026-11-15"}`, "", `["session_learnings"]`)
-	if _, err := p.SyncCatalog(ctx, store); err != nil {
-		t.Fatal(err)
-	}
-	knowledge = projectionDocs(t, store, projectDS, "knowledge")
-	if len(knowledge) != 1 || knowledge[0].DocID != nextDoc || knowledge[0].EffectiveDate != "2026-10-01" || knowledge[0].DocSeq <= d.DocSeq {
-		t.Fatalf("replacement knowledge = %+v", knowledge)
-	}
-	if _, err := store.GetCatalogSyncState(ctx, profileDS); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("deleted dataset checkpoint: %v", err)
-	}
-	if err := store.DeleteProject(ctx, "project"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := p.SyncCatalog(ctx, store); err != nil {
-		t.Fatal(err)
-	}
-	if docs := projectionDocs(t, store, projectDS, "knowledge"); len(docs) != 0 {
-		t.Fatalf("stale docs = %+v", docs)
-	}
-	if sessions, err := store.ListCatalogSessions(ctx, projectDS, 10); err != nil || len(sessions) != 0 {
-		t.Fatalf("stale sessions = %+v, %v", sessions, err)
-	}
-}
-
-func projectionDocs(t *testing.T, store *domain.Store, dataset, kind string) []domain.CatalogDoc {
-	t.Helper()
-	docs, err := store.ListCatalogDocs(context.Background(), dataset, kind, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return docs
 }
 
 func TestProjectorCacheUserScopeAndExpiration(t *testing.T) {
@@ -234,7 +193,7 @@ func TestProjectorCacheUserScopeAndExpiration(t *testing.T) {
 
 func TestProjectorReadOnlyAndOptionalTables(t *testing.T) {
 	ctx := context.Background()
-	p, store := testProjector(t), openProjectionStore(t)
+	p := testProjector(t)
 	realDB := filepath.Join(t.TempDir(), "with?#url")
 	openProjectionTestDB(t, realDB, "CREATE TABLE data(id TEXT,dataset_id TEXT); INSERT INTO data VALUES('incomplete', 'dataset');")
 	if err := os.Symlink(realDB, p.database("cognee_db")); err != nil {
@@ -271,10 +230,9 @@ func TestProjectorReadOnlyAndOptionalTables(t *testing.T) {
 	if err != nil || len(datasets) != 0 {
 		t.Fatalf("optional datasets discovery = %+v, %v", datasets, err)
 	}
-	registerProjectionProject(t, store, "optional", "dataset", "optional")
-	stats, err := p.SyncCatalog(ctx, store)
-	if err != nil || stats.PendingRawCount != 1 || stats.Datasets != 1 {
-		t.Fatalf("optional tables sync = %+v, %v", stats, err)
+	snap, err := p.SnapshotCatalog(ctx, []engine.CatalogDatasetTarget{{DatasetID: "dataset"}}, engine.CatalogSnapshotOptions{})
+	if err != nil || len(snap.Datasets) != 1 || len(snap.Datasets[0].Docs) != 1 {
+		t.Fatalf("optional tables snapshot = %+v, %v", snap, err)
 	}
 }
 
@@ -299,7 +257,6 @@ func TestCogneeProjectorShadowClone(t *testing.T) {
 	if src == "" {
 		t.Skip("daily official store is unavailable")
 	}
-	store := openProjectionStore(t)
 	var p *Projector
 	for attempt := 0; attempt < 3; attempt++ {
 		p = testProjector(t)
@@ -315,37 +272,43 @@ func TestCogneeProjectorShadowClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, dataset := range datasets {
-		if dataset.Name == "" {
-			dataset.Name = dataset.ID
+	targets := make([]engine.CatalogDatasetTarget, 0, len(datasets))
+	protectedSet := map[string]bool{}
+	for _, dataset := range datasets {
+		targets = append(targets, engine.CatalogDatasetTarget{DatasetID: dataset.ID, Protected: dataset.Protected})
+		if dataset.Protected {
+			protectedSet[dataset.ID] = true
 		}
-		registerProjectionProject(t, store, fmt.Sprintf("shadow-%d", i), dataset.ID, dataset.Name)
 	}
-	stats, err := p.SyncCatalog(ctx, store)
+	snap, err := p.SnapshotCatalog(ctx, targets, engine.CatalogSnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("shadow projection %+v", stats)
-	if stats.DocsProjected == 0 || stats.SessionsProjected == 0 || stats.DistinctSessionUsers <= 1 {
-		t.Fatalf("shadow projection counts = %+v", stats)
+	var docsProjected, sessionsProjected, protectedRows int
+	users := map[string]struct{}{}
+	for _, ds := range snap.Datasets {
+		docsProjected += len(ds.Docs)
+		sessionsProjected += len(ds.Sessions)
+		for _, s := range ds.Sessions {
+			if s.UserID != "" {
+				users[s.UserID] = struct{}{}
+			}
+		}
+		if protectedSet[ds.DatasetID] {
+			for _, doc := range ds.Docs {
+				if doc.PipelineStatus != "not_applicable" {
+					t.Fatalf("protected doc %s has pipeline_status=%q", doc.DocID, doc.PipelineStatus)
+				}
+				protectedRows++
+			}
+		}
 	}
-	protectedRows := 0
-	for _, dataset := range datasets {
-		if !dataset.Protected {
-			continue
-		}
-		var total, invalid int
-		err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*),
-			COALESCE(SUM(pipeline_status<>'not_applicable'),0) FROM catalog_docs WHERE dataset_id=?`, dataset.ID).Scan(&total, &invalid)
-		if err != nil || invalid != 0 {
-			t.Fatalf("protected docs total %d, invalid %d: %v", total, invalid, err)
-		}
-		protectedRows += total
+	if docsProjected == 0 || sessionsProjected == 0 || len(users) <= 1 {
+		t.Fatalf("shadow snapshot counts docs=%d sessions=%d users=%d", docsProjected, sessionsProjected, len(users))
 	}
 	if protectedRows == 0 {
 		t.Fatal("shadow projection contains no protected profile documents")
 	}
-	t.Logf("protected profiles: %d projected, 0 applicable to processing", protectedRows)
 }
 
 func copyProjectionSnapshot(src string, p *Projector) (bool, error) {
@@ -404,13 +367,12 @@ func copyProjectionFile(src, dst string) error {
 func TestProjectorReadableTitles(t *testing.T) {
 	t.Setenv("FILE_ENCRYPTION_ENABLED", "")
 	ctx := t.Context()
-	p, store := testProjector(t), openProjectionStore(t)
+	p := testProjector(t)
 	src := openProjectionTestDB(t, p.database("cognee_db"), `
 		CREATE TABLE datasets(id TEXT,name TEXT);
 		CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT,label TEXT,raw_data_location TEXT,content_hash TEXT,
 			system_metadata TEXT,external_metadata TEXT,node_set TEXT);
 	`)
-	registerProjectionProject(t, store, "project", projectDS, "Project")
 	execProjectionTestSQL(t, src, "INSERT INTO datasets VALUES(?,?)", projectDS, "Project")
 	const machine = "text_1234567890abcdef1234567890abcdef.txt"
 	data := filepath.Join(p.storePath, "data")
@@ -431,16 +393,26 @@ func TestProjectorReadableTitles(t *testing.T) {
 		execProjectionTestSQL(t, src, `INSERT INTO data VALUES(?,?,?,?,?,'hash',?,?,'["memory"]')`,
 			tc.id, projectDS, tc.name, tc.label, tc.location, tc.system, tc.external)
 	}
+	hints := map[engine.CatalogDocKey]engine.CatalogTitleHint{}
 	check := func() {
 		t.Helper()
-		if _, err := p.SyncCatalog(ctx, store); err != nil {
+		snap, err := p.SnapshotCatalog(ctx, []engine.CatalogDatasetTarget{{DatasetID: projectDS}}, engine.CatalogSnapshotOptions{TitleHints: hints})
+		if err != nil {
 			t.Fatal(err)
 		}
-		docs := projectionDocs(t, store, projectDS, "knowledge")
+		docs := findDatasetSnapshot(t, snap, projectDS).Docs
 		if len(docs) != len(tests) {
 			t.Fatalf("projected %d titles, want %d", len(docs), len(tests))
 		}
+		hints = map[engine.CatalogDocKey]engine.CatalogTitleHint{}
 		for _, d := range docs {
+			if d.DocLabel != "" {
+				hints[engine.CatalogDocKey{DatasetID: d.DatasetID, DocID: d.DocID}] = engine.CatalogTitleHint{
+					DocLabel:        d.DocLabel,
+					ContentHash:     d.ContentHash,
+					RawDataLocation: d.RawDataLocation,
+				}
+			}
 			for _, tc := range tests {
 				if d.DocID == tc.id && (d.DocName != tc.name || d.DocLabel != tc.want) {
 					t.Errorf("%s: name=%q label=%q, want %q and %q", tc.id, d.DocName, d.DocLabel, tc.name, tc.want)
@@ -450,7 +422,7 @@ func TestProjectorReadableTitles(t *testing.T) {
 	}
 	check()
 
-	// An unchanged hash and location must reuse the published label even without the body.
+	// An unchanged hash and location must reuse the hinted label even without the body.
 	if err := os.Remove(wrapper); err != nil {
 		t.Fatal(err)
 	}
@@ -460,82 +432,4 @@ func TestProjectorReadableTitles(t *testing.T) {
 	execProjectionTestSQL(t, src, "UPDATE data SET content_hash='changed' WHERE id='wrapper'")
 	tests[1].want = "Updated title"
 	check()
-}
-
-func TestProjectorMergesSessionRelationsAndHierarchy(t *testing.T) {
-	ctx := context.Background()
-	p, store := testProjector(t), openProjectionStore(t)
-	// Upstream Cognee 1.6.7 session_records has no parent_session_id or subagent_role columns.
-	src := openProjectionTestDB(t, p.database("cognee_db"), `
-		CREATE TABLE datasets(id TEXT,name TEXT);
-		CREATE TABLE data(id TEXT,dataset_id TEXT,name TEXT);
-		CREATE TABLE session_records(dataset_id TEXT,session_id TEXT,user_id TEXT,status TEXT,started_at DATETIME,last_activity_at DATETIME);
-	`)
-	registerProjectionProject(t, store, "project", projectDS, "Project")
-	execProjectionTestSQL(t, src, "INSERT INTO datasets VALUES(?,?)", uuidHex(projectDS), "Project")
-
-	insertSession := func(sid, uid, ts string) {
-		t.Helper()
-		execProjectionTestSQL(t, src, "INSERT INTO session_records VALUES(?,?,?,?,?,?)",
-			uuidHex(projectDS), sid, uid, "active", ts, ts)
-	}
-	insertSession("root", uuidHex(userOne), "2026-11-26 10:00:00")
-	insertSession("child1", uuidHex(userOne), "2026-11-26 10:01:00")
-	insertSession("child2", uuidHex(userTwo), "2026-11-26 10:02:00")
-	insertSession("grandchild", uuidHex(userOne), "2026-11-26 10:03:00")
-	insertSession("orphan", uuidHex(userOne), "2026-11-26 10:04:00")
-	insertSession("cycleA", uuidHex(userOne), "2026-11-26 10:05:00")
-	insertSession("cycleB", uuidHex(userOne), "2026-11-26 10:06:00")
-
-	for _, rel := range []domain.SessionRelation{
-		{DatasetID: projectDS, SessionID: "child1", ParentSessionID: "root", SubagentRole: "research"},
-		{DatasetID: projectDS, SessionID: "child2", ParentSessionID: "root", SubagentRole: "worker"},
-		{DatasetID: projectDS, SessionID: "grandchild", ParentSessionID: "child1", SubagentRole: "verifier"},
-		{DatasetID: projectDS, SessionID: "orphan", ParentSessionID: "missing-parent", SubagentRole: "explorer"},
-		{DatasetID: projectDS, SessionID: "cycleA", ParentSessionID: "cycleB", SubagentRole: "loop-a"},
-		{DatasetID: projectDS, SessionID: "cycleB", ParentSessionID: "cycleA", SubagentRole: "loop-b"},
-	} {
-		if err := store.UpsertSessionRelation(ctx, rel); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if _, err := p.SyncCatalog(ctx, store); err != nil {
-		t.Fatal(err)
-	}
-	sessions, err := store.ListCatalogSessions(ctx, projectDS, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID := make(map[string]domain.CatalogSession, len(sessions))
-	for _, s := range sessions {
-		byID[s.SessionID] = s
-	}
-
-	root := byID["root"]
-	if !root.IsTopLevel || root.ChildCount != 2 || root.NestingDepth != 0 {
-		t.Fatalf("root = %+v", root)
-	}
-	c1 := byID["child1"]
-	if c1.IsTopLevel || c1.ParentSessionID != "root" || c1.RootSessionID != "root" || c1.SubagentRole != "research" || c1.NestingDepth != 1 || c1.ChildCount != 1 {
-		t.Fatalf("child1 = %+v", c1)
-	}
-	c2 := byID["child2"]
-	if c2.IsTopLevel || c2.ParentSessionID != "root" || c2.RootSessionID != "root" || c2.SubagentRole != "worker" || c2.NestingDepth != 1 || c2.ChildCount != 0 {
-		t.Fatalf("child2 = %+v", c2)
-	}
-	gc := byID["grandchild"]
-	if gc.IsTopLevel || gc.ParentSessionID != "child1" || gc.RootSessionID != "root" || gc.SubagentRole != "verifier" || gc.NestingDepth != 2 || gc.ChildCount != 0 {
-		t.Fatalf("grandchild = %+v", gc)
-	}
-	orphan := byID["orphan"]
-	if !orphan.IsTopLevel || orphan.ParentSessionID != "missing-parent" || orphan.RootSessionID != "missing-parent" || orphan.SubagentRole != "explorer" || orphan.NestingDepth != 1 {
-		t.Fatalf("orphan = %+v", orphan)
-	}
-	for _, id := range []string{"cycleA", "cycleB"} {
-		c := byID[id]
-		if !c.IsTopLevel || c.ParentSessionID != "" || c.SubagentRole != "" || c.NestingDepth != 0 || c.ChildCount != 0 {
-			t.Fatalf("%s = %+v", id, c)
-		}
-	}
 }

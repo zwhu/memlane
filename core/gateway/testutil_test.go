@@ -23,6 +23,7 @@ const readIdentity = "desktop-reader"
 
 type fakeEngine struct {
 	mu                                                  sync.Mutex
+	store                                               *domain.Store
 	calls                                               []string
 	ingest                                              []engine.IngestRequest
 	extract                                             []engine.ExtractRequest
@@ -165,24 +166,126 @@ func (f *fakeEngine) ProbeModel(_ context.Context, in engine.ProbeRequest) (engi
 	return out, nil
 }
 
-func (f *fakeEngine) SyncCatalog(ctx context.Context, store *domain.Store) (*engine.SyncStats, error) {
+func (f *fakeEngine) SnapshotCatalog(ctx context.Context, targets []engine.CatalogDatasetTarget, opts engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "sync")
 	if f.syncErr != nil {
 		return nil, f.syncErr
 	}
-	for _, d := range f.common {
-		if err := store.UpsertCatalogDoc(ctx, d); err != nil {
-			return nil, err
-		}
+	if opts.SessionsOnly {
+		return &engine.CatalogSnapshot{}, nil
 	}
-	for id, ds := range f.deleted {
-		if _, err := store.DB().ExecContext(ctx, "DELETE FROM catalog_docs WHERE dataset_id=? AND doc_id=?", ds, id); err != nil {
-			return nil, err
+	snap := &engine.CatalogSnapshot{}
+	for _, target := range targets {
+		hasMutation := false
+		for _, d := range f.common {
+			if d.DatasetID == target.DatasetID {
+				hasMutation = true
+				break
+			}
 		}
+		if !hasMutation {
+			for _, ds := range f.deleted {
+				if ds == target.DatasetID {
+					hasMutation = true
+					break
+				}
+			}
+		}
+		if !hasMutation {
+			continue
+		}
+		byID := map[string]engine.CatalogSnapshotDoc{}
+		if f.store != nil {
+			for _, kind := range []string{"knowledge", "common", "raw_doc"} {
+				existing, err := f.store.ListCatalogDocs(ctx, target.DatasetID, kind, 200)
+				if err != nil {
+					return nil, err
+				}
+				for _, d := range existing {
+					if f.deleted[d.DocID] == target.DatasetID {
+						continue
+					}
+					byID[d.DocID] = engine.CatalogSnapshotDoc{
+						DatasetID:           d.DatasetID,
+						DocID:               d.DocID,
+						Kind:                d.Kind,
+						IsKnowledge:         d.IsKnowledge,
+						CommonCategory:      d.CommonCategory,
+						LessonType:          d.LessonType,
+						StateKey:            d.StateKey,
+						Category:            d.Category,
+						SessionID:           d.SessionID,
+						DocName:             d.DocName,
+						DocLabel:            d.DocLabel,
+						RawDataLocation:     d.RawDataLocation,
+						ContentHash:         d.ContentHash,
+						CreatedAtRaw:        d.CreatedAtRaw,
+						CreatedAtNS:         d.CreatedAtNS,
+						CreatedAtInvalid:    d.CreatedAtInvalid,
+						UpdatedAtNS:         d.UpdatedAtNS,
+						EffectiveDate:       d.EffectiveDate,
+						EffectiveDateSource: d.EffectiveDateSource,
+						DayDescKey:          d.DayDescKey,
+						SortTSDescKey:       d.SortTSDescKey,
+						PipelineStatus:      d.PipelineStatus,
+						SourceUpdatedAt:     d.SourceUpdatedAt,
+					}
+				}
+			}
+		}
+		for _, d := range f.common {
+			if d.DatasetID == target.DatasetID {
+				byID[d.DocID] = engine.CatalogSnapshotDoc{
+					DatasetID:      d.DatasetID,
+					DocID:          d.DocID,
+					Kind:           d.Kind,
+					IsKnowledge:    d.IsKnowledge,
+					CommonCategory: d.CommonCategory,
+					DocLabel:       d.DocLabel,
+					EffectiveDate:  d.EffectiveDate,
+					SortTSDescKey:  d.SortTSDescKey,
+				}
+			}
+		}
+		docs := make([]engine.CatalogSnapshotDoc, 0, len(byID))
+		for _, d := range byID {
+			docs = append(docs, d)
+		}
+		var sessions []engine.CatalogSnapshotSession
+		if f.store != nil {
+			existingSess, err := f.store.ListCatalogSessions(ctx, target.DatasetID, 200)
+			if err != nil {
+				return nil, err
+			}
+			for _, sess := range existingSess {
+				sessions = append(sessions, engine.CatalogSnapshotSession{
+					DatasetID:       sess.DatasetID,
+					UserID:          sess.UserID,
+					SessionID:       sess.SessionID,
+					AgentID:         sess.AgentID,
+					Status:          sess.Status,
+					StartedAt:       sess.StartedAt,
+					LastActivityAt:  sess.LastActivityAt,
+					SortTSDescKey:   sess.SortTSDescKey,
+					ParentSessionID: sess.ParentSessionID,
+					RootSessionID:   sess.RootSessionID,
+					SubagentRole:    sess.SubagentRole,
+					NestingDepth:    sess.NestingDepth,
+					IsTopLevel:      sess.IsTopLevel,
+					ChildCount:      sess.ChildCount,
+				})
+			}
+		}
+		snap.Datasets = append(snap.Datasets, engine.CatalogDatasetSnapshot{
+			DatasetID: target.DatasetID,
+			Exists:    true,
+			Docs:      docs,
+			Sessions:  sessions,
+		})
 	}
-	return &engine.SyncStats{}, nil
+	return snap, nil
 }
 
 func (f *fakeEngine) ReadLocalBody(_ context.Context, in engine.LocalBodyRef) (string, error) {
@@ -217,6 +320,7 @@ func testServer(t *testing.T, configure func(*Config)) (*Server, *domain.Store, 
 	t.Helper()
 	ctx := context.Background()
 	store, fake := openTestStore(t), newFakeEngine()
+	fake.store = store
 	must(t, store.UpsertProject(ctx, domain.Project{ID: "p", Name: "Project", DatasetID: "ds", AutoCapture: true, Aliases: []string{t.TempDir()}}))
 	must(t, store.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "general", Name: "Common", DatasetID: "common"}))
 	must(t, store.ConnectAgent(ctx, domain.Agent{ID: "agent", Name: "agent", Kind: "codex"}))
@@ -282,7 +386,7 @@ func requireCode(t *testing.T, w *httptest.ResponseRecorder, code string) {
 
 func seedDoc(t *testing.T, store *domain.Store, ds, id, kind, category string, at time.Time, key int64) {
 	t.Helper()
-	doc := domain.CatalogDoc{DatasetID: ds, DocID: id, CogneeRowID: -key, Kind: kind, Category: category, IsKnowledge: kind != "raw_doc",
+	doc := domain.CatalogDoc{DatasetID: ds, DocID: id, DocSeq: -key, Kind: kind, Category: category, IsKnowledge: kind != "raw_doc",
 		DocLabel: "match " + id, CreatedAtRaw: domain.FormatUTCNS(at), CreatedAtNS: domain.FormatUTCNS(at), EffectiveDate: at.In(time.Local).Format(time.DateOnly),
 		DayDescKey: key, SortTSDescKey: key, RawDataLocation: "owned://" + id}
 	if kind == "common" {

@@ -74,9 +74,9 @@ type fakeCatalogProjector struct {
 	err   error
 }
 
-func (p *fakeCatalogProjector) SyncCatalog(_ context.Context, _ *domain.Store) (*engine.SyncStats, error) {
+func (p *fakeCatalogProjector) SnapshotCatalog(_ context.Context, _ []engine.CatalogDatasetTarget, _ engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 	p.calls++
-	return &engine.SyncStats{}, p.err
+	return &engine.CatalogSnapshot{}, p.err
 }
 
 func (p *fakeCatalogProjector) ReadLocalBody(_ context.Context, _ engine.LocalBodyRef) (string, error) {

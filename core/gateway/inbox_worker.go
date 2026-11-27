@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,20 @@ import (
 )
 
 var errExtractionPausedModelUnverified = errors.New("extraction paused: active model unverified")
+
+type catalogPublishError struct {
+	datasetID string
+	projectID string
+	err       error
+}
+
+func (e *catalogPublishError) Error() string {
+	return fmt.Sprintf("publish catalog: %v", e.err)
+}
+
+func (e *catalogPublishError) Unwrap() error {
+	return e.err
+}
 
 type FlushScheduleStatus string
 
@@ -62,6 +77,11 @@ type InboxSummary struct {
 
 	FilteredCount  int                      `json:"filtered_count,omitempty"`
 	RecentFiltered []CaptureFilterEventView `json:"recent_filtered,omitempty"`
+
+	CatalogPublishPending int    `json:"catalog_publish_pending,omitempty"`
+	CatalogPublishFailed  int    `json:"catalog_publish_failed,omitempty"`
+	CatalogPublishError   string `json:"catalog_publish_error,omitempty"`
+	CatalogPublishErrorAt string `json:"catalog_publish_error_at,omitempty"`
 }
 type InboxFailure struct {
 	ID        string `json:"id"`
@@ -316,10 +336,30 @@ func (w *InboxWorker) flushSession(ctx context.Context, job domain.SessionFlushJ
 		return errors.New("engine did not complete session-end extraction")
 	}
 	w.resetExtractBackoff()
-	if w.cfg.Projector != nil {
-		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {
-			return fmt.Errorf("publish catalog: %w", err)
-		}
+	if err := w.syncDatasetCatalog(ctx, job.DatasetID); err != nil {
+		return &catalogPublishError{datasetID: job.DatasetID, projectID: job.ProjectID, err: err}
+	}
+	return nil
+}
+
+func (w *InboxWorker) syncDatasetCatalog(ctx context.Context, datasetID string) error {
+	if w.cfg.Projector == nil {
+		return nil
+	}
+	if w.server != nil {
+		_, err := w.server.SyncDatasetCatalog(ctx, datasetID)
+		return err
+	}
+	return nil
+}
+
+func (w *InboxWorker) syncDatasetSessions(ctx context.Context, datasetID string) error {
+	if w.cfg.Projector == nil {
+		return nil
+	}
+	if w.server != nil {
+		_, err := w.server.SyncDatasetSessions(ctx, datasetID)
+		return err
 	}
 	return nil
 }
@@ -331,6 +371,22 @@ func (w *InboxWorker) startedAtSnapshot() string {
 }
 
 func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
+	// Pending catalog publishes read local store only (zero LLM calls), so process them
+	// before checking model verification gate or extract backoff.
+	w.claimMu.Lock()
+	excluded := w.activeDatasetsSnapshot()
+	pendingPub, pubErr := w.cfg.Store.NextPendingCatalogPublishExcludingDatasets(ctx, excluded)
+	if pubErr == nil {
+		w.markDatasetActive(pendingPub.DatasetID)
+		w.claimMu.Unlock()
+		defer w.releaseDataset(pendingPub.DatasetID)
+		return w.finishPendingCatalogPublish(ctx, pendingPub)
+	}
+	w.claimMu.Unlock()
+	if !errors.Is(pubErr, domain.ErrNotFound) {
+		return false, pubErr
+	}
+
 	if w.inExtractBackoff() {
 		return false, nil
 	}
@@ -341,7 +397,7 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	}
 
 	w.claimMu.Lock()
-	excluded := w.activeDatasetsSnapshot()
+	excluded = w.activeDatasetsSnapshot()
 	if w.needsRecovery.Load() && len(excluded) == 0 {
 		if _, _, err := w.cfg.Store.RecoverStaleProcessingBefore(ctx, w.startedAtSnapshot()); err == nil {
 			w.needsRecovery.Store(false)
@@ -411,6 +467,22 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	return false, flushErr
 }
 
+func (w *InboxWorker) finishPendingCatalogPublish(ctx context.Context, st domain.CatalogPublishState) (bool, error) {
+	err := w.syncDatasetCatalog(ctx, st.DatasetID)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, context.Canceled) && w.isStopping() {
+		return false, nil
+	}
+	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if markErr := w.cfg.Store.MarkCatalogPublishFailed(finish, st.DatasetID, st.ProjectID, sanitizeError(err)); markErr != nil {
+		return true, errors.Join(err, markErr)
+	}
+	return true, nil
+}
+
 func (w *InboxWorker) pruneInterval() int {
 	if w.cfg.InboxPruneInterval > 0 {
 		return w.cfg.InboxPruneInterval
@@ -429,6 +501,25 @@ func (w *InboxWorker) finishInboxItem(ctx context.Context, item domain.CaptureIn
 	err := w.process(ctx, item)
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	var pubErr *catalogPublishError
+	if errors.As(err, &pubErr) {
+		status := "failed"
+		errText := sanitizeError(pubErr.err)
+		if errors.Is(pubErr.err, context.Canceled) && w.isStopping() {
+			status = "pending"
+			errText = ""
+		}
+		if persistErr := w.cfg.Store.CompleteInboxWithCatalogPublishState(finish, item.ID, pubErr.datasetID, pubErr.projectID, status, errText); persistErr != nil {
+			return true, errors.Join(pubErr, persistErr)
+		}
+		if status == "pending" {
+			return false, nil
+		}
+		if w.hasQueuedSessionFlushes() {
+			w.Notify()
+		}
+		return true, nil
+	}
 	if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
 		if requeueErr := w.cfg.Store.RequeueInboxItem(finish, item.ID); requeueErr != nil {
 			return true, requeueErr
@@ -462,6 +553,26 @@ func (w *InboxWorker) finishSessionFlushJob(ctx context.Context, job domain.Sess
 	err := w.flushSession(ctx, job)
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	var pubErr *catalogPublishError
+	if errors.As(err, &pubErr) {
+		status := "failed"
+		errText := sanitizeError(pubErr.err)
+		if errors.Is(pubErr.err, context.Canceled) && w.isStopping() {
+			status = "pending"
+			errText = ""
+		}
+		requeued, persistErr := w.cfg.Store.CompleteSessionFlushWithCatalogPublishState(finish, job.ID, pubErr.datasetID, pubErr.projectID, status, errText)
+		if persistErr != nil {
+			return true, errors.Join(pubErr, persistErr)
+		}
+		if status == "pending" {
+			return false, nil
+		}
+		if requeued {
+			w.Notify()
+		}
+		return true, nil
+	}
 	if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
 		if requeueErr := w.cfg.Store.RequeueSessionFlush(finish, job.ID); requeueErr != nil {
 			return true, requeueErr
@@ -556,7 +667,8 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 			}
 		}
 	}
-	if !(item.Kind == string(engine.IngestKindCaptureTrace) && mode == engine.ExtractModeDefault) {
+	isTraceOnly := item.Kind == string(engine.IngestKindCaptureTrace) && mode == engine.ExtractModeDefault
+	if !isTraceOnly {
 		model, err := w.expectedDigest(ctx)
 		if err != nil {
 			return err
@@ -579,9 +691,13 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		}
 		w.resetExtractBackoff()
 	}
-	if w.cfg.Projector != nil {
-		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {
-			return fmt.Errorf("publish catalog: %w", err)
+	if isTraceOnly {
+		if err := w.syncDatasetSessions(ctx, item.DatasetID); err != nil {
+			return &catalogPublishError{datasetID: item.DatasetID, projectID: item.ProjectID, err: err}
+		}
+	} else {
+		if err := w.syncDatasetCatalog(ctx, item.DatasetID); err != nil {
+			return &catalogPublishError{datasetID: item.DatasetID, projectID: item.ProjectID, err: err}
 		}
 	}
 	return nil
@@ -675,6 +791,23 @@ func (w *InboxWorker) expectedDigest(ctx context.Context) (string, error) {
 }
 
 func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]string, error) {
+	// 1. Prioritize retrying failed catalog publish states (zero LLM calls).
+	failedPubs, err := w.cfg.Store.ListFailedCatalogPublishStates(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	retried := make([]string, 0, len(failedPubs))
+	var publishRetryErr error
+	for _, st := range failedPubs {
+		if err := w.syncDatasetCatalog(ctx, st.DatasetID); err != nil {
+			_ = w.cfg.Store.MarkCatalogPublishFailed(ctx, st.DatasetID, st.ProjectID, sanitizeError(err))
+			publishRetryErr = errors.Join(publishRetryErr, err)
+			continue
+		}
+		retried = append(retried, "catalog:"+st.DatasetID)
+	}
+
+	// 2. Retry failed capture_inbox and session_flush_jobs entries.
 	query := `SELECT id FROM capture_inbox WHERE status='failed'`
 	var args []any
 	if projectID != "" {
@@ -687,7 +820,7 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 		return id, err
 	})
 	if err != nil {
-		return nil, err
+		return retried, err
 	}
 	flushQuery := `SELECT id FROM session_flush_jobs WHERE status='failed'`
 	var flushArgs []any
@@ -701,9 +834,8 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 		return id, err
 	})
 	if err != nil {
-		return nil, err
+		return retried, err
 	}
-	retried := make([]string, 0, len(ids)+len(flushIDs))
 	defer w.Notify()
 	for _, id := range ids {
 		if _, err := w.cfg.Store.RetryInboxItem(ctx, id); err != nil {
@@ -722,6 +854,9 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 			return retried, err
 		}
 		retried = append(retried, id)
+	}
+	if publishRetryErr != nil {
+		return retried, publishRetryErr
 	}
 	return retried, nil
 }
@@ -755,6 +890,8 @@ func (w *InboxWorker) summary(ctx context.Context, db sqlRead, projectID string)
 	if projectID != "" {
 		where = " AND project_id=?"
 		args = append(args, projectID)
+	} else {
+		where = " AND project_id IN (SELECT id FROM projects)"
 	}
 	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE status='pending'),COUNT(*) FILTER(WHERE status='processing'),
 		COUNT(*) FILTER(WHERE status='succeeded'),COUNT(*) FILTER(WHERE status='failed') FROM capture_inbox WHERE 1=1`+where, args...).
@@ -772,6 +909,31 @@ func (w *InboxWorker) summary(ctx context.Context, db sqlRead, projectID string)
 	out.Pending += flushPending
 	out.Processing += flushProcessing
 	out.Failed += flushFailed
+
+	var pubWhere string
+	var pubArgs []any
+	if projectID != "" {
+		pubWhere = " WHERE (project_id=? OR dataset_id IN (SELECT dataset_id FROM projects WHERE id=? AND dataset_id<>''))"
+		pubArgs = []any{projectID, projectID}
+	} else {
+		pubWhere = " WHERE (dataset_id IN (SELECT dataset_id FROM projects WHERE dataset_id<>''))"
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FILTER(WHERE status='pending'),COUNT(*) FILTER(WHERE status='failed')
+		FROM catalog_publish_state`+pubWhere, pubArgs...).Scan(&out.CatalogPublishPending, &out.CatalogPublishFailed); err != nil {
+		return out, err
+	}
+	if out.CatalogPublishFailed > 0 {
+		var pubErr, pubErrAt string
+		q := `SELECT last_error,last_error_at FROM catalog_publish_state` + pubWhere + ` AND status='failed' ORDER BY updated_at DESC,dataset_id LIMIT 1`
+		if err := db.QueryRowContext(ctx, q, pubArgs...).Scan(&pubErr, &pubErrAt); err == nil {
+			if pubErr != "" {
+				out.CatalogPublishError = sanitizeError(errors.New(pubErr))
+			}
+			out.CatalogPublishErrorAt = pubErrAt
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return out, err
+		}
+	}
 
 	unionArgs := make([]any, 0, len(args)*2)
 	unionArgs = append(unionArgs, args...)

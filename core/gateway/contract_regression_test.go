@@ -31,11 +31,14 @@ type contractMockEngine struct {
 	ingestErr    error
 	extractErr   error
 	searchErr    error
-	ingestCalls  int
-	extractCalls int
-	syncCalls    int
-	ingestReqs   []engine.IngestRequest
-	extractReqs  []engine.ExtractRequest
+	ingestCalls      int
+	extractCalls     int
+	syncCalls        int
+	sessionSyncCalls int
+	datasetSyncCalls int
+	fullSyncCalls    int
+	ingestReqs       []engine.IngestRequest
+	extractReqs      []engine.ExtractRequest
 	ingestFunc   func(call int, req engine.IngestRequest) (engine.IngestResult, error)
 }
 
@@ -125,11 +128,19 @@ func (m *contractMockEngine) Graph(context.Context, engine.GraphRequest) (engine
 	return engine.GraphPayload{OK: true}, nil
 }
 
-func (m *contractMockEngine) SyncCatalog(context.Context, *domain.Store) (*engine.SyncStats, error) {
+func (m *contractMockEngine) SnapshotCatalog(_ context.Context, targets []engine.CatalogDatasetTarget, opts engine.CatalogSnapshotOptions) (*engine.CatalogSnapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.syncCalls++
-	return &engine.SyncStats{}, nil
+	switch {
+	case opts.SessionsOnly:
+		m.sessionSyncCalls++
+	case len(targets) == 1:
+		m.datasetSyncCalls++
+	default:
+		m.fullSyncCalls++
+	}
+	return &engine.CatalogSnapshot{}, nil
 }
 
 func (m *contractMockEngine) ReadLocalBody(context.Context, engine.LocalBodyRef) (string, error) {
@@ -483,14 +494,16 @@ func TestContractBatchCaptureTraceFastPathAndQASessionExtract(t *testing.T) {
 
 	eng.mu.Lock()
 	ingestCalls, extractCalls, syncCalls := eng.ingestCalls, eng.extractCalls, eng.syncCalls
+	sessionSyncCalls, datasetSyncCalls, fullSyncCalls := eng.sessionSyncCalls, eng.datasetSyncCalls, eng.fullSyncCalls
 	extractReqs := slices.Clone(eng.extractReqs)
 	eng.mu.Unlock()
 
 	if ingestCalls != 11 {
 		t.Fatalf("ingestCalls = %d, want 11", ingestCalls)
 	}
-	if syncCalls != 11 {
-		t.Fatalf("syncCalls = %d, want 11 (traces must still sync catalog)", syncCalls)
+	if syncCalls != 11 || sessionSyncCalls != 10 || datasetSyncCalls != 1 || fullSyncCalls != 0 {
+		t.Fatalf("sync breakdown = total:%d session:%d dataset:%d full:%d, want 11/10/1/0",
+			syncCalls, sessionSyncCalls, datasetSyncCalls, fullSyncCalls)
 	}
 	if extractCalls != 1 {
 		t.Fatalf("extractCalls = %d, want 1 (only capture_qa should trigger Extract)", extractCalls)

@@ -64,6 +64,7 @@ type Server struct {
 	registryMu   sync.Mutex
 	generationMu sync.Mutex
 	commonMu     sync.Mutex
+	catalogSync  catalogSyncCoordinator
 
 	startupModelMu        sync.Mutex
 	startupModelErr       string
@@ -172,6 +173,7 @@ func (s *Server) routes() http.Handler {
 	both("GET", "/overview/bootstrap", s.overview)
 	both("GET", "/overview/day", s.overviewDay)
 	both("GET", "/projects", s.listProjects)
+	both("GET", "/linkable-datasets", s.listLinkableDatasets)
 	both("PUT", "/defaults", s.updateDefaults)
 	both("POST", "/projects", s.createProject)
 	both("GET", "/projects/{id}", s.getProject)
@@ -470,12 +472,4 @@ func (s *Server) shutdown(ctx context.Context, l *loopback) error {
 	s.listener = nil
 	s.mu.Unlock()
 	return l.err
-}
-
-// SyncCatalog projects the official catalog before the gateway starts serving.
-func (s *Server) SyncCatalog(ctx context.Context) (*engine.SyncStats, error) {
-	if s.cfg.Projector == nil {
-		return &engine.SyncStats{}, nil
-	}
-	return s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
 }

@@ -182,8 +182,40 @@ func (m *mcpRememberService) Remember(ctx context.Context, req mcp.RememberReque
 
 	var dedupResult *mcp.RememberResult
 	var notifyInbox bool
-	err = s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		now := domain.NowUTCMicro()
+	err = func() error {
+		s.registryMu.Lock()
+		defer s.registryMu.Unlock()
+		proj, projErr := s.cfg.Store.GetProject(ctx, req.Project.ID)
+		if projErr != nil {
+			if errors.Is(projErr, domain.ErrNotFound) {
+				return domain.ErrForbidden
+			}
+			return projErr
+		}
+		if canonicalDatasetID(proj.DatasetID) != canonicalDatasetID(req.Project.DatasetID) ||
+			domain.IsProtectedProject(proj.Name, proj.DatasetName) ||
+			domain.IsProtectedProject(proj.ID, proj.DatasetID) {
+			return domain.ErrForbidden
+		}
+		acl, aclErr := s.cfg.Store.EvaluateProjectACL(ctx, proj.ID, req.Agent.ID)
+		if aclErr != nil {
+			return aclErr
+		}
+		if acl.Access != domain.AccessMaintain {
+			return domain.ErrForbidden
+		}
+		return s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
+			var projectExists int
+			if err := tx.QueryRowContext(ctx,
+				`SELECT 1 FROM projects WHERE id=? AND dataset_id=?`,
+				req.Project.ID, req.Project.DatasetID,
+			).Scan(&projectExists); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return domain.ErrForbidden
+				}
+				return err
+			}
+			now := domain.NowUTCMicro()
 		var existing domain.CaptureReceipt
 		var entryID sql.NullString
 		receiptErr := tx.QueryRowContext(ctx,
@@ -304,6 +336,14 @@ func (m *mcpRememberService) Remember(ctx context.Context, req mcp.RememberReque
 					return err
 				}
 				notifyInbox = true
+			} else if inboxStatus == "cancelled_project_removed" {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE capture_inbox SET project_id=?,status='pending',last_error='',last_error_at='',updated_at=? WHERE id=? AND agent_id=? AND status='cancelled_project_removed'`,
+					req.Project.ID, now, inboxID, req.Agent.ID,
+				); err != nil {
+					return err
+				}
+				notifyInbox = true
 			}
 			res := mcp.RememberResult{
 				OK:             true,
@@ -349,6 +389,7 @@ func (m *mcpRememberService) Remember(ctx context.Context, req mcp.RememberReque
 		}
 		return nil
 	})
+	}()
 	if err != nil {
 		return mcp.RememberResult{}, err
 	}
@@ -455,16 +496,41 @@ func (m *mcpRememberService) Remember(ctx context.Context, req mcp.RememberReque
 	if s.cfg.Projector != nil {
 		syncErrCh := make(chan error, 1)
 		go func() {
-			_, syncErr := s.cfg.Projector.SyncCatalog(fastCtx, s.cfg.Store)
+			var syncErr error
+			if req.Kind == engine.IngestKindCaptureTrace {
+				_, syncErr = s.SyncDatasetSessions(fastCtx, req.Project.DatasetID)
+			} else {
+				_, syncErr = s.SyncDatasetCatalog(fastCtx, req.Project.DatasetID)
+			}
 			syncErrCh <- syncErr
 		}()
+		var publishFailed bool
 		select {
 		case err := <-syncErrCh:
-			if err != nil {
-				return requeue(entryID, resultDocID)
-			}
+			publishFailed = err != nil
 		case <-fastCtx.Done():
-			return requeue(entryID, resultDocID)
+			publishFailed = true
+		}
+		if publishFailed {
+			// Extract already succeeded: never requeue capture_inbox (which would re-invoke LLM).
+			// Atomically mark inbox succeeded and enqueue independent catalog publish retry.
+			finishCtx, cancelFinish := m.newFinalizeContext(ctx)
+			defer cancelFinish()
+			if err := s.cfg.Store.CompleteInboxWithCatalogPublishState(finishCtx, taskID, req.Project.DatasetID, req.Project.ID, "pending", ""); err != nil {
+				return mcp.RememberResult{}, err
+			}
+			s.inbox.Notify()
+			return mcp.RememberResult{
+				OK:             true,
+				Status:         "queued",
+				Saved:          false,
+				TaskID:         taskID,
+				EntryID:        entryID,
+				DocumentID:     resultDocID,
+				IdempotencyKey: req.IdempotencyKey,
+				DatasetID:      req.Project.DatasetID,
+				Message:        "记忆已生成，目录待更新",
+			}, nil
 		}
 	}
 
