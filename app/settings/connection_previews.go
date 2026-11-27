@@ -260,6 +260,11 @@ func (a *Controller) previewTraeHooksRepair(id string) {
 	if !ok || s.Busy || s.Loading || !a.canDispatch() || s.pendingConnection(id) != nil {
 		return
 	}
+	if i := slices.IndexFunc(s.Connections.Connections, func(row AgentConnection) bool { return row.ID == id }); i >= 0 {
+		if kind := s.Connections.Connections[i].Kind; kind != "" && kind != "trae_ide" {
+			return
+		}
+	}
 	s.clearTraeRepairPreview(id)
 	s.Busy = true
 	s.Error, s.Message = "", ""

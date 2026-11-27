@@ -13,6 +13,9 @@ func captureVerifiedHealthy(row AgentConnection) bool {
 }
 
 func shouldExpandChecklist(row AgentConnection) bool {
+	if needsHookRepair(row) && !needsTraeIDEHooksRepair(row) {
+		return false
+	}
 	if captureVerifiedHealthy(row) {
 		return false
 	}
@@ -23,7 +26,7 @@ func shouldExpandChecklist(row AgentConnection) bool {
 			return true
 		}
 	}
-	if needsTraeHooksRepair(row) {
+	if needsTraeIDEHooksRepair(row) {
 		return true
 	}
 	switch row.Status {

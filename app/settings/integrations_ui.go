@@ -32,7 +32,7 @@ func isAgentVisibleInBeta(row AgentConnection, pending *generationUIOperation) b
 }
 
 func connectionUnavailable(row AgentConnection) bool {
-	if needsTraeHooksRepair(row) {
+	if needsHookRepair(row) {
 		return false
 	}
 	switch row.Status {

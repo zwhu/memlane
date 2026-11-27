@@ -412,3 +412,178 @@ func TestConnectionConfirmRejectsNonEligiblePreviewStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestNeedsHookRepairSemanticsSplitBetweenGenericAndTraeIDE(t *testing.T) {
+	cases := []struct {
+		name           string
+		row            AgentConnection
+		wantRepair     bool
+		wantTraeRepair bool
+	}{
+		{
+			name:           "traex_needs_hook_repair",
+			row:            AgentConnection{ID: "traex", Kind: "traex", NeedsHookRepair: true},
+			wantRepair:     true,
+			wantTraeRepair: false,
+		},
+		{
+			name:           "traex_ignores_trae_ide_error_code_for_ide_repair_action",
+			row:            AgentConnection{ID: "traex", Kind: "traex", ErrorCode: "trae_ide_unsupported_hook_events"},
+			wantRepair:     true,
+			wantTraeRepair: false,
+		},
+		{
+			name:           "trae_ide_needs_hook_repair",
+			row:            AgentConnection{ID: "trae", Kind: "trae_ide", NeedsHookRepair: true},
+			wantRepair:     true,
+			wantTraeRepair: true,
+		},
+		{
+			name:           "empty_kind_with_explicit_trae_ide_error_code",
+			row:            AgentConnection{ID: "trae", ErrorCode: "trae_ide_hook_changed_requires_review"},
+			wantRepair:     true,
+			wantTraeRepair: true,
+		},
+		{
+			name:           "empty_kind_without_trae_ide_error_code",
+			row:            AgentConnection{ID: "unknown", NeedsHookRepair: true},
+			wantRepair:     true,
+			wantTraeRepair: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needsHookRepair(tc.row); got != tc.wantRepair {
+				t.Fatalf("needsHookRepair(%+v) = %v, want %v", tc.row, got, tc.wantRepair)
+			}
+			if got := needsTraeIDEHooksRepair(tc.row); got != tc.wantTraeRepair {
+				t.Fatalf("needsTraeIDEHooksRepair(%+v) = %v, want %v", tc.row, got, tc.wantTraeRepair)
+			}
+		})
+	}
+}
+
+func TestTraexNeedsHookRepairOmitsTraeIDERepairAndRestartChecklist(t *testing.T) {
+	scenarios := []struct {
+		name       string
+		row        AgentConnection
+		wantReview bool
+	}{
+		{
+			name: "registered_legacy_hooks_only",
+			row:  AgentConnection{ID: "traex-1", Kind: "traex", Detected: true, Status: "registered", NeedsHookRepair: true, Profile: "/Users/example/.trae"},
+		},
+		{
+			name: "configured_waiting_session",
+			row: AgentConnection{
+				ID: "traex-1", Kind: "traex", Detected: true, Status: "configured_pending_new_session",
+				NeedsHookRepair: true, Capture: &AgentCaptureState{State: "waiting_session", Permission: "observed"},
+			},
+		},
+		{
+			name: "configured_historical_healthy",
+			row: AgentConnection{
+				ID: "traex-1", Kind: "traex", Detected: true, Status: "configured_pending_new_session",
+				NeedsHookRepair: true, NewSessions: 2,
+				Capture: &AgentCaptureState{State: "healthy", Permission: "observed", LastSavedAt: 1794931200},
+			},
+		},
+		{
+			name:       "requires_review",
+			row:        AgentConnection{ID: "traex-1", Kind: "traex", Detected: true, Status: "requires_review", NeedsHookRepair: true},
+			wantReview: true,
+		},
+	}
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			root := t.TempDir()
+			a := newTestHost(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)
+			var requests atomic.Int32
+			a.client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				t.Errorf("unexpected HTTP request %s %s", r.Method, r.URL.Path)
+				http.NotFound(w, r)
+			})}
+			a.dispatch = func(fn func()) { fn() }
+			a.integrations.Loaded = true
+			a.integrations.Connections = ConnectionsDirectory{Revision: 5, Connections: []AgentConnection{sc.row}}
+			if connectionUnavailable(sc.row) {
+				t.Fatal("traex needing hook repair must not be hidden as unavailable")
+			}
+			if tone := agentConnectionBadgeTone(sc.row, nil, false, needsHookRepair(sc.row), connectionNeedsReview(sc.row)); tone != "warn" {
+				t.Fatalf("badge tone = %q, want warn", tone)
+			}
+			if shouldExpandChecklist(sc.row) {
+				t.Fatal("traex needing hook repair must not expand the restart checklist")
+			}
+			tt := ui.NewTester(func(c *ui.Context) { a.agentConnectionRow(c, sc.row) }, 1000, 500)
+			if !tt.HasText("Hooks 需修复") {
+				t.Fatalf("missing Hooks 需修复 badge: %v", tt.Texts())
+			}
+			for _, forbidden := range []string{"一键修复 TRAE Hooks", "查看 TRAE Hooks 修复预览", "⌘Q", "新建会话", "收起步骤：TRAE CLI", "查看步骤：TRAE CLI", "核对连接状态"} {
+				if tt.HasText(forbidden) {
+					t.Fatalf("unexpected text %q for traex hook repair: %v", forbidden, tt.Texts())
+				}
+			}
+			if sc.wantReview != tt.HasText("核对连接") {
+				t.Fatalf("核对连接 visibility = %v, want %v: %v", tt.HasText("核对连接"), sc.wantReview, tt.Texts())
+			}
+			joined := strings.Join(tt.Texts(), "\n")
+			if !strings.Contains(joined, "connect --agent traex") || !strings.Contains(joined, "~/.trae/cli/hooks.json") {
+				t.Fatalf("missing traex migration guidance: %v", tt.Texts())
+			}
+			clickProjectUI(t, tt, "复制排障指令交给 Agent")
+			if prompt := tt.Clipboard(); prompt != agentTakeoverConnectionTroubleshootPrompt("traex") ||
+				!strings.Contains(prompt, "doctor --include-logs --json") || !strings.Contains(prompt, "--agent traex --json") {
+				t.Fatalf("unexpected troubleshoot prompt: %q", prompt)
+			}
+			a.previewTraeHooksRepair(sc.row.ID)
+			if requests.Load() != 0 {
+				t.Fatalf("previewTraeHooksRepair sent %d requests for traex", requests.Load())
+			}
+		})
+	}
+}
+
+func TestOnboardingTraexNeedsHookRepairUsesGuidanceInsteadOfTraeIDERepairPreview(t *testing.T) {
+	root := t.TempDir()
+	a := newTestHost(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)
+	a.initialSetup = true
+	a.environment.InitialStep, a.environment.RuntimeStarted, a.environment.HostsLoaded = 3, true, true
+	a.environment.SelectedAgents = []string{"traex"}
+	s := &a.integrations
+	s.Loaded, s.ConnectionsLoaded = true, true
+	s.NextReceiptCheck = time.Now().Add(time.Hour)
+	traexRow := AgentConnection{ID: "traex-1", Kind: "traex", Detected: true, Status: "registered", NeedsHookRepair: true}
+	s.Connections = ConnectionsDirectory{Revision: 3, Connections: []AgentConnection{traexRow}}
+
+	if label, tone := a.onboardingConnectionStatus(traexRow); label != "待修复" || tone != "warn" {
+		t.Fatalf("onboarding status = (%q, %q), want (待修复, warn)", label, tone)
+	}
+	tt := ui.NewTester(a.View, 1200, 820)
+	if !tt.HasText("待修复") {
+		t.Fatalf("missing 待修复 badge: %v", tt.Texts())
+	}
+	for _, forbidden := range []string{"查看 TRAE Hooks 修复预览", "一键修复 TRAE Hooks", "最后一步：重启已接入的 Agent"} {
+		if tt.HasText(forbidden) {
+			t.Fatalf("unexpected onboarding text %q for traex hook repair: %v", forbidden, tt.Texts())
+		}
+	}
+	joined := strings.Join(tt.Texts(), "\n")
+	if !strings.Contains(joined, "connect --agent traex") || !strings.Contains(joined, "~/.trae/cli/hooks.json") {
+		t.Fatalf("missing onboarding traex migration guidance: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "复制排障指令交给 Agent")
+	if prompt := tt.Clipboard(); prompt != agentTakeoverConnectionTroubleshootPrompt("traex") {
+		t.Fatalf("unexpected onboarding troubleshoot prompt: %q", prompt)
+	}
+
+	// Verify TRAE IDE still exposes the dedicated TRAE Hooks repair preview button in onboarding.
+	a.environment.SelectedAgents = []string{"trae_ide"}
+	traeIDERow := AgentConnection{ID: "trae-1", Kind: "trae_ide", Detected: true, Status: "configured_pending_new_session", NeedsHookRepair: true}
+	s.Connections = ConnectionsDirectory{Revision: 4, Connections: []AgentConnection{traeIDERow}}
+	tt.Frame()
+	if !tt.HasText("查看 TRAE Hooks 修复预览") {
+		t.Fatalf("trae_ide lost its onboarding repair preview button: %v", tt.Texts())
+	}
+}

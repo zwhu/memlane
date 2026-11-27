@@ -131,9 +131,13 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 		s.EnvironmentOpen = map[string]bool{}
 	}
 	pending := s.pendingConnection(row.ID)
-	repair := needsTraeHooksRepair(row)
+	repair := needsHookRepair(row)
+	traeIDERepair := needsTraeIDEHooksRepair(row)
 	preview, previewOpen := s.ConnectionPreviews[row.ID]
 	repairPreview, repairPreviewOpen := s.TraeRepairPreview[row.ID]
+	if !traeIDERepair {
+		repairPreviewOpen = false
+	}
 	review := connectionNeedsReview(row)
 	unknownReview := review && row.Status != "requires_review"
 	allowed := connectionActionAllowed(row, "prepare") || row.Status == "prepared"
@@ -192,16 +196,16 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 				if shouldExpandChecklist(row) || captureConnection(row) {
 					a.captureConnectionAction(c, row)
 				}
-				if pending == nil && review && !unknownReview && repair &&
+				if pending == nil && review && !unknownReview && traeIDERepair &&
 					(!repairPreviewOpen || repairPreview.Repairable && len(repairPreview.Blockers) == 0) {
 					kitui.SmallButton(c, tok, "核对连接状态", nil, func() { a.connectAgents("review", []string{row.ID}) }).Disabled(s.Busy || s.Loading)
 				}
 				switch {
 				case pending != nil:
 					kitui.SmallButton(c, tok, "核对连接", nil, func() { a.reviewConnectionOperation(*pending) }).Label("核对连接：" + name).Disabled(s.Busy || s.Loading)
-				case unknownReview || (review && !repair):
+				case unknownReview || (review && !traeIDERepair):
 					kitui.SmallButton(c, tok, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Label("核对连接：" + name).Disabled(s.Busy || s.Loading)
-				case repair && !repairPreviewOpen:
+				case traeIDERepair && !repairPreviewOpen:
 					kitui.SmallPrimaryButton(c, tok, "一键修复 TRAE Hooks", func() { a.previewTraeHooksRepair(row.ID) }).Disabled(s.Busy || s.Loading)
 				case repair:
 				case allowed && !previewOpen:
@@ -228,11 +232,11 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() { kitui.Text(c, tok, notice, kitui.RoleMeta).LineHeight(1.5) })
 		}
 		if repair && pending == nil && !unknownReview {
-			if repairPreviewOpen {
+			if traeIDERepair && repairPreviewOpen {
 				a.traeHooksRepairDetails(c, row.ID, repairPreview, review)
-			} else if row.RepairSummary != "" {
+			} else if summary := hookRepairNotice(row); summary != "" {
 				ui.Row(c).FillWidth().Padding(0, sp4, sp2, sp4+36).Children(func() {
-					kitui.Text(c, tok, row.RepairSummary, kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
+					kitui.Text(c, tok, summary, kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
 				})
 			}
 		}
@@ -347,7 +351,19 @@ func (a *Controller) connectionPreviewDetails(c *ui.Context, row AgentConnection
 		ui.Column(c).FillWidth().Padding(sp3).Gap(sp1).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 			kitui.Text(c, tok, "将为 "+connectionName(row.Kind)+" 添加 Memlane 连接。", kitui.RoleBody).FontWeight(500)
 			if preview.NeedsHookRepair {
-				kitui.Text(c, tok, "请重新检测连接，然后打开「一键修复 TRAE Hooks」预览。", kitui.RoleMeta).TextColor(tok.Warning)
+				msg := "请重新检测连接，然后打开「一键修复 TRAE Hooks」预览。"
+				effectiveKind := row.Kind
+				if effectiveKind == "" {
+					effectiveKind = preview.Kind
+				}
+				if effectiveKind != "trae_ide" {
+					r := row
+					r.Kind = effectiveKind
+					msg = hookRepairNotice(r)
+				}
+				if msg != "" {
+					kitui.Text(c, tok, msg, kitui.RoleMeta).TextColor(tok.Warning)
+				}
 			}
 			if preview.Target != "" {
 				kitui.Text(c, tok, "配置文件 "+preview.Target, kitui.RoleMeta)

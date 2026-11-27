@@ -36,7 +36,7 @@ func (a *Controller) onboardingConnectionRows() []AgentConnection {
 func (a *Controller) onboardingConnectionStatus(row AgentConnection) (string, string) {
 	s := &a.integrations
 	needsAttention := s.pendingConnection(row.ID) != nil || connectionNeedsReview(row) ||
-		needsTraeHooksRepair(row) || s.ConnectionPreviews[row.ID].NeedsHookRepair
+		needsHookRepair(row) || s.ConnectionPreviews[row.ID].NeedsHookRepair
 	switch {
 	case row.ID != "" && a.onboardingConnection.Writing == row.ID:
 		return "写入中", "accent"
@@ -48,7 +48,7 @@ func (a *Controller) onboardingConnectionStatus(row AgentConnection) (string, st
 		return "已跳过", "plain"
 	case s.pendingConnection(row.ID) != nil, connectionNeedsReview(row):
 		return "待核对", "warn"
-	case needsTraeHooksRepair(row), s.ConnectionPreviews[row.ID].NeedsHookRepair:
+	case needsHookRepair(row), s.ConnectionPreviews[row.ID].NeedsHookRepair:
 		return "待修复", "warn"
 	default:
 		return "待接入", ""
@@ -60,7 +60,7 @@ func (a *Controller) onboardingConnectionPreview(row AgentConnection) (controlpl
 	p, ok := s.ConnectionPreviews[row.ID]
 	eligible := row.ID != "" && p.InstanceID == row.ID && p.Kind == row.Kind && p.Target != "" && p.OK &&
 		!p.NeedsHookRepair && len(p.Blockers) == 0 && len(p.BlockerDetails) == 0 &&
-		!needsTraeHooksRepair(row) && !connectionNeedsReview(row) && s.pendingConnection(row.ID) == nil &&
+		!needsHookRepair(row) && !connectionNeedsReview(row) && s.pendingConnection(row.ID) == nil &&
 		(connectionActionAllowed(row, "prepare") || row.Status == "prepared") && previewEligibleForConfirm(p)
 	return p, ok && eligible
 }
@@ -70,7 +70,7 @@ func (a *Controller) acceptConnectionsDirectory(directory ConnectionsDirectory) 
 	s.Connections = directory
 	for _, row := range directory.Connections {
 		needsAttention := s.pendingConnection(row.ID) != nil || connectionNeedsReview(row) ||
-			needsTraeHooksRepair(row) || s.ConnectionPreviews[row.ID].NeedsHookRepair
+			needsHookRepair(row) || s.ConnectionPreviews[row.ID].NeedsHookRepair
 		if !needsAttention && (captureVerifiedHealthy(row) || row.Status == "configured_pending_new_session" || row.Status == "environment_receipt_unconfirmed") {
 			delete(a.onboardingConnection.Skipped, row.Kind)
 		}

@@ -35,7 +35,7 @@ func connectionName(kind string) string {
 }
 
 func connectionStatus(row AgentConnection) string {
-	if needsTraeHooksRepair(row) {
+	if needsHookRepair(row) {
 		return "Hooks 需修复"
 	}
 	if row.Capture != nil && row.Capture.State == "awaiting_generation_activation" {
@@ -123,8 +123,32 @@ func connectionNeedsReview(row AgentConnection) bool {
 	return false
 }
 
-func needsTraeHooksRepair(row AgentConnection) bool {
-	return row.NeedsHookRepair || row.ErrorCode == "trae_ide_hook_changed_requires_review" || row.ErrorCode == "trae_ide_unsupported_hook_events"
+func isTraeIDEHookRepairErrorCode(code string) bool {
+	return code == "trae_ide_hook_changed_requires_review" || code == "trae_ide_unsupported_hook_events"
+}
+
+func needsHookRepair(row AgentConnection) bool {
+	return row.NeedsHookRepair || isTraeIDEHookRepairErrorCode(row.ErrorCode)
+}
+
+func needsTraeIDEHooksRepair(row AgentConnection) bool {
+	if isTraeIDEHookRepairErrorCode(row.ErrorCode) {
+		return row.Kind == "" || row.Kind == "trae_ide"
+	}
+	return row.NeedsHookRepair && row.Kind == "trae_ide"
+}
+
+func hookRepairNotice(row AgentConnection) string {
+	if row.RepairSummary != "" {
+		return row.RepairSummary
+	}
+	if row.Kind == "traex" {
+		return "检测到旧版 TRAE CLI Hooks 配置，请复制下方排障指令交给 Agent，或运行 connect --agent traex 将 Hook 迁移到 ~/.trae/cli/hooks.json。"
+	}
+	if !needsTraeIDEHooksRepair(row) {
+		return "检测到 Hooks 配置需要修复，请复制下方排障指令交给 Agent 处理。"
+	}
+	return ""
 }
 
 func connectionReviewNotice(name string, row AgentConnection) string {

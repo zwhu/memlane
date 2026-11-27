@@ -81,13 +81,18 @@ func (a *Controller) onboardingConnectionRowDetails(c *ui.Context, row AgentConn
 	s, flow := &a.integrations, &a.onboardingConnection
 	locked := a.onboardingConnectionBusy()
 	pending := s.pendingConnection(row.ID)
+	effectiveKind := row.Kind
+	if effectiveKind == "" {
+		effectiveKind = preview.Kind
+	}
+	traeIDERepair := needsTraeIDEHooksRepair(row) || (preview.NeedsHookRepair && effectiveKind == "trae_ide")
 	switch {
 	case pending != nil:
 		kitui.SmallButton(c, tok, "核对连接", nil, func() { a.reviewConnectionOperation(*pending) }).Disabled(locked).AlignSelf(ui.Start)
 		a.pendingConnectionReconcileDetails(c, *pending, row.Kind)
 	case connectionNeedsReview(row) && row.Status != "requires_review":
 		kitui.SmallButton(c, tok, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Disabled(locked).AlignSelf(ui.Start)
-	case needsTraeHooksRepair(row), preview.NeedsHookRepair:
+	case traeIDERepair:
 		if p, ok := s.TraeRepairPreview[row.ID]; ok {
 			a.traeHooksRepairDetails(c, row.ID, p, connectionNeedsReview(row))
 		} else {
@@ -96,6 +101,22 @@ func (a *Controller) onboardingConnectionRowDetails(c *ui.Context, row AgentConn
 			}
 			kitui.SmallButton(c, tok, "查看 TRAE Hooks 修复预览", nil, func() { a.previewTraeHooksRepair(row.ID) }).Disabled(locked).AlignSelf(ui.Start)
 		}
+	case needsHookRepair(row), preview.NeedsHookRepair:
+		r := row
+		r.Kind = effectiveKind
+		summary := hookRepairNotice(r)
+		if row.RepairSummary == "" && preview.RepairSummary != "" {
+			summary = preview.RepairSummary
+		}
+		if summary != "" {
+			kitui.Text(c, tok, bootstrap.RedactInstallerText(summary), kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
+		}
+		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Margin(0, 0, sp2, 0).Children(func() {
+			if connectionNeedsReview(row) {
+				kitui.SmallButton(c, tok, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Disabled(locked)
+			}
+			copyConnectionTroubleshooting(tok, c, effectiveKind)
+		})
 	case connectionNeedsReview(row):
 		kitui.SmallButton(c, tok, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Disabled(locked).AlignSelf(ui.Start)
 	}
