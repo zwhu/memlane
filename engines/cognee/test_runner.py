@@ -3,6 +3,9 @@ import io
 import json
 import os
 from pathlib import Path
+import resource
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -127,3 +130,83 @@ class SetupTests(unittest.IsolatedAsyncioTestCase):
             send.assert_awaited_once_with({'type': 'websocket.close', 'code': 1008})
             setup = False
             self.assertEqual((await client.get('/internal/v1/items')).json(), {'downstream': True})
+
+
+class NoFileLimitTests(unittest.TestCase):
+    def test_raise_nofile_limit_darwin_infinity_and_step_down(self):
+        inf = resource.RLIM_INFINITY
+        state = [256, inf]
+        calls = []
+
+        def fake_get(_res):
+            return tuple(state)
+
+        def fake_set(_res, pair):
+            calls.append(pair)
+            if pair[0] > 10240:
+                raise ValueError('not allowed')
+            state[0], state[1] = pair
+
+        with (patch.object(runner, '_darwin_maxfilesperproc', return_value=138240),
+              patch.object(runner.resource, 'getrlimit', side_effect=fake_get),
+              patch.object(runner.resource, 'setrlimit', side_effect=fake_set)):
+            got = runner.raise_nofile_limit()
+        self.assertEqual(got, (10240, inf))
+        self.assertEqual(calls, [(65536, inf), (16384, inf), (10240, inf)])
+
+    def test_raise_nofile_limit_respects_hard_cap_and_never_downgrades(self):
+        inf = resource.RLIM_INFINITY
+        with (patch.object(runner, '_darwin_maxfilesperproc', return_value=138240),
+              patch.object(runner.resource, 'getrlimit', return_value=(131072, inf)),
+              patch.object(runner.resource, 'setrlimit') as mock_set):
+            self.assertEqual(runner.raise_nofile_limit(), (131072, inf))
+            mock_set.assert_not_called()
+
+        state = [256, 8192]
+        calls = []
+
+        def fake_set(_res, pair):
+            calls.append(pair)
+            state[0], state[1] = pair
+
+        with (patch.object(runner, '_darwin_maxfilesperproc', return_value=138240),
+              patch.object(runner.resource, 'getrlimit', side_effect=lambda _: tuple(state)),
+              patch.object(runner.resource, 'setrlimit', side_effect=fake_set)):
+            self.assertEqual(runner.raise_nofile_limit(), (8192, 8192))
+        self.assertEqual(calls, [(8192, 8192)])
+
+    def test_raise_nofile_limit_real_os_and_spawn_child_inheritance(self):
+        script = (
+            'import json, multiprocessing, resource\n'
+            'from engines.cognee.runner import raise_nofile_limit\n'
+            'def _child(q):\n'
+            '    q.put(resource.getrlimit(resource.RLIMIT_NOFILE)[0])\n'
+            'if __name__ == "__main__":\n'
+            '    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\n'
+            '    resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))\n'
+            '    before = resource.getrlimit(resource.RLIMIT_NOFILE)[0]\n'
+            '    after = raise_nofile_limit()[0]\n'
+            '    ctx = multiprocessing.get_context("spawn")\n'
+            '    q = ctx.Queue()\n'
+            '    p = ctx.Process(target=_child, args=(q,))\n'
+            '    p.start()\n'
+            '    child_soft = q.get(timeout=10)\n'
+            '    p.join(timeout=10)\n'
+            '    print(json.dumps({"before": before, "after": after, "child": child_soft}))\n'
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / 'rlimit_probe.py'
+            script_path.write_text(script)
+            proc = subprocess.run(
+                [sys.executable, str(script_path)],
+                cwd=str(Path(__file__).resolve().parents[2]),
+                env={**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[2])},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(data['before'], 256)
+        self.assertGreaterEqual(data['after'], 4096)
+        self.assertGreaterEqual(data['child'], 4096)

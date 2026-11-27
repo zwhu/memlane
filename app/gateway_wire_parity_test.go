@@ -1800,3 +1800,103 @@ func TestGatewayWireParityInboxProcessingAndProjectRemoval(t *testing.T) {
 		t.Fatalf("expected 1 cancelled_project_removed inbox item, got %d", len(cancelledItems))
 	}
 }
+
+type internalErrorEngine struct {
+	wireEngine
+}
+
+func (internalErrorEngine) Ingest(_ context.Context, _ engine.IngestRequest) (engine.IngestResult, error) {
+	return engine.IngestResult{OK: true, EntryID: "wire-500-entry"}, nil
+}
+
+func (internalErrorEngine) Extract(_ context.Context, _ engine.ExtractRequest) (engine.ExtractResult, error) {
+	return engine.ExtractResult{}, &engine.EngineError{
+		StatusCode: http.StatusInternalServerError,
+		Code:       "engine_internal_error",
+		Message:    "engine runner internal error (fd_limit_exceeded)",
+		Err:        engine.ErrInternal,
+	}
+}
+
+func TestGatewayWireParityInboxEngineInternalError(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const (
+		token     = "wire-parity-500-management-token"
+		agentKey  = "wire-parity-500-agent-secret-key"
+		projectID = "memlane"
+	)
+	check(store.UpsertProject(ctx, domain.Project{
+		ID: projectID, Name: "memlane", DatasetID: "memlane-ds", DatasetName: "memlane",
+		Aliases: []string{filepath.Join(dir, "memlane")}, Status: "verified", DesiredRevision: 1, AutoCapture: true,
+	}))
+	check(store.UpsertAgent(ctx, domain.Agent{
+		ID: "antigravity-1", Kind: "antigravity", Name: "Antigravity", DefaultAccess: domain.AccessMaintain,
+	}))
+	activeGen, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "wire-500-bridge", Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-5.4",
+	})
+	check(err)
+	check(store.SetActiveGeneration(ctx, activeGen.ProfileID, activeGen.Revision))
+
+	server, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          internalErrorEngine{},
+		ManagementToken: token,
+		AgentTokens:     map[string]string{"antigravity-1": agentKey},
+	})
+	check(err)
+
+	const gatewayURL = "http://127.0.0.1:61263"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	apiClient, err := api.NewClient(api.Config{
+		BaseURL: gatewayURL, ManagementToken: token, HTTPClient: httpClient,
+	})
+	check(err)
+
+	ingestBody := `{"project_id":"memlane","session_id":"wire-500-sess","message_id":"msg-500","kind":"capture_qa","content":{"question":"触发引擎内部错误","answer":"应准确回报内部错误"}}`
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayURL+"/ingest", bytes.NewBufferString(ingestBody))
+	check(err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Api-Key", agentKey)
+	res, err := httpClient.Do(req)
+	check(err)
+	check(res.Body.Close())
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /ingest status = %d, want 202", res.StatusCode)
+	}
+
+	worked, err := server.Inbox().ProcessOnce(ctx)
+	check(err)
+	if !worked {
+		t.Fatal("expected HTTP 500 internal error to fail fast on attempt 1")
+	}
+
+	proj, err := apiClient.GetProject(ctx, projectID)
+	check(err)
+	if proj.Inbox.Failed != 1 || proj.Inbox.Pending != 0 || len(proj.Inbox.RecentFailures) != 1 {
+		t.Fatalf("unexpected inbox state after HTTP 500: %+v", proj.Inbox)
+	}
+	failure := proj.Inbox.RecentFailures[0]
+	if failure.ErrorCode != "engine_internal_error" || failure.Attempts != 1 {
+		t.Fatalf("failure code/attempts = (%q, %d), want (engine_internal_error, 1)", failure.ErrorCode, failure.Attempts)
+	}
+	if !strings.Contains(failure.Summary, "记忆提炼内部出错") || !strings.Contains(failure.Summary, "文件句柄不足") ||
+		strings.Contains(failure.Summary, "提炼服务暂时无法连接") {
+		t.Fatalf("failure.Summary = %q, want internal FD error copy without unavailable wording", failure.Summary)
+	}
+	if exp := overview.DescribeFailureClass(failure.ErrorCode); exp.Label != "记忆提炼内部出错" {
+		t.Fatalf("overview.DescribeFailureClass(%q) = %+v, want 记忆提炼内部出错", failure.ErrorCode, exp)
+	}
+}

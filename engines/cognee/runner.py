@@ -1,12 +1,14 @@
 """Verify and serve the pinned Cognee SDK on loopback."""
 import argparse
 import asyncio
+import ctypes
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import resource
 from pathlib import Path
 import stat
 import sys
@@ -17,6 +19,49 @@ from urllib.parse import urlparse
 from . import COMPONENT_MANIFEST, private_write, read_secret, watch_owner
 _VERIFY_CACHE_SCHEMA_VERSION = 2
 _BYTECODE_SUFFIXES = ('.pyc', '.pyo')
+_DEFAULT_NOFILE_TARGET = 65536
+_NOFILE_TIER_TARGETS = (16384, 10240, 4096)
+
+
+def _darwin_maxfilesperproc():
+    if sys.platform != 'darwin':
+        return None
+    try:
+        libc = ctypes.CDLL(None)
+        val = ctypes.c_uint32()
+        size = ctypes.c_size_t(ctypes.sizeof(val))
+        if libc.sysctlbyname(b'kern.maxfilesperproc', ctypes.byref(val), ctypes.byref(size), None, 0) == 0 and val.value > 0:
+            return int(val.value)
+    except (OSError, AttributeError):
+        return None
+    return None
+
+
+def raise_nofile_limit(target=_DEFAULT_NOFILE_TARGET):
+    """Safely raise RLIMIT_NOFILE soft limit before LanceDB/multiprocessing spawns."""
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return None
+    if soft == resource.RLIM_INFINITY:
+        return (soft, hard)
+    ceiling = hard if hard != resource.RLIM_INFINITY and hard > 0 else None
+    max_per_proc = _darwin_maxfilesperproc()
+    if max_per_proc is not None and (ceiling is None or max_per_proc < ceiling):
+        ceiling = max_per_proc
+    candidates = []
+    for raw in (target, *_NOFILE_TIER_TARGETS):
+        val = min(raw, ceiling) if ceiling is not None else raw
+        if val > soft and val not in candidates:
+            candidates.append(val)
+    candidates.sort(reverse=True)
+    for candidate in candidates:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (candidate, hard))
+            return resource.getrlimit(resource.RLIMIT_NOFILE)
+        except (OSError, ValueError):
+            continue
+    return (soft, hard)
 
 
 class _SourceOnlyFileLoader(importlib.machinery.SourceFileLoader):
@@ -464,6 +509,7 @@ async def _serve(config, root, token):
 
 
 def main():
+    raise_nofile_limit()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
     args = parser.parse_args()

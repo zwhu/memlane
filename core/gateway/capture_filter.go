@@ -79,7 +79,23 @@ func describeInboxFailure(rawErr string) (code, summary, nextAction string) {
 		code, summary, nextAction = "extract_timeout", "记忆提炼超时（耗时超过上限）", "引擎可能仍在处理大数据集，请稍后刷新或点击「一键重试」。"
 	case isTimeout:
 		code, summary, nextAction = "engine_timeout", "提炼服务连接超时", "请确认提炼服务可以连接，然后一键重试。"
-	case strings.Contains(errText, "connection refused"), strings.Contains(errText, "engine_unavailable"), strings.Contains(errText, "unavailable"), strings.Contains(errText, "503"):
+	case strings.Contains(errText, "fd_limit_exceeded"), strings.Contains(errText, "too many open files"),
+		strings.Contains(errText, "os error 24"), strings.Contains(errText, "emfile"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（文件句柄不足）", "请重启本地服务以刷新文件句柄上限，然后点击「一键重试」。"
+	case strings.Contains(errText, "disk_full"), strings.Contains(errText, "no space left on device"), strings.Contains(errText, "enospc"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（磁盘空间不足）", "请清理本机可用磁盘空间后再点击「一键重试」。"
+	case strings.Contains(errText, "database_locked"), strings.Contains(errText, "database is locked"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（本地存储被占用）", "请稍后点击「一键重试」，或展开技术详情排查。"
+	case strings.Contains(errText, "vector_store_error"), strings.Contains(errText, "graph_store_error"),
+		strings.Contains(errText, "storage_io_error"), strings.Contains(errText, "lanceerror"), strings.Contains(errText, "lance error"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（本地存储异常）", "引擎服务仍在运行，请展开技术详情或服务日志排查存储状态后再重试。"
+	case strings.Contains(errText, "out_of_memory"), strings.Contains(errText, "out of memory"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（内存不足）", "请释放本机内存后点击「一键重试」。"
+	case strings.Contains(errText, "engine_internal_error"), strings.Contains(errText, "official_extract_failed"),
+		strings.Contains(errText, "http 500"), strings.Contains(errText, "internal server error"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错", "引擎服务仍在运行，请展开技术详情或服务日志排查后点击「一键重试」。"
+	case strings.Contains(errText, "connection refused"), strings.Contains(errText, "engine_unavailable"),
+		strings.Contains(errText, "unavailable"), strings.Contains(errText, "http 502"), strings.Contains(errText, "503"):
 		code, summary, nextAction = "engine_unavailable", "提炼服务暂时无法连接", "请检查服务状态，恢复后再重试。"
 	case strings.Contains(errText, "unauthorized"), strings.Contains(errText, "forbidden"), strings.Contains(errText, "authentication"), strings.Contains(errText, "401"), strings.Contains(errText, "403"):
 		code, summary, nextAction = "authorization_failed", "提炼服务拒绝了请求", "请检查模型凭据和访问权限，更新后再重试。"

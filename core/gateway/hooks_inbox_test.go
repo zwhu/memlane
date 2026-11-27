@@ -696,6 +696,71 @@ func TestDescribeInboxFailureExtractTimeout(t *testing.T) {
 	}
 }
 
+func TestDescribeInboxFailureEngineInternalError(t *testing.T) {
+	cases := []struct {
+		raw         string
+		wantCode    string
+		wantSummary string
+	}{
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (fd_limit_exceeded)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（文件句柄不足）",
+		},
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (vector_store_error)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（本地存储异常）",
+		},
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (database_locked)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（本地存储被占用）",
+		},
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (disk_full)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（磁盘空间不足）",
+		},
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错",
+		},
+		{
+			// Previously persisted HTTP 500 rows with old "unavailable" code must still avoid misreporting disconnect.
+			raw:         "extract inbox: HTTP 500: unavailable: engine runner rejected the request",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错",
+		},
+		{
+			raw:         "extract inbox: HTTP 503: official_extract_failed: engine runner rejected the request",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错",
+		},
+		{
+			raw:         "extract inbox: HTTP 502: unavailable: engine runner rejected the request",
+			wantCode:    "engine_unavailable",
+			wantSummary: "提炼服务暂时无法连接",
+		},
+		{
+			raw:         "extract inbox: HTTP 503: unavailable: engine runner rejected the request",
+			wantCode:    "engine_unavailable",
+			wantSummary: "提炼服务暂时无法连接",
+		},
+	}
+	for _, tc := range cases {
+		code, summary, nextAction := describeInboxFailure(tc.raw)
+		if code != tc.wantCode || summary != tc.wantSummary || nextAction == "" {
+			t.Errorf("describeInboxFailure(%q) = (%q, %q, %q), want (%q, %q, non-empty)",
+				tc.raw, code, summary, nextAction, tc.wantCode, tc.wantSummary)
+		}
+		if tc.wantCode == "engine_internal_error" && strings.Contains(summary, "暂时无法连接") {
+			t.Errorf("engine internal error %q misreported as unavailable: %q", tc.raw, summary)
+		}
+	}
+}
+
 type hybridRecallTestEngine struct {
 	*fakeEngine
 	mu           sync.Mutex

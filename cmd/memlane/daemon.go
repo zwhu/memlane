@@ -199,6 +199,9 @@ func runDaemon(ctx context.Context, args []string, stdout, stderr io.Writer) int
 }
 
 func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.Writer) (err error) {
+	if cur, rlimitErr := daemon.EnsureFileDescriptorLimit(daemon.DefaultTargetNoFileLimit); rlimitErr != nil {
+		log.Printf("daemon rlimit nofile raise skipped: current=%d err=%v", cur, rlimitErr)
+	}
 	management, err := hooks.ReadPrivateKey(cfg.ManagementTokenFile)
 	if err != nil {
 		return fmt.Errorf("management token: %w", err)

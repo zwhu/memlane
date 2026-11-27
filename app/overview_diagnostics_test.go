@@ -208,6 +208,7 @@ func TestOverviewFailureDurationLocalWindowAndExplanations(t *testing.T) {
 		"":                          "官方未提供详细原因",
 		"CustomError":               "CustomError",
 		"engine_unavailable":        "提炼服务暂时无法连接",
+		"engine_internal_error":     "记忆提炼内部出错",
 		"engine_timeout":            "提炼服务响应超时",
 		"context_deadline_exceeded": "提炼服务响应超时",
 		"capture_paused":            "自动采集已暂停",

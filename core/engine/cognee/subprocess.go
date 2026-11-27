@@ -166,6 +166,7 @@ func (r SubprocessRunner) run(ctx context.Context, timeout time.Duration, home s
 	stdout := &subprocessOutput{exceeded: make(chan struct{})}
 	cmd.Stdout = stdout
 	// Provider and SDK errors can include credentials. Keep stderr on the null device.
+	_, _ = daemon.EnsureFileDescriptorLimit(daemon.DefaultTargetNoFileLimit)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.WaitDelay = subprocessPipeGap
 	if err := cmd.Start(); err != nil {

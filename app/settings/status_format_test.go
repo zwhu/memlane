@@ -125,3 +125,34 @@ func TestMonitorAndHookMessagesShowUnknownTimes(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestEngineInternalErrorFormattingAvoidsUnavailableCopy(t *testing.T) {
+	headline, detail, tech := formatInboxFailureUI(
+		"extract inbox: HTTP 500: engine_internal_error: engine runner internal error (fd_limit_exceeded)",
+		sampleStatusTime,
+		[]api.InboxFailure{{
+			ID:          "fail-500",
+			Attempts:    1,
+			LastError:   "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (fd_limit_exceeded)",
+			LastErrorAt: sampleStatusTime,
+			ErrorCode:   "engine_internal_error",
+			Summary:     "记忆提炼内部出错（文件句柄不足）",
+			NextAction:  "请重启本地服务以刷新文件句柄上限，然后点击「一键重试」。",
+		}},
+	)
+	if headline != "记忆提炼内部出错（文件句柄不足）" || strings.Contains(headline, "暂时无法连接") {
+		t.Fatalf("unexpected headline: %q", headline)
+	}
+	if !strings.Contains(detail, "文件句柄上限") || !strings.Contains(tech, "engine_internal_error") || !strings.Contains(tech, "fd_limit_exceeded") {
+		t.Fatalf("unexpected detail/tech: detail=%q tech=%q", detail, tech)
+	}
+
+	mon := &ServiceMonitorState{
+		State:     "degraded",
+		LastError: "HTTP 500: engine_internal_error: engine runner internal error (fd_limit_exceeded)",
+	}
+	alert := mon.alertText()
+	if !strings.Contains(alert, "记忆提炼服务内部出错") || strings.Contains(alert, "提炼服务暂时无法连接") {
+		t.Fatalf("unexpected monitor alert for HTTP 500: %q", alert)
+	}
+}

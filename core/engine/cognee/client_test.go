@@ -394,23 +394,33 @@ func TestRunnerStatusMapping(t *testing.T) {
 	cases := []struct {
 		status     int
 		body, code string
+		wantMsg    string
 		cause      error
 	}{
-		{400, "", "invalid_argument", engine.ErrInvalidArgument},
-		{401, "private upstream error", "unauthorized", engine.ErrUnauthorized},
-		{403, "", "forbidden", engine.ErrForbidden},
-		{404, "", "not_found", engine.ErrNotFound},
-		{404, "dataset_not_provisioned: non-json text", "not_found", engine.ErrNotFound},
-		{404, `{"detail":"dataset_not_provisioned: extra"}`, "not_found", engine.ErrNotFound},
-		{404, `{"detail":"dataset_not_provisioned"}`, datasetNotProvisionedCode, engine.ErrDatasetNotProvisioned},
-		{409, `{"code":"write_conflict"}`, "conflict", engine.ErrConflict},
-		{409, `{"code":"model_digest_mismatch"}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
-		{409, `{"error":"model_digest_mismatch"}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
-		{409, `{"detail":"model_digest_mismatch: active model changed"}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
-		{409, `{"detail":{"code":"model_digest_mismatch"}}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
-		{409, "model_digest_mismatch: private upstream details", modelDigestMismatchCode, engine.ErrModelDigestMismatch},
-		{422, "", "invalid_argument", engine.ErrInvalidArgument},
-		{500, "", "unavailable", engine.ErrUnavailable},
+		{400, "", "invalid_argument", "", engine.ErrInvalidArgument},
+		{401, "private upstream error", "unauthorized", "", engine.ErrUnauthorized},
+		{403, "", "forbidden", "", engine.ErrForbidden},
+		{404, "", "not_found", "", engine.ErrNotFound},
+		{404, "dataset_not_provisioned: non-json text", "not_found", "", engine.ErrNotFound},
+		{404, `{"detail":"dataset_not_provisioned: extra"}`, "not_found", "", engine.ErrNotFound},
+		{404, `{"detail":"dataset_not_provisioned"}`, datasetNotProvisionedCode, "", engine.ErrDatasetNotProvisioned},
+		{409, `{"code":"write_conflict"}`, "conflict", "", engine.ErrConflict},
+		{409, `{"code":"model_digest_mismatch"}`, modelDigestMismatchCode, "", engine.ErrModelDigestMismatch},
+		{409, `{"error":"model_digest_mismatch"}`, modelDigestMismatchCode, "", engine.ErrModelDigestMismatch},
+		{409, `{"detail":"model_digest_mismatch: active model changed"}`, modelDigestMismatchCode, "", engine.ErrModelDigestMismatch},
+		{409, `{"detail":{"code":"model_digest_mismatch"}}`, modelDigestMismatchCode, "", engine.ErrModelDigestMismatch},
+		{409, "model_digest_mismatch: private upstream details", modelDigestMismatchCode, "", engine.ErrModelDigestMismatch},
+		{422, "", "invalid_argument", "", engine.ErrInvalidArgument},
+		{500, "", engineInternalErrorCode, "engine runner internal error", engine.ErrInternal},
+		{500, `{"detail":"RuntimeError: lance error: LanceError(IO): Too many open files (os error 24) at /Users/alice/.local/daily/secret Bearer sk-secret-123"}`, engineInternalErrorCode, "engine runner internal error (fd_limit_exceeded)", engine.ErrInternal},
+		{500, `{"detail":"LanceError(IO): fragment corrupt at /Users/alice/store"}`, engineInternalErrorCode, "engine runner internal error (vector_store_error)", engine.ErrInternal},
+		{500, `{"detail":"OperationalError: database is locked in /Users/alice/cognee_db"}`, engineInternalErrorCode, "engine runner internal error (database_locked)", engine.ErrInternal},
+		{500, `{"detail":"OSError: [Errno 28] No space left on device /Users/alice/store"}`, engineInternalErrorCode, "engine runner internal error (disk_full)", engine.ErrInternal},
+		{500, "Internal Server Error: secret-token-xyz /Users/alice/private.key", engineInternalErrorCode, "engine runner internal error", engine.ErrInternal},
+		{502, "bad gateway", "unavailable", "", engine.ErrUnavailable},
+		{503, "", "unavailable", "", engine.ErrUnavailable},
+		{503, `{"detail":"generation_not_configured"}`, "generation_not_configured", "", engine.ErrUnavailable},
+		{503, `{"detail":"official_extract_failed"}`, "official_extract_failed", "", engine.ErrUnavailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {
@@ -422,10 +432,21 @@ func TestRunnerStatusMapping(t *testing.T) {
 			var typed *engine.EngineError
 			if !errors.Is(err, tc.cause) || !errors.As(err, &typed) ||
 				typed.StatusCode != tc.status || typed.Code != tc.code {
-				t.Fatalf("error = %#v, want HTTP %d with %s", err, tc.status, tc.code)
+				t.Fatalf("error = %#v, want HTTP %d with %s (%v)", err, tc.status, tc.code, tc.cause)
+			}
+			if tc.status == http.StatusInternalServerError && errors.Is(err, engine.ErrUnavailable) {
+				t.Fatalf("HTTP 500 must not wrap ErrUnavailable: %#v", err)
+			}
+			if tc.wantMsg != "" && typed.Message != tc.wantMsg {
+				t.Fatalf("message = %q, want %q", typed.Message, tc.wantMsg)
 			}
 			if tc.body != "" && strings.Contains(err.Error(), tc.body) {
 				t.Error("engine error exposes response body")
+			}
+			for _, secret := range []string{"/Users/alice", "sk-secret-123", "secret-token-xyz"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("engine error leaked sensitive token %q: %v", secret, err)
+				}
 			}
 		})
 	}

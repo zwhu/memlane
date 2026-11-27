@@ -19,6 +19,8 @@ func DescribeFailureClass(class string) FailureExplanation {
 	switch class {
 	case "engine_unavailable":
 		return FailureExplanation{"提炼服务暂时无法连接", "采集记录暂未完成处理，提炼服务无法连接。", "请在服务监控中检查运行状态，服务恢复后重试。"}
+	case "engine_internal_error":
+		return FailureExplanation{"记忆提炼内部出错", "提炼服务仍在运行，但执行本次任务时内部发生错误。", "可展开下方「技术信息」或服务日志排查原因，必要时重启服务后重试。"}
 	case "engine_timeout", "context_deadline_exceeded":
 		return FailureExplanation{"提炼服务响应超时", "服务未在等待时间内完成请求。", "请确认本地服务和模型端点可以连接，然后重试。"}
 	case "capture_paused":

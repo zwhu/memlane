@@ -176,6 +176,7 @@ func StartManagedProcess(spec ServiceSpec, onUnexpectedExit func(ServiceStatus))
 	if err := spec.LogRedactor.TrimServiceLog(spec.LogPath, spec.LogLimitBytes); err != nil {
 		return nil, err
 	}
+	_, _ = EnsureFileDescriptorLimit(DefaultTargetNoFileLimit)
 	logFile, err := OpenPrivateLog(spec.LogPath)
 	if err != nil {
 		return nil, err

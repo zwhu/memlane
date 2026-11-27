@@ -29,6 +29,7 @@ const (
 	datasetNotProvisionedCode = "dataset_not_provisioned"
 	extractTimeoutCode        = "extract_timeout"
 	engineTimeoutCode         = "engine_timeout"
+	engineInternalErrorCode   = "engine_internal_error"
 )
 
 type client struct {
@@ -194,6 +195,7 @@ func invalidArgument(message string, err error) error {
 
 func runnerStatusError(resp *http.Response) error {
 	code, cause := "unavailable", engine.ErrUnavailable
+	message := "engine runner rejected the request"
 	switch resp.StatusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		code, cause = "invalid_argument", engine.ErrInvalidArgument
@@ -212,6 +214,14 @@ func runnerStatusError(resp *http.Response) error {
 		if responseContainsCode(resp.Body, modelDigestMismatchCode) {
 			code, cause = modelDigestMismatchCode, engine.ErrModelDigestMismatch
 		}
+	case http.StatusInternalServerError:
+		code, cause = engineInternalErrorCode, engine.ErrInternal
+		message = "engine runner internal error"
+		if category := classifyInternalError(resp.Body); category != "" {
+			message = "engine runner internal error (" + category + ")"
+		}
+	case http.StatusBadGateway:
+		code, cause = "unavailable", engine.ErrUnavailable
 	case http.StatusServiceUnavailable:
 		if data, err := io.ReadAll(io.LimitReader(resp.Body, maxRunnerErrorBytes+1)); err == nil && len(data) <= maxRunnerErrorBytes {
 			switch {
@@ -225,8 +235,53 @@ func runnerStatusError(resp *http.Response) error {
 	return &engine.EngineError{
 		StatusCode: resp.StatusCode,
 		Code:       code,
-		Message:    "engine runner rejected the request",
+		Message:    message,
 		Err:        cause,
+	}
+}
+
+// classifyInternalError maps bounded HTTP 500 runner bodies to a fixed,
+// secret-free diagnostic category token without ever echoing raw body text.
+func classifyInternalError(body io.Reader) string {
+	data, err := io.ReadAll(io.LimitReader(body, maxRunnerErrorBytes))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	lower := strings.ToLower(string(data))
+	switch {
+	case strings.Contains(lower, "too many open files"),
+		strings.Contains(lower, "os error 24"),
+		strings.Contains(lower, "errno 24"),
+		strings.Contains(lower, "emfile"):
+		return "fd_limit_exceeded"
+	case strings.Contains(lower, "no space left on device"),
+		strings.Contains(lower, "os error 28"),
+		strings.Contains(lower, "errno 28"),
+		strings.Contains(lower, "enospc"):
+		return "disk_full"
+	case strings.Contains(lower, "database is locked"),
+		strings.Contains(lower, "database table is locked"):
+		return "database_locked"
+	case strings.Contains(lower, "lanceerror"),
+		strings.Contains(lower, "lance error"),
+		strings.Contains(lower, "lancedb"):
+		return "vector_store_error"
+	case strings.Contains(lower, "ladybug"),
+		strings.Contains(lower, "kuzu"):
+		return "graph_store_error"
+	case strings.Contains(lower, "disk i/o error"),
+		strings.Contains(lower, "sqlite"),
+		strings.Contains(lower, "operationalerror"):
+		return "storage_io_error"
+	case strings.Contains(lower, "broken pipe"),
+		strings.Contains(lower, "brokenpipeerror"):
+		return "broken_pipe"
+	case strings.Contains(lower, "memoryerror"),
+		strings.Contains(lower, "out of memory"),
+		strings.Contains(lower, "cannot allocate memory"):
+		return "out_of_memory"
+	default:
+		return ""
 	}
 }
 

@@ -146,7 +146,9 @@ func (m *ServiceMonitorState) alertText() string {
 	switch raw := strings.ToLower(m.LastError); {
 	case strings.Contains(raw, "timeout"), strings.Contains(raw, "deadline"):
 		cause = "连接或等待提炼服务响应超时"
-	case strings.Contains(raw, "connection refused"), strings.Contains(raw, "unavailable"), strings.Contains(raw, "http 503"):
+	case strings.Contains(raw, "engine_internal_error"), strings.Contains(raw, "official_extract_failed"), strings.Contains(raw, "http 500"):
+		cause = "记忆提炼服务内部出错"
+	case strings.Contains(raw, "connection refused"), strings.Contains(raw, "unavailable"), strings.Contains(raw, "http 502"), strings.Contains(raw, "http 503"):
 		cause = "提炼服务暂时无法连接"
 	case strings.Contains(raw, "unauthorized"), strings.Contains(raw, "forbidden"), strings.Contains(raw, "http 401"), strings.Contains(raw, "http 403"):
 		cause = "提炼服务拒绝访问，请检查服务凭据"

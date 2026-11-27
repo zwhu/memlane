@@ -717,14 +717,15 @@ func TestInboxHTTP500AndOfficialExtractFailedMarkFailedInsteadOfInfiniteRetry(t 
 		return res["inbox_id"].(string)
 	}
 
-	// 1. HTTP 500 from engine extract must mark item failed immediately instead of requeuing forever.
+	// 1. HTTP 500 from engine extract must mark item failed immediately instead of requeuing forever,
+	// and classify as engine_internal_error rather than "提炼服务暂时无法连接".
 	id500 := enqueueQA("m-500")
 	fake.mu.Lock()
 	fake.extractErr = &engine.EngineError{
 		StatusCode: http.StatusInternalServerError,
-		Code:       "unavailable",
-		Message:    "engine runner rejected the request",
-		Err:        engine.ErrUnavailable,
+		Code:       "engine_internal_error",
+		Message:    "engine runner internal error (fd_limit_exceeded)",
+		Err:        engine.ErrInternal,
 	}
 	fake.mu.Unlock()
 	worked, err := s.Inbox().ProcessOnce(ctx)
@@ -737,8 +738,17 @@ func TestInboxHTTP500AndOfficialExtractFailedMarkFailedInsteadOfInfiniteRetry(t 
 	if item500.Status != "failed" || item500.Attempts != 1 {
 		t.Fatalf("HTTP 500 must mark failed on attempt 1, got %+v", item500)
 	}
+	summary500, err := s.Inbox().Summary(ctx, "p")
+	must(t, err)
+	if len(summary500.RecentFailures) != 1 ||
+		summary500.RecentFailures[0].ErrorCode != "engine_internal_error" ||
+		!strings.Contains(summary500.RecentFailures[0].Summary, "文件句柄不足") ||
+		strings.Contains(summary500.RecentFailures[0].Summary, "暂时无法连接") {
+		t.Fatalf("HTTP 500 failure summary misclassified: %+v", summary500.RecentFailures)
+	}
 
-	// 2. HTTP 503 official_extract_failed must also mark item failed (not pause/requeue forever).
+	// 2. HTTP 503 official_extract_failed must also mark item failed (not pause/requeue forever)
+	// and classify as engine_internal_error rather than unavailable.
 	id503Extract := enqueueQA("m-503-extract")
 	fake.mu.Lock()
 	fake.extractErr = &engine.EngineError{
@@ -757,6 +767,20 @@ func TestInboxHTTP500AndOfficialExtractFailedMarkFailedInsteadOfInfiniteRetry(t 
 	must(t, err)
 	if item503.Status != "failed" || item503.Attempts != 1 {
 		t.Fatalf("503 official_extract_failed must mark failed, got %+v", item503)
+	}
+	summary503, err := s.Inbox().Summary(ctx, "p")
+	must(t, err)
+	found503 := false
+	for _, f := range summary503.RecentFailures {
+		if f.ID == id503Extract {
+			found503 = true
+			if f.ErrorCode != "engine_internal_error" || strings.Contains(f.Summary, "暂时无法连接") {
+				t.Fatalf("503 official_extract_failed misclassified: %+v", f)
+			}
+		}
+	}
+	if !found503 {
+		t.Fatalf("503 official_extract_failed missing from RecentFailures: %+v", summary503.RecentFailures)
 	}
 
 	// 3. Transport-level unavailable (StatusCode 0) must still pause and keep item pending.

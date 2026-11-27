@@ -13,6 +13,7 @@ var (
 	ErrNotFound              = errors.New("not found")
 	ErrConflict              = errors.New("conflict")
 	ErrUnavailable           = errors.New("engine unavailable")
+	ErrInternal              = errors.New("engine internal error")
 	ErrInvalidArgument       = errors.New("invalid argument")
 	ErrPathDenied            = errors.New("path denied")
 	ErrContentTooLarge       = errors.New("content too large")
