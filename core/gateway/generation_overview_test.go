@@ -116,6 +116,19 @@ func TestGenerationValidationAndActivation(t *testing.T) {
 	}
 
 	manage(t, s, "PUT", "/api/generation/profiles/p2", `{"mode":"agent_bridge","bridge_kind":"codex","model":"bridge-model"}`, 200)
+	// Local Agent CLIs activate directly without prior validation; provider profiles still require validation.
+	directBridge := manage(t, s, "POST", "/v1/generation/handoffs", `{"profile":{"id":"p2","revision":1}}`, 200)
+	handoffBody := decodeResponse[map[string]any](t, directBridge)
+	if h, ok := handoffBody["handoff"].(map[string]any); !ok || h["status"] != "applied" {
+		t.Fatalf("expected direct agent_bridge handoff applied, got %+v", handoffBody)
+	}
+	state, err = store.GetGenerationState(ctx)
+	must(t, err)
+	if state.ActiveProfileID != "p2" || state.ActiveRevision != 1 {
+		t.Fatalf("expected active p2/1 after direct bridge handoff, got %+v", state)
+	}
+	// Restore p1 as active so p2 can be deleted below.
+	manage(t, s, "POST", "/api/generation/activate", `{"profile_id":"p1","revision":1}`, 200)
 	manage(t, s, "POST", "/v1/generation/profiles/p2/delete", "", 204)
 	manage(t, s, "POST", "/api/generation/validate", `{"profile_id":"p2"}`, 403)
 }

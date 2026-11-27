@@ -37,14 +37,25 @@ func (a *Controller) generationAction(action string) {
 		s.NextOperation = op
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		timeout := 20 * time.Second
+		if action == "validations" {
+			timeout = 180 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		method := "POST"
 		if action == "next" {
 			method = "PUT"
 		}
-		var result any
-		err := client.request(ctx, method, "/v1/generation/"+action, map[string]any{"expected_revision": revision, "operation_id": op, "profile": ref}, &result)
+		var validationReceipt GenerationValidation
+		var target any
+		if action == "validations" {
+			target = &validationReceipt
+		} else {
+			var result any
+			target = &result
+		}
+		err := client.request(ctx, method, "/v1/generation/"+action, map[string]any{"expected_revision": revision, "operation_id": op, "profile": ref}, target)
 		var directory GenerationDirectory
 		readErr := client.request(ctx, "GET", "/v1/generation", nil, &directory)
 		a.dispatch(func() {
@@ -66,9 +77,14 @@ func (a *Controller) generationAction(action string) {
 					return
 				}
 				s.NextOperation = ""
-				s.Message = "已设为下次启动使用；当前任务保持原配置"
+				s.Message = "已设为下次启动使用"
+			} else if validationReceipt.Status == "passed" || validationReceipt.Status == "failed" || validationReceipt.Status == "result_unknown" {
+				s.Validation = validationReceipt
+				s.Message = ""
+				a.finishGenerationOperation(op)
+				return
 			} else {
-				s.Message = "正在验证，会使用所选 Provider 的额度"
+				s.Message = "正在验证…"
 			}
 			if action == "validations" {
 				var rejected *ControlResponseError
@@ -81,6 +97,113 @@ func (a *Controller) generationAction(action string) {
 				}
 				a.pollGenerationValidation(op)
 			}
+		})
+	}()
+}
+
+// switchAgentBridge directly activates a locally detected Agent CLI in regular
+// Settings without pre-validation, automatically saving updated CLI defaults first
+// when needed so activeProfileGate never hits a stale model mismatch.
+func (a *Controller) switchAgentBridge() {
+	client, ok := a.accessClient()
+	s := &a.integrations
+	if !ok || s.Busy || s.DraftMode != "agent_bridge" || !s.availableProcessingBridge(s.BridgeKind) {
+		return
+	}
+	draft := s.draftProfile()
+	if draft.Model == "" {
+		s.Error = "尚未读取到本机 CLI 的默认模型，请确认已登录后重试。"
+		return
+	}
+	id := s.ProfileID
+	if id == "" {
+		id = "agent-" + draft.BridgeKind
+	}
+	var targetRef GenerationRef
+	needsSave := true
+	if s.Saved != nil {
+		if row, found := s.Generation.row(s.Saved); found &&
+			row.Profile.Mode == "agent_bridge" &&
+			row.Profile.BridgeKind == draft.BridgeKind &&
+			row.Profile.Model == draft.Model &&
+			row.Profile.BridgeProvider == draft.BridgeProvider {
+			targetRef = *s.Saved
+			needsSave = false
+		}
+	}
+	revision := s.Generation.Revision
+	handoffAvailable := s.Generation.HandoffAvailable
+	label := generationBridgeLabel(draft.BridgeKind)
+	s.Busy = true
+	s.Error = ""
+	s.Message = "正在切换到 " + label + "…"
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if needsSave {
+			var saveResp struct {
+				Result GenerationRef `json:"result"`
+			}
+			err := client.request(ctx, "PUT", "/v1/generation/profiles/"+url.PathEscape(id), map[string]any{
+				"expected_revision": revision,
+				"operation_id":      integrationOperation(),
+				"profile":           draft,
+			}, &saveResp)
+			if err != nil {
+				a.dispatch(func() {
+					s.Busy = false
+					s.Message = ""
+					s.Error = "保存 CLI 配置失败：" + ControlUserError(err)
+				})
+				return
+			}
+			targetRef = saveResp.Result
+		}
+		var handoffDir GenerationHandoffDirectory
+		var switchErr error
+		if handoffAvailable {
+			switchErr = client.request(ctx, "POST", "/v1/generation/handoffs", map[string]any{
+				"profile":           targetRef,
+				"expected_revision": revision,
+				"operation_id":      integrationOperation(),
+			}, &handoffDir)
+		} else {
+			var ignored any
+			switchErr = client.request(ctx, "PUT", "/v1/generation/next", map[string]any{
+				"profile":           targetRef,
+				"expected_revision": revision,
+				"operation_id":      integrationOperation(),
+			}, &ignored)
+		}
+		var directory GenerationDirectory
+		readErr := client.request(ctx, "GET", "/v1/generation", nil, &directory)
+		a.dispatch(func() {
+			s.Busy = false
+			if readErr == nil {
+				s.Generation = directory
+			}
+			if switchErr != nil {
+				s.Message = ""
+				s.Error = "切换失败：" + ControlUserError(switchErr)
+				return
+			}
+			if handoffAvailable && handoffDir.Handoff != nil && handoffDir.Handoff.Status != "applied" {
+				s.Message = ""
+				s.Handoff = handoffDir
+				s.Error = "切换未生效，仍使用原模型"
+				return
+			}
+			if row, found := s.Generation.row(&targetRef); found {
+				s.editProfile(targetRef.ID, row)
+			}
+			s.Handoff = GenerationHandoffDirectory{}
+			s.Error = ""
+			if handoffAvailable {
+				s.Message = "已切换到 " + label
+			} else {
+				s.Message = "已设为下次启动使用"
+			}
+			a.refreshServiceMonitor()
 		})
 	}()
 }

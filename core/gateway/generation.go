@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/core/gateway/completion"
 	"github.com/zwhu/memlane/kit/agents"
 	"github.com/zwhu/memlane/kit/daemon"
 )
@@ -625,13 +627,65 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	if p.BridgeKind != "" {
 		backend = p.BridgeKind
 	}
+	// When validating an agent_bridge candidate in daemon mode, mount an isolated
+	// ephemeral completion bridge for that candidate so probing an inactive CLI
+	// never collides with the currently active profile.
+	if p.Mode == "agent_bridge" && s.cfg.BridgeEndpoint != "" {
+		var secret [32]byte
+		if _, randErr := rand.Read(secret[:]); randErr != nil {
+			writeDomainError(w, randErr)
+			return
+		}
+		probeToken := hex.EncodeToString(secret[:])
+		candidate := &completion.ActiveProfile{
+			Mode:           p.Mode,
+			BridgeKind:     p.BridgeKind,
+			BridgeProvider: p.BridgeProvider,
+			Model:          p.Model,
+		}
+		if p.BridgeKind != "" {
+			opts := s.cfg.DiscoveryOptions
+			opts.Kinds = []string{p.BridgeKind}
+			if hosts := agents.DetectHosts(opts); len(hosts) > 0 {
+				candidate.Executable = hosts[0].Executable
+				candidate.AuthHome = hosts[0].ProfileDir
+			}
+			if candidate.AuthHome == "" {
+				candidate.AuthHome = agents.DefaultProfileDir(p.BridgeKind, s.cfg.DiscoveryOptions)
+			}
+		}
+		probeSrv, srvErr := completion.NewServer(completion.Config{
+			Token: probeToken,
+			Gate:  completion.StaticProfileGate{Profile: candidate},
+		})
+		if srvErr != nil {
+			writeDomainError(w, srvErr)
+			return
+		}
+		addr, listenErr := probeSrv.StartLoopback("127.0.0.1:0")
+		if listenErr != nil {
+			writeDomainError(w, listenErr)
+			return
+		}
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = probeSrv.Shutdown(shutCtx)
+		}()
+		endpoint = "http://" + addr + "/v1"
+		key = probeToken
+	}
 	res, probeErr := s.cfg.Models.ProbeModel(ctx, engine.ProbeRequest{GenerationMode: p.Mode, BackendKind: backend,
 		Environment: probeEnvironment(p, provider, endpoint, key), Runtime: maps.Clone(s.cfg.ProbeRuntime), MaxConcurrentRequests: capacity})
 	res.Status = cleanReceipt(res.Status, key)
 	res.ErrorCode = cleanReceipt(res.ErrorCode, key)
 	res.StructuredMode = cleanReceipt(res.StructuredMode, key)
 	if probeErr != nil || res.Status != "passed" && res.Status != "failed" && res.Status != "result_unknown" {
-		res = engine.ProbeResult{Status: "result_unknown", ErrorCode: "probe_result_unconfirmed"}
+		code := "probe_result_unconfirmed"
+		if errors.Is(probeErr, context.DeadlineExceeded) {
+			code = "validation_timeout"
+		}
+		res = engine.ProbeResult{Status: "result_unknown", ErrorCode: code}
 	}
 	payloadObj := map[string]any{}
 	var validatedDefaults *agentModelDefaultsView
@@ -794,14 +848,16 @@ func (s *Server) selectNextGeneration(w http.ResponseWriter, r *http.Request, in
 		writeDomainError(w, err)
 		return
 	}
-	valid, err := s.cfg.Store.IsGenerationDigestValidated(ctx, p.Digest)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-	if !valid {
-		writeError(w, 409, "validation_required", "validate this revision before selecting it")
-		return
+	if p.Mode != "agent_bridge" {
+		valid, err := s.cfg.Store.IsGenerationDigestValidated(ctx, p.Digest)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if !valid {
+			writeError(w, 409, "validation_required", "validate this revision before selecting it")
+			return
+		}
 	}
 	receipt := map[string]any{"next": generationRef{p.ProfileID, p.Revision}}
 	err = s.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -840,14 +896,16 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
-	valid, err := s.cfg.Store.IsGenerationDigestValidated(ctx, p.Digest)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-	if !valid {
-		writeError(w, 409, "validation_required", "validate this revision before activation")
-		return
+	if p.Mode != "agent_bridge" {
+		valid, err := s.cfg.Store.IsGenerationDigestValidated(ctx, p.Digest)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if !valid {
+			writeError(w, 409, "validation_required", "validate this revision before activation")
+			return
+		}
 	}
 	cfg, key, err := s.applyConfig(ctx, p)
 	if err != nil {

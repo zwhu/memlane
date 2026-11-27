@@ -123,8 +123,8 @@ func TestGenerationNewestUnknownResultWithdrawsOldSuccessAndShowsSafeReason(t *t
 		t.Fatal("opening saved profile lost its original validation receipt")
 	}
 	tt := ui.NewTester(a.View, 1200, 820)
-	if !tt.HasText("验证等待超时，结果未确认；请核对原验证。") {
-		t.Fatal("timeout reason missing from rendered settings")
+	if !tt.HasText("验证超时，请重试。") {
+		t.Fatalf("timeout reason missing from rendered settings: %v", tt.Texts())
 	}
 	if !tt.HasText("本次结构化请求：JSON 对象") {
 		t.Fatal("observed request mode missing from rendered settings")

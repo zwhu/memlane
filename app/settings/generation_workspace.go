@@ -151,8 +151,31 @@ func (s *IntegrationState) hasAvailableProcessingBridge() bool {
 func (a *Controller) generationCanUse(ref *GenerationRef) bool {
 	s := &a.integrations
 	row, ok := s.Generation.row(ref)
-	return ok && s.Generation.validated(ref) &&
-		(row.Profile.Mode != "agent_bridge" || s.availableProcessingBridge(row.Profile.BridgeKind))
+	if !ok {
+		return false
+	}
+	if row.Profile.Mode == "agent_bridge" {
+		if !s.availableProcessingBridge(row.Profile.BridgeKind) {
+			return false
+		}
+		if !a.initialSetup && !a.canActivateFirstRuntimeFromSettings() {
+			return true
+		}
+	}
+	return s.Generation.validated(ref)
+}
+
+func (a *Controller) agentBridgeMatchesActive() bool {
+	s := &a.integrations
+	if s.Generation.Active == nil || s.Saved == nil || *s.Generation.Active != *s.Saved {
+		return false
+	}
+	row, ok := s.Generation.row(s.Saved)
+	if !ok || row.Profile.Mode != "agent_bridge" {
+		return false
+	}
+	draft := s.draftProfile()
+	return row.Profile.BridgeKind == draft.BridgeKind && row.Profile.Model == draft.Model && row.Profile.BridgeProvider == draft.BridgeProvider
 }
 
 func (a *Controller) generationCandidateStatus(c *ui.Context) {
@@ -165,13 +188,18 @@ func (a *Controller) generationCandidateStatus(c *ui.Context) {
 	}
 	saved := s.cleanSaved()
 	current := saved && s.Generation.Active != nil && *s.Generation.Active == *s.Saved
+	if bridge && !setup {
+		current = a.agentBridgeMatchesActive()
+	}
 	nextSelected := saved && s.Generation.Next != nil && *s.Generation.Next == *s.Saved
-	needsValidation := bridge && !s.Generation.validated(s.Saved)
+	needsValidation := bridge && setup && !s.Generation.validated(s.Saved)
 	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != ""
 	if !current && (!setup || !nextSelected || needsValidation) {
 		ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp1).AlignItems(ui.Center).Justify(ui.End).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 			available := !bridge || s.availableProcessingBridge(s.BridgeKind)
 			switch {
+			case bridge && !setup:
+				kitui.SmallPrimaryButton(c, tok, "切换", a.switchAgentBridge).Disabled(busy || !available)
 			case bridge && !saved:
 				kitui.SmallPrimaryButton(c, tok, "保存配置", a.saveGeneration).Disabled(busy || !available)
 			case needsValidation:
@@ -193,9 +221,10 @@ func (a *Controller) generationCandidateStatus(c *ui.Context) {
 			}
 		})
 	}
-	if bridge && (s.ValidationOperation != "" || s.Error != "" || s.Message != "") {
+	showValidation := bridge && setup && s.ValidationOperation != ""
+	if bridge && (showValidation || s.Error != "" || s.Message != "") {
 		ui.Column(c).FillWidth().Padding(sp2, sp1).Gap(sp2).Children(func() {
-			if s.ValidationOperation != "" {
+			if showValidation {
 				a.generationValidationStatus(c)
 			}
 			if s.Error != "" {
@@ -238,15 +267,15 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 	desc := ""
 	if enable {
 		title = "提炼方式"
-		desc = "当前使用：" + generationLabel(s.Generation, s.Generation.Active)
+		desc = "当前：" + generationLabel(s.Generation, s.Generation.Active)
 	}
 	selected := 0
 	if s.DraftMode == "provider" {
 		selected = 1
 	}
-	sourceDesc := "使用本机已登录的 Codex、pi、TRAE CLI、Gemini 等 CLI 提炼记忆，无需 API Key"
+	sourceDesc := "复用本机已登录的 CLI，无需 API Key"
 	if s.DraftMode == "provider" {
-		sourceDesc = "填写 OpenAI 兼容或 Ollama 等接口，由 Memlane 直接调用"
+		sourceDesc = "直连 OpenAI 兼容或 Ollama 接口"
 	}
 	showingEmptyGuide := s.DraftMode == "agent_bridge" && !s.hasAvailableProcessingBridge()
 
@@ -282,7 +311,7 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 			kitui.Row(c, tok, kitui.RowOptions{
 				Key:       "settings-goto-agents",
 				Title:     "管理 Agent 与模型",
-				Desc:      "连接或检查本机 Coding Agents、添加与编辑模型 Provider",
+				Desc:      "管理本机 Agent 连接与模型 API",
 				Clickable: true,
 				Chevron:   true,
 				OnClick: func() {

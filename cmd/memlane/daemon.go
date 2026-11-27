@@ -39,6 +39,7 @@ type StackConfig struct {
 	ManagementToken                 string
 	CompletionToken                 string
 	BridgeEndpoint, BridgeTokenFile string
+	ProbeRuntime                    map[string]any
 	AgentTokens                     map[string]string
 	DaemonStatus                    func(context.Context) map[string]any
 	DiscoveryOptions                agents.DiscoveryOptions
@@ -135,6 +136,7 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 		DiscoveryOptions: cfg.DiscoveryOptions,
 		CompletionHandler: completions.Handler(), MCPHandler: mcpServer.Handler(), ProfilesHandler: profileService.Handler(),
 		OutputLanguage: cfg.OutputLanguage, BridgeEndpoint: cfg.BridgeEndpoint, BridgeTokenFile: cfg.BridgeTokenFile,
+		ProbeRuntime: cfg.ProbeRuntime,
 	})
 	if err != nil {
 		return nil, errors.Join(err, profileService.Close(context.Background()))
@@ -219,9 +221,13 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 			return err
 		}
 	}
+	probeRuntime, err := buildProbeRuntime(cfg)
+	if err != nil {
+		return err
+	}
 	stackCfg := StackConfig{ManagementToken: management, CompletionToken: completionToken,
 		BridgeTokenFile: cfg.CompletionTokenFile, OutputLanguage: cfg.OutputLanguage,
-		BridgeEndpoint: strings.TrimRight(cfg.GatewayURL, "/") + "/v1"}
+		BridgeEndpoint: strings.TrimRight(cfg.GatewayURL, "/") + "/v1", ProbeRuntime: probeRuntime}
 	if resources := os.Getenv("MEMLANE_RUNTIME_RESOURCES"); resources != "" {
 		if !filepath.IsAbs(resources) {
 			return errors.New("runtime resource directory must be absolute")
@@ -377,6 +383,47 @@ func loopbackAddress(raw string) (string, error) {
 		return "", err
 	}
 	return "127.0.0.1:" + u.Port(), nil
+}
+
+func buildProbeRuntime(cfg runtimeConfig) (map[string]any, error) {
+	data := cfg.raw
+	if cfg.EngineConfig != "" {
+		var err error
+		data, err = os.ReadFile(cfg.EngineConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	base := firstNonempty(cfg.EngineConfig, cfg.Path)
+	out := map[string]any{}
+	for _, key := range []string{"official_source", "official_archive", "verify_cache_path"} {
+		field, ok := raw[key]
+		if !ok {
+			continue
+		}
+		var path string
+		if err := json.Unmarshal(field, &path); err != nil {
+			return nil, err
+		}
+		if path == "" {
+			continue
+		}
+		if !filepath.IsAbs(path) && base != "" {
+			path = filepath.Join(filepath.Dir(base), path)
+		}
+		out[key] = path
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func engineService(cfg *runtimeConfig) (daemon.ServiceSpec, func() error, error) {

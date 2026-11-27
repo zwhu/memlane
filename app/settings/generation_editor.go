@@ -11,13 +11,13 @@ import (
 func generationLabel(g GenerationDirectory, ref *GenerationRef) string {
 	row, ok := g.row(ref)
 	if !ok {
-		return "尚未确认"
+		return "尚未配置"
 	}
 	if row.Profile.Mode == "agent_bridge" {
-		return "本机 Agent CLI · " + generationBridgeLabel(row.Profile.BridgeKind) + " · " + generationDefaultModel(g, row.Profile.BridgeKind)
+		return generationBridgeLabel(row.Profile.BridgeKind) + " · " + generationDefaultModel(g, row.Profile.BridgeKind)
 	}
 	provider := map[string]string{"openai": "OpenAI", "anthropic": "Anthropic", "gemini": "Gemini", "custom": "OpenAI 兼容", "ollama": "Ollama"}[row.Profile.Provider]
-	return "模型 API · " + provider + " · " + row.Profile.Model
+	return provider + " · " + row.Profile.Model
 }
 
 func (a *Controller) generationSetupPage(c *ui.Context) {
@@ -48,7 +48,9 @@ func (a *Controller) generationConfigurationFor(c *ui.Context, edit, enable bool
 		a.generationLoadPrompt(c)
 		return
 	}
-	a.generationPendingOperations(c)
+	if edit {
+		a.generationPendingOperations(c)
+	}
 	a.generationWorkspaceFor(c, edit, enable)
 	if edit {
 		a.generationDeleteModal(c)
@@ -67,21 +69,26 @@ func (a *Controller) generationLoadPrompt(c *ui.Context) {
 func (a *Controller) generationPendingOperations(c *ui.Context) {
 	tok := a.tokens()
 	s := &a.integrations
-	if s.hasPendingGeneration() {
-		settingsCard(tok, c, "待核对操作", "重开应用后保留原操作；核对只读取回执，不重新提交请求。", func() {
-			for _, pending := range s.PendingOperations {
-				if pending.connection() {
-					continue
-				}
-				o := pending
-				label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "更换提炼模型", "validations": "模型验证", "delete": "删除配置"}[o.Kind]
-				ui.Row(c.Key("pending-generation-" + o.Operation)).Gap(12).Children(func() {
-					kitui.Text(c, tok, label+" · "+o.Profile, kitui.RoleMeta).Grow(1)
-					kitui.TextButton(c, tok, "核对原操作", nil).Label("核对原操作：" + o.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(o) })
-				})
-			}
-		})
+	var visible []generationUIOperation
+	for _, pending := range s.PendingOperations {
+		if pending.connection() || pending.Kind == "validations" {
+			continue
+		}
+		visible = append(visible, pending)
 	}
+	if len(visible) == 0 {
+		return
+	}
+	settingsCard(tok, c, "待核对操作", "上次操作尚未确认，点击核对最新状态。", func() {
+		for _, o := range visible {
+			op := o
+			label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "切换提炼模型", "delete": "删除配置"}[op.Kind]
+			ui.Row(c.Key("pending-generation-" + op.Operation)).Gap(12).Children(func() {
+				kitui.Text(c, tok, label+" · "+op.Profile, kitui.RoleMeta).Grow(1)
+				kitui.TextButton(c, tok, "核对原操作", nil).Label("核对原操作：" + op.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(op) })
+			})
+		}
+	})
 }
 
 func (a *Controller) generationEditorPanel(c *ui.Context) {
@@ -191,44 +198,51 @@ func (a *Controller) generationEditorContent(c *ui.Context) {
 func (a *Controller) generationValidationStatus(c *ui.Context) {
 	tok := a.tokens()
 	s := &a.integrations
-	if s.ValidationOperation != "" {
-		label := generationValidationStageLabel(s.Validation)
-		if generationValidationActive(s.Validation) {
-			c.After(time.Second)
-			elapsed := generationValidationElapsed(time.Now(), s.ValidationStartedAt, s.Validation)
-			label += fmt.Sprintf(" · 已等待 %d 秒", elapsed/time.Second)
-			if notice := generationValidationSlowNotice(elapsed, s.Validation); notice != "" {
-				kitui.Text(c, tok, notice, kitui.RoleMeta).LineHeight(1.6)
-			}
-		}
+	if s.ValidationOperation == "" {
+		return
+	}
+	active := generationValidationActive(s.Validation)
+	switch {
+	case active:
+		c.After(time.Second)
+		elapsed := generationValidationElapsed(time.Now(), s.ValidationStartedAt, s.Validation)
+		label := generationValidationStageLabel(s.Validation) + fmt.Sprintf(" · 已等待 %d 秒", elapsed/time.Second)
 		if !s.cleanSaved() {
 			label = "已保存配置的原验证：" + label
 		}
 		kitui.Text(c, tok, label, kitui.RoleMeta)
-		if message := generationValidationMessage(s.Validation.ErrorCode); message != "" {
-			kitui.Text(c, tok, message, kitui.RoleMeta).LineHeight(1.6)
+		if notice := generationValidationSlowNotice(elapsed, s.Validation); notice != "" {
+			kitui.Text(c, tok, notice, kitui.RoleMeta).LineHeight(1.5)
 		}
+		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
+			kitui.DangerOutlineButton(c, tok, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
+		})
+	case s.Validation.Status == "passed":
+		label := "验证通过"
+		if !s.cleanSaved() {
+			label = "已保存配置的原验证：" + label
+		}
+		kitui.Text(c, tok, label, kitui.RoleMeta)
+	default:
+		reason := generationValidationMessage(s.Validation.ErrorCode)
+		if reason == "" {
+			reason = "验证未通过，请检查配置后重试。"
+		}
+		if !s.cleanSaved() {
+			reason = "已保存配置的原验证：" + reason
+		}
+		kitui.Text(c, tok, reason, kitui.RoleMeta).TextColor(tok.Danger).LineHeight(1.5)
 		if diagnostic := generationValidationDiagnosticLine(s.Validation); diagnostic != "" {
-			kitui.Text(c, tok, diagnostic, kitui.RoleMeta).LineHeight(1.6)
-		}
-		nextStep := generationValidationNextStep(s.Validation)
-		if nextStep != "" {
-			kitui.Text(c, tok, nextStep, kitui.RoleMeta).LineHeight(1.6)
+			kitui.Text(c, tok, diagnostic, kitui.RoleMeta).LineHeight(1.5)
 		}
 		if s.Validation.ModeEvidence == "official_adapter_request" {
 			mode := map[string]string{"json_schema": "本次结构化请求：Schema", "json_schema_non_strict": "本次结构化请求：非严格 Schema", "json_object": "本次结构化请求：JSON 对象"}[s.Validation.StructuredMode]
 			if mode != "" {
-				kitui.Text(c, tok, mode, kitui.RoleMeta).LineHeight(1.6)
+				kitui.Text(c, tok, mode, kitui.RoleMeta).LineHeight(1.5)
 			}
 		}
 		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
-			kitui.SmallButton(c, tok, "核对原验证", kitui.IconRefresh, func() { a.pollGenerationValidation(s.ValidationOperation) }).Disabled(s.Busy)
-			if nextStep != "" {
-				kitui.SmallButton(c, tok, "重新验证", kitui.IconRefresh, a.retryGenerationValidation).Disabled(!s.canRetryGenerationValidation())
-			}
-			if generationValidationActive(s.Validation) {
-				kitui.DangerOutlineButton(c, tok, "停止验证", true, a.cancelGenerationValidation).Disabled(s.Busy)
-			}
+			kitui.SmallButton(c, tok, "重新验证", kitui.IconRefresh, a.retryGenerationValidation).Disabled(!s.canRetryGenerationValidation())
 		})
 	}
 }
@@ -239,46 +253,47 @@ func generationValidationMessage(code string) string {
 	}
 	if message, ok := map[string]string{
 		"dns_resolution_failed":                "无法解析模型服务地址。",
-		"provider_connection_unconfirmed":      "未能确认与模型服务的连接。",
+		"provider_connection_unconfirmed":      "无法连接到模型服务，请检查地址和网络。",
 		"provider_unavailable":                 "模型服务暂时不可用。",
-		"probe_process_failed":                 "验证进程提前退出，结果未确认。",
-		"generation_bridge_changed_revalidate": "Agent 的模型或配置在验证期间发生变化，请重新验证。",
-		"validation_interrupted":               "验证已停止，结果未确认。",
-		"validation_owner_interrupted":         "验证期间服务中断，结果未确认。",
-		"validation_cleanup_unconfirmed":       "暂时无法确认验证进程已退出。",
-		"validation_not_recorded":              "服务端未找到该次验证记录，可能尚未成功提交，请重新验证。",
-		"pi_timeout":                           "Pi 模型请求超时。",
-		"pi_model_failed":                      "Pi 模型请求失败。",
-		"codex_timeout":                        "Codex 模型请求超时。",
+		"probe_process_failed":                 "验证进程异常退出，请重试。",
+		"probe_result_unconfirmed":             "验证未完成，请重试。",
+		"generation_bridge_changed_revalidate": "Agent 模型配置已变更，请重新验证。",
+		"validation_interrupted":               "验证已停止。",
+		"validation_owner_interrupted":         "验证期间服务中断，请重试。",
+		"validation_cleanup_unconfirmed":       "验证进程尚未完全退出，请稍后重试。",
+		"validation_not_recorded":              "未找到该次验证记录，请重新验证。",
+		"pi_timeout":                           "pi 请求超时。",
+		"pi_model_failed":                      "pi 模型请求失败。",
+		"codex_timeout":                        "Codex 请求超时。",
 		"codex_connection_failed":              "Codex 无法连接模型服务。",
 		"codex_model_failed":                   "Codex 模型请求失败。",
-		"antigravity_timeout":                  "Antigravity 模型请求超时。",
-		"antigravity_model_failed":             "Antigravity 模型请求失败。",
-		"traex_timeout":                        "TraeX 模型请求超时。",
-		"traex_connection_failed":              "TraeX 无法连接模型服务。",
-		"traex_model_failed":                   "TraeX 模型请求失败。",
+		"antigravity_timeout":                  "Gemini CLI 请求超时。",
+		"antigravity_model_failed":             "Gemini CLI 模型请求失败。",
+		"traex_timeout":                        "TRAE CLI 请求超时。",
+		"traex_connection_failed":              "TRAE CLI 无法连接模型服务。",
+		"traex_model_failed":                   "TRAE CLI 模型请求失败。",
 		"authentication_failed":                "API 密钥无效，请检查凭据。",
 		"permission_denied":                    "当前凭据没有访问此模型的权限。",
 		"payment_required":                     "供应商额度或余额不足。",
 		"quota_exhausted":                      "供应商可用额度已耗尽。",
-		"rate_or_quota_limit":                  "供应商限制了请求或可用额度，请检查后再验证。",
-		"provider_refusal":                     "模型拒绝了验证材料，本次验证未通过。",
-		"completion_truncated":                 "模型输出被截断，本次验证未通过。",
-		"schema_validation_failed":             "模型返回内容不符合所需的数据结构。",
-		"native_schema_verification_failed":    "模型接口未通过结构化输出能力检测。",
-		"structured_output_unsupported":        "此模型或接口不支持所需的结构化输出。",
-		"unsupported_model_parameters":         "此模型或接口不支持所需的请求参数。",
-		"plain_output_mismatch":                "普通回答未通过固定样本校验。",
-		"extraction_quality_failed":            "抽取内容未通过固定事实校验。",
-		"provider_timeout":                     "供应商请求超时，结果未确认；请核对原验证。",
-		"validation_timeout":                   "验证等待超时，结果未确认；请核对原验证。",
+		"rate_or_quota_limit":                  "触发限流或额度不足，请稍后重试。",
+		"provider_refusal":                     "模型拒绝了验证请求。",
+		"completion_truncated":                 "模型输出被截断，验证未通过。",
+		"schema_validation_failed":             "模型返回内容不符合结构化格式要求。",
+		"native_schema_verification_failed":    "模型接口未通过结构化输出检测。",
+		"structured_output_unsupported":        "此模型不支持所需的结构化输出。",
+		"unsupported_model_parameters":         "此模型不支持当前请求参数。",
+		"plain_output_mismatch":                "基础对话校验未通过。",
+		"extraction_quality_failed":            "结构化抽取校验未通过。",
+		"provider_timeout":                     "模型响应超时，请重试。",
+		"validation_timeout":                   "验证超时，请重试。",
 		"provider_endpoint_or_model_not_found": "未找到配置的模型或 API 地址。",
-		"provider_bad_request":                 "供应商拒绝了请求，请检查配置。",
-		"provider_redirect_rejected":           "API 地址返回了重定向，已停止请求；请核对并明确配置最终地址。",
-		"unexpected_model_destination":         "验证目标与已保存配置不一致，已停止请求。",
-		"fallback_configuration_rejected":      "验证配置包含其他模型回退，已停止请求。",
+		"provider_bad_request":                 "模型服务拒绝了请求，请检查配置。",
+		"provider_redirect_rejected":           "API 地址返回了重定向，请填写最终地址。",
+		"unexpected_model_destination":         "请求目标与已保存配置不一致。",
+		"fallback_configuration_rejected":      "配置包含不支持的回退模型。",
 	}[code]; ok {
 		return message
 	}
-	return "本次验证未确认，请核对原结果。"
+	return "验证未完成，请重试。"
 }

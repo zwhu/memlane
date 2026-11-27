@@ -118,6 +118,7 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 								})
 							},
 							Control: func() {
+								setup := a.initialSetup || a.canActivateFirstRuntimeFromSettings()
 								if isActive {
 									kitui.Badge(c, tok, "使用中", "ok")
 								} else if !available {
@@ -126,10 +127,12 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 										status = "待登录配置"
 									}
 									kitui.Text(c, tok, status, kitui.RoleMeta).SingleLine()
-								} else if s.Generation.validated(ref) {
-									kitui.Badge(c, tok, "已验证", "ok")
-								} else {
-									kitui.Badge(c, tok, "未验证", "")
+								} else if setup {
+									if s.Generation.validated(ref) {
+										kitui.Badge(c, tok, "已验证", "ok")
+									} else {
+										kitui.Badge(c, tok, "未验证", "")
+									}
 								}
 								v4SelectionIndicator(tok, c, isSelected)
 							},

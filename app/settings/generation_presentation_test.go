@@ -1,6 +1,9 @@
 package settings
 
 import (
+	"encoding/json"
+	"net/http"
+	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -163,14 +166,15 @@ func TestProcessingAgentChoiceShowsAvailabilityAndValidationSeparately(t *testin
 	}}
 	a.chooseGenerationSource("agent_bridge")
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.generationWorkspaceFor(c, false, true) }) }, 1200, 820)
-	for _, label := range []string{"已验证", "未验证", "未检测到 CLI"} {
-		if !tt.HasText(label) {
-			t.Fatal("Agent choice is missing its status", label)
-		}
+	if !tt.HasText("未检测到 CLI") {
+		t.Fatalf("unavailable Agent CLI missing status: %v", tt.Texts())
+	}
+	if tt.HasText("未验证") || tt.HasText("已验证") || tt.HasText("验证（会消耗额度）") {
+		t.Fatalf("regular Settings Agent CLI list should not clutter with validation badges: %v", tt.Texts())
 	}
 	clickProjectUI(t, tt, "配置模型：agent-pi")
-	if a.integrations.BridgeKind != "pi" || !tt.HasText("保存配置") || a.integrations.Generation.Active != nil {
-		t.Fatal("locally detected Agent could not be selected without a capture binding")
+	if a.integrations.BridgeKind != "pi" || !tt.HasText("切换") || a.integrations.Generation.Active != nil {
+		t.Fatalf("locally detected Agent could not switch directly without pre-validation: bridge=%q texts=%v", a.integrations.BridgeKind, tt.Texts())
 	}
 	clickProjectUI(t, tt, "配置模型：agent-traex")
 	if a.integrations.BridgeKind != "pi" {
@@ -178,7 +182,80 @@ func TestProcessingAgentChoiceShowsAvailabilityAndValidationSeparately(t *testin
 	}
 	clickProjectUI(t, tt, "配置模型：agent-codex")
 	if a.integrations.BridgeKind != "codex" || !tt.HasText("切换") || a.integrations.Generation.Active != nil {
-		t.Fatal("available Codex CLI lost its validated selection")
+		t.Fatal("available Codex CLI lost its direct switch action")
+	}
+}
+
+func TestSwitchAgentBridgeAutoSavesUpdatedDefaultModelAndActivatesDirectly(t *testing.T) {
+	root := t.TempDir()
+	a := newTestHost(Config{GenerationFile: filepath.Join(root, "generation.json"), ProjectControl: beta3ControlConfig(t, root)}, nil)
+	var savedModel string
+	var handoffRef GenerationRef
+	active := GenerationRef{ID: "agent-traex", Revision: 1}
+	directory := GenerationDirectory{
+		Revision:         4,
+		HandoffAvailable: true,
+		Active:           &active,
+		AgentBridges: map[string]GenerationProfile{
+			"codex": {Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-6.2-sol"},
+			"traex": {Mode: "agent_bridge", BridgeKind: "traex", Model: "GPT-6.1-Sol"},
+		},
+		Profiles: map[string][]GenerationRow{
+			"existing-codex": {{Revision: 2, Digest: "old-codex", Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-6.1-sol"}}},
+			"agent-traex":    {{Revision: 1, Digest: "traex", Profile: GenerationProfile{Mode: "agent_bridge", BridgeKind: "traex", Model: "GPT-6.1-Sol"}}},
+		},
+	}
+	a.client.HTTP = &http.Client{Transport: queueTestTransport(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/v1/generation/profiles/existing-codex":
+			var body struct {
+				Profile GenerationProfile `json:"profile"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			savedModel = body.Profile.Model
+			directory.Profiles["existing-codex"] = append(directory.Profiles["existing-codex"], GenerationRow{
+				Revision: 3, Digest: "new-codex", Profile: body.Profile,
+			})
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": GenerationRef{ID: "existing-codex", Revision: 3}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/generation/handoffs":
+			var body struct {
+				Profile GenerationRef `json:"profile"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			handoffRef = body.Profile
+			directory.Active = &handoffRef
+			_ = json.NewEncoder(w).Encode(GenerationHandoffDirectory{
+				Handoff: &GenerationHandoffReceipt{Operation: "op-1", Reference: handoffRef, Status: "applied"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/generation":
+			_ = json.NewEncoder(w).Encode(directory)
+		default:
+			http.NotFound(w, r)
+		}
+	})}
+	updates := make(chan func(), 16)
+	a.dispatch = func(fn func()) { updates <- fn }
+	a.integrations.Loaded, a.integrations.GenerationLoaded = true, true
+	a.integrations.Generation = directory
+	a.chooseGenerationSource("agent_bridge")
+
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Column(c).Fill().Children(func() { a.generationSettings(c) })
+	}, 1200, 820)
+	clickProjectUI(t, tt, "配置模型：existing-codex")
+	if !tt.HasText("切换") || tt.HasText("待核对操作") || tt.HasText("验证（会消耗额度）") {
+		t.Fatalf("unexpected direct switch UI: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "切换")
+	drainReading(t, updates, func() bool { return !a.integrations.Busy })
+	if savedModel != "gpt-6.2-sol" {
+		t.Fatalf("expected updated codex default model saved before switch, got %q", savedModel)
+	}
+	if handoffRef != (GenerationRef{ID: "existing-codex", Revision: 3}) {
+		t.Fatalf("expected handoff to new revision 3, got %+v", handoffRef)
+	}
+	if a.integrations.Generation.Active == nil || *a.integrations.Generation.Active != handoffRef {
+		t.Fatalf("expected active updated to %+v, got %+v", handoffRef, a.integrations.Generation.Active)
 	}
 }
 

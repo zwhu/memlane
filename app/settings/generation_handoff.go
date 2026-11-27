@@ -80,7 +80,6 @@ func (a *Controller) generationHandoffPanel(c *ui.Context) {
 		Width:           kitui.DialogSmall,
 		CancelText:      "取消",
 		ConfirmText:     "确认启用",
-		Hint:            "仅确认后的服务回执会更新当前使用的提炼方式",
 		CancelDisabled:  s.Busy,
 		ConfirmDisabled: confirmDisabled,
 		OnCancel:        func() { s.HandoffOpen = false },

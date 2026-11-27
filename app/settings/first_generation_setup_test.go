@@ -153,14 +153,19 @@ func TestFirstGenerationSetupRetriesSameSavedCandidate(t *testing.T) {
 				}
 			}
 			tt := ui.NewTester(func(c *ui.Context) { a.generationValidationStatus(c) }, 900, 300)
-			for _, want := range []string{"失败阶段：向模型发送真实验证", "DNS 解析失败", "HTTP 502", "耗时 1.2 秒",
-				"已保留当前保存的配置，无需重新填写。", "请检查 API 地址与 DNS", "重新验证", "核对原验证"} {
+			for _, want := range []string{"失败阶段：向模型发送真实验证", "DNS 解析失败", "HTTP 502", "耗时 1.2 秒", "重新验证"} {
 				if !tt.HasText(want) {
 					t.Fatalf("missing %q: %v", want, tt.Texts())
 				}
 			}
-			if status == "result_unknown" && !tt.HasText("验证等待超时，结果未确认；请核对原验证。") {
-				t.Fatal("timeout copy was lost")
+			if status == "failed" && !tt.HasText("无法解析模型服务地址。") {
+				t.Fatalf("missing failure reason: %v", tt.Texts())
+			}
+			if status == "result_unknown" && !tt.HasText("验证超时，请重试。") {
+				t.Fatalf("timeout copy was lost: %v", tt.Texts())
+			}
+			if tt.HasText("核对原验证") || tt.HasText("已保留当前保存的配置") {
+				t.Fatalf("verbose boilerplate should not clutter validation status: %v", tt.Texts())
 			}
 			if tt.HasText("credential-secret") || tt.HasText("gaierror") || tt.HasText("dns_resolution_failed") {
 				t.Fatal("rendered raw diagnostic code")
@@ -196,7 +201,7 @@ func TestFirstGenerationSetupNeverDisplaysUntrustedDiagnosticStrings(t *testing.
 	s.Validation = GenerationValidation{Status: "failed", ErrorCode: "private-error", DiagnosticCode: "private-diagnostic",
 		NetworkError: "private-network", BridgeErrorCode: "private-bridge", FailedPhase: "private-phase", HTTPStatus: 600}
 	tt := ui.NewTester(func(c *ui.Context) { a.generationValidationStatus(c) }, 900, 300)
-	if tt.HasText("private-") || tt.HasText("HTTP 600") || !tt.HasText("已保留当前保存的配置") {
+	if tt.HasText("private-") || tt.HasText("HTTP 600") || !tt.HasText("验证未完成，请重试。") || !tt.HasText("重新验证") {
 		t.Fatalf("unexpected validation display: %v", tt.Texts())
 	}
 }
