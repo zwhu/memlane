@@ -41,7 +41,7 @@ Memlane 是面向程序员的 macOS 记忆客户端，采用 **Go 单二进制�
 
 - **产品与安装**：[产品定义](docs/product/product.md)、[Roadmap](docs/product/roadmap.md)、[内测安装指南](docs/product/beta-install-guide.md)
 - **架构与契约**：[架构总览](docs/architecture/overview.md)、[架构边界契约](docs/architecture/boundaries.md)（含分层红线、方案 C 接入、存储与日期口径）、[开发说明](docs/architecture/development.md)、[有效模型契约](docs/architecture/agent-effective-model-contract-20261118.md)
-- **界面与动效**：[V4 视觉与交互规范](docs/design/visual-standards-v4-20261120.md)（含窗口规格、浅/深双外观与交互不变量）、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 原型](docs/design/visual-v4-prototype/)、[首装向导原型](docs/design/onboarding-prototype/)
+- **界面与动效**：[V4 视觉与交互规范](docs/design/visual-standards-v4-20261120.md)（含窗口规格、浅/深双外观与交互不变量）、[桌面 UI 护栏](app/AGENTS.md)、[MyGo 动效契约](docs/design/motion-implementation.md)、[V4 原型](docs/design/visual-v4-prototype/)、[首装向导原型](docs/design/onboarding-prototype/)
 - **工程与复盘**：[工程规范](docs/engineering/workflow.md)（含 T0–T3 分级、双审 2+1、发版与模型参数门禁、四次失败停止规则）、[架构治理与 Python 冻结](docs/engineering/architecture-governance-and-py-freeze.md)、[缺陷复盘汇总](docs/engineering/defect-postmortems.md)、[双审账本模板](docs/engineering/templates/review-ledger-template.md)
 
 ## 4. 协作原则与不可碰红线
