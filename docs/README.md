@@ -17,6 +17,7 @@
 | --- | --- |
 | [overview.md](architecture/overview.md) | 现行系统分层、Go 单二进制 + `kit/*`/`core/*`/`app/*`/`engines/cognee` 源码映射、五条核心数据流与架构全景图 |
 | [boundaries.md](architecture/boundaries.md) | 现行生效架构边界契约（Go 单二进制收口、Python ≤3.5k 无状态引擎薄壳、方案 C `memlane hook` 与三级冲突策略、6 原语 `MemoryEngine`、`kit/*` 跨 App 复用边界与机械门禁） |
+| [mcp.md](architecture/mcp.md) | MCP 在方案 C 架构中的职责定位、`memlane mcp` stdio 桥接与网关 `/mcp` 两段式架构、4 项工具契约（`remember` 快路径/收件箱回退、`remember_status`、`recall` 故障隔离配额、`health`）与安全边界 |
 | [development.md](architecture/development.md) | 日常开发入口 `cmd/memlane dev`、统一门禁（`check.py` / `lint.py` / `diff_guard.py`）、运行配置与凭据隔离、多 Agent/Provider 调试及国内镜像源手工终端兜底 |
 | [agent-effective-model-contract-20261118.md](architecture/agent-effective-model-contract-20261118.md) | 多 Agent 有效模型读取、Bridge 与 Provider 互斥激活及调用契约 |
 | [memory-flow-3d/](architecture/memory-flow-3d/) | Memlane × Cognee 3D / 2D 记忆流转交互动画图解（离线 WebGL 3D + 零依赖 2D Canvas 双版本一键互切，均支持浅色/深空双风格，含切段/分词、GPT 代理提炼、三库与零大模型召回演示） |

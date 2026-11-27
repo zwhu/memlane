@@ -15,7 +15,7 @@ _Avoid_: 控制面、控制面服务、记忆网关、服务网关
 **Agent 模型代理**：在选择使用已连接 Coding Agent（不填 API Key）时，将记忆提炼等模型请求转发给本机 Agent 执行的本地 OpenAI 兼容代理服务（`core/gateway/completion` + `kit/agents/bridge`）；直连 Provider / Ollama 时不经过该代理。
 _Avoid_: Agent 整理通道、整理通道、模型通道、补全端点、补全桥
 
-**单一 Go 二进制与四段分层**：`cmd/memlane` 收口 `app` | `daemon` | `hook` | `setup` | `dev` 五种运行模式；仓内源码严格划分为零业务底座 `kit/*`（`kit/ui`、`kit/agents`、`kit/aiinstaller`、`kit/daemon`）、Memlane 领域与应用层 `core/*` + `app/*`（`app/shell`、`app/overview`、`app/reading`、`app/search`、`app/graph`、`app/settings`、`app/api`），以及隔离引擎与沙箱画布层 `engines/cognee` + `web/official-graph`。
+**单一 Go 二进制与四段分层**：`cmd/memlane` 收口 `app` | `daemon` | `hook` | `mcp` | `setup` | `dev` 六种运行模式；仓内源码严格划分为零业务底座 `kit/*`（`kit/ui`、`kit/agents`、`kit/aiinstaller`、`kit/daemon`）、Memlane 领域与应用层 `core/*` + `app/*`（`app/shell`、`app/overview`、`app/reading`、`app/search`、`app/graph`、`app/settings`、`app/api`），以及隔离引擎与沙箱画布层 `engines/cognee` + `web/official-graph`。
 
 ### 二、两层记忆内容与「采集 → 提炼」链路
 
