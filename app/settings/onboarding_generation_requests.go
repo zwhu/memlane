@@ -58,6 +58,8 @@ func (r *onboardingGenerationRun) mutate(op generationUIOperation, method, path 
 	return nil
 }
 
+var onboardingValidationPollInterval = time.Second
+
 func (r *onboardingGenerationRun) validate(parent context.Context, progress func(GenerationValidation, time.Time), beginEnabling func() bool) error {
 	op := generationUIOperation{Kind: "validations", Operation: integrationOperation(), Profile: r.ref.ID, Revision: r.ref.Revision}
 	r.validationStarted = time.Now()
@@ -71,11 +73,19 @@ func (r *onboardingGenerationRun) validate(parent context.Context, progress func
 	}
 	err := r.mutate(op, http.MethodPost, "/v1/generation/validations", map[string]any{"profile": r.ref}, &receipt)
 	path := "/v1/generation/validations/" + url.PathEscape(op.Operation)
+	if err != nil {
+		if parent.Err() != nil {
+			var rejected *ControlResponseError
+			if errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 &&
+				rejected.Phase != "post_mutation" && rejected.Code != "operation_id_conflict" {
+				return context.Canceled
+			}
+			return r.cancelValidation(op.Operation, path)
+		}
+		return err
+	}
 	if parent.Err() != nil {
 		return r.cancelValidation(op.Operation, path)
-	}
-	if err != nil {
-		return err
 	}
 	if receipt.Result.Operation != op.Operation {
 		return errors.New("验证登记回执与请求不匹配")
@@ -97,7 +107,7 @@ func (r *onboardingGenerationRun) validate(parent context.Context, progress func
 		}
 		progress(r.validation, r.validationStarted)
 		select {
-		case <-time.After(time.Second):
+		case <-time.After(onboardingValidationPollInterval):
 		case <-parent.Done():
 			return r.cancelValidation(op.Operation, path)
 		case <-ctx.Done():
@@ -116,7 +126,8 @@ func (r *onboardingGenerationRun) validate(parent context.Context, progress func
 	}
 	if r.validation.Status != "passed" || !r.validation.Plain || !r.validation.Schema || !r.validation.Quality ||
 		r.directory.Validations[op.Operation].Digest != row.Digest || !r.directory.validated(r.ref) {
-		if r.validation.Status == "failed" || r.validation.Status == "passed" {
+		if r.validation.Status == "failed" || r.validation.Status == "passed" ||
+			(r.validation.Status == "result_unknown" && r.validation.ErrorCode != "" && r.validation.ErrorCode != "validation_cleanup_unconfirmed") {
 			if err = controlplane.FinishUIOperation(r.operations, op.Operation); err != nil {
 				return err
 			}
@@ -143,6 +154,13 @@ func (r *onboardingGenerationRun) cancelValidation(operation, path string) error
 	}
 	payload := map[string]any{"expected_revision": r.directory.Revision, "operation_id": integrationOperation()}
 	if err := r.client.request(ctx, http.MethodDelete, path, payload, &receipt); err != nil {
+		var rejected *ControlResponseError
+		if errors.As(err, &rejected) && rejected.Status == http.StatusNotFound && rejected.Code == "generation_validation_not_found" {
+			if finishErr := controlplane.FinishUIOperation(r.operations, operation); finishErr != nil {
+				return finishErr
+			}
+			return context.Canceled
+		}
 		return err
 	}
 	if receipt.Result.Operation != operation || !receipt.Result.Exited {

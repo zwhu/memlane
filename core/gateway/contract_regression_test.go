@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
@@ -178,6 +179,11 @@ func openContractStoreAndServer(t *testing.T, eng *contractMockEngine, agentToke
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	})
 	return store, srv
 }
 
@@ -863,6 +869,11 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	})
 
 	for _, route := range []string{"/api/generation", "/v1/generation"} {
 		code, resp := doHTTPJSON(t, srv, http.MethodGet, route, "", mgmtHeaders())
@@ -939,19 +950,28 @@ func TestContractGenerationReturnsDetectedBridgesAndDefaults(t *testing.T) {
 			}
 			valCode, valResp := doHTTPJSON(t, srv, http.MethodPost, "/v1/generation/validations",
 				`{"profile":{"id":"agent-codex","revision":1},"operation_id":"op-codex-val"}`, mgmtHeaders())
-			if valCode != http.StatusOK || valResp["status"] != "passed" {
+			if valCode != http.StatusAccepted || valResp["status"] != "running" || valResp["operation_id"] != "op-codex-val" {
 				t.Fatalf("POST /v1/generation/validations = %d %+v", valCode, valResp)
 			}
-			valDefaults, _ := valResp["agent_defaults"].(map[string]any)
-			if valDefaults["model"] != "gpt-5.4" || valDefaults["provider"] != "openai" || valDefaults["reasoning_effort"] != "high" {
-				t.Fatalf("POST validation missing agent_defaults: %+v", valResp)
+			var getValCode int
+			var getValResp map[string]any
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				getValCode, getValResp = doHTTPJSON(t, srv, http.MethodGet, "/v1/generation/validations/op-codex-val", "", mgmtHeaders())
+				if getValCode != http.StatusOK {
+					t.Fatalf("GET /v1/generation/validations/op-codex-val = %d %+v", getValCode, getValResp)
+				}
+				if getValResp["status"] != "running" && getValResp["status"] != "queued" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
-			getValCode, getValResp := doHTTPJSON(t, srv, http.MethodGet, "/v1/generation/validations/op-codex-val", "", mgmtHeaders())
-			if getValCode != http.StatusOK {
-				t.Fatalf("GET /v1/generation/validations/op-codex-val = %d %+v", getValCode, getValResp)
+			if getValResp["status"] != "passed" {
+				t.Fatalf("GET validation did not pass: %+v", getValResp)
 			}
 			getValDefaults, _ := getValResp["agent_defaults"].(map[string]any)
-			if getValDefaults["model"] != "gpt-5.4" || getValDefaults["provider"] != "openai" || getValDefaults["service_tier"] != "fast" {
+			if getValDefaults["model"] != "gpt-5.4" || getValDefaults["provider"] != "openai" ||
+				getValDefaults["reasoning_effort"] != "high" || getValDefaults["service_tier"] != "fast" {
 				t.Fatalf("GET validation missing persisted agent_defaults: %+v", getValResp)
 			}
 		}
@@ -1124,6 +1144,11 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	})
 
 	// 1. Seed a real succeeded capture for agent-codex via POST /ingest + InboxWorker.ProcessOnce.
 	status, _ := doHTTPJSON(t, srv, http.MethodPost, "/ingest", `{

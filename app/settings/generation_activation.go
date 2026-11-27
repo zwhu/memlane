@@ -37,11 +37,7 @@ func (a *Controller) generationAction(action string) {
 		s.NextOperation = op
 	}
 	go func() {
-		timeout := 20 * time.Second
-		if action == "validations" {
-			timeout = 180 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		method := "POST"
 		if action == "next" {
@@ -86,12 +82,15 @@ func (a *Controller) generationAction(action string) {
 				a.finishGenerationOperation(op)
 				return
 			} else {
+				if generationValidationActive(validationReceipt) {
+					s.Validation = validationReceipt
+				}
 				s.Message = "正在验证…"
 				s.MessageScope = "generation"
 			}
 			if action == "validations" {
 				var rejected *ControlResponseError
-				if errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 {
+				if errors.As(err, &rejected) && rejected.Status >= 400 && rejected.Status < 500 && rejected.Code != "operation_id_conflict" {
 					if !a.finishGenerationOperation(op) {
 						return
 					}

@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -239,8 +240,135 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+const (
+	defaultValidationBudget    = 360 * time.Second
+	ephemeralBridgeStopTimeout = 10 * time.Second
+	cancelValidationWaitBudget = 15 * time.Second
+)
+
+type activeValidation struct {
+	operationID     string
+	profileID       string
+	revision        int
+	digest          string
+	startedAt       float64
+	deadlineSeconds int
+
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	mu                 sync.Mutex
+	phase              string
+	cancelReason       string
+	localProcessExited bool
+}
+
+func (av *activeValidation) setPhase(phase string) {
+	av.mu.Lock()
+	av.phase = phase
+	av.mu.Unlock()
+}
+
+func (av *activeValidation) requestCancel(reason string) {
+	av.mu.Lock()
+	if av.cancelReason == "" {
+		av.cancelReason = reason
+	}
+	av.mu.Unlock()
+	av.cancel()
+}
+
+func (av *activeValidation) getCancelReason() string {
+	av.mu.Lock()
+	defer av.mu.Unlock()
+	return av.cancelReason
+}
+
+func (av *activeValidation) setLocalProcessExited(exited bool) {
+	av.mu.Lock()
+	av.localProcessExited = exited
+	av.mu.Unlock()
+}
+
+func (av *activeValidation) isLocalProcessExited() bool {
+	av.mu.Lock()
+	defer av.mu.Unlock()
+	return av.localProcessExited
+}
+
+func (av *activeValidation) view() validationView {
+	av.mu.Lock()
+	phase := av.phase
+	av.mu.Unlock()
+	v := validationView{
+		OperationID:     av.operationID,
+		Phase:           phase,
+		StartedAt:       av.startedAt,
+		DeadlineSeconds: av.deadlineSeconds,
+		Digest:          av.digest,
+		Status:          "running",
+	}
+	v.Reference.ID = av.profileID
+	v.Reference.Revision = av.revision
+	return v
+}
+
+func (s *Server) effectiveValidationBudget() time.Duration {
+	if s.validationBudget > 0 {
+		return s.validationBudget
+	}
+	return defaultValidationBudget
+}
+
+func (s *Server) effectiveEphemeralBridgeTimeout() time.Duration {
+	if s.ephemeralBridgeTimeout > 0 {
+		return s.ephemeralBridgeTimeout
+	}
+	return ephemeralBridgeStopTimeout
+}
+
+func (s *Server) effectiveValidationCancelWait() time.Duration {
+	if s.validationCancelWait > 0 {
+		return s.validationCancelWait
+	}
+	return cancelValidationWaitBudget
+}
+
+func (s *Server) beginValidationShutdown() []*activeValidation {
+	s.validationMu.Lock()
+	s.validationClosing = true
+	active := make([]*activeValidation, 0, len(s.activeValidations))
+	for _, av := range s.activeValidations {
+		active = append(active, av)
+	}
+	s.validationMu.Unlock()
+	for _, av := range active {
+		av.requestCancel("shutdown")
+	}
+	return active
+}
+
+func (s *Server) waitActiveValidations(ctx context.Context, active []*activeValidation) error {
+	for _, av := range active {
+		select {
+		case <-av.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (s *Server) stopActiveValidations(ctx context.Context) error {
+	active := s.beginValidationShutdown()
+	return s.waitActiveValidations(ctx, active)
+}
+
 type validationView struct {
 	OperationID        string                  `json:"-"`
+	Phase              string                  `json:"phase,omitempty"`
+	StartedAt          float64                 `json:"started_at,omitempty"`
+	DeadlineSeconds    int                     `json:"deadline_seconds,omitempty"`
 	Digest             string                  `json:"digest"`
 	RegisteredRevision int                     `json:"registered_revision"`
 	Status             string                  `json:"status"`
@@ -256,43 +384,71 @@ type validationView struct {
 	} `json:"reference"`
 }
 
-func (s *Server) generationValidations(ctx context.Context, secrets []string) (map[string]validationView, error) {
-	type validationRow struct {
-		view        validationView
-		payloadJSON string
+func validationViewFromRecord(r domain.GenerationValidation, secrets []string) (string, validationView, bool) {
+	op := safeModelDigest(r.OperationID, secrets...)
+	if op == "" {
+		return "", validationView{}, false
 	}
-	rows, err := readRows(ctx, s.cfg.Store.DB(), `SELECT operation_id,profile_id,profile_revision,digest,registered_revision,
-  status,plain_passed,schema_passed,quality_passed,structured_mode,error_code,payload_json FROM generation_validations`, nil,
-		func(row rowScanner) (validationRow, error) {
-			var r validationRow
-			err := row.Scan(&r.view.OperationID, &r.view.Reference.ID, &r.view.Reference.Revision, &r.view.Digest, &r.view.RegisteredRevision,
-				&r.view.Status, &r.view.PlainPassed, &r.view.SchemaPassed, &r.view.QualityPassed, &r.view.StructuredMode, &r.view.ErrorCode, &r.payloadJSON)
-			return r, err
+	v := validationView{
+		OperationID:        op,
+		Digest:             safeModelDigest(r.Digest, secrets...),
+		RegisteredRevision: r.RegisteredRevision,
+		Status:             cleanReceipt(r.Status, secrets...),
+		PlainPassed:        r.PlainPassed,
+		SchemaPassed:       r.SchemaPassed,
+		QualityPassed:      r.QualityPassed,
+		StructuredMode:     cleanReceipt(r.StructuredMode, secrets...),
+		ErrorCode:          cleanReceipt(r.ErrorCode, secrets...),
+	}
+	v.Reference.ID = safeModelDigest(r.ProfileID, secrets...)
+	v.Reference.Revision = r.ProfileRevision
+	if r.PayloadJSON != "" {
+		var payload struct {
+			AgentDefaults *agentModelDefaultsView `json:"agent_defaults"`
+		}
+		if json.Unmarshal([]byte(r.PayloadJSON), &payload) == nil && payload.AgentDefaults != nil {
+			if clean, ok := sanitizeAgentDefaults(*payload.AgentDefaults, secrets); ok {
+				v.AgentDefaults = &clean
+			}
+		}
+	}
+	return op, v, true
+}
+
+func (s *Server) distinctGenerationSecrets(ctx context.Context) ([]string, error) {
+	rows, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT DISTINCT credential_ref, credential_version FROM generation_profiles WHERE credential_ref <> '' AND credential_version <> ''`,
+		nil,
+		func(row rowScanner) (domain.GenerationProfile, error) {
+			var p domain.GenerationProfile
+			err := row.Scan(&p.CredentialRef, &p.CredentialVersion)
+			return p, err
 		})
+	if err != nil {
+		return nil, err
+	}
+	secrets := make([]string, 0, len(rows)+1)
+	for _, p := range rows {
+		if key, err := s.generationCredential(p); err == nil && key != "" {
+			secrets = append(secrets, key)
+		}
+	}
+	if key, err := s.secrets.read(s.cfg.BridgeTokenFile); err == nil && key != "" {
+		secrets = append(secrets, key)
+	}
+	return secrets, nil
+}
+
+func (s *Server) generationValidations(ctx context.Context, secrets []string) (map[string]validationView, error) {
+	rows, err := s.cfg.Store.ListGenerationValidations(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]validationView, len(rows))
 	for _, r := range rows {
-		v := r.view
-		op := safeModelDigest(v.OperationID, secrets...)
-		if op == "" {
+		op, v, ok := validationViewFromRecord(r, secrets)
+		if !ok {
 			continue
-		}
-		v.Digest = safeModelDigest(v.Digest, secrets...)
-		v.Reference.ID = safeModelDigest(v.Reference.ID, secrets...)
-		v.Status = cleanReceipt(v.Status, secrets...)
-		v.StructuredMode = cleanReceipt(v.StructuredMode, secrets...)
-		v.ErrorCode = cleanReceipt(v.ErrorCode, secrets...)
-		if r.payloadJSON != "" {
-			var payload struct {
-				AgentDefaults *agentModelDefaultsView `json:"agent_defaults"`
-			}
-			if json.Unmarshal([]byte(r.payloadJSON), &payload) == nil && payload.AgentDefaults != nil {
-				if clean, ok := sanitizeAgentDefaults(*payload.AgentDefaults, secrets); ok {
-					v.AgentDefaults = &clean
-				}
-			}
 		}
 		out[op] = v
 	}
@@ -301,31 +457,38 @@ func (s *Server) generationValidations(ctx context.Context, secrets []string) (m
 
 func (s *Server) generationValidation(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	profiles, err := s.cfg.Store.ListGenerationProfiles(ctx)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-	secrets := []string{}
-	for _, p := range profiles {
-		if key, err := s.generationCredential(p); err == nil && key != "" {
-			secrets = append(secrets, key)
-		}
-	}
-	if key, err := s.secrets.read(s.cfg.BridgeTokenFile); err == nil {
-		secrets = append(secrets, key)
-	}
-	validations, err := s.generationValidations(ctx, secrets)
-	if err != nil {
-		writeDomainError(w, err)
-		return
-	}
-	validation, ok := validations[r.PathValue("op")]
-	if !ok {
+	op := r.PathValue("op")
+	if !modelDigest.MatchString(op) {
 		writeError(w, 404, "generation_validation_not_found", "validation not found")
 		return
 	}
-	writeJSON(w, 200, validation)
+	s.validationMu.Lock()
+	av := s.activeValidations[op]
+	s.validationMu.Unlock()
+	if av != nil {
+		writeJSON(w, 200, av.view())
+		return
+	}
+	record, err := s.cfg.Store.GetGenerationValidation(ctx, op)
+	if errors.Is(err, domain.ErrNotFound) {
+		writeError(w, 404, "generation_validation_not_found", "validation not found")
+		return
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	secrets, err := s.distinctGenerationSecrets(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	safeOp, view, ok := validationViewFromRecord(record, secrets)
+	if !ok || safeOp != op {
+		writeError(w, 404, "generation_validation_not_found", "validation not found")
+		return
+	}
+	writeJSON(w, 200, view)
 }
 
 func checkGenerationRevision(state domain.GenerationState, expected *int) error {
@@ -602,131 +765,321 @@ func safeModelDigest(value string, secrets ...string) string {
 	return ""
 }
 
-func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
+type preparedValidation struct {
+	profile  domain.GenerationProfile
+	provider string
+	endpoint string
+	key      string
+	av       *activeValidation
+	probeCtx context.Context
+}
+
+func (s *Server) prepareValidation(w http.ResponseWriter, r *http.Request, async bool) (*preparedValidation, bool) {
 	if s.cfg.Models == nil {
 		writeError(w, 503, "generation_validation_unavailable", "model validation unavailable")
-		return
+		return nil, false
 	}
 	var in profileSelection
 	if !decodeJSON(w, r, s.cfg.MaxBodyBytes, &in) {
-		return
+		return nil, false
 	}
 	ctx := r.Context()
+
+	// Hold generationMu only for reading state, profile snapshot, and credentials.
+	// Release it before checking/registering validation execution or probing models.
 	s.generationMu.Lock()
-	defer s.generationMu.Unlock()
 	state, err := s.cfg.Store.GetGenerationState(ctx)
 	if err == nil {
 		err = checkGenerationRevision(state, in.ExpectedRevision)
 	}
 	if err != nil {
+		s.generationMu.Unlock()
 		writeDomainError(w, err)
-		return
+		return nil, false
 	}
-	if in.OperationID != "" {
-		if !profileID.MatchString(in.OperationID) {
-			writeDomainError(w, domain.ErrInvalidArgument)
-			return
-		}
-		var exists bool
-		if err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM generation_validations WHERE operation_id=?)`, in.OperationID).Scan(&exists); err != nil {
-			writeDomainError(w, err)
-			return
-		}
-		if exists {
-			writeError(w, 409, "operation_id_conflict", "validation operation already recorded")
-			return
-		}
+	if in.OperationID != "" && !profileID.MatchString(in.OperationID) {
+		s.generationMu.Unlock()
+		writeDomainError(w, domain.ErrInvalidArgument)
+		return nil, false
 	}
 	p, err := s.selectedProfile(ctx, in)
 	if err != nil {
+		s.generationMu.Unlock()
 		writeDomainError(w, err)
-		return
+		return nil, false
 	}
 	provider, endpoint, key, err := s.modelConnection(p)
 	if err != nil {
+		s.generationMu.Unlock()
 		writeError(w, 503, "generation_credential_unavailable", "model credential unavailable")
-		return
+		return nil, false
 	}
+	s.generationMu.Unlock()
+
+	op := in.OperationID
+	if op == "" {
+		op = rand.Text()
+	} else {
+		secrets, secErr := s.distinctGenerationSecrets(ctx)
+		if secErr != nil {
+			writeDomainError(w, secErr)
+			return nil, false
+		}
+		if key != "" {
+			secrets = append(secrets, key)
+		}
+		if !modelDigest.MatchString(op) || containsCredential(op, secrets) {
+			writeDomainError(w, domain.ErrInvalidArgument)
+			return nil, false
+		}
+	}
+
+	s.validationMu.Lock()
+	if s.validationClosing {
+		s.validationMu.Unlock()
+		writeError(w, 503, "generation_validation_unavailable", "model validation unavailable")
+		return nil, false
+	}
+	if s.activeValidations == nil {
+		s.activeValidations = make(map[string]*activeValidation)
+	}
+	if _, exists := s.activeValidations[op]; exists {
+		s.validationMu.Unlock()
+		writeError(w, 409, "operation_id_conflict", "validation operation already in progress")
+		return nil, false
+	}
+	for _, existing := range s.activeValidations {
+		if existing.profileID == p.ProfileID {
+			s.validationMu.Unlock()
+			writeError(w, 409, "validation_in_progress", "validation already in progress for this profile")
+			return nil, false
+		}
+	}
+	if _, err := s.cfg.Store.GetGenerationValidation(ctx, op); err == nil {
+		s.validationMu.Unlock()
+		writeError(w, 409, "operation_id_conflict", "validation operation already recorded")
+		return nil, false
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		s.validationMu.Unlock()
+		writeDomainError(w, err)
+		return nil, false
+	}
+	budget := s.effectiveValidationBudget()
+	parentCtx := context.Background()
+	if !async {
+		parentCtx = ctx
+	}
+	probeCtx, cancel := context.WithTimeout(parentCtx, budget)
+	av := &activeValidation{
+		operationID:     op,
+		profileID:       p.ProfileID,
+		revision:        p.Revision,
+		digest:          p.Digest,
+		startedAt:       float64(time.Now().UnixMilli()) / 1000,
+		deadlineSeconds: int(budget / time.Second),
+		cancel:          cancel,
+		done:            make(chan struct{}),
+		phase:           "prepare",
+	}
+	s.activeValidations[op] = av
+	s.validationMu.Unlock()
+
+	return &preparedValidation{
+		profile:  p,
+		provider: provider,
+		endpoint: endpoint,
+		key:      key,
+		av:       av,
+		probeCtx: probeCtx,
+	}, true
+}
+
+func (s *Server) startEphemeralProbeBridge(p domain.GenerationProfile) (*completion.Server, string, string, error) {
+	var secret [32]byte
+	if _, randErr := rand.Read(secret[:]); randErr != nil {
+		return nil, "", "", randErr
+	}
+	probeToken := hex.EncodeToString(secret[:])
+	candidate := &completion.ActiveProfile{
+		Mode:           p.Mode,
+		BridgeKind:     p.BridgeKind,
+		BridgeProvider: p.BridgeProvider,
+		Model:          p.Model,
+	}
+	if p.BridgeKind != "" {
+		opts := s.cfg.DiscoveryOptions
+		opts.Kinds = []string{p.BridgeKind}
+		if hosts := agents.DetectHosts(opts); len(hosts) > 0 {
+			candidate.Executable = hosts[0].Executable
+			candidate.AuthHome = hosts[0].ProfileDir
+		}
+		if candidate.AuthHome == "" {
+			candidate.AuthHome = agents.DefaultProfileDir(p.BridgeKind, s.cfg.DiscoveryOptions)
+		}
+	}
+	probeSrv, srvErr := completion.NewServer(completion.Config{
+		Token: probeToken,
+		Gate:  completion.StaticProfileGate{Profile: candidate},
+	})
+	if srvErr != nil {
+		return nil, "", "", srvErr
+	}
+	addr, listenErr := probeSrv.StartLoopback("127.0.0.1:0")
+	if listenErr != nil {
+		return nil, "", "", listenErr
+	}
+	return probeSrv, probeToken, addr, nil
+}
+
+func isSubprocessGroupCleanupFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "did not exit") || strings.Contains(msg, "signal Cognee subprocess group")
+}
+
+func (s *Server) finishActiveValidation(av *activeValidation) {
+	s.validationMu.Lock()
+	if s.activeValidations[av.operationID] == av {
+		delete(s.activeValidations, av.operationID)
+	}
+	s.validationMu.Unlock()
+	close(av.done)
+}
+
+func (s *Server) executeValidation(pv *preparedValidation) (engine.ProbeResult, *agentModelDefaultsView, error) {
+	p := pv.profile
+	av := pv.av
+	probeCtx := pv.probeCtx
+	var probeSrv *completion.Server
+	cleanedUp := false
+	defer func() {
+		if !cleanedUp {
+			if probeSrv != nil {
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), s.effectiveEphemeralBridgeTimeout())
+				_ = probeSrv.Shutdown(shutCtx)
+				shutCancel()
+			}
+			s.finishActiveValidation(av)
+		}
+		av.cancel()
+	}()
+
 	capacity := 0
 	if p.MaxConcurrentRequests != nil {
 		capacity = *p.MaxConcurrentRequests
 	}
-	backend := provider
+	backend := pv.provider
 	if p.BridgeKind != "" {
 		backend = p.BridgeKind
 	}
+	probeEndpoint, probeKey := pv.endpoint, pv.key
+
 	// When validating an agent_bridge candidate in daemon mode, mount an isolated
 	// ephemeral completion bridge for that candidate so probing an inactive CLI
 	// never collides with the currently active profile.
-	if p.Mode == "agent_bridge" && s.cfg.BridgeEndpoint != "" {
-		var secret [32]byte
-		if _, randErr := rand.Read(secret[:]); randErr != nil {
-			writeDomainError(w, randErr)
-			return
+	var bridgeStartErr error
+	if p.Mode == "agent_bridge" && s.cfg.BridgeEndpoint != "" && probeCtx.Err() == nil {
+		av.setPhase("bridge_start")
+		var addr string
+		probeSrv, probeKey, addr, bridgeStartErr = s.startEphemeralProbeBridge(p)
+		if bridgeStartErr == nil {
+			probeEndpoint = "http://" + addr + "/v1"
 		}
-		probeToken := hex.EncodeToString(secret[:])
-		candidate := &completion.ActiveProfile{
-			Mode:           p.Mode,
-			BridgeKind:     p.BridgeKind,
-			BridgeProvider: p.BridgeProvider,
-			Model:          p.Model,
-		}
-		if p.BridgeKind != "" {
-			opts := s.cfg.DiscoveryOptions
-			opts.Kinds = []string{p.BridgeKind}
-			if hosts := agents.DetectHosts(opts); len(hosts) > 0 {
-				candidate.Executable = hosts[0].Executable
-				candidate.AuthHome = hosts[0].ProfileDir
-			}
-			if candidate.AuthHome == "" {
-				candidate.AuthHome = agents.DefaultProfileDir(p.BridgeKind, s.cfg.DiscoveryOptions)
-			}
-		}
-		probeSrv, srvErr := completion.NewServer(completion.Config{
-			Token: probeToken,
-			Gate:  completion.StaticProfileGate{Profile: candidate},
-		})
-		if srvErr != nil {
-			writeDomainError(w, srvErr)
-			return
-		}
-		addr, listenErr := probeSrv.StartLoopback("127.0.0.1:0")
-		if listenErr != nil {
-			writeDomainError(w, listenErr)
-			return
-		}
-		defer func() {
-			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = probeSrv.Shutdown(shutCtx)
-		}()
-		endpoint = "http://" + addr + "/v1"
-		key = probeToken
 	}
-	res, probeErr := s.cfg.Models.ProbeModel(ctx, engine.ProbeRequest{GenerationMode: p.Mode, BackendKind: backend,
-		Environment: probeEnvironment(p, provider, endpoint, key), Runtime: maps.Clone(s.cfg.ProbeRuntime), MaxConcurrentRequests: capacity})
-	res.Status = cleanReceipt(res.Status, key)
-	res.ErrorCode = cleanReceipt(res.ErrorCode, key)
-	res.StructuredMode = cleanReceipt(res.StructuredMode, key)
-	if probeErr != nil || res.Status != "passed" && res.Status != "failed" && res.Status != "result_unknown" {
+
+	var res engine.ProbeResult
+	var probeErr error
+	probeExited := true
+	if bridgeStartErr != nil {
+		probeErr = bridgeStartErr
+	} else if probeCtx.Err() != nil {
+		probeErr = probeCtx.Err()
+	} else {
+		av.setPhase("probe")
+		res, probeErr = s.cfg.Models.ProbeModel(probeCtx, engine.ProbeRequest{
+			GenerationMode:        p.Mode,
+			BackendKind:           backend,
+			Environment:           probeEnvironment(p, pv.provider, probeEndpoint, probeKey),
+			Runtime:               maps.Clone(s.cfg.ProbeRuntime),
+			MaxConcurrentRequests: capacity,
+		})
+		if probeErr != nil && isSubprocessGroupCleanupFailure(probeErr) {
+			probeExited = false
+		}
+	}
+
+	// Reap the ephemeral completion bridge only after ProbeModel (including its
+	// subprocess group cleanup) has returned, and before persisting terminal state
+	// and closing av.done.
+	av.setPhase("cleanup")
+	bridgeExited := true
+	if probeSrv != nil {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), s.effectiveEphemeralBridgeTimeout())
+		if shutErr := probeSrv.Shutdown(shutCtx); shutErr != nil {
+			bridgeExited = false
+		}
+		shutCancel()
+		probeSrv = nil
+	}
+	exited := probeExited && bridgeExited
+	av.setLocalProcessExited(exited)
+
+	secrets := make([]string, 0, 2)
+	if pv.key != "" {
+		secrets = append(secrets, pv.key)
+	}
+	if probeKey != "" && probeKey != pv.key {
+		secrets = append(secrets, probeKey)
+	}
+	res.Status = cleanReceipt(res.Status, secrets...)
+	res.ErrorCode = cleanReceipt(res.ErrorCode, secrets...)
+	res.StructuredMode = cleanReceipt(res.StructuredMode, secrets...)
+
+	cancelReason := av.getCancelReason()
+	preservePassed := false
+	switch {
+	case cancelReason == "shutdown":
+		if probeErr != nil || res.Status != "passed" {
+			res = engine.ProbeResult{Status: "result_unknown", ErrorCode: "validation_owner_interrupted"}
+			preservePassed = true
+		}
+	case cancelReason == "user" || errors.Is(probeErr, context.Canceled) || errors.Is(probeCtx.Err(), context.Canceled):
+		if !exited {
+			res = engine.ProbeResult{Status: "result_unknown", ErrorCode: "validation_cleanup_unconfirmed"}
+			preservePassed = true
+		} else if probeErr != nil || res.Status != "passed" {
+			res = engine.ProbeResult{Status: "failed", ErrorCode: "validation_interrupted"}
+			preservePassed = true
+		}
+	case !exited:
+		res = engine.ProbeResult{Status: "result_unknown", ErrorCode: "validation_cleanup_unconfirmed"}
+		preservePassed = true
+	case probeErr != nil || (res.Status != "passed" && res.Status != "failed" && res.Status != "result_unknown"):
 		code := "probe_result_unconfirmed"
-		if errors.Is(probeErr, context.DeadlineExceeded) {
+		if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
 			code = "validation_timeout"
 		}
 		res = engine.ProbeResult{Status: "result_unknown", ErrorCode: code}
 	}
+
 	payloadObj := map[string]any{}
 	var validatedDefaults *agentModelDefaultsView
 	if p.Mode == "agent_bridge" && res.Status == "passed" {
-		if defaults, ok := detectBridgeDefaultsForKind(s.cfg.DiscoveryOptions, p.BridgeKind, []string{key}); ok {
+		if defaults, ok := detectBridgeDefaultsForKind(s.cfg.DiscoveryOptions, p.BridgeKind, secrets); ok {
 			snapshot := defaults
 			validatedDefaults = &snapshot
 			payloadObj["agent_defaults"] = snapshot
 		}
 	}
 	if p.Provider == "ollama" && res.Status == "passed" {
-		want := map[string]string{"contract": "ollama-native-nonce-v1", "status": "verified",
-			"model": qualifiedModel(provider, p.Model), "endpoint_sha256": digest([]byte(endpoint))}
+		want := map[string]string{
+			"contract":        "ollama-native-nonce-v1",
+			"status":          "verified",
+			"model":           qualifiedModel(pv.provider, p.Model),
+			"endpoint_sha256": digest([]byte(probeEndpoint)),
+		}
 		evidence, ok := res.Details["native_schema_evidence"].(map[string]any)
 		matches := ok && len(evidence) == len(want)
 		for field, value := range want {
@@ -740,30 +1093,43 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	payload := "{}"
 	if len(payloadObj) > 0 {
-		raw, err := json.Marshal(payloadObj)
-		if err != nil {
-			writeDomainError(w, err)
-			return
+		if raw, err := json.Marshal(payloadObj); err == nil {
+			payload = string(raw)
 		}
-		payload = string(raw)
 	}
-	var rev int
-	if err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT COALESCE(MAX(registered_revision),0)+1 FROM generation_validations WHERE digest=?`, p.Digest).Scan(&rev); err != nil {
-		writeDomainError(w, err)
+
+	// Persist terminal state with WithoutCancel BEFORE removing from activeValidations
+	// and closing av.done so GET never sees a transient 404 window.
+	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(probeCtx), 5*time.Second)
+	record := domain.GenerationValidation{
+		OperationID:     av.operationID,
+		ProfileID:       p.ProfileID,
+		ProfileRevision: p.Revision,
+		Digest:          p.Digest,
+		Status:          res.Status,
+		PlainPassed:     res.PlainPassed,
+		SchemaPassed:    res.SchemaPassed,
+		QualityPassed:   res.QualityPassed,
+		StructuredMode:  res.StructuredMode,
+		ErrorCode:       res.ErrorCode,
+		PayloadJSON:     payload,
+	}
+	_, persistErr := s.cfg.Store.RecordGenerationValidationAutoRevision(persistCtx, record, preservePassed)
+	persistCancel()
+
+	s.finishActiveValidation(av)
+	cleanedUp = true
+	return res, validatedDefaults, persistErr
+}
+
+func (s *Server) validateProfileSync(w http.ResponseWriter, r *http.Request) {
+	pv, ok := s.prepareValidation(w, r, false)
+	if !ok {
 		return
 	}
-	op := in.OperationID
-	if op == "" {
-		op = rand.Text()
-	} else if !modelDigest.MatchString(op) || containsCredential(op, []string{key}) {
-		writeDomainError(w, domain.ErrInvalidArgument)
-		return
-	}
-	record := domain.GenerationValidation{OperationID: op, ProfileID: p.ProfileID, ProfileRevision: p.Revision, Digest: p.Digest, RegisteredRevision: rev,
-		Status: res.Status, PlainPassed: res.PlainPassed, SchemaPassed: res.SchemaPassed, QualityPassed: res.QualityPassed,
-		StructuredMode: res.StructuredMode, ErrorCode: res.ErrorCode, PayloadJSON: payload}
-	if err := s.cfg.Store.RecordGenerationValidation(ctx, record); err != nil {
-		writeDomainError(w, err)
+	res, validatedDefaults, persistErr := s.executeValidation(pv)
+	if persistErr != nil {
+		writeDomainError(w, persistErr)
 		return
 	}
 	writeJSON(w, 200, struct {
@@ -771,7 +1137,84 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 		AgentDefaults *agentModelDefaultsView `json:"agent_defaults,omitempty"`
 		OperationID   string                  `json:"operation_id"`
 		Result        map[string]string       `json:"result"`
-	}{res, validatedDefaults, op, map[string]string{"operation_id": op}})
+	}{res, validatedDefaults, pv.av.operationID, map[string]string{"operation_id": pv.av.operationID}})
+}
+
+func (s *Server) startValidation(w http.ResponseWriter, r *http.Request) {
+	pv, ok := s.prepareValidation(w, r, true)
+	if !ok {
+		return
+	}
+	view := pv.av.view()
+	go func() {
+		_, _, _ = s.executeValidation(pv)
+	}()
+	writeJSON(w, http.StatusAccepted, struct {
+		validationView
+		OperationID string            `json:"operation_id"`
+		Result      map[string]string `json:"result"`
+	}{
+		validationView: view,
+		OperationID:    pv.av.operationID,
+		Result:         map[string]string{"operation_id": pv.av.operationID, "status": view.Status},
+	})
+}
+
+func (s *Server) cancelGenerationValidation(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	op := r.PathValue("op")
+	if !modelDigest.MatchString(op) {
+		writeError(w, http.StatusNotFound, "generation_validation_not_found", "validation not found")
+		return
+	}
+	s.validationMu.Lock()
+	av := s.activeValidations[op]
+	s.validationMu.Unlock()
+	if av != nil {
+		av.requestCancel("user")
+		waitTimer := time.NewTimer(s.effectiveValidationCancelWait())
+		defer waitTimer.Stop()
+		exited := false
+		select {
+		case <-av.done:
+			exited = av.isLocalProcessExited()
+		case <-waitTimer.C:
+			exited = false
+		case <-ctx.Done():
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"result": map[string]any{
+				"operation_id":         op,
+				"local_process_exited": exited,
+			},
+		})
+		return
+	}
+	record, err := s.cfg.Store.GetGenerationValidation(ctx, op)
+	if errors.Is(err, domain.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "generation_validation_not_found", "validation not found")
+		return
+	}
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	secrets, err := s.distinctGenerationSecrets(ctx)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if safeModelDigest(record.OperationID, secrets...) != op {
+		writeError(w, http.StatusNotFound, "generation_validation_not_found", "validation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"result": map[string]any{
+			"operation_id":         op,
+			"local_process_exited": record.ErrorCode != "validation_cleanup_unconfirmed",
+		},
+	})
 }
 
 func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (map[string]any, string, error) {

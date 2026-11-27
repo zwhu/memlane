@@ -52,9 +52,15 @@ func TestGenerationValidationAndActivation(t *testing.T) {
 
 	candidate := `{"profile_id":"p1"}`
 	requireCode(t, manage(t, s, "POST", "/api/generation/activate", candidate, 409), "validation_required")
-	valid := manage(t, s, "POST", "/v1/generation/validations", candidate, 200)
-	if got := decodeResponse[map[string]any](t, valid)["status"]; got != "passed" {
-		t.Fatal(got)
+	valid := manage(t, s, "POST", "/v1/generation/validations", candidate, http.StatusAccepted)
+	validAccepted := decodeResponse[map[string]any](t, valid)
+	validOp, _ := validAccepted["operation_id"].(string)
+	if validAccepted["status"] != "running" || validOp == "" {
+		t.Fatalf("expected async 202 running validation receipt, got %+v", validAccepted)
+	}
+	validFinal := pollValidationUntilTerminal(t, s, validOp)
+	if validFinal["status"] != "passed" {
+		t.Fatal(validFinal)
 	}
 	if len(fake.probe) != 1 || fake.probe[0].Environment["LLM_API_KEY"] != secret || fake.probe[0].Environment["LLM_TEMPERATURE"] != "0" ||
 		fake.probe[0].Environment["LLM_MAX_COMPLETION_TOKENS"] != "" {

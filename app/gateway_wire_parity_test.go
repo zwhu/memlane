@@ -1313,6 +1313,11 @@ func TestGatewayWireParityGenerationBridgesAndConnections(t *testing.T) {
 		DiscoveryOptions: discovery,
 	})
 	check(err)
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutCtx)
+	})
 
 	// Seed a real succeeded capture for agent-codex through POST /ingest + InboxWorker.
 	ingestReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:61259/ingest", strings.NewReader(`{
@@ -1372,17 +1377,28 @@ func TestGatewayWireParityGenerationBridgesAndConnections(t *testing.T) {
 		"profile": genBefore.AgentBridges["codex"], "expected_revision": genBefore.Revision, "operation_id": "wire-save-codex",
 	}, &saved, 0))
 	var valReceipt struct {
-		Status        string                       `json:"status"`
-		AgentDefaults *settings.AgentModelDefaults `json:"agent_defaults"`
-		Result        struct {
+		Status string `json:"status"`
+		Result struct {
 			OperationID string `json:"operation_id"`
 		} `json:"result"`
 	}
 	check(control.RequestWithHeaders(ctx, http.MethodPost, "/v1/generation/validations", nil, map[string]any{
 		"profile": saved.Result, "expected_revision": genBefore.Revision, "operation_id": "wire-val-codex",
 	}, &valReceipt, 0))
-	if valReceipt.Status != "passed" || valReceipt.AgentDefaults == nil || *valReceipt.AgentDefaults != wantCodexDef {
-		t.Fatalf("POST /v1/generation/validations receipt mismatch: %+v", valReceipt)
+	if valReceipt.Status != "running" || valReceipt.Result.OperationID != "wire-val-codex" {
+		t.Fatalf("POST /v1/generation/validations accepted receipt mismatch: %+v", valReceipt)
+	}
+	var polledVal settings.GenerationValidation
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation/validations/wire-val-codex", nil, nil, &polledVal, 0))
+		if polledVal.Status != "running" && polledVal.Status != "queued" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if polledVal.Status != "passed" || polledVal.AgentDefaults == nil || *polledVal.AgentDefaults != wantCodexDef {
+		t.Fatalf("GET /v1/generation/validations/wire-val-codex receipt mismatch: %+v", polledVal)
 	}
 
 	var genAfter settings.GenerationDirectory
@@ -1898,5 +1914,278 @@ func TestGatewayWireParityInboxEngineInternalError(t *testing.T) {
 	}
 	if exp := overview.DescribeFailureClass(failure.ErrorCode); exp.Label != "记忆提炼内部出错" {
 		t.Fatalf("overview.DescribeFailureClass(%q) = %+v, want 记忆提炼内部出错", failure.ErrorCode, exp)
+	}
+}
+
+type wireSlowProbeEngine struct {
+	wireEngine
+	mode        atomic.Value // "slow" or "pass"
+	started     chan struct{}
+	probeExited atomic.Bool
+}
+
+func (e *wireSlowProbeEngine) ProbeModel(ctx context.Context, _ engine.ProbeRequest) (engine.ProbeResult, error) {
+	if e.mode.Load().(string) == "pass" {
+		return engine.ProbeResult{
+			Status:         "passed",
+			PlainPassed:    true,
+			SchemaPassed:   true,
+			QualityPassed:  true,
+			StructuredMode: "json_schema",
+		}, nil
+	}
+	e.probeExited.Store(false)
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	time.Sleep(40 * time.Millisecond)
+	e.probeExited.Store(true)
+	return engine.ProbeResult{}, ctx.Err()
+}
+
+func TestGatewayWireParitySlowValidationSettingsAndOnboardingCancelAndRetry(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const token = "wire-parity-slow-validation-mgmt-token"
+	tokenFile := filepath.Join(dir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(token), 0o600))
+
+	eng := &wireSlowProbeEngine{started: make(chan struct{}, 8)}
+	eng.mode.Store("slow")
+
+	server, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          eng,
+		Models:          eng,
+		ManagementToken: token,
+	})
+	check(err)
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		check(server.Shutdown(shutCtx))
+	})
+
+	const gatewayURL = "http://127.0.0.1:61263"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	control := settings.ProjectControlClient{
+		Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		HTTP:   httpClient,
+	}
+
+	// Seed a provider profile via real PUT /v1/generation/profiles/slow-prov.
+	var saved struct {
+		Result settings.GenerationRef `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodPut, "/v1/generation/profiles/slow-prov", nil, map[string]any{
+		"profile": settings.GenerationProfile{
+			Mode:     "provider",
+			Provider: "ollama",
+			Model:    "qwen3-slow",
+			Endpoint: "http://127.0.0.1:11434",
+		},
+		"expected_revision": 0,
+		"operation_id":      "wire-save-slow-prov",
+	}, &saved, 0))
+	profile, err := store.GetGenerationProfile(ctx, saved.Result.ID, int(saved.Result.Revision))
+	check(err)
+
+	// 1. Settings UI against real Go gateway: async 202 unlocks "停止验证" while probe runs,
+	//    clicking "停止验证" cancels slow probe via DELETE, clears .ui-operations, and unlocks "重新验证".
+	a := New(Config{
+		GenerationSetupOnly: true,
+		GenerationFile:      filepath.Join(dir, "generation.json"),
+		ServiceURL:          gatewayURL,
+		ProjectControl:      &ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+	}, nil)
+	a.Client.HTTP = httpClient
+	a.syncSettingsTransport()
+	updates := make(chan func(), 128)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(func() {
+		if a.settingsController.IntegrationState().ValidationCancel != nil {
+			a.settingsController.IntegrationState().ValidationCancel()
+		}
+		a.cancelAndResetPanes()
+	})
+
+	a.settingsController.RefreshIntegrations()
+	s := a.settingsController.IntegrationState()
+	drainReading(t, updates, func() bool { return s.GenerationLoaded && !s.Loading })
+
+	tt := ui.NewTester(a.View, 1200, 820)
+	tt.Frame()
+	if !tt.HasText("验证（调用模型）") {
+		t.Fatalf("settings setup view missing validate button: %v", tt.Texts())
+	}
+
+	// Start slow validation via real button click -> POST /v1/generation/validations returns 202.
+	clickProjectUI(t, tt, "验证（调用模型）")
+	select {
+	case <-eng.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("real gateway ProbeModel did not start")
+	}
+	drainReading(t, updates, func() bool {
+		return !s.Busy && s.Validation.Status == "running"
+	})
+	tt.Frame()
+	if !tt.HasText("停止验证") {
+		t.Fatalf("settings view missing 停止验证 while async validation running: %v", tt.Texts())
+	}
+
+	// Click "停止验证" -> real DELETE cancels slow probe, waits for exit, polls validation_interrupted, clears journal.
+	clickProjectUI(t, tt, "停止验证")
+	drainReading(t, updates, func() bool {
+		return !s.Busy && !s.Loading && s.Validation.Status == "failed" && s.Validation.ErrorCode == "validation_interrupted"
+	})
+	if !eng.probeExited.Load() {
+		t.Fatal("DELETE completed before slow ProbeModel exited")
+	}
+	if len(s.PendingOperations) != 0 {
+		t.Fatalf("cancelled validation left pending UI operations: %+v", s.PendingOperations)
+	}
+	tt.Frame()
+	if !tt.HasText("验证已停止。") || !tt.HasText("重新验证") {
+		t.Fatalf("cancelled settings UI missing interrupted copy or retry button: %v", tt.Texts())
+	}
+
+	// Switch probe to pass -> click "重新验证" -> async 202 + GET poll reaches passed!
+	eng.mode.Store("pass")
+	clickProjectUI(t, tt, "重新验证")
+	drainReading(t, updates, func() bool {
+		return !s.Busy && !s.Loading && s.Validation.Status == "passed"
+	})
+	if len(s.PendingOperations) != 0 {
+		t.Fatalf("passed validation left pending UI operations: %+v", s.PendingOperations)
+	}
+	valid, err := store.IsGenerationDigestValidated(ctx, profile.Digest)
+	check(err)
+	if !valid {
+		t.Fatal("passed profile not marked validated in store")
+	}
+
+	// Re-validate the already-passed profile with slow probe, click "停止验证" -> must NOT revoke existing passed!
+	eng.mode.Store("slow")
+	tt.Frame()
+	clickProjectUI(t, tt, "验证（调用模型）")
+	select {
+	case <-eng.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("re-validation ProbeModel did not start")
+	}
+	drainReading(t, updates, func() bool {
+		return !s.Busy && s.Validation.Status == "running"
+	})
+	tt.Frame()
+	clickProjectUI(t, tt, "停止验证")
+	drainReading(t, updates, func() bool {
+		return !s.Busy && !s.Loading && s.Validation.Status == "failed" && s.Validation.ErrorCode == "validation_interrupted"
+	})
+	validAfterCancel, err := store.IsGenerationDigestValidated(ctx, profile.Digest)
+	check(err)
+	if !validAfterCancel {
+		t.Fatal("cancelling re-validation revoked existing passed state in store")
+	}
+
+	// 2. Onboarding request sequence parity against real Go gateway:
+	//    PUT profile -> POST /v1/generation/validations (202) -> GET running -> DELETE cancel (local_process_exited=true)
+	//    -> retry POST (202) -> GET passed -> PUT /v1/generation/next succeeds.
+	var onboardSaved struct {
+		Result settings.GenerationRef `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodPut, "/v1/generation/profiles/onboard-prov", nil, map[string]any{
+		"profile": settings.GenerationProfile{
+			Mode: "provider", Provider: "ollama", Model: "qwen3-onboard", Endpoint: "http://127.0.0.1:11434",
+		},
+		"expected_revision": 0,
+		"operation_id":      "wire-save-onboard-prov",
+	}, &onboardSaved, 0))
+
+	var acceptResp struct {
+		Status    string  `json:"status"`
+		StartedAt float64 `json:"started_at"`
+		Result    struct {
+			OperationID string `json:"operation_id"`
+		} `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodPost, "/v1/generation/validations", nil, map[string]any{
+		"profile": onboardSaved.Result, "expected_revision": 0, "operation_id": "wire-onboard-cancel",
+	}, &acceptResp, 0))
+	if acceptResp.Status != "running" || acceptResp.StartedAt <= 0 || acceptResp.Result.OperationID != "wire-onboard-cancel" {
+		t.Fatalf("unexpected onboarding 202 receipt: %+v", acceptResp)
+	}
+	select {
+	case <-eng.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("onboarding slow probe did not start")
+	}
+
+	var runningPoll settings.GenerationValidation
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation/validations/wire-onboard-cancel", nil, nil, &runningPoll, 0))
+	if runningPoll.Status != "running" || runningPoll.StartedAt <= 0 {
+		t.Fatalf("unexpected onboarding running poll: %+v", runningPoll)
+	}
+
+	var deleteResp struct {
+		Result struct {
+			OperationID string `json:"operation_id"`
+			Exited      bool   `json:"local_process_exited"`
+		} `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodDelete, "/v1/generation/validations/wire-onboard-cancel", nil, map[string]any{
+		"expected_revision": 999, // Stale revision must NOT block stopping validation.
+		"operation_id":      "wire-onboard-delete-req",
+	}, &deleteResp, 0))
+	if deleteResp.Result.OperationID != "wire-onboard-cancel" || !deleteResp.Result.Exited || !eng.probeExited.Load() {
+		t.Fatalf("onboarding DELETE did not confirm process exit: %+v exited=%v", deleteResp, eng.probeExited.Load())
+	}
+
+	var cancelledPoll settings.GenerationValidation
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation/validations/wire-onboard-cancel", nil, nil, &cancelledPoll, 0))
+	if cancelledPoll.Status != "failed" || cancelledPoll.ErrorCode != "validation_interrupted" {
+		t.Fatalf("unexpected onboarding cancelled poll: %+v", cancelledPoll)
+	}
+
+	// Retry onboarding validation with passing probe -> GET passed -> PUT /v1/generation/next succeeds.
+	eng.mode.Store("pass")
+	check(control.RequestWithHeaders(ctx, http.MethodPost, "/v1/generation/validations", nil, map[string]any{
+		"profile": onboardSaved.Result, "expected_revision": 0, "operation_id": "wire-onboard-pass",
+	}, &acceptResp, 0))
+	var passedPoll settings.GenerationValidation
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation/validations/wire-onboard-pass", nil, nil, &passedPoll, 0))
+		if passedPoll.Status != "running" && passedPoll.Status != "queued" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if passedPoll.Status != "passed" || !passedPoll.Plain || !passedPoll.Schema || !passedPoll.Quality {
+		t.Fatalf("onboarding retry did not pass: %+v", passedPoll)
+	}
+	var nextResp struct {
+		Result struct {
+			Next *settings.GenerationRef `json:"next"`
+		} `json:"result"`
+	}
+	check(control.RequestWithHeaders(ctx, http.MethodPut, "/v1/generation/next", nil, map[string]any{
+		"profile": onboardSaved.Result, "expected_revision": 0, "operation_id": "wire-onboard-next",
+	}, &nextResp, 0))
+	if nextResp.Result.Next == nil || *nextResp.Result.Next != onboardSaved.Result {
+		t.Fatalf("onboarding PUT /v1/generation/next failed: %+v", nextResp)
 	}
 }

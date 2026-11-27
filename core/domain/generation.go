@@ -262,6 +262,29 @@ func (s *Store) ListGenerationProfiles(ctx context.Context) ([]GenerationProfile
 	return queryList(ctx, s.db, scanGenerationProfile, `SELECT `+generationProfileColumns+` FROM generation_profiles ORDER BY profile_id,revision`)
 }
 
+const generationValidationColumns = `operation_id, profile_id, profile_revision, digest, registered_revision,
+	status, plain_passed, schema_passed, quality_passed, structured_mode, error_code, payload_json, updated_at`
+
+func scanGenerationValidation(row scanner) (GenerationValidation, error) {
+	var v GenerationValidation
+	err := row.Scan(&v.OperationID, &v.ProfileID, &v.ProfileRevision, &v.Digest, &v.RegisteredRevision,
+		&v.Status, &v.PlainPassed, &v.SchemaPassed, &v.QualityPassed, &v.StructuredMode, &v.ErrorCode,
+		&v.PayloadJSON, &v.UpdatedAt)
+	return v, rowError(err)
+}
+
+func (s *Store) GetGenerationValidation(ctx context.Context, operationID string) (GenerationValidation, error) {
+	if strings.TrimSpace(operationID) == "" {
+		return GenerationValidation{}, ErrNotFound
+	}
+	return scanGenerationValidation(s.db.QueryRowContext(ctx,
+		`SELECT `+generationValidationColumns+` FROM generation_validations WHERE operation_id=?`, operationID))
+}
+
+func (s *Store) ListGenerationValidations(ctx context.Context) ([]GenerationValidation, error) {
+	return queryList(ctx, s.db, scanGenerationValidation, `SELECT `+generationValidationColumns+` FROM generation_validations`)
+}
+
 func (s *Store) RecordGenerationValidation(ctx context.Context, v GenerationValidation) error {
 	if err := requireIDs(v.OperationID, v.Digest, v.Status); err != nil {
 		return err
@@ -270,15 +293,60 @@ func (s *Store) RecordGenerationValidation(ctx context.Context, v GenerationVali
 		return err
 	}
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		return execSQL(ctx, tx, `INSERT INTO generation_validations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(operation_id) DO UPDATE SET profile_id=excluded.profile_id,profile_revision=excluded.profile_revision,
-			digest=excluded.digest,registered_revision=excluded.registered_revision,status=excluded.status,plain_passed=excluded.plain_passed,
-			schema_passed=excluded.schema_passed,quality_passed=excluded.quality_passed,structured_mode=excluded.structured_mode,
-			error_code=excluded.error_code,payload_json=excluded.payload_json,updated_at=excluded.updated_at`,
-			v.OperationID, v.ProfileID, v.ProfileRevision, v.Digest, v.RegisteredRevision, v.Status, boolToInt(v.PlainPassed),
-			boolToInt(v.SchemaPassed), boolToInt(v.QualityPassed), v.StructuredMode, v.ErrorCode, defaultText(v.PayloadJSON, "{}"),
-			defaultText(v.UpdatedAt, NowUTCMicro()))
+		return upsertGenerationValidationTx(ctx, tx, v)
 	})
+}
+
+// RecordGenerationValidationAutoRevision atomically assigns registered_revision
+// and persists the terminal validation record. When preservePassed is true and
+// the digest is currently validated at registered_revision >= 1, the new row is
+// written with registered_revision=0 so an interrupted revalidation does not
+// revoke the existing passed state; otherwise registered_revision is MAX+1.
+func (s *Store) RecordGenerationValidationAutoRevision(ctx context.Context, v GenerationValidation, preservePassed bool) (GenerationValidation, error) {
+	if err := requireIDs(v.OperationID, v.Digest, v.Status); err != nil {
+		return GenerationValidation{}, err
+	}
+	if err := validateGenerationPayload(v.PayloadJSON); err != nil {
+		return GenerationValidation{}, err
+	}
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		var maxRev int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(registered_revision),0) FROM generation_validations WHERE digest=?`, v.Digest).Scan(&maxRev); err != nil {
+			return err
+		}
+		rev := maxRev + 1
+		if preservePassed && maxRev >= 1 {
+			var currentlyPassed bool
+			if err := tx.QueryRowContext(ctx,
+				`SELECT COALESCE(MIN(status='passed' AND plain_passed=1 AND schema_passed=1 AND quality_passed=1),0)
+				 FROM generation_validations WHERE digest=? AND registered_revision=?`,
+				v.Digest, maxRev).Scan(&currentlyPassed); err != nil {
+				return err
+			}
+			if currentlyPassed {
+				rev = 0
+			}
+		}
+		v.RegisteredRevision = rev
+		v.UpdatedAt = defaultText(v.UpdatedAt, NowUTCMicro())
+		v.PayloadJSON = defaultText(v.PayloadJSON, "{}")
+		return upsertGenerationValidationTx(ctx, tx, v)
+	})
+	if err != nil {
+		return GenerationValidation{}, err
+	}
+	return v, nil
+}
+
+func upsertGenerationValidationTx(ctx context.Context, tx *sql.Tx, v GenerationValidation) error {
+	return execSQL(ctx, tx, `INSERT INTO generation_validations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(operation_id) DO UPDATE SET profile_id=excluded.profile_id,profile_revision=excluded.profile_revision,
+		digest=excluded.digest,registered_revision=excluded.registered_revision,status=excluded.status,plain_passed=excluded.plain_passed,
+		schema_passed=excluded.schema_passed,quality_passed=excluded.quality_passed,structured_mode=excluded.structured_mode,
+		error_code=excluded.error_code,payload_json=excluded.payload_json,updated_at=excluded.updated_at`,
+		v.OperationID, v.ProfileID, v.ProfileRevision, v.Digest, v.RegisteredRevision, v.Status, boolToInt(v.PlainPassed),
+		boolToInt(v.SchemaPassed), boolToInt(v.QualityPassed), v.StructuredMode, v.ErrorCode, defaultText(v.PayloadJSON, "{}"),
+		defaultText(v.UpdatedAt, NowUTCMicro()))
 }
 
 func (s *Store) IsGenerationDigestValidated(ctx context.Context, digest string) (bool, error) {

@@ -66,6 +66,13 @@ type Server struct {
 	commonMu     sync.Mutex
 	catalogSync  catalogSyncCoordinator
 
+	validationMu           sync.Mutex
+	activeValidations      map[string]*activeValidation
+	validationClosing      bool
+	validationBudget       time.Duration
+	ephemeralBridgeTimeout time.Duration
+	validationCancelWait   time.Duration
+
 	startupModelMu        sync.Mutex
 	startupModelErr       string
 	activeDigestMu        sync.Mutex
@@ -162,7 +169,13 @@ func NewServer(cfg Config) (*Server, error) {
 	if setter, ok := cfg.MCPHandler.(interface{ SetAuthenticator(*agentauth.Authenticator) }); ok {
 		setter.SetAuthenticator(auth)
 	}
-	s := &Server{cfg: cfg, cursors: cursorCodec{secret}, auth: auth, since: time.Now()}
+	s := &Server{
+		cfg:               cfg,
+		cursors:           cursorCodec{secret},
+		auth:              auth,
+		since:             time.Now(),
+		activeValidations: make(map[string]*activeValidation),
+	}
 	s.inbox = &InboxWorker{cfg: cfg, wake: make(chan struct{}, cfg.InboxWorkers), server: s}
 	s.handler = s.routes()
 	return s, nil
@@ -238,9 +251,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/generation/profiles", s.saveProfile)
 	mux.HandleFunc("DELETE /api/generation/profiles/{id}", s.removeProfile)
 	mux.HandleFunc("POST /v1/generation/profiles/{id}/delete", s.removeProfile)
-	mux.HandleFunc("POST /api/generation/validate", s.validateProfile)
-	mux.HandleFunc("POST /v1/generation/validations", s.validateProfile)
+	mux.HandleFunc("POST /api/generation/validate", s.validateProfileSync)
+	mux.HandleFunc("POST /v1/generation/validations", s.startValidation)
 	mux.HandleFunc("GET /v1/generation/validations/{op}", s.generationValidation)
+	mux.HandleFunc("DELETE /v1/generation/validations/{op}", s.cancelGenerationValidation)
 	mux.HandleFunc("GET /v1/generation/operations/{op}", s.generationOperation)
 	mux.HandleFunc("GET /v1/generation/handoffs", s.serveHandoffs)
 	mux.HandleFunc("GET /v1/generation/handoffs/{op}", s.serveHandoffs)
@@ -453,7 +467,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	l := s.listener
 	s.mu.Unlock()
 	if l == nil {
-		return s.inbox.Stop(ctx)
+		return errors.Join(s.stopActiveValidations(ctx), s.inbox.Stop(ctx))
 	}
 	return s.shutdown(ctx, l)
 }
@@ -467,22 +481,25 @@ func (s *Server) shutdown(ctx context.Context, l *loopback) error {
 	if !current {
 		return l.err
 	}
-	if err := l.http.Shutdown(ctx); err != nil {
+	active := s.beginValidationShutdown()
+	httpErr := l.http.Shutdown(ctx)
+	valErr := s.waitActiveValidations(ctx, active)
+	if httpErr != nil {
 		l.cancel()
-		return err
+		return errors.Join(httpErr, valErr)
 	}
 	if err := s.inbox.Stop(ctx); err != nil {
 		l.cancel()
-		return err
+		return errors.Join(err, valErr)
 	}
 	l.cancel()
 	select {
 	case <-l.done:
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(ctx.Err(), valErr)
 	}
 	s.mu.Lock()
 	s.listener = nil
 	s.mu.Unlock()
-	return l.err
+	return errors.Join(l.err, valErr)
 }

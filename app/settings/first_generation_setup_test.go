@@ -320,6 +320,8 @@ func newFocusedGenerationHarness(t *testing.T, outcome string) *focusedGeneratio
 				validation.Status, validation.Plain, validation.Schema, validation.Quality = "passed", true, true, true
 			case "fail":
 				validation.Status, validation.HTTPStatus, validation.ErrorCode = "failed", 401, "authentication_failed"
+			case "timeout":
+				validation.Status, validation.ErrorCode = "result_unknown", "validation_timeout"
 			}
 			directory.Validations[validationOp] = validation
 			json.NewEncoder(w).Encode(validation)
@@ -592,4 +594,57 @@ func TestOnboardingUnknownActivationKeepsOriginalRequest(t *testing.T) {
 	clickProjectUI(t, tt, "核对启用结果")
 	drainReading(t, h.updates, func() bool { return !a.integrations.Busy })
 	h.requireMutations(t, "save", "validate", "next", "activate", "activate")
+}
+
+func TestFocusedOnboardingRecordedTimeoutClearsJournalAndAllowsImmediateRetry(t *testing.T) {
+	prevPoll := onboardingValidationPollInterval
+	onboardingValidationPollInterval = time.Millisecond
+	t.Cleanup(func() { onboardingValidationPollInterval = prevPoll })
+
+	h := newFocusedGenerationHarness(t, "timeout")
+	a := h.a
+
+	a.runOnboardingGeneration()
+	drainReading(t, h.updates, func() bool { return !a.integrations.Busy })
+	if a.integrations.hasPendingGeneration() {
+		t.Fatalf("recorded validation_timeout left pending op locking wizard: %+v", a.integrations.PendingOperations)
+	}
+	if !strings.Contains(a.onboardingGeneration.failure, "验证超时") {
+		t.Fatalf("missing timeout failure copy: %q", a.onboardingGeneration.failure)
+	}
+
+	h.outcome.Store("pass")
+	tt := ui.NewTester(a.View, 1200, 820)
+	clickProjectUI(t, tt, "重新验证")
+	drainReading(t, h.updates, func() bool { return !a.integrations.Busy })
+	if a.onboardingPage() != onboardingDone {
+		t.Fatalf("retry after recorded timeout did not complete onboarding: page=%v failure=%q", a.onboardingPage(), a.onboardingGeneration.failure)
+	}
+}
+
+func TestFocusedOnboardingStopValidation404ClearsJournalAndUnlocksRetry(t *testing.T) {
+	prevPoll := onboardingValidationPollInterval
+	onboardingValidationPollInterval = time.Millisecond
+	t.Cleanup(func() { onboardingValidationPollInterval = prevPoll })
+
+	h := newFocusedGenerationHarness(t, "slow")
+	a := h.a
+	orig := a.client.HTTP.Transport
+	a.client.HTTP.Transport = generationTestTransport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/generation/validations/") {
+			return queueTestTransport(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`{"error":"generation_validation_not_found"}`))
+			}).RoundTrip(r)
+		}
+		return orig.RoundTrip(r)
+	})
+
+	a.runOnboardingGeneration()
+	drainReading(t, h.updates, func() bool { return a.onboardingGeneration.validation.Status == "running" })
+	a.stopOnboardingValidation()
+	drainReading(t, h.updates, func() bool { return !a.integrations.Busy })
+	if a.integrations.hasPendingGeneration() || !strings.Contains(a.onboardingGeneration.failure, "已停止验证") {
+		t.Fatalf("delete 404 did not unlock onboarding: pending=%+v failure=%q", a.integrations.PendingOperations, a.onboardingGeneration.failure)
+	}
 }
