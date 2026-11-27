@@ -185,33 +185,15 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		}).Height(40).Shrink(0).Padding(0, sp2)
 
 		appFooter(c, "侧栏状态栏").Padding(0, sp3, 0, sp4).Gap(sp2).Children(func() {
-			color := tok.Text4
-			hookErrors := 0
-			if a.monitor.Snapshot != nil && a.monitor.Snapshot.Summary != nil {
-				hookErrors = a.monitor.Snapshot.Summary.HookErrorsCount
-			}
-			switch {
-			case a.monitor.State == "degraded" || a.monitor.State == "exited" || (a.monitor.EngineStatus != "已连接" && a.monitor.EngineStatus != "尚未检查"):
-				color = tok.Danger
-			case a.monitor.State == "warning" || hookErrors > 0:
-				color = tok.Warning
-			case a.monitor.EngineStatus == "已连接":
-				color = tok.OK
-			}
-			status := "待检查"
-			if a.monitor.EngineStatus == "已连接" {
-				status = "已连接"
-			} else if a.monitor.EngineStatus != "尚未检查" {
-				status = "连接异常"
-			}
-			svcBtn := ui.ButtonBase(c.Key("sidebar-service-status")).Role(ui.RoleButton).Label("服务 · "+status).
+			overallDot, overallLabel := a.trayOverallServiceStatus()
+			svcBtn := ui.ButtonBase(c.Key("sidebar-service-status")).Role(ui.RoleButton).Label(overallLabel).
 				Cursor(ui.CursorPointer).Grow(1).MinWidth(0).Height(28).Padding(0, 4).Radius(radiusSmall).BorderWidth(0).
 				AlignItems(ui.Center).Justify(ui.Start).Gap(sp2)
 			btnHovered := svcBtn.Hovered()
 			btnFocused := svcBtn.Focused()
 			svcBtn.Background(homeHoverColor(svcBtn, "svc-foot-bg", ui.Transparent, tok.Hover)).Children(func() {
-				ui.Box(c).Size(6, 6).Radius(3).Background(color).Shrink(0)
-				homeText(c, "服务 · "+status, homeMeta).SingleLine()
+				v4StatusDot(c, overallDot)
+				homeText(c, overallLabel, homeMeta).SingleLine()
 			}).OnClick(func() {
 				a.closeServicePopover()
 				a.servicePopover.popoverClicked = true
@@ -222,7 +204,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 				a.navigate("设置", 0)
 			})
 			a.syncServicePopoverHover(btnHovered, a.servicePopover.popoverPanelHover, btnFocused)
-			a.sidebarServicePopover(c, svcBtn, status, color)
+			a.sidebarServicePopover(c, svcBtn, overallDot, overallLabel)
 			a.sidebarAppearanceButton(c)
 		})
 	})
@@ -320,10 +302,11 @@ func (a *App) syncServicePopoverHover(btnHover, panelHover, btnFocus bool) {
 	})
 }
 
-func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallStatus string, overallColor ui.Color) {
+func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallDot, overallLabel string) {
 	if !a.servicePopover.PopoverOpen {
 		return
 	}
+	a.syncSettingsTransport()
 	m := a.monitor
 	checkedLabel := "尚未检查"
 	if !m.LastCheckedAt.IsZero() {
@@ -340,74 +323,33 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 			// Header
 			ui.Row(c).FillWidth().Padding(sp3, sp3, sp2, sp3).Gap(sp2).AlignItems(ui.Center).
 				BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-				ui.Box(c).Size(6, 6).Radius(3).Background(overallColor).Shrink(0)
-				ui.Text(c, "服务 · "+overallStatus).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+				v4StatusDot(c, overallDot)
+				ui.Text(c, overallLabel).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
 				ui.Spacer(c)
-				ui.Text(c, checkedLabel).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+				ui.Text(c, checkedLabel).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			})
 
-			// Component rows
+			// Component rows (unified with Settings › Service and tray flyout)
+			components := a.settingsController.ServiceComponents()
 			ui.Column(c).FillWidth().Padding(sp1, sp3).Gap(0).Children(func() {
-				popRow := func(dotState, name, stateText, metrics string, stateColor ui.Color, last bool) {
+				for idx, comp := range components {
 					borderBottom := float32(1)
-					if last {
+					if idx == len(components)-1 {
 						borderBottom = 0
 					}
 					ui.Row(c).FillWidth().Padding(sp2, 0).Gap(sp2).AlignItems(ui.Start).
 						BorderWidth(0, 0, borderBottom, 0).BorderColor(tok.Border).Children(func() {
-						ui.Box(c).Padding(5, 0, 0, 0).Shrink(0).Children(func() { v4StatusDot(c, dotState) })
-						ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+						ui.Box(c).Padding(5, 0, 0, 0).Shrink(0).Children(func() { v4StatusDot(c, comp.DotState) })
+						ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-								ui.Text(c, name).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).Grow(1).MinWidth(0).SingleLine()
-								ui.Text(c, stateText).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(stateColor).SingleLine()
+								ui.Text(c, comp.Name).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).LineHeight(1.35).Grow(1).MinWidth(0).SingleLine()
+								ui.Text(c, comp.StatusText).Font("system-ui").FontSize(fsCaption).FontWeight(400).FontFeatures("tnum").TextColor(comp.StatusColor).Shrink(0).SingleLine()
 							})
-							if metrics != "" {
-								ui.Text(c, metrics).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).LineHeight(1.4)
+							if comp.CompactMetrics != "" {
+								ui.Text(c, comp.CompactMetrics).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).LineHeight(1.4)
 							}
 						})
 					})
-				}
-
-				cogneeDot, cogneeStatus, cogneeCol := a.serviceCogneeStatus()
-				cogneeMetrics := settings.SanitizedMonitorURL(a.Config.ServiceURL)
-				if summary := a.settingsController.ServiceSummary(); summary != "" {
-					cogneeMetrics = summary
-				}
-				hasDisk := m.Snapshot != nil && m.Snapshot.Disk != nil
-				completionURL := a.monitor.EffectiveCompletionURL(a.Config.CompletionURL)
-				hasChannel := completionURL != ""
-				popRow(cogneeDot, "记忆引擎（Cognee）", cogneeStatus, cogneeMetrics, cogneeCol, !m.ControlChecked && !hasChannel && !hasDisk)
-
-				if m.ControlChecked {
-					ctrlDot, ctrlText, ctrlCol := "ok", "已连接", tok.Text2
-					if !m.ControlReachable {
-						ctrlDot, ctrlText, ctrlCol = "fail", "异常", tok.Danger
-					}
-					ctrlMetrics := ""
-					if m.Snapshot != nil && m.Snapshot.Summary != nil {
-						ctrlMetrics = fmt.Sprintf("项目 %d 个", m.Snapshot.Summary.ProjectsCount)
-						if m.Snapshot.Summary.HookErrorsCount > 0 {
-							ctrlMetrics += fmt.Sprintf(" · Hook 未记录 %d", m.Snapshot.Summary.HookErrorsCount)
-						}
-					}
-					popRow(ctrlDot, "接入网关", ctrlText, ctrlMetrics, ctrlCol, !hasChannel && !hasDisk)
-				}
-
-				if hasChannel {
-					chDot, chText, chCol := a.trayChannelStatus()
-					popRow(chDot, "Agent 模型代理", chText, settings.SanitizedMonitorURL(completionURL), chCol, !hasDisk)
-				}
-
-				if hasDisk {
-					diskDot, diskCol := "ok", tok.Text2
-					diskText := settings.FormatBytesGiB(m.Snapshot.Disk.FreeBytes)
-					threshold := formatDiskThreshold(m.Snapshot.Disk.StopFreeBytes)
-					diskMetrics := fmt.Sprintf("可用空间正常（预警线 %s）", threshold)
-					if m.Snapshot.Disk.Low {
-						diskDot, diskCol = "fail", tok.Danger
-						diskMetrics = fmt.Sprintf("低于 %s 预警线", threshold)
-					}
-					popRow(diskDot, "磁盘空间", diskText, diskMetrics, diskCol, true)
 				}
 			})
 
@@ -431,17 +373,6 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallSta
 		})
 	})
 	a.syncServicePopoverHover(a.servicePopover.popoverBtnHover, panelHovered, false)
-}
-
-func formatDiskThreshold(stopFreeBytes int64) string {
-	const gib = 1024 * 1024 * 1024
-	if stopFreeBytes <= 0 {
-		return "55 GiB"
-	}
-	if stopFreeBytes%gib == 0 {
-		return fmt.Sprintf("%d GiB", stopFreeBytes/gib)
-	}
-	return settings.FormatBytesCompact(stopFreeBytes)
 }
 
 func (a *App) serviceConnectionTip() string {

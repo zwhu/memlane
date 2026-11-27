@@ -1075,8 +1075,8 @@ func TestGatewayWireParityCompletionHealthMonitorAndUI(t *testing.T) {
 	}
 	a.servicePopover.PopoverOpen = true
 	ttPop := ui.NewTester(a.View, 1200, 820)
-	if !ttPop.HasText(gatewayURL) || ttPop.HasText("18173") {
-		t.Fatalf("service popover should show %s instead of :18173: %v", gatewayURL, ttPop.Texts())
+	if !ttPop.HasText("Agent 模型代理") || !ttPop.HasText("Codex") || ttPop.HasText("18173") || ttPop.HasText(gatewayURL) {
+		t.Fatalf("service popover should show unified Agent proxy metrics without raw URLs: %v", ttPop.Texts())
 	}
 	a.servicePopover.PopoverOpen = false
 

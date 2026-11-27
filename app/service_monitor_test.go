@@ -116,8 +116,11 @@ func TestServiceMonitorPollAndSettingsCardMetrics(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		ui.Column(c).FillWidth().Padding(24).Children(func() { a.settingsController.ViewServiceOverview(c) })
 	}, 1000, 700)
-	if !tt.HasText("记忆引擎（Cognee）") || !tt.HasText("接入网关：已连接") || !tt.HasText("复制诊断") {
+	if !tt.HasText("记忆引擎（Cognee）") || !tt.HasText("接入网关") || !tt.HasText("已连接") || !tt.HasText("复制诊断") {
 		t.Fatal("expected expanded service monitor details in settings card")
+	}
+	if tt.HasText("接入网关：已连接") || tt.HasText("接入网关：异常") {
+		t.Fatalf("gateway status value must not repeat component name prefix: %v", tt.Texts())
 	}
 	if tt.HasText("最近请求") {
 		t.Fatalf("gateway row must not display misleading 最近请求 label: %v", tt.Texts())
@@ -434,12 +437,18 @@ func TestServiceConnectionCardsAttributeGenerationLatencyLightAndDark(t *testing
 			// Generation duration belongs to Agent 模型代理 row, not 记忆引擎 or 接入网关 rows when channel row exists.
 			cogBox, ok := tt.Find("记忆引擎（Cognee）")
 			ctrlDescBox, cok := tt.Find("延迟 18 ms · 内存 70 MB · 项目 9 个 · 配置回执一致")
-			genDescBox, gok := tt.Find("http://127.0.0.1:18173 · 延迟 3 ms · 内存 214 MB · 最近模型生成 41.5 s")
+			genDescBox, gok := tt.Find("延迟 3 ms · 内存 214 MB · 最近模型生成 41.5 s · http://127.0.0.1:18173")
 			if !ok || !cok || !gok {
 				t.Fatalf("missing expected service rows: cogOK=%v ctrlOK=%v genOK=%v texts=%v", ok, cok, gok, texts)
 			}
 			if !(cogBox.Y < ctrlDescBox.Y && ctrlDescBox.Y < genDescBox.Y) {
 				t.Fatalf("unexpected row vertical order: cog=%+v ctrlDesc=%+v genDesc=%+v", cogBox, ctrlDescBox, genDescBox)
+			}
+			// Unified V4 status color rule: healthy status text uses neutral Text2 (never ok green).
+			for _, comp := range a.settingsController.ServiceComponents() {
+				if comp.DotState == "ok" && comp.StatusColor != tok.Text2 {
+					t.Fatalf("healthy component %q status color = %v, want neutral tok.Text2 (%v) not ok green (%v)", comp.ID, comp.StatusColor, tok.Text2, tok.OK)
+				}
 			}
 		})
 	}
@@ -450,28 +459,46 @@ func TestSidebarServicePopoverUsesMonitorDiskAndChannelStatus(t *testing.T) {
 	a := settingsFixture()
 	a.Config.CompletionURL = "http://127.0.0.1:61256"
 	a.servicePopover.PopoverOpen = true
-	a.monitor.Snapshot = &ServiceMonitorSnapshot{Disk: &DiskMonitorState{FreeBytes: 4 * gib}}
+	a.monitor.EngineStatus = "已连接"
+	a.monitor.State = "ready"
+	a.monitor.HasLatency = true
+	a.monitor.LastLatencyMs = 10
+	a.monitor.ControlChecked = true
+	a.monitor.ControlReachable = true
+	a.monitor.HasControlLatency = true
+	a.monitor.ControlLatencyMs = 4
+	a.monitor.Snapshot = &ServiceMonitorSnapshot{
+		Disk:    &DiskMonitorState{FreeBytes: 4 * gib},
+		Summary: &MonitorBusinessSummary{ProjectsCount: 5},
+	}
 	a.monitor.HasCompletionLatency = true
 	a.monitor.CompletionLatencyMs = 27
+	a.monitor.CompletionProvider = "codex"
+	a.monitor.CompletionAgentDefault = true
 	for _, tc := range []struct {
-		stop                                   int64
-		low                                    bool
-		completion, diskText, channelText, dot string
+		stop                                                      int64
+		low                                                       bool
+		completion, diskText, popStatus, popMetrics, trayText, dot string
 	}{
-		{5 * gib, false, "端点已连接（自定义状态）", "可用空间正常（预警线 5 GiB）", "已连接 · 27 ms", "ok"},
-		{5 * gib, true, "请求超时", "低于 5 GiB 预警线", "待检查", "warn"},
-		{0, false, "请求超时", "可用空间正常（预警线 55 GiB）", "待检查", "warn"},
-		{0, true, "请求超时", "低于 55 GiB 预警线", "待检查", "warn"},
-		{gib + gib/2, true, "请求超时", "低于 1.5 GiB 预警线", "待检查", "warn"},
+		{5 * gib, false, "端点已连接（自定义状态）", "可用空间正常 · 预警线 5 GiB", "已连接", "延迟 27 ms · Codex 默认", "已连接 · 27 ms", "ok"},
+		{5 * gib, true, "请求超时", "低于 5 GiB 预警线", "待检查", "连接状态待核对", "待检查", "warn"},
+		{0, false, "请求超时", "可用空间正常 · 预警线 55 GiB", "待检查", "连接状态待核对", "待检查", "warn"},
+		{0, true, "请求超时", "低于 55 GiB 预警线", "待检查", "连接状态待核对", "待检查", "warn"},
+		{gib + gib/2, true, "请求超时", "低于 1.5 GiB 预警线", "待检查", "连接状态待核对", "待检查", "warn"},
 	} {
 		a.monitor.Snapshot.Disk.StopFreeBytes, a.monitor.Snapshot.Disk.Low = tc.stop, tc.low
 		a.monitor.CompletionStatus = tc.completion
 		tt := ui.NewTester(a.View, 1200, 820)
-		if !tt.HasText(tc.diskText) || !tt.HasText(tc.channelText) {
-			t.Fatalf("missing %q or %q in %v", tc.diskText, tc.channelText, tt.Texts())
+		for _, want := range []string{tc.diskText, tc.popStatus, tc.popMetrics, "延迟 10 ms", "延迟 4 ms · 项目 5 个"} {
+			if !tt.HasText(want) {
+				t.Fatalf("missing %q in %v", want, tt.Texts())
+			}
 		}
-		if dot, _, color := a.trayChannelStatus(); dot != tc.dot || (dot == "warn" && color != tok.Warning) {
-			t.Fatalf("unexpected shared channel status: %s %v", dot, color)
+		if tt.HasText("http://127.0.0.1:61256") || tt.HasText("已连接 · 27 ms") {
+			t.Fatalf("sidebar popover must not display raw URL or mix latency into status column: %v", tt.Texts())
+		}
+		if dot, metric, color := a.trayChannelStatus(); dot != tc.dot || metric != tc.trayText || (dot == "warn" && color != tok.Warning) || (dot == "ok" && color != tok.Text2) {
+			t.Fatalf("unexpected shared channel status: dot=%s metric=%q color=%v", dot, metric, color)
 		}
 	}
 }

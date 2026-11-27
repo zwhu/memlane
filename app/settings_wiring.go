@@ -4,7 +4,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/egoist/mygo/ui"
 	"github.com/zwhu/memlane"
 	"github.com/zwhu/memlane/app/reading"
 	"github.com/zwhu/memlane/app/settings"
@@ -165,10 +164,6 @@ func (a *App) existingProjectQueueState(p AccessProject) *ProjectQueueState {
 func (a *App) isSetupOnlyRuntime() bool {
 	a.syncSettingsTransport()
 	return a.settingsController.SetupOnlyRuntime()
-}
-
-func (a *App) serviceCogneeStatus() (string, string, ui.Color) {
-	return a.settingsController.ServiceCogneeStatus()
 }
 
 type ProjectQueueState = settings.ProjectQueueState

@@ -87,6 +87,9 @@ type ServiceMonitorSnapshot struct {
 type ServiceMonitorState struct {
 	EngineStatus, CompletionStatus string
 	CompletionEndpoint             string
+	CompletionProvider             string
+	CompletionModel                string
+	CompletionAgentDefault         bool
 	State                          string
 	ConsecutiveFailures            int
 	LastLatencyMs                  float64
@@ -154,6 +157,11 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 
 		completion := "未配置"
 		completionEndpoint := ""
+		var completionPayload struct {
+			Provider     string          `json:"provider"`
+			Model        string          `json:"model"`
+			AgentDefault json.RawMessage `json:"agent_default"`
+		}
 		var completionLatencyMs float64
 		var hasCompletionLatency bool
 		probeStandaloneCompletion := func() {
@@ -162,11 +170,12 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			}
 			cc := Client{Config: Config{ServiceURL: completionURL}, HTTP: client.HTTP}
 			compStarted := time.Now()
-			_, e := cc.request(ctx, "GET", "/health", nil)
+			body, e := cc.request(ctx, "GET", "/health", nil)
 			if e == nil {
 				completionLatencyMs = float64(time.Since(compStarted).Microseconds()) / 1000.0
 				hasCompletionLatency = true
 				completion = "端点已连接（登录状态以实际请求为准）"
+				_ = json.Unmarshal(body, &completionPayload)
 			} else {
 				completion = e.Error()
 			}
@@ -176,7 +185,7 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 			completion = SetupOnlyCompletion
 		} else if hasControl {
 			compStarted := time.Now()
-			err := controlClient.request(ctx, "GET", "/v1/completion/health", nil, nil)
+			err := controlClient.request(ctx, "GET", "/v1/completion/health", nil, &completionPayload)
 			switch {
 			case err == nil:
 				completionLatencyMs = float64(time.Since(compStarted).Microseconds()) / 1000.0
@@ -230,6 +239,16 @@ func (a *Controller) PollServiceMonitor(allowLogs bool) {
 				return
 			}
 			a.monitor.CompletionEndpoint = completionEndpoint
+			if strings.HasPrefix(completion, "端点已连接") {
+				a.monitor.CompletionProvider = strings.TrimSpace(completionPayload.Provider)
+				a.monitor.CompletionModel = strings.TrimSpace(completionPayload.Model)
+				rawDefault := strings.TrimSpace(string(completionPayload.AgentDefault))
+				a.monitor.CompletionAgentDefault = rawDefault != "" && rawDefault != "null" && rawDefault != "false" && rawDefault != "{}"
+			} else {
+				a.monitor.CompletionProvider = ""
+				a.monitor.CompletionModel = ""
+				a.monitor.CompletionAgentDefault = false
+			}
 			a.ApplyServiceMonitorResult(time.Now(), healthErr, latencyMs, completion, completionLatencyMs, hasCompletionLatency, hasControl, snap, controlErr, controlLatencyMs, hasControlLatency)
 		})
 	}()

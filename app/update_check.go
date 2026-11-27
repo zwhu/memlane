@@ -322,7 +322,6 @@ func (a *App) versionUpdateSettings(c *ui.Context) {
 			valCol = tok.Accent
 		} else if u.Checked && u.Error == "" {
 			desc = "当前已是最新版本（" + u.CheckedAt.Format("15:04:05") + " 已检查）"
-			valCol = tok.OK
 		}
 		v4Row(c, v4RowOptions{
 			Key:        "settings-version-current",

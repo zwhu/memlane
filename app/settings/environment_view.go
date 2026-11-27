@@ -52,7 +52,7 @@ func (a *Controller) environmentSetup(c *ui.Context, initial bool) {
 				dailyUpdate := isDailyPluginUpdateAvailable(a, row, status)
 				dotState := environmentDotState(status)
 				valueLabel := environmentLabel(status)
-				valueColor := environmentStatusColor(tok, status)
+				valueColor := serviceStatusColor(tok, dotState)
 				var extraHint string
 				var extraColor ui.Color
 				var detailReason string

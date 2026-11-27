@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/zwhu/memlane/app/settings"
 )
 
 var v4IconWindow = v4IconSVG(`<rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14"/>`)
@@ -97,42 +96,15 @@ func (a *App) trayLowDisk() bool {
 }
 
 func (a *App) trayControlStatus() (dotState, metric string, col ui.Color) {
-	m := a.monitor
-	if a.Config.ProjectControl == nil && !m.ControlChecked && m.Snapshot == nil {
-		return "neutral", "未配置", tok.Text3
-	}
-	if m.ControlChecked && !m.ControlReachable {
-		return "fail", "异常", tok.Danger
-	}
-	if m.ControlReachable || m.Snapshot != nil {
-		if m.HasControlLatency {
-			return "ok", "已连接 · " + settings.FormatDurationCompact(m.ControlLatencyMs), tok.Text2
-		}
-		return "ok", "已连接", tok.Text2
-	}
-	return "neutral", "待检查", tok.Text3
+	a.syncSettingsTransport()
+	comp := a.settingsController.ServiceControlComponent()
+	return comp.DotState, comp.CompactStatus, comp.StatusColor
 }
 
 func (a *App) trayChannelStatus() (dotState, metric string, col ui.Color) {
-	if a.isSetupOnlyRuntime() || a.monitor.CompletionStatus == settings.SetupOnlyCompletion {
-		return "neutral", "待配置提炼", tok.Text3
-	}
-	if a.monitor.CompletionStatus == settings.CompletionInactiveStatus {
-		return "neutral", "未启用", tok.Text3
-	}
-	if a.monitor.CompletionStatus == "未配置" || (a.monitor.EffectiveCompletionURL(a.Config.CompletionURL) == "" && a.monitor.CompletionStatus == "") {
-		return "neutral", "未配置", tok.Text3
-	}
-	if strings.HasPrefix(a.monitor.CompletionStatus, "端点已连接") {
-		if a.monitor.HasCompletionLatency {
-			return "ok", "已连接 · " + settings.FormatDurationCompact(a.monitor.CompletionLatencyMs), tok.Text2
-		}
-		return "ok", "已连接", tok.Text2
-	}
-	if a.monitor.CompletionStatus == "" || a.monitor.CompletionStatus == "尚未检查" {
-		return "neutral", "待检查", tok.Text3
-	}
-	return "warn", "待检查", tok.Warning
+	a.syncSettingsTransport()
+	comp := a.settingsController.ServiceChannelComponent()
+	return comp.DotState, comp.CompactStatus, comp.StatusColor
 }
 
 func (a *App) openSettingsFromTray(section string) {
@@ -251,23 +223,17 @@ func trayIconButton(c *ui.Context, key, label string, icon *ui.SVG, fn func()) u
 }
 
 func (a *App) trayFlyoutComponentsSection(c *ui.Context) {
-	cogDot, cogStatus, cogCol := a.serviceCogneeStatus()
-	cogMetric := cogStatus
-	if a.monitor.HasLatency && cogDot == "ok" {
-		cogMetric = fmt.Sprintf("%s · %s", cogStatus, settings.FormatDurationCompact(a.monitor.LastLatencyMs))
-	}
-	if cogDot == "ok" {
-		cogCol = tok.Text2
-	}
-	ctrlDot, ctrlMetric, ctrlCol := a.trayControlStatus()
-	chanDot, chanMetric, chanCol := a.trayChannelStatus()
+	a.syncSettingsTransport()
+	cog := a.settingsController.ServiceCogneeComponent()
+	ctrl := a.settingsController.ServiceControlComponent()
+	ch := a.settingsController.ServiceChannelComponent()
 	todayCount := a.trayTodayMemoryCount(time.Now())
 
 	ui.Column(c.Key("tray-components")).FillWidth().Padding(sp2, sp3).Gap(5).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-		trayCompRow(c, "记忆引擎（Cognee）", cogDot, cogMetric, cogCol)
-		trayCompRow(c, "接入网关", ctrlDot, ctrlMetric, ctrlCol)
-		trayCompRow(c, "Agent 模型代理", chanDot, chanMetric, chanCol)
+		trayCompRow(c, cog.Name, cog.DotState, cog.CompactStatus, cog.StatusColor)
+		trayCompRow(c, ctrl.Name, ctrl.DotState, ctrl.CompactStatus, ctrl.StatusColor)
+		trayCompRow(c, ch.Name, ch.DotState, ch.CompactStatus, ch.StatusColor)
 		ui.Row(c).FillWidth().Padding(4, 0, 0, 0).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 			ui.Text(c, "今日新增记忆").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 			ui.Spacer(c)
