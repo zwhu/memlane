@@ -17,6 +17,8 @@ type authorizedScope struct {
 }
 
 func (s *Server) scopes(ctx context.Context, agent domain.Agent, selected projectSelector, kind string, health bool) ([]authorizedScope, error) {
+	unlock := s.lockRegistry()
+	defer unlock()
 	var projects []domain.Project
 	var err error
 	if selected.empty() {

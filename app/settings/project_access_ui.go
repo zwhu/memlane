@@ -30,6 +30,16 @@ type ProjectAccessState struct {
 	Queues                       map[string]*ProjectQueueState
 	CheckboxPending              map[string]*ProjectCheckboxPending
 	SidebarQueueIndex            int
+	RemoveTarget         *AccessProject
+	RemoveOpen           bool
+	RemoveBusy           bool
+	RemoveError          string
+	RemoveSummaryLoading bool
+	RemoveSummaryLoaded  bool
+	RemoveSummaryError   string
+	RemoveSummaryRequest uint64
+	RemovePending        int
+	RemoveProcessing     int
 }
 
 func (a *Controller) accessClient() (ProjectControlClient, bool) {
@@ -88,6 +98,11 @@ func (a *Controller) ApplyAccessDirectory(directory AccessDirectory) {
 	a.access.Directory = directory
 	a.access.Signature = signature
 	a.access.Loaded = true
+	if a.access.RemoveTarget != nil && !a.access.RemoveBusy {
+		if !directoryHasExactProject(directory.Projects, a.access.RemoveTarget.ID, a.access.RemoveTarget.Dataset) {
+			a.clearProjectRemoveDialog()
+		}
+	}
 	if !a.access.DefaultsDirty {
 		a.access.Defaults = directory.Defaults
 		a.access.DefaultsRevision = directory.Revision

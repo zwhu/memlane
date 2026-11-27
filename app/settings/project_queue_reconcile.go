@@ -97,8 +97,9 @@ func reconcileProjectQueueState(p AccessProject, snap projectQueueSnapshot) proj
 }
 
 func (q *ProjectQueueState) clearInboxStatus() {
-	q.InboxPending, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, "", ""
+	q.InboxPending, q.InboxProcessing, q.InboxFailed, q.LastError, q.InboxRetryError = 0, 0, 0, "", ""
 	q.LastErrorAt, q.RecentFailures = "", nil
+	q.CatalogPublishPending, q.CatalogPublishFailed, q.CatalogPublishError, q.CatalogPublishErrorAt = 0, 0, "", ""
 	q.FilteredCount, q.RecentFiltered, q.inboxLoaded = 0, nil, false
 	q.ShowFailureTech, q.ShowFilteredDetails = false, false
 }
@@ -131,8 +132,15 @@ func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProje
 			snap.inbox.AutoCaptureActor, snap.inbox.AutoCaptureReason)
 	}
 	if snap.inbox != nil && meta.inboxRevision == q.inboxRevision {
-		q.InboxPending, q.InboxFailed, q.LastError = snap.inbox.InboxPending, snap.inbox.InboxFailed, snap.inbox.LastError
+		q.InboxPending = snap.inbox.InboxPending
+		q.InboxProcessing = max(snap.inbox.InboxProcessing, snap.inbox.Inbox.Processing)
+		q.InboxFailed = snap.inbox.InboxFailed
+		q.LastError = snap.inbox.LastError
 		q.LastErrorAt, q.RecentFailures = snap.inbox.LastErrorAt, snap.inbox.Inbox.RecentFailures
+		q.CatalogPublishPending = snap.inbox.Inbox.CatalogPublishPending
+		q.CatalogPublishFailed = snap.inbox.Inbox.CatalogPublishFailed
+		q.CatalogPublishError = snap.inbox.Inbox.CatalogPublishError
+		q.CatalogPublishErrorAt = snap.inbox.Inbox.CatalogPublishErrorAt
 		q.FilteredCount, q.RecentFiltered, q.inboxLoaded = snap.inbox.FilteredCount, snap.inbox.RecentFiltered, true
 		if len(q.RecentFiltered) == 0 {
 			q.RecentFiltered = snap.inbox.Inbox.RecentFiltered
@@ -141,7 +149,7 @@ func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProje
 		if len(q.RecentFiltered) <= 1 {
 			q.ShowFilteredDetails = false
 		}
-		if q.InboxFailed == 0 && q.LastError == "" {
+		if q.InboxFailed == 0 && q.LastError == "" && q.CatalogPublishFailed == 0 {
 			q.InboxRetryError = ""
 			q.ShowFailureTech = false
 		}
@@ -195,7 +203,7 @@ func (a *Controller) applyProjectQueueResult(q *ProjectQueueState, p AccessProje
 
 		}
 	}
-	if q.InboxPending > 0 || q.Backlog.active() {
+	if q.InboxPending > 0 || q.InboxProcessing > 0 || q.CatalogPublishPending > 0 || q.Backlog.active() {
 		activeNext := time.Now().Add(projectQueueActiveInterval)
 		if q.Next.IsZero() || q.Next.After(activeNext) {
 			q.Next = activeNext

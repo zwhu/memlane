@@ -107,19 +107,22 @@ func TestCapturePauseAndIdempotency(t *testing.T) {
 
 func TestIngestRejectsProtectedProjects(t *testing.T) {
 	s, store, _ := testServer(t, nil)
-	for _, body := range []string{
-		`{"id":"protected","name":"ml-user-profiles","dataset_name":"Profiles","dataset_id":"profiles"}`,
-		`{"id":"protected","name":"Profiles","dataset_name":"ml-user-profiles","dataset_id":"profiles"}`,
+	for _, tc := range []struct {
+		id   string
+		body string
+	}{
+		{"protected-by-name", `{"id":"protected-by-name","name":"ml-user-profiles","dataset_name":"Profiles","dataset_id":"profiles-1"}`},
+		{"protected-by-dataset", `{"id":"protected-by-dataset","name":"Profiles","dataset_name":"ml-user-profiles","dataset_id":"profiles-2"}`},
 	} {
-		manage(t, s, "POST", "/api/projects", body, 201)
-		manage(t, s, "PUT", "/api/projects/protected/acl/agent", `{"access":"maintain","capture":true}`, 200)
+		manage(t, s, "POST", "/api/projects", tc.body, 201)
+		manage(t, s, "PUT", "/api/projects/"+tc.id+"/acl/agent", `{"access":"maintain","capture":true}`, 200)
 		for _, mode := range []string{"automatic", "manual"} {
-			body := fmt.Sprintf(`{"project_id":"protected","mode":%q,"content":"profile"}`, mode)
+			body := fmt.Sprintf(`{"project_id":%q,"mode":%q,"content":"profile"}`, tc.id, mode)
 			if got := agentRequest(t, s, "/ingest", body, 403); got["error"] != "project_protected" {
 				t.Fatal(got)
 			}
 		}
-		manage(t, s, "DELETE", "/api/projects/protected", "", 204)
+		manage(t, s, "DELETE", "/api/projects/"+tc.id, "", 403)
 	}
 	if countRows(t, store, "capture_inbox") != 0 || countRows(t, store, "capture_receipts") != 0 {
 		t.Fatal("protected ingest persisted capture data")

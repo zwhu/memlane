@@ -376,7 +376,10 @@ func (a *Controller) ViewFirstGeneration(c *ui.Context) { a.generationSetupPage(
 func (a *Controller) OnboardingShortcuts(c *ui.Context) {
 	a.onboardingShortcuts(c)
 }
-func (a *Controller) ViewDialogs(c *ui.Context) { a.toolGraphDialog(c) }
+func (a *Controller) ViewDialogs(c *ui.Context) {
+	a.toolGraphDialog(c)
+	a.projectRemoveModal(c)
+}
 
 // RefreshServiceMonitor reads the current model, control plane and service statuses.
 func (a *Controller) RefreshServiceMonitor() { a.refreshServiceMonitor() }

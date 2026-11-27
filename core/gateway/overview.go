@@ -126,17 +126,27 @@ func (out *overviewSnapshot) loadProjects(ctx context.Context, tx *sql.Tx, refs 
 	var err error
 	out.Projects, err = readRows(ctx, tx, `SELECT p.id,p.name,p.dataset_id,p.dataset_name,p.auto_capture,p.auto_capture_version,
 		p.auto_capture_updated_at,p.auto_capture_reason,p.auto_capture_actor,
-		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='pending'),
-		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed'),
-		COALESCE((SELECT i.last_error FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed'
-		 ORDER BY i.updated_at DESC,i.id LIMIT 1),''),
-		COALESCE((SELECT i.last_error_at FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed'
-		 ORDER BY i.updated_at DESC,i.id LIMIT 1),''),
+		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='pending') +
+		(SELECT count(*) FROM session_flush_jobs f WHERE f.project_id=p.id AND f.status='pending'),
+		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='processing') +
+		(SELECT count(*) FROM session_flush_jobs f WHERE f.project_id=p.id AND f.status='processing'),
+		(SELECT count(*) FROM capture_inbox i WHERE i.project_id=p.id AND i.status='failed') +
+		(SELECT count(*) FROM session_flush_jobs f WHERE f.project_id=p.id AND f.status='failed'),
+		COALESCE((SELECT last_error FROM (
+			SELECT last_error,updated_at,id FROM capture_inbox WHERE project_id=p.id AND status='failed'
+			UNION ALL
+			SELECT last_error,updated_at,id FROM session_flush_jobs WHERE project_id=p.id AND status='failed'
+		) ORDER BY updated_at DESC,id LIMIT 1),''),
+		COALESCE((SELECT last_error_at FROM (
+			SELECT last_error_at,updated_at,id FROM capture_inbox WHERE project_id=p.id AND status='failed'
+			UNION ALL
+			SELECT last_error_at,updated_at,id FROM session_flush_jobs WHERE project_id=p.id AND status='failed'
+		) ORDER BY updated_at DESC,id LIMIT 1),''),
 		(SELECT count(*) FROM capture_filter_events f WHERE f.project_id=p.id) FROM projects p ORDER BY p.name,p.id`, nil, func(row rowScanner) (projectSummary, error) {
 		var p projectSummary
 		var datasetName string
 		err := row.Scan(&p.ProjectID, &p.Name, &p.DatasetID, &datasetName, &p.AutoCapture, &p.AutoCaptureVersion,
-			&p.AutoCaptureUpdatedAt, &p.AutoCaptureReason, &p.AutoCaptureActor, &p.InboxPending, &p.InboxFailed, &p.LastError, &p.LastErrorAt, &p.FilteredCount)
+			&p.AutoCaptureUpdatedAt, &p.AutoCaptureReason, &p.AutoCaptureActor, &p.InboxPending, &p.InboxProcessing, &p.InboxFailed, &p.LastError, &p.LastErrorAt, &p.FilteredCount)
 		p.Protected = domain.IsProtectedProject(p.Name, datasetName) || domain.IsProtectedProject(p.ProjectID, p.DatasetID)
 		if p.LastError != "" {
 			p.LastError = sanitizeError(errors.New(p.LastError))

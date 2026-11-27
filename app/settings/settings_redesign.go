@@ -269,6 +269,11 @@ func (a *Controller) projectSettingsPage(c *ui.Context) {
 
 			// 4. 工具记录关系图谱
 			a.projectToolGraphSettings(c, p)
+
+			// 5. 危险操作（移除项目，仅非受保护项目）
+			if !p.IsProtected() {
+				a.projectRemoveSection(c, p)
+			}
 		})
 	})
 }

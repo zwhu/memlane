@@ -143,6 +143,7 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 		return nil, errors.Join(err, profileService.Close(context.Background()))
 	}
 	mcpServer.SetRememberService(server.MCPRememberService())
+	mcpServer.SetRegistryLocker(server.RegistryLocker())
 	return &GatewayStack{Gateway: server, Profiles: profileService}, nil
 }
 

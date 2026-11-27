@@ -1712,3 +1712,91 @@ func TestGatewayWireParityMissingSessionHistoryDegradation(t *testing.T) {
 	}
 	_ = control
 }
+
+func TestGatewayWireParityInboxProcessingAndProjectRemoval(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const token = "wire-parity-wave3b-management-token"
+	tokenFile := filepath.Join(dir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(token), 0o600))
+
+	check(store.UpsertProject(ctx, domain.Project{ID: "p-live", Name: "Live", DatasetID: "ds-live"}))
+	check(store.UpsertProject(ctx, domain.Project{ID: "ml-user-profiles", Name: "ml-user-profiles", DatasetID: "ds-prof", DatasetName: "ml-user-profiles"}))
+	check(store.UpsertAgent(ctx, domain.Agent{ID: "agent", Kind: "codex", Name: "Codex"}))
+
+	for _, id := range []string{"in-1", "in-2"} {
+		_, err := store.ReserveAndEnqueueCapture(ctx, domain.EnqueueCaptureInput{
+			Receipt: domain.CaptureReceipt{CaptureKey: "ck-" + id, UserID: "agent", DatasetID: "ds-live", SessionID: "s-" + id, MessageID: id, PayloadSHA256: "sha-" + id, EntryType: "capture_qa"},
+			Inbox:   domain.CaptureInboxItem{ID: id, ProjectID: "p-live", DatasetID: "ds-live", AgentID: "agent", SessionID: "s-" + id, MessageID: id, CaptureKey: "ck-" + id, Kind: "capture_qa", PayloadJSON: `{}`},
+		})
+		check(err)
+	}
+	claimedInbox, err := store.ClaimNextInboxItem(ctx) // processing
+	check(err)
+	_, _, err = store.EnqueueSessionFlushJob(ctx, "p-live", "ds-live", "sf-1")
+	check(err)
+	_, err = store.ClaimNextSessionFlushInDatasets(ctx, []string{"ds-live"}) // processing
+	check(err)
+
+	server, err := gateway.NewServer(gateway.Config{Store: store, Engine: wireEngine{}, ManagementToken: token})
+	check(err)
+	const gatewayURL = "http://127.0.0.1:61262"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	apiClient, err := api.NewClient(api.Config{BaseURL: gatewayURL, ManagementToken: token, HTTPClient: httpClient})
+	check(err)
+
+	gotProj, err := apiClient.GetProject(ctx, "p-live")
+	check(err)
+	if gotProj.InboxPending != 1 || gotProj.InboxProcessing != 2 || gotProj.Inbox.Processing != 2 {
+		t.Fatalf("GetProject inbox_processing parity mismatch: %+v", gotProj)
+	}
+	gotOverview, err := apiClient.OverviewBootstrap(ctx, api.OverviewOptions{})
+	check(err)
+	var liveSummary *api.ProjectSummary
+	for i := range gotOverview.Projects {
+		if gotOverview.Projects[i].ProjectID == "p-live" {
+			liveSummary = &gotOverview.Projects[i]
+			break
+		}
+	}
+	if liveSummary == nil || liveSummary.InboxPending != 1 || liveSummary.InboxProcessing != 2 {
+		t.Fatalf("OverviewBootstrap inbox_processing parity mismatch: %+v", gotOverview.Projects)
+	}
+
+	// Protected project deletion must be rejected with HTTP 403.
+	err = apiClient.DeleteProject(ctx, "ml-user-profiles")
+	var apiErr *api.APIError
+	if !errors.As(err, &apiErr) || !apiErr.IsForbidden() || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("expected HTTP 403 deleting protected project ml-user-profiles, got %v", err)
+	}
+
+	// Normal project deletion succeeds (204), cancels pending inbox, keeps processing inbox intact.
+	check(apiClient.DeleteProject(ctx, "p-live"))
+	listAfter, err := apiClient.ListProjects(ctx)
+	check(err)
+	for _, p := range listAfter.Projects {
+		if p.ID == "p-live" {
+			t.Fatalf("p-live still present after DELETE: %+v", p)
+		}
+	}
+	procItem, err := store.GetInboxItem(ctx, claimedInbox.ID)
+	check(err)
+	if procItem.Status != "processing" {
+		t.Fatalf("in-flight processing inbox item changed status to %q", procItem.Status)
+	}
+	cancelledItems, err := store.ListInboxItems(ctx, "p-live", "cancelled_project_removed", 10)
+	check(err)
+	if len(cancelledItems) != 1 {
+		t.Fatalf("expected 1 cancelled_project_removed inbox item, got %d", len(cancelledItems))
+	}
+}

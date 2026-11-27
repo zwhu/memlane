@@ -12,7 +12,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 const utcNSLayout = "2006-01-02T15:04:05.000000000Z"
 
 var (
@@ -267,6 +267,11 @@ CREATE TABLE IF NOT EXISTS session_bindings (
  session_key TEXT PRIMARY KEY, project_id TEXT NOT NULL, updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_session_bindings_project ON session_bindings(project_id);
+CREATE TABLE IF NOT EXISTS removed_session_owners (
+ dataset_id TEXT NOT NULL, session_id TEXT NOT NULL, removed_at TEXT NOT NULL,
+ PRIMARY KEY(dataset_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_removed_session_owners_session ON removed_session_owners(session_id);
 CREATE TABLE IF NOT EXISTS registry_connection_operations (
  operation_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_at REAL NOT NULL
 );

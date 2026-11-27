@@ -8,12 +8,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/zwhu/memlane/core/domain"
 )
+
+func (s *Server) RegistryLocker() sync.Locker { return &s.registryMu }
 
 type projectSummary struct {
 	ProjectID          string `json:"project_id"`
@@ -29,6 +34,7 @@ type projectSummary struct {
 	UnreadStateRev     int64  `json:"unread_state_rev"`
 	CatalogVersion     string `json:"catalog_version"`
 	InboxPending       int    `json:"inbox_pending"`
+	InboxProcessing    int    `json:"inbox_processing"`
 	InboxFailed        int    `json:"inbox_failed"`
 	LastError          string `json:"last_error"`
 
@@ -121,7 +127,7 @@ func (s *Server) projectView(ctx context.Context, p domain.Project) (projectView
 	if err != nil {
 		return view, err
 	}
-	view.InboxPending, view.InboxFailed = view.Inbox.Pending, view.Inbox.Failed
+	view.InboxPending, view.InboxProcessing, view.InboxFailed = view.Inbox.Pending, view.Inbox.Processing, view.Inbox.Failed
 	view.FilteredCount, view.RecentFiltered = view.Inbox.FilteredCount, view.Inbox.RecentFiltered
 	if len(view.Inbox.RecentFailures) > 0 {
 		view.LastError = view.Inbox.RecentFailures[0].LastError
@@ -278,7 +284,7 @@ func (in projectInput) apply(p *domain.Project) {
 		p.CodeEnabled = *in.CodeEnabled
 	}
 	if in.CodeDatasetID != nil {
-		p.CodeDatasetID = strings.TrimSpace(*in.CodeDatasetID)
+		p.CodeDatasetID = domain.CanonicalUUID(*in.CodeDatasetID)
 	}
 }
 
@@ -291,21 +297,31 @@ func (s *Server) validProject(ctx context.Context, p domain.Project) error {
 			return domain.ErrInvalidArgument
 		}
 	}
-	if p.DatasetID != "" && p.DatasetID == p.CodeDatasetID {
+	canonDS := domain.CanonicalUUID(p.DatasetID)
+	canonCodeDS := domain.CanonicalUUID(p.CodeDatasetID)
+	if canonDS != "" && canonDS == canonCodeDS {
 		return domain.ErrConflict
 	}
-	for _, ds := range []string{p.DatasetID, p.CodeDatasetID} {
-		if ds == "" {
+	if canonDS == "" && canonCodeDS == "" {
+		return nil
+	}
+	existingRows, err := readRows(ctx, s.cfg.Store.DB(), `SELECT dataset_id FROM projects WHERE id<>? AND dataset_id<>''
+		UNION ALL SELECT code_dataset_id FROM projects WHERE id<>? AND code_dataset_id<>''
+		UNION ALL SELECT dataset_id FROM common_config WHERE dataset_id<>''`,
+		[]any{p.ID, p.ID}, func(row rowScanner) (string, error) {
+			var ds string
+			err := row.Scan(&ds)
+			return ds, err
+		})
+	if err != nil {
+		return err
+	}
+	for _, rawExisting := range existingRows {
+		existingCanon := domain.CanonicalUUID(rawExisting)
+		if existingCanon == "" {
 			continue
 		}
-		var existing int
-		err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM projects
-			WHERE id<>? AND (dataset_id=? OR code_dataset_id=?) UNION ALL
-			SELECT 1 FROM common_config WHERE dataset_id=?)`, p.ID, ds, ds, ds).Scan(&existing)
-		if err != nil {
-			return err
-		}
-		if existing != 0 {
+		if (canonDS != "" && existingCanon == canonDS) || (canonCodeDS != "" && existingCanon == canonCodeDS) {
 			return domain.ErrConflict
 		}
 	}
@@ -324,7 +340,8 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = rand.Text()
 	}
-	p := domain.Project{ID: id, DatasetID: strings.TrimSpace(in.DatasetID), DatasetName: in.DatasetName, AutoCapture: true}
+	reconnected := strings.TrimSpace(in.DatasetID) != ""
+	p := domain.Project{ID: id, DatasetID: domain.CanonicalUUID(in.DatasetID), DatasetName: in.DatasetName, AutoCapture: true}
 	if p.DatasetID == "" {
 		var id [16]byte
 		if _, err := rand.Read(id[:]); err != nil {
@@ -344,8 +361,8 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	p.AutoCaptureVersion = 1
 	ctx := r.Context()
 	s.registryMu.Lock()
-	defer s.registryMu.Unlock()
 	if _, err := s.cfg.Store.GetProject(ctx, id); !errors.Is(err, domain.ErrNotFound) {
+		s.registryMu.Unlock()
 		if err == nil {
 			err = domain.ErrConflict
 		}
@@ -353,12 +370,25 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.validProject(ctx, p); err != nil {
+		s.registryMu.Unlock()
 		writeDomainError(w, err)
 		return
 	}
 	if err := s.cfg.Store.UpsertProject(ctx, p); err != nil {
+		s.registryMu.Unlock()
 		writeDomainError(w, err)
 		return
+	}
+	if reconnected && p.DatasetID != "" {
+		if err := s.cfg.Store.ClearRemovedSessionOwners(ctx, p.DatasetID); err != nil {
+			log.Printf("gateway project reconnect clear removed session owners: %s", sanitizeError(err))
+		}
+	}
+	s.registryMu.Unlock()
+	if reconnected && s.cfg.Projector != nil {
+		if _, err := s.SyncDatasetCatalog(ctx, p.DatasetID); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("gateway project reconnect catalog sync: %s", sanitizeError(err))
+		}
 	}
 	s.getCreatedProject(w, r, id)
 }
@@ -449,9 +479,22 @@ func (s *Server) addAlias(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	expectedDS := strings.TrimSpace(r.URL.Query().Get("dataset_id"))
 	s.registryMu.Lock()
 	defer s.registryMu.Unlock()
-	if err := s.cfg.Store.DeleteProject(r.Context(), r.PathValue("id")); err != nil {
+	if expectedDS != "" {
+		p, err := s.cfg.Store.GetProject(r.Context(), id)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if domain.CanonicalUUID(p.DatasetID) != domain.CanonicalUUID(expectedDS) {
+			writeDomainError(w, domain.ErrConflict)
+			return
+		}
+	}
+	if err := s.cfg.Store.DeleteProject(r.Context(), id); err != nil {
 		writeDomainError(w, err)
 		return
 	}

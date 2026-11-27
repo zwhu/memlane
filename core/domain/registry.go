@@ -7,7 +7,23 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/uuid"
 )
+
+// CanonicalUUID normalizes valid UUID strings (including compact, uppercase,
+// brace-wrapped, and urn:uuid: forms) to standard lowercase hyphenated UUIDs.
+// Non-UUID dataset identifiers are returned trimmed unchanged.
+func CanonicalUUID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if parsed, err := uuid.Parse(trimmed); err == nil {
+		return parsed.String()
+	}
+	return trimmed
+}
 
 type AccessLevel string
 
@@ -189,11 +205,18 @@ func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 
 func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		var datasetID string
-		if err := tx.QueryRowContext(ctx, `SELECT dataset_id FROM projects WHERE id=?`, id).Scan(&datasetID); err != nil {
+		var name, datasetID, datasetName, codeDatasetID string
+		if err := tx.QueryRowContext(ctx, `SELECT name,dataset_id,dataset_name,code_dataset_id FROM projects WHERE id=?`, id).
+			Scan(&name, &datasetID, &datasetName, &codeDatasetID); err != nil {
 			return rowError(err)
 		}
+		if IsProtectedProject(name, datasetName) || IsProtectedProject(id, datasetID) {
+			return fmt.Errorf("cannot delete protected project %s: %w", id, ErrForbidden)
+		}
 		if err := requireAffected(tx.ExecContext(ctx, `DELETE FROM projects WHERE id=?`, id)); err != nil {
+			return err
+		}
+		if err := execSQL(ctx, tx, `DELETE FROM project_aliases WHERE project_id=?`, id); err != nil {
 			return err
 		}
 		if err := execSQL(ctx, tx, `DELETE FROM project_acl_overrides WHERE target_kind='project' AND target_id=?`, id); err != nil {
@@ -202,12 +225,80 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 		if err := execSQL(ctx, tx, `DELETE FROM session_bindings WHERE project_id=?`, id); err != nil {
 			return err
 		}
-		if strings.TrimSpace(datasetID) != "" {
-			if err := execSQL(ctx, tx, `DELETE FROM session_relations WHERE dataset_id=? AND NOT EXISTS(SELECT 1 FROM projects WHERE dataset_id=?)`, datasetID, datasetID); err != nil {
+		referenced := make(map[string]bool)
+		refRows, err := queryList(ctx, tx, func(row scanner) (string, error) {
+			var ds string
+			err := row.Scan(&ds)
+			return ds, err
+		}, `SELECT dataset_id FROM projects WHERE dataset_id<>''
+			UNION ALL SELECT code_dataset_id FROM projects WHERE code_dataset_id<>''
+			UNION ALL SELECT dataset_id FROM common_config WHERE dataset_id<>''`)
+		if err != nil {
+			return err
+		}
+		for _, rawRef := range refRows {
+			if canon := CanonicalUUID(rawRef); canon != "" {
+				referenced[canon] = true
+			}
+		}
+
+		now := NowUTCMicro()
+		seenDatasets := make(map[string]bool, 2)
+		for _, rawDS := range []string{datasetID, codeDatasetID} {
+			trimmed := strings.TrimSpace(rawDS)
+			canon := CanonicalUUID(trimmed)
+			if canon == "" || seenDatasets[canon] {
+				continue
+			}
+			seenDatasets[canon] = true
+			if referenced[canon] {
+				continue
+			}
+			norm := strings.ToLower(strings.ReplaceAll(canon, "-", ""))
+			if err := execSQL(ctx, tx, `INSERT OR IGNORE INTO removed_session_owners(dataset_id,session_id,removed_at)
+				SELECT ?,session_id,? FROM catalog_sessions
+				WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`,
+				canon, now, trimmed, canon, norm); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM catalog_docs WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM catalog_sessions WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM catalog_sync_state WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM session_relations WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm); err != nil {
+				return err
+			}
+			if err := execSQL(ctx, tx, `DELETE FROM catalog_publish_state WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm); err != nil {
 				return err
 			}
 		}
+		if err := execSQL(ctx, tx, `UPDATE capture_inbox SET status='cancelled_project_removed',updated_at=? WHERE project_id=? AND status IN ('pending','failed')`, now, id); err != nil {
+			return err
+		}
+		if err := execSQL(ctx, tx, `UPDATE session_flush_jobs SET rerun_requested=0,updated_at=? WHERE project_id=? AND rerun_requested<>0`, now, id); err != nil {
+			return err
+		}
+		if err := execSQL(ctx, tx, `UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,updated_at=? WHERE project_id=? AND status IN ('pending','failed')`, now, id); err != nil {
+			return err
+		}
 		return nil
+	})
+}
+
+func (s *Store) ClearRemovedSessionOwners(ctx context.Context, datasetID string) error {
+	trimmed := strings.TrimSpace(datasetID)
+	canon := CanonicalUUID(trimmed)
+	if canon == "" {
+		return nil
+	}
+	norm := strings.ToLower(strings.ReplaceAll(canon, "-", ""))
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		return execSQL(ctx, tx, `DELETE FROM removed_session_owners WHERE dataset_id=? OR dataset_id=? OR LOWER(REPLACE(dataset_id,'-',''))=?`, trimmed, canon, norm)
 	})
 }
 

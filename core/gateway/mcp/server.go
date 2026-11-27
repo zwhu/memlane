@@ -69,16 +69,18 @@ type Config struct {
 	Store           *domain.Store
 	Engine          engine.MemoryEngine
 	RememberService RememberService
+	RegistryLocker  sync.Locker
 	SearchTimeout   time.Duration
 	SecretReader    func(path string) ([]byte, error)
 	OnRecall        func(RecallObservation)
 }
 
 type Server struct {
-	cfg         Config
-	tools       []tool
-	rememberMu  sync.RWMutex
-	rememberSvc RememberService
+	cfg            Config
+	tools          []tool
+	rememberMu     sync.RWMutex
+	rememberSvc    RememberService
+	registryLocker sync.Locker
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -91,7 +93,7 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.SecretReader == nil {
 		cfg.SecretReader = readSecret
 	}
-	s := &Server{cfg: cfg, rememberSvc: cfg.RememberService}
+	s := &Server{cfg: cfg, rememberSvc: cfg.RememberService, registryLocker: cfg.RegistryLocker}
 	s.tools = s.memoryTools()
 	return s, nil
 }
@@ -100,6 +102,23 @@ func (s *Server) SetRememberService(svc RememberService) {
 	s.rememberMu.Lock()
 	s.rememberSvc = svc
 	s.rememberMu.Unlock()
+}
+
+func (s *Server) SetRegistryLocker(locker sync.Locker) {
+	s.rememberMu.Lock()
+	s.registryLocker = locker
+	s.rememberMu.Unlock()
+}
+
+func (s *Server) lockRegistry() func() {
+	s.rememberMu.RLock()
+	locker := s.registryLocker
+	s.rememberMu.RUnlock()
+	if locker == nil {
+		return func() {}
+	}
+	locker.Lock()
+	return locker.Unlock
 }
 
 func (s *Server) rememberService() RememberService {

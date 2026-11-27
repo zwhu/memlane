@@ -38,3 +38,11 @@ func (c ProjectControlClient) reconcile(ctx context.Context, revision int64, pro
 	err := c.request(ctx, "POST", "/v1/projects/"+url.PathEscape(project)+"/reconcile", map[string]any{"expected_revision": revision}, &result)
 	return result, err
 }
+
+func (c ProjectControlClient) deleteProject(ctx context.Context, projectID, datasetID string) error {
+	path := "/v1/projects/" + url.PathEscape(projectID)
+	if ds := url.QueryEscape(datasetID); ds != "" {
+		path += "?dataset_id=" + ds
+	}
+	return c.request(ctx, "DELETE", path, nil, nil)
+}

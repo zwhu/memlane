@@ -18,7 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_capture_inbox_dataset_session_status ON capture_i
 const sessionFlushDDL = `
 CREATE TABLE IF NOT EXISTS session_flush_jobs (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, dataset_id TEXT NOT NULL, session_id TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed')),
+ status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed','cancelled_project_removed')),
  last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
  attempts INTEGER NOT NULL DEFAULT 0, rerun_requested INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_capture_receipts_status_updated ON capture_receip
 CREATE TABLE IF NOT EXISTS capture_inbox (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, dataset_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT NOT NULL,
  message_id TEXT NOT NULL, capture_key TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, payload_json TEXT NOT NULL,
- status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed')), last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed','cancelled_project_removed')), last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
  attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_capture_inbox_status_updated ON capture_inbox(status,updated_at);
@@ -160,6 +160,14 @@ func checkInboxCapacityTx(ctx context.Context, tx *sql.Tx, limits CaptureLimits,
 	return nil
 }
 
+const projectDatasetMatchSQL = `EXISTS(SELECT 1 FROM projects p WHERE p.id=? AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(?,'-','')))`
+
+func projectMatchesDatasetTx(ctx context.Context, tx *sql.Tx, projectID, datasetID string) (bool, error) {
+	var exists bool
+	err := tx.QueryRowContext(ctx, `SELECT `+projectDatasetMatchSQL, projectID, datasetID).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) ReserveAndEnqueueCapture(ctx context.Context, in EnqueueCaptureInput) (EnqueueCaptureResult, error) {
 	r := in.Receipt
 	item := in.Inbox
@@ -182,6 +190,13 @@ func (s *Store) ReserveAndEnqueueCapture(ctx context.Context, in EnqueueCaptureI
 	}
 	var out EnqueueCaptureResult
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		projectExists, err := projectMatchesDatasetTx(ctx, tx, item.ProjectID, item.DatasetID)
+		if err != nil {
+			return err
+		}
+		if !projectExists {
+			return fmt.Errorf("project %s removed or dataset mismatched: %w", item.ProjectID, ErrNotFound)
+		}
 		existing, err := getCaptureReceipt(ctx, tx, r.CaptureKey)
 		if err == nil {
 			if !receiptScopeMatches(existing, r) {
@@ -385,7 +400,15 @@ func (s *Store) ClaimNextInboxItemExcludingDatasets(ctx context.Context, exclude
 		}
 		var err error
 		item, err = scanInboxItem(tx.QueryRowContext(ctx, `UPDATE capture_inbox SET status='processing',attempts=attempts+1,updated_at=?
-			WHERE id=(SELECT id FROM capture_inbox WHERE status='pending'`+excludeClause+` ORDER BY created_at,rowid LIMIT 1)
+			WHERE id=(
+				SELECT ci.id FROM capture_inbox ci
+				WHERE ci.status='pending'`+excludeClause+`
+				  AND EXISTS (
+				      SELECT 1 FROM projects p
+				      WHERE p.id=ci.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(ci.dataset_id,'-',''))
+				  )
+				ORDER BY ci.created_at,ci.rowid LIMIT 1
+			)
 			RETURNING `+inboxColumns, args...))
 		return err
 	})
@@ -427,15 +450,48 @@ func (s *Store) MarkInboxSucceeded(ctx context.Context, id string) error {
 }
 
 func (s *Store) MarkInboxFailed(ctx context.Context, id, lastError string) error {
-	_, err := s.transitionInboxItem(ctx, id, "processing", "failed", lastError)
-	return err
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		existing, err := getInboxItem(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if existing.Status != "processing" {
+			return fmt.Errorf("capture inbox item is not processing: %w", ErrConflict)
+		}
+		active, err := projectMatchesDatasetTx(ctx, tx, existing.ProjectID, existing.DatasetID)
+		if err != nil {
+			return err
+		}
+		now := NowUTCMicro()
+		nextStatus := "failed"
+		if !active {
+			nextStatus = "cancelled_project_removed"
+		}
+		return execSQL(ctx, tx, `UPDATE capture_inbox SET status=?,last_error=?,last_error_at=?,updated_at=?
+			WHERE id=? AND status='processing'`, nextStatus, lastError, now, now, id)
+	})
 }
 
 func (s *Store) RequeueInboxItem(ctx context.Context, id string) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		existing, err := getInboxItem(ctx, tx, id)
+		if errors.Is(err, ErrNotFound) || (err == nil && existing.Status != "processing") {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		active, err := projectMatchesDatasetTx(ctx, tx, existing.ProjectID, existing.DatasetID)
+		if err != nil {
+			return err
+		}
+		nextStatus := "pending"
+		if !active {
+			nextStatus = "cancelled_project_removed"
+		}
 		return execSQL(ctx, tx,
-			`UPDATE capture_inbox SET status='pending',updated_at=? WHERE id=? AND status='processing'`,
-			NowUTCMicro(), id)
+			`UPDATE capture_inbox SET status=?,updated_at=? WHERE id=? AND status='processing'`,
+			nextStatus, NowUTCMicro(), id)
 	})
 }
 
@@ -516,30 +572,52 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		if projectID == "" {
 			var resolved string
-			if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE dataset_id=? LIMIT 1`, datasetID).Scan(&resolved); err == nil {
-				projectID = resolved
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE LOWER(REPLACE(dataset_id,'-',''))=LOWER(REPLACE(?,'-','')) LIMIT 1`, datasetID).Scan(&resolved); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("project for dataset %s not found: %w", datasetID, ErrNotFound)
+				}
+				return err
+			}
+			projectID = resolved
+		} else {
+			projectExists, err := projectMatchesDatasetTx(ctx, tx, projectID, datasetID)
+			if err != nil {
+				return err
+			}
+			if !projectExists {
+				return fmt.Errorf("project %s removed or dataset mismatched: %w", projectID, ErrNotFound)
 			}
 		}
 		now := NowUTCMicro()
 		existing, err := getSessionFlushJobByKey(ctx, tx, datasetID, sessionID)
 		if err == nil {
+			effectiveProject := projectID
+			if effectiveProject == "" {
+				effectiveProject = existing.ProjectID
+			}
 			if existing.Status == "pending" {
+				if effectiveProject != existing.ProjectID {
+					out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+						`UPDATE session_flush_jobs SET project_id=?,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+						effectiveProject, now, existing.ID))
+					if err != nil {
+						return err
+					}
+					queued = false
+					return nil
+				}
 				out, queued = existing, false
 				return nil
 			}
 			if existing.Status == "processing" {
 				out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
-					`UPDATE session_flush_jobs SET rerun_requested=1,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
-					now, existing.ID))
+					`UPDATE session_flush_jobs SET project_id=?,rerun_requested=1,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+					effectiveProject, now, existing.ID))
 				if err != nil {
 					return err
 				}
 				queued = false
 				return nil
-			}
-			effectiveProject := projectID
-			if effectiveProject == "" {
-				effectiveProject = existing.ProjectID
 			}
 			out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
 				`UPDATE session_flush_jobs SET project_id=?,status='pending',rerun_requested=0,last_error='',last_error_at='',updated_at=?
@@ -581,10 +659,15 @@ func (s *Store) claimSessionFlushWhere(ctx context.Context, extraWhere string, e
 			WHERE id=(
 				SELECT sf.id FROM session_flush_jobs sf
 				WHERE sf.status='pending'`+extraWhere+`
+				  AND EXISTS (
+				      SELECT 1 FROM projects p
+				      WHERE p.id=sf.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(sf.dataset_id,'-',''))
+				  )
 				  AND NOT EXISTS (
 				      SELECT 1 FROM capture_inbox ci
 				      WHERE ci.dataset_id=sf.dataset_id AND ci.session_id=sf.session_id
 				        AND ci.status IN ('pending','processing','failed')
+				        AND EXISTS (SELECT 1 FROM projects p2 WHERE p2.id=ci.project_id)
 				  )
 				ORDER BY sf.updated_at ASC,sf.created_at ASC,sf.id ASC LIMIT 1
 			)
@@ -659,7 +742,16 @@ func (s *Store) MarkSessionFlushSucceeded(ctx context.Context, id string) (bool,
 		if existing.Status != "processing" {
 			return fmt.Errorf("session flush job is not processing: %w", ErrConflict)
 		}
+		active, err := projectMatchesDatasetTx(ctx, tx, existing.ProjectID, existing.DatasetID)
+		if err != nil {
+			return err
+		}
 		now := NowUTCMicro()
+		if !active {
+			return execSQL(ctx, tx,
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,last_error='',last_error_at='',updated_at=?
+				 WHERE id=? AND status='processing'`, now, id)
+		}
 		if existing.RerunRequested {
 			requeued = true
 			return execSQL(ctx, tx,
@@ -683,7 +775,16 @@ func (s *Store) MarkSessionFlushFailed(ctx context.Context, id, lastError string
 		if existing.Status != "processing" {
 			return fmt.Errorf("session flush job is not processing: %w", ErrConflict)
 		}
+		active, err := projectMatchesDatasetTx(ctx, tx, existing.ProjectID, existing.DatasetID)
+		if err != nil {
+			return err
+		}
 		now := NowUTCMicro()
+		if !active {
+			return execSQL(ctx, tx,
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,last_error=?,last_error_at=?,updated_at=?
+				 WHERE id=? AND status='processing'`, lastError, now, now, id)
+		}
 		if existing.RerunRequested {
 			requeued = true
 			return execSQL(ctx, tx,
@@ -699,6 +800,22 @@ func (s *Store) MarkSessionFlushFailed(ctx context.Context, id, lastError string
 
 func (s *Store) RequeueSessionFlush(ctx context.Context, id string) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		existing, err := getSessionFlushJobByID(ctx, tx, id)
+		if errors.Is(err, ErrNotFound) || (err == nil && existing.Status != "processing") {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		active, err := projectMatchesDatasetTx(ctx, tx, existing.ProjectID, existing.DatasetID)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return execSQL(ctx, tx,
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,updated_at=? WHERE id=? AND status='processing'`,
+				NowUTCMicro(), id)
+		}
 		return execSQL(ctx, tx,
 			`UPDATE session_flush_jobs SET status='pending',updated_at=? WHERE id=? AND status='processing'`,
 			NowUTCMicro(), id)
@@ -739,24 +856,35 @@ func (s *Store) RecoverStaleProcessingBefore(ctx context.Context, cutoff string)
 	var recoveredInbox, recoveredFlushes int
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		now := NowUTCMicro()
-		var resInbox, resFlush sql.Result
-		var err error
-		if cutoff == "" {
-			resInbox, err = tx.ExecContext(ctx, `UPDATE capture_inbox SET status='pending',updated_at=? WHERE status='processing'`, now)
-		} else {
-			resInbox, err = tx.ExecContext(ctx, `UPDATE capture_inbox SET status='pending',updated_at=? WHERE status='processing' AND updated_at<=?`, now, cutoff)
+		cutoffClause := ""
+		args := []any{now}
+		if cutoff != "" {
+			cutoffClause = " AND updated_at<=?"
+			args = append(args, cutoff)
 		}
+		// Cancel orphaned processing rows whose owning project was removed.
+		if err := execSQL(ctx, tx,
+			`UPDATE capture_inbox SET status='cancelled_project_removed',updated_at=?
+			 WHERE status='processing'`+cutoffClause+`
+			   AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id=capture_inbox.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(capture_inbox.dataset_id,'-','')))`,
+			args...); err != nil {
+			return err
+		}
+		if err := execSQL(ctx, tx,
+			`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,updated_at=?
+			 WHERE status='processing'`+cutoffClause+`
+			   AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id=session_flush_jobs.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(session_flush_jobs.dataset_id,'-','')))`,
+			args...); err != nil {
+			return err
+		}
+		resInbox, err := tx.ExecContext(ctx, `UPDATE capture_inbox SET status='pending',updated_at=? WHERE status='processing'`+cutoffClause, args...)
 		if err != nil {
 			return err
 		}
 		if n, err := resInbox.RowsAffected(); err == nil {
 			recoveredInbox = int(n)
 		}
-		if cutoff == "" {
-			resFlush, err = tx.ExecContext(ctx, `UPDATE session_flush_jobs SET status='pending',updated_at=? WHERE status='processing'`, now)
-		} else {
-			resFlush, err = tx.ExecContext(ctx, `UPDATE session_flush_jobs SET status='pending',updated_at=? WHERE status='processing' AND updated_at<=?`, now, cutoff)
-		}
+		resFlush, err := tx.ExecContext(ctx, `UPDATE session_flush_jobs SET status='pending',updated_at=? WHERE status='processing'`+cutoffClause, args...)
 		if err != nil {
 			return err
 		}

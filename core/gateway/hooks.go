@@ -836,6 +836,10 @@ func sessionBindingMatchesSession(sessionKey, sessionID string) bool {
 	return false
 }
 
+func normalizeDatasetIDKey(raw string) string {
+	return strings.ToLower(strings.ReplaceAll(domain.CanonicalUUID(raw), "-", ""))
+}
+
 // verifyAuthorizedSession checks whether sessionID belongs to an authorized project dataset in scopes
 // and has no conflicting ownership in an unauthorized dataset before allowing session-scoped reads.
 func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, sessionID string, scopes []engine.Scope, commonDatasetID string) (sessionOwnership, string) {
@@ -843,10 +847,12 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, se
 	if sid == "" || len(scopes) == 0 {
 		return sessionOwnershipUnknown, ""
 	}
+	commonNorm := normalizeDatasetIDKey(commonDatasetID)
 	allowed := make(map[string]bool, len(scopes))
 	for _, scope := range scopes {
-		if scope.DatasetID != "" && scope.DatasetID != commonDatasetID {
-			allowed[scope.DatasetID] = true
+		norm := normalizeDatasetIDKey(scope.DatasetID)
+		if norm != "" && norm != commonNorm {
+			allowed[norm] = true
 		}
 	}
 	if len(allowed) == 0 {
@@ -871,12 +877,32 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, se
 	catalogAuthorized := false
 	catalogUserID := ""
 	for _, owner := range owners {
-		if !allowed[owner.datasetID] {
+		if !allowed[normalizeDatasetIDKey(owner.datasetID)] {
 			return sessionOwnershipConflict, ""
 		}
 		catalogAuthorized = true
 		if catalogUserID == "" && strings.TrimSpace(owner.userID) != "" {
 			catalogUserID = strings.TrimSpace(owner.userID)
+		}
+	}
+
+	activeRows, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT dataset_id FROM projects WHERE dataset_id<>''
+		 UNION
+		 SELECT code_dataset_id FROM projects WHERE code_dataset_id<>''`,
+		nil, func(row rowScanner) (string, error) {
+			var ds string
+			err := row.Scan(&ds)
+			return ds, err
+		})
+	if err != nil {
+		log.Printf("gateway recall active project datasets lookup: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
+	}
+	activeProjectDatasets := make(map[string]bool, len(activeRows))
+	for _, ds := range activeRows {
+		if norm := normalizeDatasetIDKey(ds); norm != "" {
+			activeProjectDatasets[norm] = true
 		}
 	}
 
@@ -894,15 +920,39 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, se
 		return sessionOwnershipConflict, ""
 	}
 	captureAuthorized := false
+	hasRemovedProjectResidual := false
 	for _, rawDataset := range captureDatasets {
-		datasetID := strings.TrimSpace(rawDataset)
-		if datasetID == "" {
+		norm := normalizeDatasetIDKey(rawDataset)
+		if norm == "" {
 			continue
 		}
-		if !allowed[datasetID] {
+		if allowed[norm] {
+			captureAuthorized = true
+			continue
+		}
+		if activeProjectDatasets[norm] {
 			return sessionOwnershipConflict, ""
 		}
-		captureAuthorized = true
+		hasRemovedProjectResidual = true
+	}
+
+	removedOwnerDatasets, err := readRows(ctx, s.cfg.Store.DB(),
+		`SELECT DISTINCT dataset_id FROM removed_session_owners WHERE session_id=?`,
+		[]any{sid}, func(row rowScanner) (string, error) {
+			var datasetID string
+			err := row.Scan(&datasetID)
+			return datasetID, err
+		})
+	if err != nil {
+		log.Printf("gateway recall removed session owners lookup: %s", sanitizeError(err))
+		return sessionOwnershipConflict, ""
+	}
+	for _, rawDataset := range removedOwnerDatasets {
+		norm := normalizeDatasetIDKey(rawDataset)
+		if norm == "" || allowed[norm] {
+			continue
+		}
+		hasRemovedProjectResidual = true
 	}
 
 	encodedSession, err := json.Marshal(sid)
@@ -938,12 +988,18 @@ func (s *Server) verifyAuthorizedSession(ctx context.Context, _ domain.Agent, se
 			}
 			return sessionOwnershipConflict, ""
 		}
-		if !allowed[project.DatasetID] {
+		if !allowed[normalizeDatasetIDKey(project.DatasetID)] {
 			return sessionOwnershipConflict, ""
 		}
 		bindingAuthorized = true
 	}
 
+	if hasRemovedProjectResidual {
+		// Historical receipts/inbox rows from a removed project dataset share this session_id.
+		// Degrade to Unknown so normal recall still succeeds, while disabling session-scoped
+		// cache.db reads that could otherwise pull context from the removed dataset.
+		return sessionOwnershipUnknown, ""
+	}
 	if catalogAuthorized {
 		return sessionOwnershipAuthorized, catalogUserID
 	}
@@ -1155,29 +1211,25 @@ func (s *Server) sessionEnd(w http.ResponseWriter, r *http.Request, agent domain
 	}
 	ctx := r.Context()
 	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	project, err := s.hookProject(ctx, req.hookScope, agent.ID)
 	if errors.Is(err, domain.ErrNotFound) {
-		s.registryMu.Unlock()
 		writeError(w, 403, "project_access_denied", "managed project required")
 		return
 	}
 	if err != nil {
-		s.registryMu.Unlock()
 		writeDomainError(w, err)
 		return
 	}
 	if domain.IsProtectedProject(project.Name, project.DatasetName) {
-		s.registryMu.Unlock()
 		writeError(w, 403, "project_protected", "host capture is disabled for protected projects")
 		return
 	}
 	if project.DatasetID == "" {
-		s.registryMu.Unlock()
 		writeError(w, 403, "project_access_denied", "managed project required")
 		return
 	}
 	acl, err := s.cfg.Store.EvaluateProjectACL(ctx, project.ID, agent.ID)
-	s.registryMu.Unlock()
 	if errors.Is(err, domain.ErrForbidden) || err == nil && acl.Access != domain.AccessMaintain {
 		writeError(w, 403, "dataset_write_denied", "project maintain access required")
 		return

@@ -96,6 +96,8 @@ func (s *Server) selectedProject(ctx context.Context, sel projectSelector) (doma
 }
 
 func (s *Server) writableProject(ctx context.Context, sel projectSelector, agent domain.Agent, autoCapture bool) (domain.Project, error) {
+	unlock := s.lockRegistry()
+	defer unlock()
 	project, err := s.selectedProject(ctx, sel)
 	if err != nil {
 		return project, err
@@ -248,7 +250,13 @@ func (s *Server) rememberDirect(ctx context.Context, project domain.Project, use
 	if receipt.MessageID == "" {
 		receipt.MessageID = key
 	}
+	unlock := s.lockRegistry()
+	if _, err := s.cfg.Store.GetProject(ctx, project.ID); err != nil {
+		unlock()
+		return nil, err
+	}
 	state, prior, err := s.cfg.Store.ReserveCaptureReceipt(ctx, receipt)
+	unlock()
 	if err != nil {
 		return nil, err
 	}

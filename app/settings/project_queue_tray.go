@@ -126,6 +126,9 @@ func (a *Controller) traySummaryFingerprint() uint64 {
 			h = fnvMixBool(h, q.DocumentError != "")
 			h = fnvMixUint64(h, uint64(q.InboxFailed))
 			h = fnvMixUint64(h, uint64(q.InboxPending))
+			h = fnvMixUint64(h, uint64(q.InboxProcessing))
+			h = fnvMixUint64(h, uint64(q.CatalogPublishPending))
+			h = fnvMixUint64(h, uint64(q.CatalogPublishFailed))
 			h = fnvMixUint64(h, uint64(max(q.PendingDocumentsCount, len(q.Documents))))
 		}
 	}
@@ -154,11 +157,11 @@ func (a *Controller) TrayQueueSummary() ProjectQueueSummary {
 		q := a.ExistingProjectQueue(p)
 		errors, progress := 0, 0
 		if q != nil {
-			if q.InboxFailed > 0 || q.LastError != "" || q.DocumentError != "" {
-				errors = max(1, q.InboxFailed)
+			if q.InboxFailed > 0 || q.CatalogPublishFailed > 0 || q.LastError != "" || q.DocumentError != "" {
+				errors = max(1, q.InboxFailed+q.CatalogPublishFailed)
 			}
 			if q.Loaded && q.DocumentError == "" {
-				progress = max(0, q.InboxPending) + max(q.PendingDocumentsCount, len(q.Documents))
+				progress = max(0, q.InboxPending) + max(0, q.InboxProcessing) + max(0, q.CatalogPublishPending) + max(q.PendingDocumentsCount, len(q.Documents))
 			}
 		}
 		if !syncUnconfirmed && errors == 0 && progress == 0 {

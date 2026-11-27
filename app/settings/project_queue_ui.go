@@ -44,7 +44,10 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 		}).Disabled(q.Loading || a.access.Busy)
 	}
 	failed := q.InboxFailed > 0 || q.LastError != ""
-	healthy := !setupOnly && q.Loaded && !failed && q.InboxPending == 0 && max(q.PendingDocumentsCount, len(q.Documents)) == 0 &&
+	publishPending := q.CatalogPublishPending > 0
+	publishFailed := q.CatalogPublishFailed > 0
+	healthy := !setupOnly && q.Loaded && !failed && !publishPending && !publishFailed &&
+		q.InboxPending == 0 && q.InboxProcessing == 0 && max(q.PendingDocumentsCount, len(q.Documents)) == 0 &&
 		q.DocumentError == "" && q.AutoCaptureError == "" && !p.PolicySyncUnconfirmed()
 	filteredCount, filtered := q.FilteredCount, q.RecentFiltered
 	if !q.inboxLoaded && filteredCount == 0 && len(filtered) == 0 && q.DocumentError == "" {
@@ -127,9 +130,46 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 				}
 			})
 		}
-		if q.InboxPending > 0 {
-			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-pending-" + p.ID, Title: fmt.Sprintf("有 %d 条原始记录等待提炼", q.InboxPending),
+		if q.InboxProcessing > 0 || q.InboxPending > 0 {
+			var pendingTitle string
+			switch {
+			case q.InboxProcessing > 0 && q.InboxPending > 0:
+				pendingTitle = fmt.Sprintf("正在提炼 %d 条，另有 %d 条等待提炼", q.InboxProcessing, q.InboxPending)
+			case q.InboxProcessing > 0:
+				pendingTitle = fmt.Sprintf("有 %d 条原始记录正在提炼", q.InboxProcessing)
+			default:
+				pendingTitle = fmt.Sprintf("有 %d 条原始记录等待提炼", q.InboxPending)
+			}
+			kitui.Row(c, tok, kitui.RowOptions{Key: "proj-inbox-pending-" + p.ID, Title: pendingTitle,
 				Leading: func() { kitui.StatusDot(c, tok, "run") },
+			})
+		}
+		if publishPending {
+			kitui.Row(c, tok, kitui.RowOptions{
+				Key:     "proj-catalog-publish-pending-" + p.ID,
+				Title:   "记忆已生成，目录待更新",
+				Desc:    fmt.Sprintf("有 %d 项目录更新正在等待同步。", q.CatalogPublishPending),
+				Leading: func() { kitui.StatusDot(c, tok, "run") },
+			})
+		}
+		if publishFailed {
+			desc := "记忆已写入引擎，但本地列表索引尚未同步完成。"
+			if strings.TrimSpace(q.CatalogPublishError) != "" {
+				desc = strings.TrimSpace(q.CatalogPublishError)
+			}
+			if ts := formatEventTimeLocal(q.CatalogPublishErrorAt); ts != "" {
+				desc = desc + " · " + ts
+			}
+			kitui.Row(c, tok, kitui.RowOptions{
+				Key:     "proj-catalog-publish-failed-" + p.ID,
+				Title:   "记忆已保存，列表更新失败",
+				Desc:    desc,
+				Error:   q.InboxRetryError,
+				Leading: func() { kitui.StatusDot(c, tok, "warn") },
+				Control: func() {
+					kitui.SmallPrimaryButton(c, tok, "重试更新列表", func() { a.RetryProjectInbox(q, p) }).
+						Disabled(q.InboxRetryBusy || a.access.Busy || a.config.ProjectControl == nil || !a.canDispatch())
+				},
 			})
 		}
 		if count := max(q.PendingDocumentsCount, len(q.Documents)); q.Loaded && q.DocumentError == "" && count > 0 {
@@ -142,7 +182,7 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 				kitui.Text(c, tok, message, kitui.RoleMeta).TextColor(tok.Danger)
 			}
 		}
-		if !q.Loaded && !failed && q.InboxPending == 0 {
+		if !q.Loaded && !failed && !publishPending && !publishFailed && q.InboxPending == 0 && q.InboxProcessing == 0 {
 			kitui.SkeletonRow(c, tok, 1, false, false)
 		}
 	})

@@ -35,6 +35,11 @@ type InboxSummary struct {
 
 	FilteredCount  int                  `json:"filtered_count,omitempty"`
 	RecentFiltered []CaptureFilterEvent `json:"recent_filtered,omitempty"`
+
+	CatalogPublishPending int    `json:"catalog_publish_pending,omitempty"`
+	CatalogPublishFailed  int    `json:"catalog_publish_failed,omitempty"`
+	CatalogPublishError   string `json:"catalog_publish_error,omitempty"`
+	CatalogPublishErrorAt string `json:"catalog_publish_error_at,omitempty"`
 }
 
 type InboxFailure struct {
@@ -111,6 +116,7 @@ type ProjectSummary struct {
 	UnreadStateRev     int64  `json:"unread_state_rev"`
 	CatalogVersion     string `json:"catalog_version"`
 	InboxPending       int    `json:"inbox_pending"`
+	InboxProcessing    int    `json:"inbox_processing"`
 	InboxFailed        int    `json:"inbox_failed"`
 	LastError          string `json:"last_error"`
 

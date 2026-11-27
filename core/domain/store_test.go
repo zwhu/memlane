@@ -159,6 +159,7 @@ func TestClearCatalogProjection(t *testing.T) {
 		INSERT INTO session_flush_jobs(id,project_id,dataset_id,session_id,status,created_at,updated_at)
 			VALUES('flush:1','p','d','s','pending','','');
 		INSERT INTO session_project_hits(bound_dataset_id,session_id,target_project_id,updated_at) VALUES('d','s','p','');
+		INSERT INTO removed_session_owners(dataset_id,session_id,removed_at) VALUES('d-removed','s-removed','');
 		INSERT INTO session_drift_seen VALUES('d','s','m','');
 		INSERT INTO session_drift_disposition VALUES('d','s','dismissed','p','');
 		INSERT INTO generation_profiles(profile_id,revision,digest,mode,model,created_at) VALUES('gp',1,'digest','provider','model','');

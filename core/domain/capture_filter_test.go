@@ -49,7 +49,7 @@ func TestCaptureFilterSchemaV2Migration(t *testing.T) {
 
 func TestCaptureEventTimestampsAndRetention(t *testing.T) {
 	s, ctx := newTestStore(t), context.Background()
-	must(t, s.UpsertProject(ctx, Project{ID: "p", Name: "Project", AutoCapture: true}))
+	must(t, s.UpsertProject(ctx, Project{ID: "p", Name: "Project", DatasetID: "ds", AutoCapture: true}))
 	must(t, s.UpsertProject(ctx, Project{ID: "other", Name: "Other"}))
 	p, err := s.SetProjectAutoCaptureWithMeta(ctx, "p", false, "system", "maintenance")
 	must(t, err)

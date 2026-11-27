@@ -47,6 +47,7 @@ func TestCaptureInboxFailureAndRetry(t *testing.T) {
 	ctx := context.Background()
 	receipt := CaptureReceipt{CaptureKey: "receipt", UserID: "u", DatasetID: "dataset", SessionID: "session",
 		MessageID: "message", PayloadSHA256: "digest", EntryType: "qa"}
+	must(t, s.UpsertProject(ctx, Project{ID: "project", Name: "Project", DatasetID: "dataset"}))
 	_, _, err := s.ReserveCaptureReceipt(ctx, receipt)
 	must(t, err)
 	input := CaptureInboxItem{ID: "inbox", ProjectID: "project", DatasetID: "dataset", AgentID: "agent",

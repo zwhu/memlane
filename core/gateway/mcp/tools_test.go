@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -596,5 +598,66 @@ func TestRememberR1SingleSidedSessionAndCanonicalJSON(t *testing.T) {
 	bad := rpc(t, h, `{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{"name":"remember","arguments":{"project_id":"write","content":"bad","idempotency_key":"engine-invalid"}}}`)
 	if bad.Error == nil || bad.Error.Code != -32602 {
 		t.Fatalf("engine.ErrInvalidArgument should map to -32602, got %+v", bad)
+	}
+}
+
+type trackingLocker struct {
+	mu     sync.Mutex
+	held   atomic.Bool
+	locks  atomic.Int32
+	unlock atomic.Int32
+}
+
+func (l *trackingLocker) Lock() {
+	l.mu.Lock()
+	l.held.Store(true)
+	l.locks.Add(1)
+}
+
+func (l *trackingLocker) Unlock() {
+	l.held.Store(false)
+	l.unlock.Add(1)
+	l.mu.Unlock()
+}
+
+type lockCheckRememberService struct {
+	locker *trackingLocker
+	t      *testing.T
+}
+
+func (s *lockCheckRememberService) Remember(_ context.Context, req RememberRequest) (RememberResult, error) {
+	if s.locker.held.Load() {
+		s.t.Error("RegistryLocker must be released before calling RememberService.Remember")
+	}
+	return RememberResult{OK: true, Status: "saved", Saved: true, IdempotencyKey: req.IdempotencyKey, DatasetID: req.Project.DatasetID}, nil
+}
+
+func (s *lockCheckRememberService) LookupTask(_ context.Context, _ domain.Agent, taskID string) (TaskStatusResult, error) {
+	return TaskStatusResult{OK: true, TaskID: taskID, Status: "succeeded", Saved: true}, nil
+}
+
+func TestMCPServerRegistryLockerUsedWithoutDeadlock(t *testing.T) {
+	store, eng := fixture(t)
+	configureScopes(t, store)
+	locker := &trackingLocker{}
+	eng.search = func(_ context.Context, _ engine.SearchRequest) (engine.SearchResult, error) {
+		if locker.held.Load() {
+			t.Error("RegistryLocker must be released before Engine.Search")
+		}
+		return engine.SearchResult{OK: true}, nil
+	}
+	srv, err := NewServer(Config{Store: store, Engine: eng, RegistryLocker: locker})
+	requireOK(t, err)
+	srv.SetRememberService(&lockCheckRememberService{locker: locker, t: t})
+	h := srv.Handler()
+
+	if _, msg := callTool(t, h, "remember", `{"project_id":"write","content":"locked check"}`); msg != "" {
+		t.Fatalf("remember failed: %s", msg)
+	}
+	if _, msg := callTool(t, h, "recall", `{"project_id":"write","query":"locked"}`); msg != "" {
+		t.Fatalf("recall failed: %s", msg)
+	}
+	if locker.locks.Load() < 2 || locker.locks.Load() != locker.unlock.Load() || locker.held.Load() {
+		t.Fatalf("unbalanced registry lock usage: locks=%d unlocks=%d held=%v", locker.locks.Load(), locker.unlock.Load(), locker.held.Load())
 	}
 }

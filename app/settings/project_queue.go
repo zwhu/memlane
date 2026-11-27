@@ -12,12 +12,17 @@ type UnreadState = api.UnreadScopeStateOf[Item]
 
 type ProjectQueueState struct {
 	UnreadState
-	InboxPending        int
-	InboxFailed         int
-	LastError           string
-	LastErrorAt         string
-	RecentFailures      []api.InboxFailure
-	FilteredCount       int
+	InboxPending          int
+	InboxProcessing       int
+	InboxFailed           int
+	LastError             string
+	LastErrorAt           string
+	RecentFailures        []api.InboxFailure
+	CatalogPublishPending int
+	CatalogPublishFailed  int
+	CatalogPublishError   string
+	CatalogPublishErrorAt string
+	FilteredCount         int
 	RecentFiltered      []api.CaptureFilterEvent
 	ShowFailureTech     bool
 	ShowFilteredDetails bool
@@ -167,7 +172,7 @@ func (a *Controller) LoadProjectQueue(q *ProjectQueueState, p AccessProject) {
 	q.Request++
 	request, authEpoch := q.Request, a.authEpoch()
 	q.Next = time.Now().Add(projectQueueIdleInterval)
-	if q.InboxPending > 0 || q.Backlog.active() {
+	if q.InboxPending > 0 || q.InboxProcessing > 0 || q.CatalogPublishPending > 0 || q.Backlog.active() {
 		q.Next = time.Now().Add(projectQueueActiveInterval)
 	}
 	baseIdentity := a.cachedBaseReadingIdentity()
