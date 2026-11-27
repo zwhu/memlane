@@ -45,8 +45,8 @@ func TestRegistryAgentGrantsAndCaptureScope(t *testing.T) {
 	}{
 		{AccessNone, nil, "default", false, []string{}},
 		{AccessRead, &trueValue, "ok", false, []string{"read"}},
-		{AccessMaintain, &falseValue, "agent", false, []string{"delete", "read", "write"}},
-		{AccessMaintain, &trueValue, "ok", true, []string{"delete", "read", "write"}},
+		{AccessMaintain, &falseValue, "agent", false, []string{"read", "write"}},
+		{AccessMaintain, &trueValue, "ok", true, []string{"read", "write"}},
 	} {
 		must(t, s.SetACLOverride(ctx, ACLOverride{TargetKind: "project", TargetID: "existing", AgentID: "agent", Access: &tc.access, Capture: tc.capture}))
 		acl, err := s.EvaluateProjectACL(ctx, "existing", "agent")

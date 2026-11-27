@@ -1,6 +1,7 @@
 package reading
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -158,6 +159,8 @@ type ProfilesState struct {
 	Next                                          time.Time
 	ReadAt                                        time.Time
 	ReadGeneration                                uint64
+	RefreshCancel                                 context.CancelFunc
+	ReadCancel                                    context.CancelFunc
 	Scroll                                        ui.ScrollState
 	ReaderList                                    ui.ListState
 	Markdown                                      ProfileMarkdown
@@ -196,4 +199,60 @@ func (s *ProfilesState) Select(id string) bool {
 	s.ClearBody()
 	s.Scroll, s.ReaderList = ui.ScrollState{}, ui.ListState{}
 	return true
+}
+
+func (s *ProfilesState) Invalidate(dataset string) {
+	matched := dataset == "" || strings.Contains(s.BodyKey, "/"+dataset+"/")
+	if !matched {
+		for _, p := range s.Directory.Profiles {
+			if p.Document != nil && p.Document.Dataset == dataset {
+				matched = true
+				break
+			}
+		}
+	}
+	if !matched {
+		return
+	}
+	if s.RefreshCancel != nil {
+		s.RefreshCancel()
+		s.RefreshCancel = nil
+	}
+	if s.ReadCancel != nil {
+		s.ReadCancel()
+		s.ReadCancel = nil
+	}
+	s.Loading = false
+	s.ClearBody()
+	s.DeleteOpen = false
+	s.Open = false
+	s.Draft = ""
+	s.DraftSource = ""
+	s.Drafts = nil
+	s.Message = ""
+	s.Next = time.Time{}
+	s.Loaded = false
+	if dataset == "" {
+		s.Directory = ProfileDirectory{}
+		s.Selected = ""
+		return
+	}
+	s.Directory.Prompt = ""
+	for i := range s.Directory.Profiles {
+		p := &s.Directory.Profiles[i]
+		if p.Document != nil && p.Document.Dataset == dataset {
+			if s.Selected == p.ID {
+				s.Selected = ""
+			}
+			p.Document = nil
+			p.ContentVersion = ""
+			p.Updated = 0
+			p.Status = ""
+			p.FailureReason = ""
+			p.ErrorDetail = ""
+			p.Error = ""
+			p.Operation = ""
+			p.SaveUnknown = false
+		}
+	}
 }

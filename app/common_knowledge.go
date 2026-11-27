@@ -32,14 +32,17 @@ func (c Client) commonAPI() (reading.CommonController, bool, error) {
 }
 
 type CommonWriteReceipt struct {
-	Gateway        bool   `json:"-"`
-	Status         string `json:"status"`
-	DatasetID      string `json:"dataset_id"`
-	DataID         string `json:"data_id"`
-	PipelineRunID  string `json:"pipeline_run_id"`
-	ContentHash    string `json:"content_hash"`
-	HTTPStatus     int    `json:"-"`
-	OutcomeUnknown bool   `json:"-"`
+	Gateway          bool     `json:"-"`
+	Status           string   `json:"status"`
+	DatasetID        string   `json:"dataset_id"`
+	DataID           string   `json:"data_id"`
+	PipelineRunID    string   `json:"pipeline_run_id"`
+	ContentHash      string   `json:"content_hash"`
+	HTTPStatus       int      `json:"-"`
+	OutcomeUnknown   bool     `json:"-"`
+	ExpectedSHA256   [32]byte `json:"-"`
+	HasExpectedSHA   bool     `json:"-"`
+	ExpectedCategory string   `json:"-"`
 }
 
 // The receipt preserves the original official operation even on partial failure.
@@ -154,9 +157,18 @@ func (c Client) confirmCommon(ctx context.Context, control ProjectControlClient,
 	if !hasControl {
 		return Document{}, "保存尚未核对", fmt.Errorf("控制面服务不可用，无法核对官方保存结果")
 	}
+	category := draft.Category
 	expected, err := draft.FormatDocument()
+	useHashOnly := false
 	if err != nil {
-		return Document{}, "", err
+		if receipt.HasExpectedSHA {
+			useHashOnly = true
+			if category == "" {
+				category = receipt.ExpectedCategory
+			}
+		} else {
+			return Document{}, "", err
+		}
 	}
 	notFound := fmt.Errorf("未找到与本次正文一致的官方文档；保留原操作，不重复提交")
 	var rows []Item
@@ -169,22 +181,25 @@ func (c Client) confirmCommon(ctx context.Context, control ProjectControlClient,
 			return Document{}, "保存尚未核对", lookupErr
 		}
 		d := res.Document
-		category := commonCategory(d)
+		docCategory := commonCategory(d)
 		if d.Dataset != p.Dataset || d.ID != receipt.DataID ||
-			(d.Metadata["memlane_kind"] == "common_knowledge" && category != draft.Category) ||
-			(res.CommonCategory != "" && res.CommonCategory != draft.Category) ||
-			(category == "" && res.CommonCategory == "") ||
+			(category != "" && d.Metadata["memlane_kind"] == "common_knowledge" && docCategory != category) ||
+			(category != "" && res.CommonCategory != "" && res.CommonCategory != category) ||
+			(docCategory == "" && res.CommonCategory == "") ||
 			(receipt.ContentHash != "" && d.ContentHash != receipt.ContentHash) {
 			return Document{}, "保存尚未核对", notFound
 		}
-		rows = []Item{{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Title: documentTitle(d), Date: documentDate(d), Document: &d, CommonCategory: draft.Category}}
+		if category == "" {
+			category = docCategory
+		}
+		rows = []Item{{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Title: documentTitle(d), Date: documentDate(d), Document: &d, CommonCategory: category}}
 	} else {
-		res, pageErr := control.commonKnowledgePageV2(ctx, p.Dataset, draft.Category, 30, v2KnowledgePageOpts{})
+		res, pageErr := control.commonKnowledgePageV2(ctx, p.Dataset, category, 30, v2KnowledgePageOpts{})
 		if pageErr != nil {
 			return Document{}, "保存尚未核对", pageErr
 		}
 		for _, row := range res.Items[:min(30, len(res.Items))] {
-			if row.DocID == "" || row.DatasetID != p.Dataset || row.CommonCategory != draft.Category ||
+			if row.DocID == "" || row.DatasetID != p.Dataset || (category != "" && row.CommonCategory != category) ||
 				(receipt.ContentHash != "" && row.ContentHash != "" && row.ContentHash != receipt.ContentHash) {
 				continue
 			}
@@ -202,7 +217,9 @@ func (c Client) confirmCommon(ctx context.Context, control ProjectControlClient,
 		}
 		// The official raw-text ingestion strips the final LF. Compare only
 		// that transport normalization; retain all internal whitespace/content.
-		if strings.TrimSuffix(loaded.Body, "\n") == strings.TrimSuffix(expected, "\n") {
+		normalized := strings.TrimSuffix(loaded.Body, "\n")
+		if (!useHashOnly && normalized == strings.TrimSuffix(expected, "\n")) ||
+			(useHashOnly && reading.BaselineSHA256(normalized) == receipt.ExpectedSHA256) {
 			document = *row.Document
 			break
 		}

@@ -54,7 +54,7 @@ try {
   const extension = loaded.extensions[0];
   const declaredTypes = await readFile(join(packageRoot, 'dist/core/extensions/types.d.ts'), 'utf8');
   for (const event of extension.handlers.keys()) assert.ok(declaredTypes.includes(`on(event: "${event}"`), `undeclared pi event: ${event}`);
-  assert.deepEqual([...extension.tools.keys()].sort(), ['cognee_forget', 'cognee_health', 'cognee_recall', 'cognee_remember']);
+  assert.deepEqual([...extension.tools.keys()].sort(), ['cognee_health', 'cognee_recall', 'cognee_remember']);
   const ctx = { cwd: root, sessionManager: { getSessionId: () => 'synthetic-session' } };
   const emit = async (name, value = {}) => {
     let result;
@@ -92,7 +92,7 @@ try {
   assert.equal(recall.length, 2);
   assert.equal(recall[0].query, 'synthetic question');
   assert.ok(calls.every(c => c.session_id === 'synthetic-session' && c.workspace === root));
-  for (const [name, args] of Object.entries({ health: {}, remember: { data: 'note' }, recall: { query: 'note' }, forget: { data_id: 'item' } })) {
+  for (const [name, args] of Object.entries({ health: {}, remember: { data: 'note' }, recall: { query: 'note' } })) {
     const entry = extension.tools.get('cognee_' + name);
     const result = await (entry.definition ?? entry).execute('call', args, undefined, undefined, ctx);
     assert.equal(result.details.structuredContent.ok, true);
@@ -100,7 +100,6 @@ try {
     assert.equal(calls.at(-1).method, 'tools/call');
     assert.equal(calls.at(-1).params.name, name);
     assert.equal(calls.at(-1).params.arguments.project_path, root);
-    if (name === 'forget') assert.equal(calls.at(-1).params.arguments.item_id, 'item');
   }
   assert.ok(calls.every(c => c.token === 'synthetic-key'));
   const requests = calls.length;
@@ -109,7 +108,7 @@ try {
   assert.deepEqual((await emit('context', { messages: [stale] })).messages, []);
   await emit('tool_execution_end', { toolCallId: 'internal', toolName: 'bash' });
   assert.equal(calls.length, requests);
-  console.log(JSON.stringify({ status: 'passed', boundary: 'real_pi_loader_loopback_gateway', tools: 4, trace: 1, qa: 1 }));
+  console.log(JSON.stringify({ status: 'passed', boundary: 'real_pi_loader_loopback_gateway', tools: 3, trace: 1, qa: 1 }));
 } finally {
   await new Promise(resolve => server.close(resolve));
   await rm(root, { recursive: true, force: true });

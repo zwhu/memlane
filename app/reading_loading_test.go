@@ -870,7 +870,7 @@ func TestInvalidateReadingUnifiedHooks(t *testing.T) {
 	if v.SnapshotVersion != 1 || v.Generation != 1 || v.ActivityGeneration != 1 || v.DayRequest != 1 ||
 		v.BootstrapCancel != nil || v.ActivityCancel != nil || v.DayCancel != nil || v.RecallCancel != nil ||
 		v.Loading || v.ActivityLoading || v.DayLoading || v.GroupedEvents != nil ||
-		len(v.DayItems) != 1 || v.DayItems[0].ID != second.ID || v.DayNextCursor != "" || v.DayHasMore || v.DayTotal != 2 ||
+		len(v.DayItems) != 1 || v.DayItems[0].ID != second.ID || v.DayNextCursor != "" || v.DayHasMore || v.DayTotal != 1 ||
 		v.ExpandedEvent != "" || v.ExpandedReport != "" || v.ExpandedDetail != nil ||
 		len(v.Events) != 2 || v.Events[0].Key != mixed.Key || len(v.Events[0].Failures) != 1 ||
 		v.Events[0].Failures[0].Dataset != second.Dataset || len(v.Events[0].Recall.Hits) != 1 ||

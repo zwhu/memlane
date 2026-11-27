@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -8,7 +9,20 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/zwhu/memlane/app/reading"
+	"github.com/zwhu/memlane/app/settings"
 )
+
+func projectDeleteTitle(i Item) string {
+	title := strings.TrimSpace(projectDisplayTitle(i))
+	if title == "" {
+		return "这条记忆"
+	}
+	runes := []rune(title)
+	if len(runes) > 28 {
+		return string(runes[:28]) + "…"
+	}
+	return title
+}
 
 func projectDisplayTitle(i Item) string {
 	if i.Session != nil {
@@ -34,12 +48,16 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 			case !s.Loaded && s.Loading && s.Error == "":
 				ui.Column(c).Grow(1).MinHeight(0).FillWidth()
 			case a.kind != "知识":
-				v4EmptyState(c, "reader-empty", "选择一条原始记录", "")
+				v4EmptyState(c, "reader-empty", "选择一条原始记录", s.Error)
 			default:
-				v4EmptyState(c, "reader-empty", "选择一条记忆", "")
+				v4EmptyState(c, "reader-empty", "选择一条记忆", s.Error)
 			}
 			appFooter(c, "项目阅读栏").Padding(0, sp6).Children(func() {
-				homeText(c, "Cognee 提供 · 只读", homeMeta)
+				if a.kind == "知识" {
+					homeText(c, "Cognee 提供", homeMeta)
+				} else {
+					homeText(c, "Cognee 提供 · 只读", homeMeta)
+				}
 			})
 			return
 		}
@@ -123,7 +141,11 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 
 		_, canCopy := reading.CopyBody(i.Body, i.BodyLoaded || i.Detail != nil || (i.Document == nil && i.Preview != ""), i.ReadingState == "unavailable")
 		appFooter(c, "项目阅读栏").Padding(0, sp6).Gap(sp2).Children(func() {
-			homeText(c, "Cognee 提供 · 只读", homeMeta)
+			if i.Kind == "知识" {
+				homeText(c, "Cognee 提供", homeMeta)
+			} else {
+				homeText(c, "Cognee 提供 · 只读", homeMeta)
+			}
 			ui.Spacer(c)
 			if time.Now().Before(a.projectUI.CopyUntil) {
 				homeText(c, a.projectUI.Copied+"已复制", homeMeta)
@@ -136,7 +158,105 @@ func (a *App) projectDetail(c *ui.Context, s *pane) {
 				a.copyFeedback("正文")
 			}).Disabled(!canCopy)
 		})
+		a.projectDeleteDialog(c, s, *i)
 	})
+}
+
+func (a *App) projectDeleteDialog(c *ui.Context, s *pane, i Item) {
+	if a.projectUI.DeleteTarget == nil || a.projectUI.DeleteTarget.Key() != i.Key() {
+		return
+	}
+	open := true
+	target := *a.projectUI.DeleteTarget
+	v4Dialog(c, &open, v4DialogOptions{
+		Key:             "project-memory-delete-" + target.Key(),
+		Title:           fmt.Sprintf("删除『%s』？", projectDeleteTitle(target)),
+		Width:           v4DialogSmall,
+		Danger:          true,
+		CancelText:      "保留记忆",
+		CancelDisabled:  a.projectUI.DeleteBusy,
+		ConfirmText:     "确认删除",
+		ConfirmLabel:    "确认删除记忆",
+		ConfirmDisabled: a.projectUI.DeleteBusy,
+		OnCancel: func() {
+			if !a.projectUI.DeleteBusy {
+				a.projectUI.DeleteTarget = nil
+				a.projectUI.DeleteError = ""
+			}
+		},
+		OnConfirm: func() {
+			a.deleteProjectKnowledge(s, target)
+		},
+		Body: func() {
+			ui.Text(c, "产生这条记忆的原始对话会保留。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
+			if a.projectUI.DeleteError != "" {
+				ui.Text(c, a.projectUI.DeleteError).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).LineHeight(1.5)
+			}
+		},
+	})
+	if !open && !a.projectUI.DeleteBusy {
+		a.projectUI.DeleteTarget = nil
+		a.projectUI.DeleteError = ""
+	}
+}
+
+func (a *App) deleteProjectKnowledge(s *pane, target Item) {
+	if a.projectUI.DeleteBusy || target.Document == nil || target.Dataset == "" || target.ID == "" {
+		return
+	}
+	control, ok := a.accessClient()
+	if !ok {
+		a.projectUI.DeleteError = "控制面服务不可用，无法删除记忆"
+		return
+	}
+	if !a.syncReadingIdentity() || a.projectUI.DeleteTarget == nil || a.projectUI.DeleteTarget.Key() != target.Key() {
+		return
+	}
+	a.projectUI.DeleteBusy = true
+	a.projectUI.DeleteError = ""
+	a.projectUI.DeleteGeneration++
+	gen := a.projectUI.DeleteGeneration
+	authEpoch := a.authEpoch
+	identity := a.cachedBaseReadingIdentity()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		client, err := newAppAPIClient(control, identity)
+		if err == nil {
+			err = client.DeleteKnowledgeDocument(ctx, target.Dataset, target.ID)
+		}
+		a.Update(func() {
+			if gen != a.projectUI.DeleteGeneration {
+				return
+			}
+			a.projectUI.DeleteBusy = false
+			if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+				return
+			}
+			if err != nil {
+				msg := settings.ControlUserError(err)
+				if msg == "" {
+					msg = err.Error()
+				}
+				if readingUnavailable(err) {
+					a.InvalidateReading(target.Dataset)
+					if s != nil {
+						s.Error = "删除失败：" + msg
+					}
+				}
+				a.projectUI.DeleteError = msg
+				return
+			}
+			a.projectUI.DeleteTarget = nil
+			a.projectUI.DeleteError = ""
+			a.applyKnowledgeDocumentDeleted(target, true)
+			if s != nil && a.page == "知识" && a.kind == "知识" {
+				if cur, ok := a.current(); ok && cur.Dataset == target.Dataset {
+					a.load(s)
+				}
+			}
+		})
+	}()
 }
 
 func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
@@ -170,6 +290,14 @@ func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
 			a.projectUI.InfoOpen = false
 		}
 		a.contentInformation(c, anchor, *i)
+		if i.Kind == "知识" && i.Document != nil && a.Config.ProjectControl != nil && i.ReadingState != "unavailable" {
+			v4DangerOutlineButton(c, "删除", true, func() {
+				itemCopy := *i
+				a.projectUI.InfoOpen = false
+				a.projectUI.DeleteTarget = &itemCopy
+				a.projectUI.DeleteError = ""
+			}).Label("删除记忆").Disabled(a.projectUI.DeleteBusy)
+		}
 	})
 	title := projectDisplayTitle(*i)
 	if title != "" {

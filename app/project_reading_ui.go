@@ -18,6 +18,10 @@ type projectReadingState struct {
 	Copied               string
 	CopyUntil            time.Time
 	InfoScroll           ui.ScrollState
+	DeleteTarget         *Item
+	DeleteBusy           bool
+	DeleteError          string
+	DeleteGeneration     uint64
 }
 type readingLocation struct {
 	Page, Kind, ProjectID string

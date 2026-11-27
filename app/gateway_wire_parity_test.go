@@ -765,7 +765,7 @@ func TestGatewayWireParityProjectAndCommonACLMatrix(t *testing.T) {
 	for _, wantText := range []string{
 		"Antigravity", "TRAE CN", "Codex", "TRAE CLI",
 		"读写", "只读", "不可访问",
-		"读取、写入并维护该项目记忆（含删除）",
+		"读取、写入并维护该项目记忆",
 		"仅允许检索与读取已有记忆，不可写入",
 		"禁止访问此项目的记忆与原始记录",
 	} {
@@ -778,10 +778,10 @@ func TestGatewayWireParityProjectAndCommonACLMatrix(t *testing.T) {
 	wantCardLabels := []struct {
 		name, desc, tier string
 	}{
-		{"Antigravity", "读取、写入并维护该项目记忆（含删除）", "读写"},
+		{"Antigravity", "读取、写入并维护该项目记忆", "读写"},
 		{"TRAE CN", "禁止访问此项目的记忆与原始记录", "不可访问"},
 		{"Codex", "仅允许检索与读取已有记忆，不可写入", "只读"},
-		{"TRAE CLI", "读取、写入并维护该项目记忆（含删除）", "读写"},
+		{"TRAE CLI", "读取、写入并维护该项目记忆", "读写"},
 	}
 	for _, card := range wantCardLabels {
 		idx := -1

@@ -455,7 +455,7 @@ func evaluateACL(ctx context.Context, tx *sql.Tx, kind, id, agentID string, p Pr
 	case AccessRead:
 		permissions = []string{"read"}
 	case AccessMaintain:
-		permissions = []string{"delete", "read", "write"}
+		permissions = []string{"read", "write"}
 	}
 	scope := "ok"
 	switch {

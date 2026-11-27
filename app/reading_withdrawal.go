@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"strings"
+	"time"
 )
 
 func clearUnavailableItem(item *Item) {
@@ -162,6 +163,168 @@ func (a *App) unavailableReadingItem(i Item) {
 				clearUnavailableItem(&rows[n])
 			}
 		}
+	}
+}
+
+func spliceDeletedItem(items []Item, key string) ([]Item, bool) {
+	if len(items) == 0 {
+		return items, false
+	}
+	kept := items[:0]
+	removed := false
+	for _, row := range items {
+		if row.Key() == key {
+			removed = true
+			continue
+		}
+		kept = append(kept, row)
+	}
+	if !removed {
+		return items, false
+	}
+	clear(items[len(kept):])
+	if len(kept) == 0 {
+		return nil, true
+	}
+	return kept, true
+}
+
+// applyKnowledgeDocumentDeleted synchronizes panes, unread counts, overview totals/heatmap,
+// and advances authEpoch to fence any in-flight reads after a confirmed knowledge deletion.
+// When allowOptimisticStats is false (e.g. reconciliation after an unknown delete response)
+// or the item was no longer in local snapshots, overview counts are refreshed authoritatively
+// instead of optimistically decremented to avoid double-decrement.
+func (a *App) applyKnowledgeDocumentDeleted(item Item, allowOptimisticStats bool) {
+	var curPane *pane
+	curPaneWasLoading := false
+	curDataset := ""
+	if a.page == "知识" || a.page == "通用知识" {
+		if p, ok := a.current(); ok {
+			curDataset = p.Dataset
+			curPane = a.state()
+			curPaneWasLoading = curPane != nil && curPane.Loading
+		}
+	}
+	overviewWasBusy := a.overviewState.Loading || a.overviewState.ActivityLoading
+	if overviewWasBusy {
+		a.overviewPageController().CancelAll()
+		a.overviewState.Loading = false
+		a.overviewState.ActivityLoading = false
+		a.overviewState.ActivityRun++
+	}
+
+	a.authEpoch++
+	a.unreadAuthEpoch.Store(a.authEpoch)
+	a.unavailableReadingItem(item)
+
+	key := item.Key()
+	existedLocally := false
+	for _, s := range a.allReadingPanes() {
+		if s.cancel != nil {
+			s.cancel()
+			s.cancel = nil
+		}
+		if s.readCancel != nil {
+			s.readCancel()
+			s.readCancel = nil
+		}
+		if s.Loading {
+			s.Loading = false
+			s.request++
+		}
+		s.Reading = false
+		s.Knowledge.Appending = false
+		s.Knowledge.Prepending = false
+		s.RawAppending = false
+		var removedItems, removedCatalog bool
+		s.Items, removedItems = spliceDeletedItem(s.Items, key)
+		s.Knowledge.Catalog, removedCatalog = spliceDeletedItem(s.Knowledge.Catalog, key)
+		if removedItems || removedCatalog {
+			existedLocally = true
+		}
+	}
+	a.recent, _ = spliceDeletedItem(a.recent, key)
+
+	if a.access != nil && item.Dataset != "" {
+		suffix := "/" + item.Dataset
+		for qKey, q := range a.access.Queues {
+			if q == nil || !strings.HasSuffix(qKey, suffix) {
+				continue
+			}
+			removedPreview := false
+			if len(q.UnreadPreview) > 0 {
+				kept := q.UnreadPreview[:0]
+				for _, row := range q.UnreadPreview {
+					if row.ID == item.ID && row.Dataset == item.Dataset {
+						removedPreview = true
+						continue
+					}
+					kept = append(kept, row)
+				}
+				clear(q.UnreadPreview[len(kept):])
+				if len(kept) == 0 {
+					q.UnreadPreview = nil
+				} else {
+					q.UnreadPreview = kept
+				}
+			}
+			// Compute unread status at completion time (not pre-delete) and mark ReadIDs
+			// immediately so any concurrent/late body-read callback cannot double-decrement.
+			alreadyRead := q.ReadIDs != nil && q.ReadIDs[item.ID]
+			isUnreadNow := !alreadyRead && (removedPreview || a.itemIsUnread(item))
+			if q.ReadIDs == nil {
+				q.ReadIDs = map[string]bool{}
+			}
+			q.ReadIDs[item.ID] = true
+			if q.ServerUnreadKnown && q.ServerUnreadCount > 0 && isUnreadNow {
+				q.ServerUnreadCount--
+			}
+		}
+	}
+
+	v := &a.overviewState
+	day, ok := overviewItemDate(item, time.Local)
+	if !ok && len(item.Date) >= 10 {
+		day = item.Date[:10]
+	}
+	var removedSnap, removedDay bool
+	v.Snapshot.Knowledge, removedSnap = spliceDeletedItem(v.Snapshot.Knowledge, key)
+	v.DayItems, removedDay = spliceDeletedItem(v.DayItems, key)
+	if removedSnap || removedDay {
+		existedLocally = true
+	}
+
+	overviewReloaded := false
+	if allowOptimisticStats && existedLocally {
+		if v.V2TotalKnowledge > 0 {
+			v.V2TotalKnowledge--
+		}
+		if day != "" && v.V2DayBuckets != nil {
+			if cnt := v.V2DayBuckets[day]; cnt > 1 {
+				v.V2DayBuckets[day] = cnt - 1
+			} else {
+				delete(v.V2DayBuckets, day)
+			}
+		}
+		if (removedDay || (day != "" && v.Day == day)) && v.DayTotal > 0 {
+			v.DayTotal--
+		}
+	} else if v.Loaded && a.Update != nil {
+		a.loadOverview(true)
+		overviewReloaded = true
+	}
+	v.SnapshotVersion++
+	v.BucketCache = nil
+	v.HeatmapCache = nil
+
+	if overviewWasBusy && !overviewReloaded && a.Update != nil {
+		a.loadOverview(true)
+	}
+
+	// If another visible pane had an in-flight load canceled by authEpoch++, restart it
+	// so it never gets stranded in an empty/loading state.
+	if curPane != nil && curPaneWasLoading && curDataset != item.Dataset && a.Update != nil {
+		a.load(curPane)
 	}
 }
 func (a *App) retryReadingTitle(s *pane, i Item) {

@@ -208,7 +208,7 @@ func TestProjectPermissionsUIHonorsDefaultsAgentDefaultAccessAndOverrides(t *tes
 		wantVal  string
 	}{
 		// defaults=maintain, agent default_access=maintain, no override -> 读写 (maintain)
-		{dir.Agents[0], "读取、写入并维护该项目记忆（含删除）", "读写"},
+		{dir.Agents[0], "读取、写入并维护该项目记忆", "读写"},
 		// defaults=maintain, agent default_access=none (TRAE CN), no override -> 不可访问 (none)
 		{dir.Agents[1], "禁止访问此项目的记忆与原始记录", "不可访问"},
 		// explicit read override beats default_access=none -> 只读
@@ -216,7 +216,7 @@ func TestProjectPermissionsUIHonorsDefaultsAgentDefaultAccessAndOverrides(t *tes
 		// explicit none override beats default_access=maintain and defaults=maintain -> 不可访问
 		{dir.Agents[3], "禁止访问此项目的记忆与原始记录", "不可访问"},
 		// explicit maintain override beats default_access=none -> 读写
-		{dir.Agents[4], "读取、写入并维护该项目记忆（含删除）", "读写"},
+		{dir.Agents[4], "读取、写入并维护该项目记忆", "读写"},
 	}
 	p := a.access.Directory.Projects[0]
 	for _, tc := range cases {

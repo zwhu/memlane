@@ -209,7 +209,7 @@ func accessLabel(access string) string {
 	case "read":
 		return "只读"
 	case "maintain":
-		return "可写并维护记忆（含删除）"
+		return "可写并维护记忆"
 	}
 	return "未知"
 }
@@ -220,7 +220,7 @@ func accessValue(label string) string {
 		return "none"
 	case "只读":
 		return "read"
-	case "可写并维护记忆（含删除）":
+	case "可写并维护记忆":
 		return "maintain"
 	}
 	return ""
@@ -271,10 +271,10 @@ func (a *Controller) accessSettings(c *ui.Context) {
 		return
 	}
 	directory := a.access.Directory
-	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护包含官方删除能力，不授予分享权限。").FontSize(12).LineHeight(1.7)
+	ui.Text(c, "新项目自动接入；具体项目可逐项覆盖。可写并维护允许读取与写入，不可删除或分享。").FontSize(12).LineHeight(1.7)
 	access, capture, process := accessLabel(a.access.Defaults.Access), booleanLabel(a.access.Defaults.Capture), booleanLabel(a.access.Defaults.AutoProcess)
-	policySettingRow(tok, c, "Agent 默认访问权限", "可写并维护包含读取、写入和删除；不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
-		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护记忆（含删除）"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
+	policySettingRow(tok, c, "Agent 默认访问权限", "可写并维护包含读取与写入；删除仅在桌面客户端确认，不授予分享权限。", accessLabel(directory.Defaults.Access), false, func() {
+		ui.Select(c.Key("default-access"), &access, []string{"不可访问", "只读", "可写并维护记忆"}).Width(260).Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Access = accessValue(access); a.access.DefaultsDirty = true })
 	})
 	policySettingRow(tok, c, "默认自动采集", "采集 Agent 后续的新会话材料；不补采关闭期间的内容。", booleanLabel(directory.Defaults.Capture), false, func() {
 		ui.Select(c.Key("default-capture"), &capture, []string{"开启", "关闭"}).Width(180).Label("默认自动采集").Disabled(a.access.Busy).OnChange(func() { a.access.Defaults.Capture = capture == "开启"; a.access.DefaultsDirty = true })

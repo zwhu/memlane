@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -14,7 +15,15 @@ type commonEditorState = reading.CommonEditorState[Document, Project, CommonWrit
 
 func (a *App) withdrawCommonEditor(dataset string) {
 	e := &a.commonEdit
-	if e.Existing != nil && (dataset == "" || e.Target.Dataset == dataset || e.Existing.Dataset == dataset) {
+	if e.Delete != nil && (dataset == "" || e.Delete.Dataset == dataset || e.DeleteTarget.Dataset == dataset) {
+		e.Delete = nil
+		e.DeleteTarget = Project{}
+		e.DeleteSubmitted = false
+	}
+	existingMatches := e.Existing != nil && (dataset == "" || e.Target.Dataset == dataset || e.Existing.Dataset == dataset)
+	hasUnsavedDraft := e.Open || strings.TrimSpace(e.Draft.Title+e.Draft.Body+e.Draft.Applicability+e.Draft.Source) != ""
+	draftMatches := hasUnsavedDraft && (dataset == "" || e.Target.Dataset == dataset)
+	if existingMatches || draftMatches {
 		e.Open = false
 		e.Existing = nil
 		e.Draft = CommonDraft{}
@@ -49,11 +58,16 @@ func (a *App) deleteCommonKnowledge(document Document) {
 		a.commonEdit.Message = "请选择当前记忆库的有效通用记忆"
 		return
 	}
+	if !a.syncReadingIdentity() {
+		return
+	}
 	a.commonEdit.Busy = true
 	a.commonEdit.DeleteSubmitted = true
 	a.commonEdit.Delete = &document
 	a.commonEdit.DeleteTarget = p
+	deletedItem := Item{ID: document.ID, Dataset: p.Dataset, Kind: "知识", Date: documentDate(document), Document: &document}
 	op := a.commonEdit.Generation
+	authEpoch := a.authEpoch
 	client := a.Client
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -70,6 +84,9 @@ func (a *App) deleteCommonKnowledge(document Document) {
 				return
 			}
 			a.commonEdit.Busy = false
+			if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+				return
+			}
 			if err != nil {
 				if readingUnavailable(err) {
 					a.withdrawCommonEditor(p.Dataset)
@@ -84,7 +101,7 @@ func (a *App) deleteCommonKnowledge(document Document) {
 				a.withdrawCommonEditor(p.Dataset)
 			}
 			a.commonEdit.Message = "官方已确认删除"
-			a.unavailableReadingItem(Item{ID: document.ID, Dataset: p.Dataset, Kind: "知识", Document: &document})
+			a.applyKnowledgeDocumentDeleted(deletedItem, true)
 			if current, ok := a.current(); ok && current.Dataset == p.Dataset && a.page == "通用知识" {
 				a.load(a.state())
 			}
@@ -96,19 +113,32 @@ func (a *App) commonEditor(c *ui.Context) { a.commonKnowledgeEditor(c) }
 
 func (a *App) saveCommonKnowledge() {
 	e := &a.commonEdit
+	if !a.syncReadingIdentity() {
+		return
+	}
 	if !e.StartSave() {
 		return
 	}
+	formatted, _ := e.Draft.FormatDocument()
+	expectedSHA := reading.BaselineSHA256(strings.TrimSuffix(formatted, "\n"))
+	expectedCategory := e.Draft.Category
 	op := e.Generation
+	authEpoch := a.authEpoch
 	client, p, draft, existing, baseline := a.Client, e.Target, e.Draft, e.Existing, e.Baseline
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 125*time.Second)
 		defer cancel()
 		receipt, err := saveCommonDraft(ctx, client, p, draft, existing, baseline)
+		receipt.ExpectedSHA256 = expectedSHA
+		receipt.HasExpectedSHA = true
+		receipt.ExpectedCategory = expectedCategory
 		if errors.Is(err, reading.ErrCommonChanged) {
 			a.Update(func() {
 				if op == a.commonEdit.Generation {
 					e.Busy = false
+					if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+						return
+					}
 					e.Message = "原记忆已变化或无法读取，请刷新后重新编辑；本次未提交修改。"
 				}
 			})
@@ -121,6 +151,9 @@ func (a *App) saveCommonKnowledge() {
 			e.Busy = false
 			e.Receipt = receipt
 			e.Submitted = true
+			if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+				return
+			}
 			if err != nil {
 				if readingUnavailable(err) {
 					a.withdrawCommonEditor(p.Dataset)
@@ -182,9 +215,13 @@ func confirmGatewayCommon(ctx context.Context, client Client, p Project, receipt
 	}
 	body, err := draft.FormatDocument()
 	if err != nil {
-		return Document{}, "", err
-	}
-	if detail.DatasetID != p.Dataset || detail.Content != body {
+		if !receipt.HasExpectedSHA {
+			return Document{}, "", err
+		}
+		if detail.DatasetID != p.Dataset || reading.BaselineSHA256(strings.TrimSuffix(detail.Content, "\n")) != receipt.ExpectedSHA256 {
+			return Document{}, "正文保存待核对", reading.ErrCommonChanged
+		}
+	} else if detail.DatasetID != p.Dataset || detail.Content != body {
 		return Document{}, "正文保存待核对", reading.ErrCommonChanged
 	}
 	row := catalogRowFromAPI(detail.CatalogItem)
@@ -200,8 +237,10 @@ func (a *App) confirmCommonKnowledge() {
 	if e.Busy || !e.Submitted {
 		return
 	}
+	a.syncReadingIdentity()
 	e.Busy = true
 	op := e.Generation
+	authEpoch := a.authEpoch
 	client, p, receipt, draft := a.Client, e.Target, e.Receipt, e.Draft
 	control, hasControl := a.accessClient()
 	go func() {
@@ -217,6 +256,10 @@ func (a *App) confirmCommonKnowledge() {
 		}
 		a.Update(func() {
 			if op != a.commonEdit.Generation {
+				return
+			}
+			if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+				e.Busy = false
 				return
 			}
 			if document.ID != "" {

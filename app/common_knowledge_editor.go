@@ -30,11 +30,12 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 }
 func (a *App) confirmCommonDeletion() {
 	e := &a.commonEdit
-	if e.Busy || !e.DeleteSubmitted || e.Delete == nil {
+	if e.Busy || !a.syncReadingIdentity() || !e.DeleteSubmitted || e.Delete == nil {
 		return
 	}
 	e.Busy = true
 	d, p, op := *e.Delete, e.DeleteTarget, e.Generation
+	authEpoch := a.authEpoch
 	control, ok := a.accessClient()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -62,6 +63,9 @@ func (a *App) confirmCommonDeletion() {
 				return
 			}
 			e.Busy = false
+			if authEpoch != a.authEpoch || !a.syncReadingIdentity() {
+				return
+			}
 			if err != nil {
 				e.Message = "删除结果仍未确认：" + err.Error()
 				return
@@ -74,7 +78,9 @@ func (a *App) confirmCommonDeletion() {
 			e.DeleteSubmitted = false
 			e.Delete = nil
 			e.Message = "已核对：官方记忆已移除"
-			a.unavailableReadingItem(Item{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Document: &d})
+			// Reconciliation after an unknown delete response must not blindly decrement
+			// overview totals if the item was already removed by a prior refresh.
+			a.applyKnowledgeDocumentDeleted(Item{ID: d.ID, Dataset: p.Dataset, Kind: "知识", Date: documentDate(d), Document: &d}, false)
 			if cur, ok := a.current(); ok && a.page == "通用知识" && cur.Dataset == p.Dataset {
 				a.load(a.state())
 			}
@@ -185,6 +191,13 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				ui.PrimaryButton(c, "核对保存结果").OnClick(a.confirmCommonKnowledge).Disabled(e.Busy)
 				if e.SaveVerified && (e.Processing == "已完成" || strings.HasPrefix(e.Processing, "失败")) {
 					v4OutlineButton(c, "完成", nil, func() { e.Completed = true; e.Open = false })
+				} else {
+					v4SmallButton(c, "结束本次记录", nil, func() {
+						category := e.Category
+						a.commonGeneration++
+						a.commonEdit = commonEditorState{Generation: a.commonGeneration, Category: category}
+						a.commonPage = commonKnowledgePageState{}
+					}).Disabled(e.Busy)
 				}
 			} else {
 				_, err := e.Draft.FormatDocument()

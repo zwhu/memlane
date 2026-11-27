@@ -61,10 +61,6 @@ func TestToolACLAndRememberReceipts(t *testing.T) {
 		if _, msg := callTool(t, h, "remember", args); msg != "Access denied" {
 			t.Fatalf("remember %s: %s", project, msg)
 		}
-		args = fmt.Sprintf(`{"project_id":%q,"item_id":"item"}`, project)
-		if _, msg := callTool(t, h, "forget", args); msg != "Access denied" {
-			t.Fatalf("forget %s: %s", project, msg)
-		}
 	}
 	for _, project := range []string{"none", "protected"} {
 		if _, msg := callTool(t, h, "recall", fmt.Sprintf(`{"project_id":%q,"query":"q"}`, project)); msg != "Access denied" {
@@ -103,8 +99,9 @@ func TestToolACLAndRememberReceipts(t *testing.T) {
 	if _, err := store.GetCaptureReceipt(ctx, "abort"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("failed receipt was not aborted: %v", err)
 	}
-	if _, msg := callTool(t, h, "forget", `{"project_id":"write","item_id":"item"}`); msg != "" || deleted != "item" {
-		t.Fatalf("forget: %q, deleted %q", msg, deleted)
+	forgetReply := rpc(t, h, `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"forget","arguments":{"project_id":"write","item_id":"item"}}}`)
+	if forgetReply.Error == nil || forgetReply.Error.Code != -32602 || deleted != "" {
+		t.Fatalf("forget should be rejected as unknown tool without invoking delete: reply=%+v deleted=%q", forgetReply, deleted)
 	}
 }
 
@@ -152,8 +149,9 @@ func TestToolsUseOwnerForInvalidPrincipal(t *testing.T) {
 			if _, msg := callTool(t, h, "recall", `{"project_id":"write","query":"note"}`); msg != "" || !slices.Equal(searched, []engine.Scope{want}) {
 				t.Fatalf("recall: %q, scopes %+v, want %+v", msg, searched, want)
 			}
-			if _, msg := callTool(t, h, "forget", `{"project_id":"write","item_id":"entry"}`); msg != "" || deleted != want {
-				t.Fatalf("forget: %q, scope %+v, want %+v", msg, deleted, want)
+			forgetReply := rpc(t, h, `{"jsonrpc":"2.0","id":98,"method":"tools/call","params":{"name":"forget","arguments":{"project_id":"write","item_id":"entry"}}}`)
+			if forgetReply.Error == nil || forgetReply.Error.Code != -32602 || deleted != (engine.Scope{}) {
+				t.Fatalf("forget should be rejected as unknown tool: reply=%+v deleted=%+v", forgetReply, deleted)
 			}
 			data, msg := callTool(t, h, "health", "{}")
 			if msg != "" {

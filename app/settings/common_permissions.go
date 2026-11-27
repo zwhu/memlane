@@ -204,7 +204,7 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 func accessTierDesc(access string) string {
 	switch access {
 	case "maintain":
-		return "读取、写入并维护该项目记忆（含删除）"
+		return "读取、写入并维护该项目记忆"
 	case "read":
 		return "仅允许检索与读取已有记忆，不可写入"
 	default:

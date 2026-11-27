@@ -90,24 +90,90 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 	if old != "" {
 		key = tupleDigest("common-replacement", common.DatasetID, old, category, title, content)
 	}
-	result, err := s.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKindDocument, IdempotencyKey: key,
-		Content: content, SourceMeta: engine.SourceMeta{NodeSet: []string{"memlane_common"},
-			ExternalMetadata: map[string]any{"memlane_kind": "common_knowledge", "category": category, "common_category": category, "title": title, "label": title}}})
+	doc, err := s.ingestCommonDoc(ctx, scope, key, category, title, content)
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	doc := result.DocumentID
-	if doc == "" {
-		doc = result.EntryID
-	}
-	if !result.OK || doc == "" {
-		writeEngineError(w, errors.New("common ingest was not accepted"))
-		return
-	}
 	if old != "" && old != doc {
-		if err := s.cfg.Engine.DeleteItem(ctx, scope, old); err != nil && !errors.Is(err, engine.ErrNotFound) {
+		// Verify the newly ingested document is actually readable before deleting old.
+		// If a previous rollback deleted this document, an engine dedup cache hit for
+		// the deterministic key can return the deleted doc ID; re-ingest with a fresh key.
+		if _, err := s.cfg.Engine.GetItem(ctx, scope, doc); errors.Is(err, engine.ErrNotFound) {
+			doc, err = s.ingestCommonDoc(ctx, scope, rand.Text(), category, title, content)
+			if err != nil {
+				writeEngineError(w, err)
+				return
+			}
+			if _, err := s.cfg.Engine.GetItem(ctx, scope, doc); err != nil {
+				syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+				if syncErr := s.syncCommonCatalog(syncCtx); syncErr != nil {
+					err = errors.Join(err, syncErr)
+				}
+				writeEngineError(w, err)
+				return
+			}
+		} else if err != nil {
+			syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if syncErr := s.syncCommonCatalog(syncCtx); syncErr != nil {
+				err = errors.Join(err, syncErr)
+			}
 			writeEngineError(w, err)
+			return
+		}
+		if err := s.cfg.Engine.DeleteItem(ctx, scope, old); err != nil && !errors.Is(err, engine.ErrNotFound) {
+			rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			// Only roll back the newly ingested doc when DeleteItem(old) returned an
+			// explicit 4xx rejection (proving the engine refused before deleting old).
+			// For timeouts, disconnects, or 5xx errors, the engine DELETE may still be
+			// in flight and commit later: never blind-delete the new doc.
+			if isExplicitDeleteRejection(err) {
+				rollbackErr := s.cfg.Engine.DeleteItem(rollbackCtx, scope, doc)
+				syncErr := s.syncCommonCatalog(rollbackCtx)
+				if rollbackErr != nil && !errors.Is(rollbackErr, engine.ErrNotFound) {
+					msg := "更新通用记忆失败：旧版本删除失败且新版本回滚未成功，请刷新核对是否存在重复条目"
+					if syncErr != nil {
+						msg += "；目录同步失败：" + syncErr.Error()
+					}
+					writeJSON(w, http.StatusBadGateway, map[string]any{
+						"error":           "common_update_partial_failure",
+						"message":         msg,
+						"new_document_id": doc,
+						"old_document_id": old,
+					})
+					return
+				}
+				if syncErr != nil {
+					writeEngineError(w, errors.Join(err, syncErr))
+					return
+				}
+				writeEngineError(w, err)
+				return
+			}
+			// Unknown outcome (timeout/disconnect/5xx): check if old is already gone.
+			if _, oldErr := s.cfg.Engine.GetItem(rollbackCtx, scope, old); errors.Is(oldErr, engine.ErrNotFound) {
+				if pubErr := s.publishCommon(rollbackCtx, scope.DatasetID, doc, old, category, title); pubErr != nil {
+					writeEngineError(w, pubErr)
+					return
+				}
+				writeJSON(w, 200, map[string]any{"ok": true, "dataset_id": scope.DatasetID, "document_id": doc, "doc_id": doc,
+					"common_category": category, "title": title, "content": content})
+				return
+			}
+			syncErr := s.syncCommonCatalog(rollbackCtx)
+			msg := "更新通用记忆结果未确认：旧版本删除结果未知，已保留新版本以避免数据丢失，请刷新核对"
+			if syncErr != nil {
+				msg += "；目录同步失败：" + syncErr.Error()
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{
+				"error":           "common_update_outcome_unknown",
+				"message":         msg,
+				"new_document_id": doc,
+				"old_document_id": old,
+			})
 			return
 		}
 	}
@@ -121,6 +187,50 @@ func (s *Server) saveCommon(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status, map[string]any{"ok": true, "dataset_id": scope.DatasetID, "document_id": doc, "doc_id": doc,
 		"common_category": category, "title": title, "content": content})
+}
+
+func (s *Server) ingestCommonDoc(ctx context.Context, scope engine.Scope, key, category, title, content string) (string, error) {
+	result, err := s.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKindDocument, IdempotencyKey: key,
+		Content: content, SourceMeta: engine.SourceMeta{NodeSet: []string{"memlane_common"},
+			ExternalMetadata: map[string]any{"memlane_kind": "common_knowledge", "category": category, "common_category": category, "title": title, "label": title}}})
+	if err != nil {
+		return "", err
+	}
+	doc := result.DocumentID
+	if doc == "" {
+		doc = result.EntryID
+	}
+	if !result.OK || doc == "" {
+		return "", errors.New("common ingest was not accepted")
+	}
+	return doc, nil
+}
+
+func isExplicitDeleteRejection(err error) bool {
+	if err == nil || errors.Is(err, engine.ErrNotFound) {
+		return false
+	}
+	var ee *engine.EngineError
+	if errors.As(err, &ee) && ee.StatusCode != 0 {
+		return ee.StatusCode >= 400 && ee.StatusCode < 500 &&
+			ee.StatusCode != http.StatusNotFound &&
+			ee.StatusCode != http.StatusRequestTimeout &&
+			ee.StatusCode != http.StatusTooManyRequests
+	}
+	return errors.Is(err, engine.ErrInvalidArgument) ||
+		errors.Is(err, engine.ErrUnauthorized) ||
+		errors.Is(err, engine.ErrForbidden) ||
+		errors.Is(err, engine.ErrConflict) ||
+		errors.Is(err, engine.ErrPathDenied) ||
+		errors.Is(err, engine.ErrContentTooLarge)
+}
+
+func (s *Server) syncCommonCatalog(ctx context.Context) error {
+	if s.cfg.Projector == nil {
+		return nil
+	}
+	_, err := s.cfg.Projector.SyncCatalog(ctx, s.cfg.Store)
+	return err
 }
 
 func (s *Server) publishCommon(ctx context.Context, ds, doc, old, category, title string) error {

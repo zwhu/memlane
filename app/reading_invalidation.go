@@ -37,8 +37,8 @@ func (a *App) ensureReadingInvalidators() []namedReadingInvalidator {
 		a.readingInvalidators = []namedReadingInvalidator{
 			{"common-editor", readingInvalidatorFunc(a.withdrawCommonEditor)},
 			{"search", &a.searchController},
-			{"project-ui", readingInvalidatorFunc(func(string) { a.projectUI.InfoOpen = false })},
-			{"user-profiles", readingInvalidatorFunc(func(dataset string) { a.clearUserProfileBody(dataset, "") })},
+			{"project-ui", readingInvalidatorFunc(a.invalidateProjectUI)},
+			{"user-profiles", readingInvalidatorFunc(a.userProfiles.Invalidate)},
 			{"graph", &a.graphController},
 			{"reading", &a.readingController},
 			{"overview", &a.overviewController},
@@ -46,6 +46,16 @@ func (a *App) ensureReadingInvalidators() []namedReadingInvalidator {
 		}
 	}
 	return a.readingInvalidators
+}
+
+func (a *App) invalidateProjectUI(dataset string) {
+	a.projectUI.InfoOpen = false
+	if a.projectUI.DeleteTarget != nil && (dataset == "" || a.projectUI.DeleteTarget.Dataset == dataset) {
+		a.projectUI.DeleteTarget = nil
+		a.projectUI.DeleteBusy = false
+		a.projectUI.DeleteError = ""
+		a.projectUI.DeleteGeneration++
+	}
 }
 
 // InvalidateReading must be called on the UI thread when access is revoked.

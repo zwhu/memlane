@@ -40,10 +40,7 @@ func (s *Server) memoryTools() []tool {
 		"kind":         map[string]any{"type": "string", "enum": []string{"document", "capture_qa", "capture_trace"}, "default": "document"},
 		"auto_capture": map[string]any{"type": "boolean", "default": false},
 	}, "content")
-	forget := schema(map[string]any{"project_id": text, "project_path": text, "item_id": text}, "item_id")
-	for _, shape := range []map[string]any{remember, forget} {
-		shape["anyOf"] = []map[string][]string{{"required": {"project_id"}}, {"required": {"project_path"}}}
-	}
+	remember["anyOf"] = []map[string][]string{{"required": {"project_id"}}, {"required": {"project_path"}}}
 	return []tool{
 		{toolDefinition{"remember", "Save content to an authorized project.", remember}, s.remember},
 		{toolDefinition{"recall", "Search authorized memory scopes.", schema(map[string]any{
@@ -51,7 +48,6 @@ func (s *Server) memoryTools() []tool {
 			"mode":  map[string]any{"type": "string", "enum": []string{"hybrid", "graph", "chunks", "code"}, "default": "hybrid"},
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
 		}, "query")}, s.recall},
-		{toolDefinition{"forget", "Delete an item from an authorized project.", forget}, s.forget},
 		{toolDefinition{"health", "Show engine health and authorized scopes.", schema(map[string]any{})}, s.health},
 	}
 }
@@ -224,23 +220,4 @@ func (s *Server) remember(ctx context.Context, agent domain.Agent, raw json.RawM
 	}
 	reply["entry_id"], reply["document_id"], reply["deduplicated"] = entryID, result.DocumentID, result.Deduplicated
 	return reply, nil
-}
-
-func (s *Server) forget(ctx context.Context, agent domain.Agent, raw json.RawMessage) (any, error) {
-	var args struct {
-		projectSelector
-		ItemID string `json:"item_id"`
-	}
-	if json.Unmarshal(raw, &args) != nil || strings.TrimSpace(args.ItemID) == "" {
-		return nil, domain.ErrInvalidArgument
-	}
-	project, err := s.writableProject(ctx, args.projectSelector, agent, false)
-	if err != nil {
-		return nil, err
-	}
-	scope := engine.Scope{DatasetID: project.DatasetID, UserID: agentUserID(agent)}
-	if err := s.cfg.Engine.DeleteItem(ctx, scope, args.ItemID); err != nil {
-		return nil, err
-	}
-	return map[string]bool{"ok": true}, nil
 }

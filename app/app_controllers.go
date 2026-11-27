@@ -144,6 +144,19 @@ func (c *readingController) invalidateReading(dataset string) {
 	c.recentRequest++
 	if dataset == "" {
 		c.recent = nil
+	} else if len(c.recent) > 0 {
+		kept := c.recent[:0]
+		for _, item := range c.recent {
+			if item.Dataset != dataset {
+				kept = append(kept, item)
+			}
+		}
+		clear(c.recent[len(kept):])
+		if len(kept) == 0 {
+			c.recent = nil
+		} else {
+			c.recent = kept
+		}
 	}
 	seen := make(map[*pane]bool, len(c.panes))
 	for _, s := range c.panes {

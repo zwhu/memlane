@@ -282,6 +282,7 @@ func TestCommonDeleteUnknownOnlyChecksOriginal(t *testing.T) {
 	a := commonUIFixture()
 	a.Client.Config.ServiceURL = server.URL
 	a.Config.ProjectControl = readingControlConfig(t, server.URL)
+	a.syncReadingIdentity()
 	updates := make(chan func(), 20)
 	a.Update = func(fn func()) { updates <- fn }
 	a.deleteCommonKnowledge(d)

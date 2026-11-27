@@ -35,11 +35,15 @@ func (a *App) refreshUserProfiles() {
 	}
 	s.Loading = true
 	s.Next = time.Now().Add(4 * time.Second)
+	if s.RefreshCancel != nil {
+		s.RefreshCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	s.RefreshCancel = cancel
 	client := ProjectControlClient{Config: *a.Config.ProjectControl, HTTP: a.Client.HTTP}
 	shellAdapter := appShellAdapter{a}
 	authEpoch := shellAdapter.AuthEpoch()
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		var result userProfilesDirectory
 		controller, err := profileController(client)
@@ -56,6 +60,7 @@ func (a *App) refreshUserProfiles() {
 			if authEpoch != shellAdapter.AuthEpoch() {
 				return
 			}
+			s.RefreshCancel = nil
 			if err != nil {
 				if reading.Status(err, 401, 403) || settings.IsControlAuthDenied(err) {
 					shellAdapter.InvalidateReading()
@@ -105,9 +110,13 @@ func (a *App) readUserProfile() {
 	shellAdapter := appShellAdapter{a}
 	authEpoch := shellAdapter.AuthEpoch()
 	s.Reading = true
+	if s.ReadCancel != nil {
+		s.ReadCancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	s.ReadCancel = cancel
 	client := ProjectControlClient{Config: *a.Config.ProjectControl, HTTP: a.Client.HTTP}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var result struct {
 			Body           string              `json:"body"`
@@ -131,6 +140,7 @@ func (a *App) readUserProfile() {
 			if generation != s.ReadGeneration || selected != s.Selected || authEpoch != shellAdapter.AuthEpoch() {
 				return
 			}
+			s.ReadCancel = nil
 			s.Reading = false
 			current, exists := a.selectedUserProfile()
 			if !exists || current.Document == nil || *current.Document != *p.Document || current.ContentVersion != p.ContentVersion {

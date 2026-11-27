@@ -329,8 +329,14 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	if rpc("initialize", nil)["protocolVersion"] != "2025-03-26" {
 		t.Fatal("invalid initialize result")
 	}
-	if list, ok := rpc("tools/list", nil)["tools"].([]any); !ok || len(list) != 4 {
+	if list, ok := rpc("tools/list", nil)["tools"].([]any); !ok || len(list) != 3 {
 		t.Fatal(list)
+	} else {
+		for _, raw := range list {
+			if asObject(t, raw)["name"] == "forget" {
+				t.Fatalf("MCP must not expose forget tool: %v", list)
+			}
+		}
 	}
 	remembered := tool("remember", map[string]any{"project_path": workspace, "content": "live MCP persisted document"})
 	memory := tool("recall", map[string]any{"project_path": workspace, "query": "live MCP persisted document"})

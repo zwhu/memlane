@@ -87,6 +87,14 @@ func (a *ControllerOf[T]) Invalidate(dataset string) {
 			v.DayNextCursor = ""
 			v.DayHasMore = false
 		}
+		v.DayTotal = len(v.DayItems)
+		v.V2DayBuckets = nil
+		v.V2TotalKnowledge = 0
+		v.Snapshot.Raw = 0
+		v.RawLoaded = false
+		v.Loaded = false
+		v.BucketCache = nil
+		v.HeatmapCache = nil
 		expandedFoundInEvents := false
 		expandedMatchesEvent := false
 		if len(v.Events) > 0 {
