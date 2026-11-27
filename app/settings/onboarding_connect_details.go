@@ -10,7 +10,7 @@ import (
 func onboardingConnectionBadge(tok *kitui.Tokens, c *ui.Context, status, tone string) {
 	switch tone {
 	case "ok":
-		ui.Row(c).Height(20).Padding(0, sp2).Gap(5).Radius(10).Background(tok.OK.Alpha(0.14)).Shrink(0).
+		ui.Row(c).Height(20).Padding(0, sp2).Gap(4).Radius(10).Background(tok.OK.Alpha(0.14)).Shrink(0).
 			AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, kitui.IconCheck).FontSize(11).TextColor(tok.OK)
 			kitui.Text(c, tok, status, kitui.RoleMeta).FontSize(fsCaption).TextColor(tok.OK).SingleLine()
@@ -142,7 +142,7 @@ func (a *Controller) onboardingConnectionRowDetails(c *ui.Context, row AgentConn
 func onboardingPreviewDetails(tok *kitui.Tokens, c *ui.Context, preview controlplane.ConnectionPreview) {
 	ui.Column(c).FillWidth().Padding(sp3).Margin(sp2, 0).Gap(sp1).Radius(radius).Background(tok.Fill1).Children(func() {
 		if preview.Target != "" {
-			kitui.Text(c, tok, bootstrap.RedactInstallerText(preview.Target), kitui.RoleMeta).Font("ui-monospace")
+			kitui.Text(c, tok, bootstrap.RedactInstallerText(preview.Target), kitui.RoleMeta).Font(kitui.FontMono)
 		}
 		summary := preview.DiffSummary
 		if summary == "" {

@@ -75,7 +75,7 @@ func (a *App) externalStoreStoppedBanner(c *ui.Context) {
 		ui.Text(c, "在 Memlane 项目目录执行启动命令。若重启后残留旧归属记录，先执行恢复命令。").
 			FontSize(fsFootnote).TextColor(tok.Text2)
 		for _, command := range []string{start, recover} {
-			ui.Text(c, command).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text1)
+			ui.Text(c, command).Font(fontMono).FontSize(fsCaption).TextColor(tok.Text1)
 		}
 		ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
 			v4SmallPrimaryButton(c, "重新检查连接", a.recheckExternalStoreConnection).Disabled(a.monitor.Polling)

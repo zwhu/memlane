@@ -213,7 +213,7 @@ func TestRecallChipAndHoverCopy(t *testing.T) {
 
 	text, _ := tt.Find("Original")
 	copyButton, ok := tt.Find("Copy")
-	if !ok || copyButton.W != 22 || copyButton.H != 22 {
+	if !ok || copyButton.W != IconBox || copyButton.H != IconBox {
 		t.Fatalf("copy button lost its hit target: %v", copyButton)
 	}
 	hidden := tt.Image()

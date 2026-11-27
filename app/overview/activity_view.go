@@ -115,13 +115,13 @@ func (a *ControllerOf[T]) RenderActivities(c *ui.Context, now time.Time) {
 				interactive := ev.Recall != nil && len(recallGroups) > 0 && a.OpenRecalled != nil
 				a.staggerEnter(c, row, "event-"+ev.Key, idx, v.ActivityRun, interactive)
 				row.Children(func() {
-					ui.Column(c).Width(8).Shrink(0).Padding(6, 0, 0, 0).AlignItems(ui.Center).Children(func() {
+					ui.Column(c).Width(8).Shrink(0).Padding(8, 0, 0, 0).AlignItems(ui.Center).Children(func() {
 						ui.Box(c).Size(6, 6).Radius(3).Background(dotColor).Shrink(0)
 						if idx < len(shown)-1 {
-							ui.Box(c).Width(1).Grow(1).Margin(4, 0, -18, 0).Background(tok.Border)
+							ui.Box(c).Width(1).Grow(1).Margin(4, 0, -16, 0).Background(tok.Border)
 						}
 					})
-					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						ui.Row(c).Gap(sp2).AlignItems(ui.Center).Children(func() {
 							kitui.Text(c, tok, ev.Title, homeActivityTitle).Grow(1).MinWidth(0).MaxLines(2)
 							if running {
@@ -158,7 +158,7 @@ func (a *ControllerOf[T]) RenderActivities(c *ui.Context, now time.Time) {
 						}
 						if ev.State == "失败" {
 							detailBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label("失败操作："+ev.Key).
-								Cursor(ui.CursorPointer).Height(24).MinHeight(24).Padding(2, 0).Gap(3).
+								Cursor(ui.CursorPointer).Height(24).MinHeight(24).Padding(4, 0).Gap(4).
 								Radius(radiusSmall).BorderWidth(0).Background(ui.Transparent).
 								AlignItems(ui.Center).AlignSelf(ui.Start)
 							fg := tok.Text3
@@ -166,7 +166,7 @@ func (a *ControllerOf[T]) RenderActivities(c *ui.Context, now time.Time) {
 								fg = tok.Text1
 							}
 							detailBtn.Children(func() {
-								ui.Text(c, "查看详情").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(fg).SingleLine()
+								ui.Text(c, "查看详情").Font(kitui.FontUI).FontSize(fsCaption).FontWeight(400).TextColor(fg).SingleLine()
 								ui.Icon(c, kitui.IconChev).FontSize(10).TextColor(fg).Shrink(0)
 							}).OnClick(func() {
 								a.OpenFailureDetail(ev, now.Location())

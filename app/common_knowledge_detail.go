@@ -82,7 +82,7 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					v4CategoryChip(c, commonCategoryLabel(i.CommonCategory))
 					row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
 					row.Children(func() {
-						ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+						ui.Text(c, displayDate(i.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 						hoverCopyAction(c, row, "复制内容", func() { c.WriteClipboard(itemPresentation(i).VisibleBody); a.copyFeedback("内容") }).Disabled(!i.BodyLoaded)
 					})
 					v4RecallChip(c, i)
@@ -111,15 +111,15 @@ func (a *App) commonKnowledgeReader(c *ui.Context, s *pane) {
 					if parts.Applicability != "" {
 						ui.Column(c).FillWidth().Margin(sp2, 0, 0, 0).Padding(sp4, 0, 0, 0).Gap(sp2).
 							BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-							ui.Text(c, "适用条件").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+							ui.Text(c, "适用条件").Font(fontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 							a.commonMarkdown(c, "common-conditions-"+i.Key(), parts.Applicability)
 						})
 					}
 					if parts.Source != "" {
 						ui.Column(c).FillWidth().Margin(sp2, 0, 0, 0).Padding(sp4, 0, 0, 0).Gap(sp2).
 							BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-							ui.Text(c, "原始来源").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
-							ui.Text(c, parts.Source).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
+							ui.Text(c, "原始来源").Font(fontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+							ui.Text(c, parts.Source).Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
 						})
 					}
 				} else {

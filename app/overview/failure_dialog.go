@@ -64,17 +64,17 @@ func (a *ControllerOf[T]) RenderFailureDialog(c *ui.Context) {
 			ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp2).Background(tok.Fill1).Radius(radius).Children(func() {
 				ui.Row(c).FillWidth().Gap(sp2).AlignItems(ui.Center).Children(func() {
 					kitui.StatusDot(c, tok, "fail")
-					ui.Text(c, detail.ReasonLabel).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Danger).Grow(1).MinWidth(0)
+					ui.Text(c, detail.ReasonLabel).Font(kitui.FontUI).FontSize(fsBody).FontWeight(600).TextColor(tok.Danger).Grow(1).MinWidth(0)
 					if detail.ErrorClass != "" {
-						ui.Text(c, detail.ErrorClass).Font("ui-monospace").FontSize(fsCaption).FontWeight(500).
+						ui.Text(c, detail.ErrorClass).Font(kitui.FontMono).FontSize(fsCaption).FontWeight(500).
 							Padding(2, 6).Radius(radiusSmall).Background(tok.Fill2).TextColor(tok.Text2).SingleLine().Shrink(0)
 					}
 				})
 				if detail.Summary != "" {
-					ui.Text(c, detail.Summary).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).LineHeight(1.55)
+					ui.Text(c, detail.Summary).Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).LineHeight(1.55)
 				}
 				if detail.Hint != "" {
-					ui.Text(c, detail.Hint).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.5)
+					ui.Text(c, detail.Hint).Font(kitui.FontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.5)
 				}
 			})
 
@@ -172,10 +172,10 @@ func (a *ControllerOf[T]) RenderFailureDialog(c *ui.Context) {
 						metaLines = append(metaLines, "本机日志目录："+detail.LogDir)
 					}
 					if len(metaLines) > 0 {
-						ui.Text(c, strings.Join(metaLines, "\n")).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
+						ui.Text(c, strings.Join(metaLines, "\n")).Font(kitui.FontMono).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
 					}
 					if len(detail.TechRecords) == 0 {
-						ui.Text(c, "官方未返回失败详情。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
+						ui.Text(c, "官方未返回失败详情。").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
 					}
 					for _, rec := range detail.TechRecords {
 						lines := []string{}
@@ -220,11 +220,11 @@ func (a *ControllerOf[T]) RenderFailureDialog(c *ui.Context) {
 							lines = append(lines, "日志候选（尚未按任务 ID 精确确认）：\n"+rec.LogCandidate)
 						}
 						ui.Column(c).FillWidth().Padding(sp2, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-							ui.Text(c, strings.Join(lines, "\n")).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
+							ui.Text(c, strings.Join(lines, "\n")).Font(kitui.FontMono).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
 						})
 					}
 					if detail.BoundaryNote != "" {
-						ui.Text(c, detail.BoundaryNote).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5).Padding(sp2, 0, 0, 0)
+						ui.Text(c, detail.BoundaryNote).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5).Padding(sp2, 0, 0, 0)
 					}
 				})
 			})

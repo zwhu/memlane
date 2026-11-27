@@ -74,10 +74,10 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 	canConsent := s.pendingConnection(row.ID) == nil && connectionActionAllowed(row, "allow_capture")
 	if consentOpen && canConsent {
 		ui.Column(c).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
-			ui.Column(c.Key("capture-consent-" + row.ID)).FillWidth().Padding(sp3).Gap(10).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			ui.Column(c.Key("capture-consent-"+row.ID)).FillWidth().Padding(sp3).Gap(12).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 				kitui.Text(c, tok, "允许 Codex 自动采集已授权项目中的会话到 Memlane。", kitui.RoleBody).FontSize(12)
-				ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
-					ui.Button(c, "确认允许").Label("确认允许自动采集："+connectionName(row.Kind)).Padding(5, 12).Disabled(s.Busy || s.Loading).OnClick(func() {
+				ui.Row(c).Gap(16).AlignItems(ui.Center).Children(func() {
+					ui.Button(c, "确认允许").Label("确认允许自动采集："+connectionName(row.Kind)).Padding(4, 12).Disabled(s.Busy || s.Loading).OnClick(func() {
 						a.connectAgentsReviewed("allow_capture", []string{row.ID}, reviewed)
 					})
 					kitui.TextButton(c, tok, "取消", func() { delete(s.CaptureReview, row.ID) }).Disabled(s.Busy)
@@ -102,7 +102,7 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 		return
 	}
 	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
-		ui.Column(c).FillWidth().Padding(sp3).Gap(6).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(8).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 			projectState := ""
 			if row.Capture != nil {
 				projectState = row.Capture.State

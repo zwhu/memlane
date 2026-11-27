@@ -15,7 +15,7 @@ func agentLogo(c *ui.Context, mark *ui.SVG, size float32) ui.Element {
 }
 
 func sourceAgentLabel(c *ui.Context, item Item) {
-	ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+	ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 		agentLogo(c, recentAgentIcon(item), 13)
 		name := sourceAgentName(item)
 		if name == "Agent 未记录" {

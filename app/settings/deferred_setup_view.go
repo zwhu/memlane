@@ -49,7 +49,7 @@ func (a *Controller) setupDeferredToast(c *ui.Context) {
 			b.Background(kitui.HoverColor(b, "toast-pbtn-bg", tok.Accent, tok.AccentHover))
 			kitui.ButtonPress(b, 0.96)
 			b.Children(func() {
-				ui.Text(c, "去配置").Font("system-ui").FontSize(fsCaption).FontWeight(500).
+				ui.Text(c, "去配置").Font(kitui.FontUI).FontSize(fsCaption).FontWeight(500).
 					TextColor(toastPrimaryButtonTextColor(tok)).SingleLine()
 			}).OnClick(func() {
 				dismiss()

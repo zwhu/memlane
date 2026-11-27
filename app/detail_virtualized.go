@@ -302,14 +302,14 @@ func (a *App) renderDetailRow(c *ui.Context, s *pane, i Item, r detailRow, mdOpt
 			padBot, bwBot = 11, 1
 		}
 		ui.Column(c).FillWidth().MaxWidth(readerMaxW).Padding(0, 0, padOut, 0).Children(func() {
-			card := ui.Column(c).FillWidth().Padding(padTop, 14, padBot, 14).Background(tok.Fill1).
-				BorderWidth(bwTop, 1, bwBot, 1).BorderColor(tok.Border).Gap(6)
+			card := ui.Column(c).FillWidth().Padding(padTop, 16, padBot, 16).Background(tok.Fill1).
+				BorderWidth(bwTop, 1, bwBot, 1).BorderColor(tok.Border).Gap(8)
 			if r.first && r.last {
 				card.Radius(radius)
 			}
 			card.Children(func() {
 				if r.first {
-					ui.Text(c, r.roleLabel).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
+					ui.Text(c, r.roleLabel).Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3)
 				}
 				markdown.View(c.Key(r.key), r.text, mdOpts)
 				if r.last && r.truncated {
@@ -367,7 +367,7 @@ func (a *App) renderDetailRow(c *ui.Context, s *pane, i Item, r detailRow, mdOpt
 					}
 					ui.Icon(c, ico).FontSize(12).TextColor(tok.Text3).Shrink(0)
 					ui.Box(c).Size(6, 6).Radius(3).Background(statusCol).Shrink(0)
-					ui.Text(c, t.Name).Font("ui-monospace").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
+					ui.Text(c, t.Name).Font(fontMono).FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
 					if t.Status != "" {
 						homeText(c, t.Status, homeMeta).SingleLine().Shrink(0)
 					}

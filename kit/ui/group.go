@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	mygoui "github.com/egoist/mygo/ui"
 )
 
@@ -18,13 +16,13 @@ func Group(c *mygoui.Context, tok *Tokens, title, desc string, actions func(), r
 		if title != "" || desc != "" || actions != nil {
 			mygoui.Row(c).FillWidth().Padding(0, Sp1, Sp2, Sp1).Gap(Sp2).AlignItems(mygoui.Center).Children(func() {
 				if title != "" {
-					mygoui.Text(c, title).Font("system-ui").FontSize(FSBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+					mygoui.Text(c, title).Font(FontUI).FontSize(FSBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
 				}
 				if desc != "" && actions == nil {
 					mygoui.Spacer(c)
-					mygoui.Text(c, desc).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
+					mygoui.Text(c, desc).Font(FontUI).FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 				} else if desc != "" {
-					mygoui.Text(c, desc).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
+					mygoui.Text(c, desc).Font(FontUI).FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 					mygoui.Spacer(c)
 				} else if actions != nil {
 					mygoui.Spacer(c)
@@ -35,7 +33,7 @@ func Group(c *mygoui.Context, tok *Tokens, title, desc string, actions func(), r
 			})
 		}
 		mygoui.Column(c).FillWidth().Gap(1).Dividers(1, tok.Border).
-			Background(tok.Fill1).Border(1, tok.Border).Radius(RadiusMenu).
+			Background(tok.Fill1).Border(1, tok.Border).Radius(RadiusCard).
 			Clip().Children(rows)
 	})
 }
@@ -73,14 +71,11 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 	double := opts.Desc != "" || opts.DescExtra != nil || opts.Error != ""
 	minH := RowHeight1
 	padV := Sp2
-	colGap := float32(2)
+	colGap := Sp1
 	if double {
 		minH = 52
-		padV = 10
-		colGap = 3
-		if (opts.Desc != "" && (len([]rune(opts.Desc)) > 20 || strings.Contains(opts.Desc, "\n"))) || opts.Error != "" {
-			padV = Sp3
-		}
+		padV = Sp3
+		colGap = Sp1
 	}
 	showChevron := (opts.Clickable || opts.Chevron) && !opts.HideChevron
 
@@ -92,7 +87,7 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 			if opts.Title != "" || opts.TitleExtra != nil {
 				mygoui.Row(c).FillWidth().AlignItems(mygoui.Center).Gap(Sp2).Children(func() {
 					if opts.Title != "" {
-						mygoui.Text(c, opts.Title).Font("system-ui").FontSize(FSBody).FontWeight(500).TextColor(tok.Text1).LineHeight(1.4)
+						mygoui.Text(c, opts.Title).Font(FontUI).FontSize(FSBody).FontWeight(500).TextColor(tok.Text1).LineHeight(1.4)
 					}
 					if opts.TitleExtra != nil {
 						opts.TitleExtra()
@@ -102,16 +97,16 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 			if opts.Desc != "" {
 				t := mygoui.Text(c, opts.Desc).FillWidth().MinWidth(0).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text3).LineHeight(1.45)
 				if opts.DescMono {
-					t.Font("ui-monospace").FontSize(FSCaption).FontFeatures("tnum")
+					t.Font(FontMono).FontSize(FSCaption).FontFeatures("tnum")
 				} else {
-					t.Font("system-ui")
+					t.Font(FontUI)
 				}
 			}
 			if opts.DescExtra != nil {
 				opts.DescExtra()
 			}
 			if opts.Error != "" {
-				mygoui.Text(c, opts.Error).FillWidth().MinWidth(0).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.4)
+				mygoui.Text(c, opts.Error).FillWidth().MinWidth(0).Font(FontUI).FontSize(FSCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.4)
 			}
 		})
 		if opts.Value != "" || opts.Control != nil || showChevron {
@@ -123,9 +118,9 @@ func Row(c *mygoui.Context, tok *Tokens, opts RowOptions) mygoui.Element {
 					}
 					vt := mygoui.Text(c, opts.Value).FontSize(FSFootnote).FontWeight(400).FontFeatures("tnum").TextColor(vc).SingleLine()
 					if opts.ValueMono {
-						vt.Font("ui-monospace").FontSize(FSCaption)
+						vt.Font(FontMono).FontSize(FSCaption)
 					} else {
-						vt.Font("system-ui")
+						vt.Font(FontUI)
 					}
 				}
 				if opts.Control != nil {

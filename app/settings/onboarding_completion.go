@@ -12,7 +12,7 @@ func (a *Controller) onboardingWelcomeContent(c *ui.Context, primary string, dis
 	tok := a.tokens()
 	s := &a.environment
 	onboardingMascot(c, a.host.BrandMark, !a.windowIsHidden() && !a.windowIsInactive()).Margin(0, 0, sp1, 0)
-	ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
+	ui.Column(c).AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, "换个 Agent，接着做。").FontSize(26).FontWeight(600).TextColor(tok.Text1).LineHeight(1.3)
 		ui.Text(c, "项目记忆留在你的 Mac 上。\n换一个编码 Agent，也能用上之前积累的项目知识。").
 			FontSize(fsReading).TextColor(tok.Text2).LineHeight(1.6).TextAlign(ui.Center)
@@ -40,7 +40,7 @@ func (a *Controller) onboardingWelcomeContent(c *ui.Context, primary string, dis
 		onboardingPrimary(tok, c, primary, disabled, run).Height(36).Padding(0, sp5)
 		if !s.HostsLoaded || len(hosts) > 0 {
 			button := ui.ButtonBase(c).Role(ui.RoleButton).Label("让 Agent 代我安装").
-				Height(36).Padding(0, sp5).Gap(6).Radius(radius).Border(1, tok.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer).
+				Height(36).Padding(0, sp5).Gap(8).Radius(radius).Border(1, tok.Accent).AlignItems(ui.Center).Cursor(ui.CursorPointer).
 				OnClick(func() { a.onboarding.takeover, a.onboarding.fullPrompt = true, false })
 			button.Background(kitui.HoverColor(button, "takeover", tok.AccentSofter, tok.AccentSoft))
 			kitui.ButtonPress(button, 0.96)
@@ -50,8 +50,8 @@ func (a *Controller) onboardingWelcomeContent(c *ui.Context, primary string, dis
 			})
 		}
 	})
-	ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+	ui.Column(c).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Icon(c, onboardingShieldIcon).FontSize(13).TextColor(tok.Text3)
 			ui.Text(c, "数据与模型只留在本机 · 随时可一键卸载").FontSize(fsFootnote).TextColor(tok.Text3)
 		})
@@ -106,7 +106,7 @@ func (a *Controller) onboardingTakeoverDialog(c *ui.Context) {
 			kitui.GhostButton(c, tok, "查看完整指令", kitui.IconChev, func() { o.fullPrompt = !o.fullPrompt })
 			if o.fullPrompt {
 				ui.Scroll(c).FillWidth().MaxHeight(180).Radius(radius).Background(tok.Fill1).Children(func() {
-					ui.Text(c, prompt).Font("ui-monospace").FontSize(fsCaption).Padding(sp3).TextColor(tok.Text1)
+					ui.Text(c, prompt).Font(kitui.FontMono).FontSize(fsCaption).Padding(sp3).TextColor(tok.Text1)
 				})
 			}
 		},
@@ -119,7 +119,7 @@ func (a *Controller) onboardingDoneContent(c *ui.Context, primary string, disabl
 		a.onboarding.doneAt = c.Now()
 	}
 	onboardingCompletionMark(tok, c, a.onboarding.doneAt)
-	ui.Column(c).AlignItems(ui.Center).Gap(6).Children(func() {
+	ui.Column(c).AlignItems(ui.Center).Gap(8).Children(func() {
 		setupHeading(tok, c, "Memlane 已就绪")
 		setupDescription(tok, c, "本地记忆服务正在运行。关闭窗口后它会在菜单栏继续工作。")
 	})
@@ -152,7 +152,7 @@ func (a *Controller) onboardingDoneContent(c *ui.Context, primary string, disabl
 			Leading: func() { kitui.StatusDot(c, tok, "ok") }, Value: "运行中", ValueColor: tok.OK})
 		kitui.Row(c, tok, kitui.RowOptions{Title: "Agent 接入", Desc: connectionSummary, Leading: func() { kitui.StatusDot(c, tok, connectionDot) },
 			Control: func() {
-				ui.Row(c).Gap(2).Children(func() {
+				ui.Row(c).Gap(4).Children(func() {
 					for _, row := range rows {
 						icon := ui.Image(c, agentOriginalIcon(row.Kind)).Size(18, 18).Fit(ui.Contain).Label(connectionName(row.Kind))
 						label, _ := a.onboardingConnectionStatus(row)
@@ -165,7 +165,7 @@ func (a *Controller) onboardingDoneContent(c *ui.Context, primary string, disabl
 		kitui.Row(c, tok, kitui.RowOptions{Title: "记忆提炼", Desc: a.onboarding.method, Leading: func() { kitui.StatusDot(c, tok, "ok") }})
 	})
 	if pending > 0 {
-		ui.Row(c).FillWidth().Padding(sp3, sp4).Gap(10).AlignItems(ui.Start).Radius(radius).Background(tok.AccentSofter).Children(func() {
+		ui.Row(c).FillWidth().Padding(sp3, sp4).Gap(12).AlignItems(ui.Start).Radius(radius).Background(tok.AccentSofter).Children(func() {
 			ui.Icon(c, onboardingNextIcon).FontSize(15).TextColor(tok.Accent).Shrink(0)
 			ui.Text(c, "下一步：重启已接入的 Agent，在项目里新建会话、正常提问。第一条记忆通常会在几分钟内出现在总览里。").
 				Grow(1).MinWidth(0).FontSize(fsFootnote).LineHeight(1.6).TextColor(tok.Text2)

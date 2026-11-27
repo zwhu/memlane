@@ -84,13 +84,13 @@ func (a *ControllerOf[T]) RenderHeatmap(c *ui.Context, now time.Time) {
 						}
 					}
 				})
-				ui.Row(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Stretch).Children(func() {
 					ui.Box(c).Width(12).Height(gridH).Shrink(0).Children(func() {
 						for _, wd := range []struct {
 							row   int
 							label string
 						}{{1, "一"}, {3, "三"}, {5, "五"}} {
-							ui.Text(c, wd.label).Font("system-ui").FontSize(9).TextColor(tok.Text3).
+							ui.Text(c, wd.label).Font(kitui.FontUI).FontSize(9).TextColor(tok.Text3).
 								Absolute().Left(0).Top(float32(wd.row * 14)).SingleLine()
 						}
 					})
@@ -269,7 +269,7 @@ func (a *ControllerOf[T]) RenderHeatmap(c *ui.Context, now time.Time) {
 								}
 								tipY := float32(hoverWD*14) - 30
 								tip.Absolute().Left(tipX).Top(tipY).Children(func() {
-									ui.Text(c, hoveredLabel).Font("system-ui").FontSize(fsCaption).FontWeight(500).
+									ui.Text(c, hoveredLabel).Font(kitui.FontUI).FontSize(fsCaption).FontWeight(500).
 										FontFeatures("tnum").TextColor(tok.TooltipText).SingleLine()
 								})
 							}
@@ -278,23 +278,23 @@ func (a *ControllerOf[T]) RenderHeatmap(c *ui.Context, now time.Time) {
 				})
 			})
 			// Right: today summary + legend.
-			ui.Column(c).Grow(1).MinWidth(0).AlignItems(ui.End).Gap(sp2).Padding(0, 0, 2, 0).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).AlignItems(ui.End).Gap(sp2).Padding(0, 0, 4, 0).Children(func() {
 				if !v.Loaded {
 					kitui.Text(c, tok, "读取中…", homeBody)
 				} else {
 					n := buckets[today.Format("2006-01-02")]
 					ui.Row(c).Label(fmt.Sprintf("今天新增 %d 条", n)).AlignItems(ui.Baseline).Gap(3).Children(func() {
 						kitui.Text(c, tok, "今天新增", homeBody)
-						ui.Text(c, fmt.Sprint(n)).Font("system-ui").FontSize(fsFootnote).FontWeight(550).FontFeatures("tnum").TextColor(tok.Text1)
+						ui.Text(c, fmt.Sprint(n)).Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(550).FontFeatures("tnum").TextColor(tok.Text1)
 						kitui.Text(c, tok, "条", homeBody)
 					})
 				}
 				ui.Row(c).AlignItems(ui.Center).Gap(3).Children(func() {
-					ui.Text(c, "少").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+					ui.Text(c, "少").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 					for level := 1; level <= 4; level++ {
 						ui.Box(c).Size(9, 9).Radius(2).Background(tok.Heat[level])
 					}
-					ui.Text(c, "多").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+					ui.Text(c, "多").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 				})
 			})
 		})

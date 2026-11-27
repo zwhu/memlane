@@ -57,7 +57,7 @@ func (g *Controller) codeGraphEmpty(c *ui.Context, tok *kitui.Tokens) {
 			}
 			ui.PrimaryButton(c, label).Disabled(g.CodeIndexBlocked()).OnClick(func() { runToggle(g.OnToggleCode, true) })
 			if g.Error != "" {
-				ui.Text(c, g.Error).Font("system-ui").FontSize(kitui.FSFootnote).TextColor(tok.Danger).MaxLines(4).TextAlign(ui.Center)
+				ui.Text(c, g.Error).Font(kitui.FontUI).FontSize(kitui.FSFootnote).TextColor(tok.Danger).MaxLines(4).TextAlign(ui.Center)
 			}
 			// Restored index activity is cached globally and is not scoped to this
 			// disabled project. Do not present it as this project's enable result.
@@ -100,10 +100,10 @@ func (g *Controller) RenderView(c *ui.Context) {
 			return
 		}
 		if g.Error != "" {
-			ui.Text(c, g.Error).FontSize(11).TextColor(tok.Text3).Margin(10, 32)
+			ui.Text(c, g.Error).FontSize(kitui.FSCaption).TextColor(tok.Text3).Margin(12, 32)
 		}
 		if g.Mode == ModeCode && g.CodeStatus != "" {
-			ui.Text(c, g.CodeStatus).FontSize(11).TextColor(tok.Text3).Margin(10, 32)
+			ui.Text(c, g.CodeStatus).FontSize(kitui.FSCaption).TextColor(tok.Text3).Margin(12, 32)
 		}
 		if g.Host != nil && g.Host.View() != nil && g.Host.HasFrame() {
 			ui.Column(c.Key("graph-canvas-container")).Grow(1).MinHeight(0).Margin(0, kitui.PageInset, kitui.PageInset, kitui.PageInset).Radius(12).Clip().Children(func() {
@@ -111,7 +111,7 @@ func (g *Controller) RenderView(c *ui.Context) {
 			})
 		}
 		if g.Selection != "" {
-			ui.Text(c, "选中节点 · "+g.Selection).FontSize(10).TextColor(tok.Text3).MaxLines(3).Margin(10, 32)
+			ui.Text(c, "选中节点 · "+g.Selection).FontSize(kitui.FSCaption).TextColor(tok.Text3).MaxLines(3).Margin(12, 32)
 			kitui.OutlineButton(c, tok, "查看官方文档出处", nil, g.OnOpenNodeSource)
 		}
 	})

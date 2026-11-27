@@ -91,13 +91,13 @@ func (a *Controller) SaveCommonAgentAccess(commonID, agentID, access string) {
 func (a *Controller) commonDatasetSettings(c *ui.Context) {
 	tok := a.tokens()
 	directory := a.access.Directory
-	ui.Text(c, "通用记忆数据组").Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1)
+	ui.Text(c, "通用记忆数据组").Font(kitui.FontUI).FontSize(fsBody).FontWeight(600).TextColor(tok.Text1)
 	if !a.access.Loaded {
-		ui.Text(c, "正在读取通用记忆权限配置…").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+		ui.Text(c, "正在读取通用记忆权限配置…").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 	} else if directory.Common != nil {
-		ui.Text(c, directory.Common.SyncLabel(directory.Agents...)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2)
+		ui.Text(c, directory.Common.SyncLabel(directory.Agents...)).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text2)
 	} else {
-		ui.Text(c, "尚未准备通用记忆数据组，准备后可按 Agent 开启只读权限。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
+		ui.Text(c, "尚未准备通用记忆数据组，准备后可按 Agent 开启只读权限。").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
 	}
 	kitui.TextButton(c, tok, "准备／核对通用记忆", nil).Disabled(!a.access.Loaded || a.access.Busy).OnClick(func() {
 		a.mutateAccess(func(ctx context.Context, client ProjectControlClient, revision int64) (AccessDirectory, error) {
@@ -115,10 +115,10 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 	}
 	common := *directory.Common
 	ui.Column(c).FillWidth().Padding(sp3, 0, 0, 0).Gap(sp2).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-		ui.Text(c, "Agent 访问权限").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
-		ui.Text(c, "新接入的 Agent 默认不可访问；可按需开启只读权限（通用记忆不支持 Agent 写入）。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+		ui.Text(c, "Agent 访问权限").Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
+		ui.Text(c, "新接入的 Agent 默认不可访问；可按需开启只读权限（通用记忆不支持 Agent 写入）。").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 		if len(directory.Agents) == 0 {
-			ui.Text(c, "尚未连接任何 Agent").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+			ui.Text(c, "尚未连接任何 Agent").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 			return
 		}
 		renderAgentRows := func() {
@@ -144,20 +144,20 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 				ui.Column(c.Key("common-access-row-" + key)).FillWidth().Gap(4).Children(func() {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 						agentLogo(tok, c, accessAgentIcon(agent), 18)
-						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-							ui.Text(c, AgentDisplayName(agent.Name)).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().MaxLines(1)
+						ui.Column(c).Grow(1).MinWidth(0).Gap(0).Children(func() {
+							ui.Text(c, AgentDisplayName(agent.Name)).Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().MaxLines(1)
 							switch {
 							case saving:
 								ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
 									kitui.Spinner(c, tok)
-									ui.Text(c, "保存中…").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+									ui.Text(c, "保存中…").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 								})
 							case savedRecently:
-								ui.Text(c, "已保存").Font("system-ui").FontSize(fsCaption).TextColor(tok.OK).SingleLine()
+								ui.Text(c, "已保存").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.OK).SingleLine()
 							case pending != nil:
-								ui.Text(c, "待核对").Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
+								ui.Text(c, "待核对").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
 							case agentUnconfirmed:
-								ui.Text(c, "权限未确认").Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
+								ui.Text(c, "权限未确认").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Danger).SingleLine()
 							}
 						})
 						seg := kitui.Segmented(c, tok, "common-access-seg-"+key, AgentDisplayName(agent.Name)+" 通用记忆访问权限", &selected, []string{"不可访问", "只读"}, func() {
@@ -183,7 +183,7 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 							errText = "尚未确认保存：" + a.access.Message
 						}
 						ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-							ui.Text(c, errText).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
+							ui.Text(c, errText).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
 							kitui.SmallButton(c, tok, "重新核对", kitui.IconRefresh, a.RefreshProjectDirectory).Disabled(a.access.Loading)
 						})
 					}
@@ -196,7 +196,7 @@ func (a *Controller) commonDatasetSettings(c *ui.Context) {
 			ui.Column(c).FillWidth().Gap(sp2).Children(renderAgentRows)
 		}
 		if a.access.Message != "" && len(a.access.CheckboxPending) == 0 {
-			ui.Text(c, a.access.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+			ui.Text(c, a.access.Message).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 		}
 	})
 }

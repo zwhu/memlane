@@ -202,9 +202,9 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 		})
 
 		if len(s.Knowledge.RecallFilter) > 0 {
-			ui.Row(c).FillWidth().Padding(6, sp2, 6, sp3).Radius(radius).Background(tok.AccentSofter).AlignItems(ui.Center).Gap(sp2).Children(func() {
+			ui.Row(c).FillWidth().Padding(8, sp2, 8, sp3).Radius(radius).Background(tok.AccentSofter).AlignItems(ui.Center).Gap(sp2).Children(func() {
 				ui.Icon(c, v4IconRecall).FontSize(13).TextColor(tok.Accent).Shrink(0)
-				ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Accent).SingleLine()
+				ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font(fontUI).FontSize(fsFootnote).FontWeight(600).TextColor(tok.Accent).SingleLine()
 				if s.Loaded && !s.Loading {
 					shown := len(a.filteredKnowledgeCatalog(s))
 					if s.Knowledge.V2Mode {

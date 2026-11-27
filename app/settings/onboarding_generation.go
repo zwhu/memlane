@@ -97,7 +97,7 @@ func (a *Controller) onboardingGenerationCard(c *ui.Context, title, desc string,
 				ui.Spacer(c)
 				onboardingGenerationRadio(tok, c, selected)
 			})
-			ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 				kitui.Text(c, tok, title, kitui.RoleBody).FontWeight(600)
 				if recommended {
 					kitui.Badge(c, tok, "推荐", "accent")
@@ -242,14 +242,14 @@ func (a *Controller) onboardingGenerationAPI(c *ui.Context, locked bool) {
 	s, g := &a.integrations, &a.onboardingGeneration
 	halfWidth := (float32(onboardingWidth) - sp3) / 2
 	field := func(width float32, label, key string, value *string, placeholder string, password bool) {
-		ui.Column(c.Key("onboarding-api-field-" + key)).Width(width).Gap(5).Children(func() {
+		ui.Column(c.Key("onboarding-api-field-" + key)).Width(width).Gap(4).Children(func() {
 			ui.Text(c, label).FontSize(fsFootnote).TextColor(tok.Text2)
 			inputLabel := label
 			if key == "model" {
 				inputLabel = "模型 ID"
 			}
 			input := ui.TextInput(c.Key(fmt.Sprintf("%s-%d", key, s.KeyEpoch)), value).
-				Label(inputLabel).Placeholder(placeholder).FillWidth().Height(32).Font("ui-monospace").FontSize(fsFootnote).Disabled(locked).
+				Label(inputLabel).Placeholder(placeholder).FillWidth().Height(32).Font(kitui.FontMono).FontSize(fsFootnote).Disabled(locked).
 				OnSubmit(func() {})
 			if key == "model" && g.focusModel {
 				input.Focus()
@@ -264,7 +264,7 @@ func (a *Controller) onboardingGenerationAPI(c *ui.Context, locked bool) {
 	ui.Column(c.Key("onboarding-generation-api")).FillWidth().Gap(sp3).Children(func() {
 		kitui.Text(c, tok, "模型接口", kitui.RoleMeta).FontWeight(600)
 		ui.Row(c).FillWidth().Gap(sp3).Children(func() {
-			ui.Column(c).Width(halfWidth).Gap(5).Children(func() {
+			ui.Column(c).Width(halfWidth).Gap(4).Children(func() {
 				ui.Text(c, "服务类型").FontSize(fsFootnote).TextColor(tok.Text2)
 				selector := ui.Select(c.Key("onboarding-api-protocol"), &s.ProviderLabel, []string{"OpenAI 兼容", "OpenAI", "Anthropic", "Gemini", "Ollama"}).
 					Label("服务类型").FillWidth().Height(32).Disabled(locked)
@@ -396,7 +396,7 @@ func (a *Controller) onboardingGenerationProgressRow(c *ui.Context, phase onboar
 	tok := a.tokens()
 	g := &a.onboardingGeneration
 	active := g.phase == phase || (phase == onboardingSelecting && g.phase == onboardingActivating)
-	ui.Row(c.Key(label)).FillWidth().MinHeight(30).Gap(10).AlignItems(ui.Center).Children(func() {
+	ui.Row(c.Key(label)).FillWidth().MinHeight(30).Gap(12).AlignItems(ui.Center).Children(func() {
 		ui.Row(c).Size(18, 18).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 			switch {
 			case active && g.failure != "":

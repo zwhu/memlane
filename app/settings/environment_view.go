@@ -87,12 +87,12 @@ func (a *Controller) environmentSetup(c *ui.Context, initial bool) {
 				if extraHint != "" || detailReason != "" {
 					hintText, hintCol, techText := extraHint, extraColor, detailReason
 					descExtra = func() {
-						ui.Column(c).FillWidth().Gap(2).Children(func() {
+						ui.Column(c).FillWidth().Gap(4).Children(func() {
 							if hintText != "" {
-								ui.Text(c, hintText).Font("system-ui").FontSize(fsCaption).TextColor(hintCol).LineHeight(1.5)
+								ui.Text(c, hintText).Font(kitui.FontUI).FontSize(fsCaption).TextColor(hintCol).LineHeight(1.5)
 							}
 							if techText != "" {
-								ui.Text(c, techText).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+								ui.Text(c, techText).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 							}
 						})
 					}
@@ -118,15 +118,15 @@ func (a *Controller) environmentSetup(c *ui.Context, initial bool) {
 
 		if s.Error != "" {
 			ui.Column(c).FillWidth().Padding(sp3, sp4).Gap(sp1).Radius(radius).Background(tok.Danger.Alpha(0.08)).Children(func() {
-				ui.Text(c, "准备未完成").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Danger)
-				summary := ui.Text(c, bootstrap.RedactInstallerText(s.Error)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.6)
+				ui.Text(c, "准备未完成").Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(600).TextColor(tok.Danger)
+				summary := ui.Text(c, bootstrap.RedactInstallerText(s.Error)).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.6)
 				if !s.Details {
 					summary.MaxLines(2)
 				}
 			})
 		}
 		if s.Message != "" {
-			ui.Text(c, s.Message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
+			ui.Text(c, s.Message).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.5)
 		}
 		if s.Busy {
 			stageTitle := "正在准备依赖组件…"

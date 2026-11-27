@@ -400,7 +400,7 @@ func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int, active boo
 	}
 	btn := ui.ButtonBase(c.Key("unread-badge-"+p.ID)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
 		Label("未读记忆："+p.Name).Tooltip(fmt.Sprintf("%d 条未读记忆，点击查看", count)).
-		MinWidth(20).Height(18).Padding(0, 6).Radius(9).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center).Shrink(0)
+		MinWidth(20).Height(18).Padding(0, 8).Radius(9).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center).Shrink(0)
 	hoverBg := tok.Accent
 	btn.Background(homeHoverColor(btn, "badge-bg", bg, hoverBg))
 	if btn.Hovered() {
@@ -408,7 +408,7 @@ func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int, active boo
 	}
 	v4ButtonPress(btn, 0.92)
 	btn.Children(func() {
-		ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").TextColor(fg).SingleLine()
+		ui.Text(c, label).Font(fontUI).FontSize(fsCaption).FontWeight(600).FontFeatures("tnum").TextColor(fg).SingleLine()
 	}).OnClick(func() {
 		if usePopover {
 			if a.projectUI.UnreadPopoverOpen && a.projectUI.UnreadPopoverProject == p.ID {
@@ -428,19 +428,19 @@ func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int, active boo
 		ui.Popover(c.Key("unread-popover-"+p.ID), btn, &open, func() {
 			ui.Column(c).Width(304).Padding(sp2, sp3).Gap(sp2).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-					ui.Text(c, fmt.Sprintf("未读记忆 · %d 条", count)).Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1).SingleLine()
+					ui.Text(c, fmt.Sprintf("未读记忆 · %d 条", count)).Font(fontUI).FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1).SingleLine()
 					ui.Spacer(c)
 				})
 				previewLimit := min(10, len(q.UnreadPreview))
 				for idx := 0; idx < previewLimit; idx++ {
 					item := q.UnreadPreview[idx]
 					row := ui.ButtonBase(c.Key("unread-preview-"+item.ID)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
-						Label(item.Title).FillWidth().Padding(5, 6).Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start).Gap(sp2)
+						Label(item.Title).FillWidth().Padding(4, 8).Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start).Gap(sp2)
 					row.Background(homeHoverColor(row, "unread-prev-bg", ui.Transparent, tok.Hover))
 					row.Children(func() {
 						v4UnreadDot(c)
-						ui.Text(c, item.Title).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
-						ui.Text(c, displayDate(item.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+						ui.Text(c, item.Title).Font(fontUI).FontSize(fsCaption).TextColor(tok.Text1).SingleLine().Grow(1).MinWidth(0)
+						ui.Text(c, displayDate(item.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 					}).OnClick(func() {
 						a.projectUI.UnreadPopoverOpen = false
 						a.projectUI.UnreadPopoverProject = ""
@@ -455,7 +455,7 @@ func (a *App) unreadProjectBadge(c *ui.Context, p Project, index int, active boo
 							AlignItems(ui.Center).Justify(ui.SpaceBetween)
 						allBtn.Background(homeHoverColor(allBtn, "unread-all-bg", ui.Transparent, tok.AccentSofter))
 						allBtn.Children(func() {
-							ui.Text(c, viewAllLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+							ui.Text(c, viewAllLabel).Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
 							ui.Icon(c, v4IconChev).FontSize(14).TextColor(tok.Accent).Shrink(0)
 						}).OnClick(func() {
 							a.openProjectUnreadFeed(index)

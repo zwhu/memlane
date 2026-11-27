@@ -28,7 +28,7 @@ func (a *App) allProjectsDialog(c *ui.Context) {
 		Body: func() {
 			ui.Scroll(c.Key("all-projects-list")).FillWidth().MaxHeight(maxListH).MinHeight(0).TrackScroll(&a.allProjectsScroll).Children(func() {
 				if len(a.Config.Projects) == 0 {
-					ui.Text(c, "暂无项目").Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text3).Padding(sp4, 0)
+					ui.Text(c, "暂无项目").Font(fontUI).FontSize(fsFootnote).TextColor(tok.Text3).Padding(sp4, 0)
 					return
 				}
 				ui.Column(c).FillWidth().Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
@@ -48,13 +48,13 @@ func (a *App) allProjectsDialog(c *ui.Context) {
 							v4ButtonPress(open, 0.995)
 							open.Children(func() {
 								ui.Icon(c, v4IconFolder).FontSize(16).TextColor(tok.Text2).Shrink(0)
-								ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-									ui.Text(c, project.Name).Font("system-ui").FontSize(fsBody).FontWeight(500).TextColor(tok.Text1).MaxLines(2)
+								ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+									ui.Text(c, project.Name).Font(fontUI).FontSize(fsBody).FontWeight(500).TextColor(tok.Text1).MaxLines(2)
 									path := project.Path
 									if path == "" {
 										path = "未关联路径"
 									}
-									ui.Text(c, path).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine().Tooltip(path)
+									ui.Text(c, path).Font(fontMono).FontSize(fsCaption).TextColor(tok.Text3).SingleLine().Tooltip(path)
 								})
 							}).OnClick(func() {
 								a.allProjectsOpen = false

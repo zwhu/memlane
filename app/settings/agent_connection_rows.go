@@ -167,7 +167,7 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			Desc:     desc,
 			DescMono: descMono,
 			TitleExtra: func() {
-				ui.Text(c, version).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).Label(name + " 版本：" + version).SingleLine()
+				ui.Text(c, version).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).Label(name + " 版本：" + version).SingleLine()
 				if slices.Contains(s.PinnedAgentKinds, row.Kind) {
 					kitui.Badge(c, tok, "已选", "")
 				}
@@ -214,7 +214,7 @@ func (a *Controller) agentConnectionRow(c *ui.Context, row AgentConnection) {
 			},
 		})
 		if row.Status == "prepared" && row.Preview != nil && !previewOpen && !repair {
-			ui.Column(c).FillWidth().Padding(0, sp4, sp3, sp4+36).Gap(5).Children(func() {
+			ui.Column(c).FillWidth().Padding(0, sp4, sp3, sp4+36).Gap(4).Children(func() {
 				kitui.Text(c, tok, "将为 "+name+" 添加 Memlane 连接，确认后生效。", kitui.RoleMeta)
 				if len(row.Preview.DisabledPlugins) > 0 {
 					kitui.Text(c, tok, fmt.Sprintf("将替换 %d 个旧 Cognee 连接。", len(row.Preview.DisabledPlugins)), kitui.RoleMeta)
@@ -399,7 +399,7 @@ func (a *Controller) agentEnvironmentDetails(c *ui.Context, row AgentConnection)
 	// Inset inside the measured width. FillWidth plus an external left margin
 	// made the expanded directory escape the shared list surface.
 	ui.Column(c.Key("environment-"+row.ID)).Label("Agent目录详情："+connectionName(row.Kind)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
-		ui.Column(c).FillWidth().Padding(sp3).Gap(6).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp3).Gap(8).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 			if row.Profile != "" {
 				kitui.Text(c, tok, "配置目录："+row.Profile, kitui.RoleMeta).FillWidth().MinWidth(0).SingleLine().Tooltip(row.Profile)
 			}

@@ -12,7 +12,7 @@ func (a *App) sourceContext(c *ui.Context, s *pane) {
 	if summary == "" {
 		summary = projectDisplayTitle(origin)
 	}
-	ui.Column(c).FillWidth().Padding(sp2+2, sp3).Gap(6).Radius(radius).Background(tok.AccentSofter).Border(1, tok.AccentSoft).Children(func() {
+	ui.Column(c).FillWidth().Padding(sp3, sp3).Gap(8).Radius(radius).Background(tok.AccentSofter).Border(1, tok.AccentSoft).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 			back := ui.ButtonBase(c.Key("source-return-btn")).Role(ui.RoleButton).Label("返回来源记忆").
 				Cursor(ui.CursorPointer).Height(24).Padding(0, sp2).Gap(4).Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Shrink(0)
@@ -20,7 +20,7 @@ func (a *App) sourceContext(c *ui.Context, s *pane) {
 			v4ButtonPress(back, 0.96)
 			back.Children(func() {
 				ui.Icon(c, readingBack).FontSize(12).TextColor(tok.Accent).Shrink(0)
-				ui.Text(c, "返回来源记忆").Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+				ui.Text(c, "返回来源记忆").Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
 			}).OnClick(func() { a.returnFromSource(s) })
 			ui.Box(c).Size(1, 12).Background(tok.Border).Shrink(0)
 			homeText(c, "来源记忆", homeMeta).Shrink(0)
@@ -34,7 +34,7 @@ func (a *App) sourceContext(c *ui.Context, s *pane) {
 			}
 		})
 		if summary != "" {
-			ui.Text(c, summary).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text1).MaxLines(2).LineHeight(1.5)
+			ui.Text(c, summary).Font(fontUI).FontSize(fsFootnote).TextColor(tok.Text1).MaxLines(2).LineHeight(1.5)
 		}
 		homeText(c, "会话级出处 · 未提供具体问答或工具记录的位置。", homeMeta)
 	})

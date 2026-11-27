@@ -107,7 +107,7 @@ func (a *Controller) generationEditorPanel(c *ui.Context) {
 func (a *Controller) generationEditorContent(c *ui.Context) {
 	tok := a.tokens()
 	s := &a.integrations
-	ui.Column(c).FillWidth().Gap(14).Children(func() {
+	ui.Column(c).FillWidth().Gap(16).Children(func() {
 		if !s.GenerationProviderDialog {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				title := "Provider 配置"
@@ -117,7 +117,7 @@ func (a *Controller) generationEditorContent(c *ui.Context) {
 				kitui.Text(c, tok, title, kitui.RoleHeading).FontSize(15).FontWeight(500)
 			})
 		}
-		ui.Column(c.Key("generation-editor-fields-" + s.ProfileID)).FillWidth().Gap(14).Children(func() {
+		ui.Column(c.Key("generation-editor-fields-" + s.ProfileID)).FillWidth().Gap(16).Children(func() {
 			locked := s.Busy || s.SaveOperation != ""
 			fieldKey := func(name string) *ui.Context {
 				return c.Key(fmt.Sprintf("generation-%s-%s-%d", name, s.ProfileID, s.KeyEpoch))

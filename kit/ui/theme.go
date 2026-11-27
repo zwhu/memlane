@@ -21,6 +21,7 @@ type Tokens struct {
 
 	OK, Danger, Warning mygoui.Color
 	ShadowLift          mygoui.Color
+	Backdrop            mygoui.Color
 
 	Heat [5]mygoui.Color
 }
@@ -55,6 +56,7 @@ func LightTokens() *Tokens {
 		Danger:       mygoui.Hex("#D64545"),
 		Warning:      mygoui.Hex("#D08A2F"),
 		ShadowLift:   mygoui.RGBA(0, 0, 0, .07),
+		Backdrop:     mygoui.RGBA(0, 0, 0, .28),
 		Heat: [5]mygoui.Color{
 			mygoui.Hex("#EDEDF0"),
 			mygoui.Hex("#5E6AD2").Alpha(.22),
@@ -96,6 +98,7 @@ func DarkTokens() *Tokens {
 		Danger:       mygoui.Hex("#EF6363"),
 		Warning:      mygoui.Hex("#E3A048"),
 		ShadowLift:   mygoui.RGBA(0, 0, 0, .32),
+		Backdrop:     mygoui.RGBA(0, 0, 0, .52),
 		Heat: [5]mygoui.Color{
 			mygoui.Hex("#2D2D32"),
 			mygoui.Hex("#7C86E8").Alpha(.25),
@@ -113,8 +116,10 @@ func TokensFor(dark bool) *Tokens {
 	return LightTokens()
 }
 
-// V4 type scale (6 levels).
+// V4 typography families and type scale (6 levels).
 const (
+	FontUI     string  = "system-ui"
+	FontMono   string  = "ui-monospace"
 	FSCaption  float32 = 11
 	FSFootnote float32 = 12
 	FSBody     float32 = 13
@@ -125,24 +130,29 @@ const (
 
 // V4 spacing and geometry (4px base grid).
 const (
-	Sp1         float32 = 4
-	Sp2         float32 = 8
-	Sp3         float32 = 12
-	Sp4         float32 = 16
-	Sp5         float32 = 20
-	Sp6         float32 = 24
-	Sp8         float32 = 32
-	Sp10        float32 = 40
-	Radius      float32 = 6
-	RadiusSmall float32 = 4
-	RadiusMenu  float32 = 8
-	RowHeight1  float32 = 32
-	RowHeight2  float32 = 54
-	TitlebarH   float32 = 52
-	SidebarW    float32 = 220
-	ListPaneW   float32 = 360
-	ListHeaderH float32 = 36
-	ReaderMaxW  float32 = 680
+	Sp1           float32 = 4
+	Sp2           float32 = 8
+	Sp3           float32 = 12
+	Sp4           float32 = 16
+	Sp5           float32 = 20
+	Sp6           float32 = 24
+	Sp8           float32 = 32
+	Sp10          float32 = 40
+	Radius        float32 = 6
+	RadiusSmall   float32 = 4
+	RadiusMenu    float32 = 8
+	RadiusCard    float32 = 8
+	RadiusPopover float32 = 8
+	RadiusDialog  float32 = 8
+	IconBox       float32 = 24
+	IconGlyph     float32 = 18
+	RowHeight1    float32 = 32
+	RowHeight2    float32 = 54
+	TitlebarH     float32 = 52
+	SidebarW      float32 = 220
+	ListPaneW     float32 = 360
+	ListHeaderH   float32 = 36
+	ReaderMaxW    float32 = 680
 )
 
 // Insets belong to their container level; do not reuse overview styling for pane toolbars.
@@ -161,7 +171,7 @@ func HomeTheme(tok *Tokens) *mygoui.Theme {
 	if tok.Dark {
 		t = *mygoui.DarkTheme()
 	}
-	t.Font = "system-ui"
+	t.Font = FontUI
 	t.FontSize = FSBody
 	t.Radius = Radius
 	t.Antialiased = true
@@ -228,7 +238,7 @@ func MarkdownOptions(tok *Tokens, size float32, codeBlock func(*mygoui.Context, 
 }
 
 func SidebarSelection(item mygoui.Element, tok *Tokens, selected bool, indicatorActive bool) mygoui.Element {
-	item.Cursor(mygoui.CursorPointer).Font("system-ui").FontSize(FSBody).FontWeight(400).LetterSpacing(0).Radius(Radius).TextColor(tok.Text1)
+	item.Cursor(mygoui.CursorPointer).Font(FontUI).FontSize(FSBody).FontWeight(400).LetterSpacing(0).Radius(Radius).TextColor(tok.Text1)
 	ButtonPress(item, 0.98)
 	if selected {
 		bg := tok.AccentSoft
@@ -257,7 +267,7 @@ func NavSurface(b mygoui.Element, tok *Tokens, active bool) mygoui.Element {
 
 func PaneHeading(c *mygoui.Context, tok *Tokens, title string, actions func()) mygoui.Element {
 	return mygoui.Row(c).Height(32).Shrink(0).AlignItems(mygoui.Center).Children(func() {
-		Text(c, tok, title, RoleHeading).FontSize(14).FontWeight(600)
+		Text(c, tok, title, RoleHeading).FontSize(FSReading).FontWeight(600)
 		mygoui.Spacer(c)
 		actions()
 	})
@@ -335,7 +345,7 @@ func Text(c *mygoui.Context, tok *Tokens, text string, role TextRole) mygoui.Ele
 }
 
 func (t Typography) Render(c *mygoui.Context, text string, role TextRole) mygoui.Element {
-	e := mygoui.Text(c, text).Font("system-ui").FontSize(t.Size).FontWeight(t.Weight).TextColor(t.Color).LineHeight(t.LineHeight).LetterSpacing(t.Tracking)
+	e := mygoui.Text(c, text).Font(FontUI).FontSize(t.Size).FontWeight(t.Weight).TextColor(t.Color).LineHeight(t.LineHeight).LetterSpacing(t.Tracking)
 	if role == RoleStatValue {
 		e.FontFeatures("tnum")
 	}

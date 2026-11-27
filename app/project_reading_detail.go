@@ -190,9 +190,9 @@ func (a *App) projectDeleteDialog(c *ui.Context, s *pane, i Item) {
 			a.deleteProjectKnowledge(s, target)
 		},
 		Body: func() {
-			ui.Text(c, "产生这条记忆的原始对话会保留。").Font("system-ui").FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
+			ui.Text(c, "产生这条记忆的原始对话会保留。").Font(fontUI).FontSize(fsBody).TextColor(tok.Text2).LineHeight(1.6)
 			if a.projectUI.DeleteError != "" {
-				ui.Text(c, a.projectUI.DeleteError).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).LineHeight(1.5)
+				ui.Text(c, a.projectUI.DeleteError).Font(fontUI).FontSize(fsCaption).TextColor(tok.Danger).LineHeight(1.5)
 			}
 		},
 	})
@@ -340,19 +340,19 @@ func (a *App) renderMissingSessionHistory(c *ui.Context, s *pane, i Item, scroll
 	ui.Scroll(c.Key("project-detail-scroll-"+scrollKey)).Grow(1).MinHeight(0).FillWidth().TrackScroll(scroll).Padding(sp4, sp10, sp8, sp10).Children(func() {
 		ui.Column(c).FillWidth().MaxWidth(readerMaxW).Gap(sp4).Children(func() {
 			ui.Column(c).FillWidth().Padding(sp4).Gap(sp3).Radius(radius).Background(tok.Fill1).Border(1, tok.Border).Children(func() {
-				ui.Text(c, "未找到对应原始会话原文（可能已过期或未留存）").Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).LineHeight(1.5)
+				ui.Text(c, "未找到对应原始会话原文（可能已过期或未留存）").Font(fontUI).FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).LineHeight(1.5)
 				ui.Column(c).FillWidth().Gap(sp2).Children(func() {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 						homeText(c, "历史会话 ID", homeMeta).Shrink(0)
 						row := ui.Row(c).MinWidth(0).AlignItems(ui.Center).Gap(4)
 						row.Children(func() {
-							ui.Text(c, i.ID).Font("ui-monospace").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().MinWidth(0).Tooltip(i.ID)
+							ui.Text(c, i.ID).Font(fontMono).FontSize(fsFootnote).TextColor(tok.Text1).SingleLine().MinWidth(0).Tooltip(i.ID)
 							hoverCopyAction(c, row, "复制历史会话 ID", func() { c.WriteClipboard(i.ID); a.copyFeedback("历史会话 ID") })
 						})
 					})
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 						homeText(c, "来源 Agent", homeMeta).Shrink(0)
-						ui.Text(c, agentLabel).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text1).SingleLine()
+						ui.Text(c, agentLabel).Font(fontUI).FontSize(fsFootnote).TextColor(tok.Text1).SingleLine()
 					})
 				})
 			})
@@ -366,8 +366,8 @@ func (a *App) projectDetailTail(c *ui.Context, s *pane, i *Item) {
 	if i.Source != "" || i.SourceDocument != "" {
 		ui.Row(c).FillWidth().Margin(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Padding(sp4, 0, 0, 0).Gap(sp3).AlignItems(ui.Center).Children(func() {
 			ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
-			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-				ui.Text(c, "出处 · "+readingSourceLabel(*i)).Font("system-ui").FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).MaxLines(2)
+			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+				ui.Text(c, "出处 · "+readingSourceLabel(*i)).Font(fontUI).FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).MaxLines(2)
 				sub := "官方关联材料"
 				if i.Source != "" {
 					sub = sessionIdentity(i.Source)
@@ -406,7 +406,7 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 	}
 	height := min(float32(400), h-160, float32(64+44*count))
 	ui.Popover(c, anchor, &a.projectUI.InfoOpen, func() {
-		ui.Row(c).Padding(10, 18).Shrink(0).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Padding(12, 20).Shrink(0).AlignItems(ui.Center).Children(func() {
 			homeText(c, "内容信息", homeHeading).FontSize(14)
 			ui.Spacer(c)
 			if time.Now().Before(a.projectUI.CopyUntil) {
@@ -414,14 +414,14 @@ func (a *App) contentInformation(c *ui.Context, anchor ui.Element, i Item) {
 			}
 			readingAction(c, "关闭内容信息", readingClose, func() { a.projectUI.InfoOpen = false })
 		})
-		ui.Scroll(c.Key("content-info-fields-"+i.Key())).Grow(1).MinHeight(0).TrackScroll(&a.projectUI.InfoScroll).Padding(0, 18, 14, 18).Gap(6).Children(func() {
+		ui.Scroll(c.Key("content-info-fields-"+i.Key())).Grow(1).MinHeight(0).TrackScroll(&a.projectUI.InfoScroll).Padding(0, 20, 16, 20).Gap(8).Children(func() {
 			for _, field := range fields {
 				f := field
 				if f.Value == "" {
 					continue
 				}
 				ui.Row(c).MinHeight(38).AlignItems(ui.Center).Gap(12).Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 						homeText(c, f.Name, homeMeta).FontSize(10)
 						value := f.Value
 						if strings.Contains(f.Name, "时间") {

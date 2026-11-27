@@ -192,7 +192,7 @@ const (
 // TrayFlyoutHeight fits the flyout sections at the menu bar width.
 // The scroll body absorbs any overflow while the header and footer stay pinned.
 func (a *App) TrayFlyoutHeight() int {
-	const header, components, settings, footer, borderAndBuffer = 45, 113, 173, 45, 8
+	const header, components, settings, footer, borderAndBuffer = 44, 112, 168, 44, 8
 	summary := a.settingsController.TrayQueueSummary()
 	alerts := 41
 	if count := len(summary.Alerts); count > 0 {
@@ -246,12 +246,12 @@ func (a *App) TrayFlyoutView(c *ui.Context) {
 
 func (a *App) trayFlyoutHeader(c *ui.Context, dual settings.DualStateSummary) {
 	dotState, statusLabel := a.trayOverallServiceStatusFor(dual)
-	ui.Row(c.Key("tray-head")).FillWidth().Shrink(0).Padding(10, sp3).Gap(sp2).AlignItems(ui.Center).
+	ui.Row(c.Key("tray-head")).FillWidth().Shrink(0).Padding(sp2, sp3).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		ui.Image(c, tok.BrandMark).Size(18, 18).Fit(ui.Contain).Shrink(0)
-		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(6).Children(func() {
+		ui.Row(c).Grow(1).MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
 			v4StatusDot(c, dotState)
-			ui.Text(c, statusLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, statusLabel).Font(fontUI).FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).SingleLine()
 		})
 		trayIconButton(c, "tray-open-window", "打开主窗口", v4IconWindow, func() {
 			if a.HideTrayFlyoutFn != nil {
@@ -312,14 +312,14 @@ func (a *App) trayFlyoutDualStateSection(c *ui.Context, dual settings.DualStateS
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Stretch).Justify(ui.Start)
 	row.Background(homeHoverColor(row, "tray-dual-state-bg", tok.Fill1, tok.Hover))
 	row.Children(func() {
-		ui.Column(c).FillWidth().Gap(2).Children(func() {
-			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+		ui.Column(c).FillWidth().Gap(4).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 				v4StatusDot(c, dotState)
-				ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(textColor).SingleLine().Grow(1).MinWidth(0)
+				ui.Text(c, label).Font(fontUI).FontSize(fsCaption).FontWeight(600).TextColor(textColor).SingleLine().Grow(1).MinWidth(0)
 				ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
 			})
 			if !dual.EngineStarting && dual.Reason != "" {
-				ui.Text(c, dual.Reason).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.4)
+				ui.Text(c, dual.Reason).Font(fontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).LineHeight(1.4)
 			}
 		})
 	}).OnClick(func() {
@@ -334,25 +334,25 @@ func (a *App) trayFlyoutComponentsSection(c *ui.Context) {
 	ch := a.settingsController.ServiceChannelComponent()
 	todayCount := a.trayTodayMemoryCount(time.Now())
 
-	ui.Column(c.Key("tray-components")).FillWidth().Padding(sp2, sp3).Gap(5).
+	ui.Column(c.Key("tray-components")).FillWidth().Padding(sp2, sp3).Gap(4).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		trayCompRow(c, cog.Name, cog.DotState, cog.CompactStatus, cog.StatusColor)
 		trayCompRow(c, ctrl.Name, ctrl.DotState, ctrl.CompactStatus, ctrl.StatusColor)
 		trayCompRow(c, ch.Name, ch.DotState, ch.CompactStatus, ch.StatusColor)
 		ui.Row(c).FillWidth().Padding(4, 0, 0, 0).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
-			ui.Text(c, "今日新增记忆").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
+			ui.Text(c, "今日新增记忆").Font(fontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 			ui.Spacer(c)
-			ui.Text(c, fmt.Sprintf("%d 条", todayCount)).Font("ui-monospace").FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Text1).SingleLine()
+			ui.Text(c, fmt.Sprintf("%d 条", todayCount)).Font(fontMono).FontSize(fsCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Text1).SingleLine()
 		})
 	})
 }
 
 func trayCompRow(c *ui.Context, name, dotState, metric string, metricColor ui.Color) {
-	ui.Row(c).FillWidth().MinHeight(20).AlignItems(ui.Center).Gap(6).Children(func() {
+	ui.Row(c).FillWidth().MinHeight(20).AlignItems(ui.Center).Gap(8).Children(func() {
 		v4StatusDot(c, dotState)
-		ui.Text(c, name).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+		ui.Text(c, name).Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
 		ui.Spacer(c)
-		ui.Text(c, metric).Font("ui-monospace").FontSize(fsCaption).FontWeight(400).FontFeatures("tnum").TextColor(metricColor).SingleLine()
+		ui.Text(c, metric).Font(fontMono).FontSize(fsCaption).FontWeight(400).FontFeatures("tnum").TextColor(metricColor).SingleLine()
 	})
 }
 
@@ -363,12 +363,12 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 	ui.Column(c.Key("tray-alerts")).FillWidth().Padding(sp2, sp3).Gap(trayAlertGap).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		if len(alerts) == 0 {
-			ui.Row(c).FillWidth().MinHeight(24).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Row(c).FillWidth().MinHeight(24).AlignItems(ui.Center).Gap(8).Children(func() {
 				v4StatusDot(c, "ok")
-				ui.Text(c, "所有项目消息状态正常").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
+				ui.Text(c, "所有项目消息状态正常").Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
 			})
 		} else {
-			ui.Text(c, "项目待处理提醒").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+			ui.Text(c, "项目待处理提醒").Font(fontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 			for _, alert := range alerts {
 				al := alert
 				total := al.ActionCount + al.ErrorCount
@@ -380,13 +380,13 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 				}
 				row := ui.ButtonBase(c.Key("tray-alert-"+al.ProjectID)).Role(ui.RoleButton).
 					Label(fmt.Sprintf("打开项目提醒：%s", al.ProjectName)).
-					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 6).Gap(6).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 8).Gap(8).
 					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
 				row.Background(homeHoverColor(row, "tray-alert-bg", ui.Transparent, tok.Hover))
 				v4ButtonPress(row, 0.99)
 				row.Children(func() {
-					v4StatusDot(c, dotState).Margin(1, 0, 0, 0)
-					ui.Text(c, al.ProjectName).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 1, 0).Grow(1).MinWidth(0)
+					v4StatusDot(c, dotState).Margin(0, 0, 0, 0)
+					ui.Text(c, al.ProjectName).Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 0, 0).Grow(1).MinWidth(0)
 					v4Badge(c, fmt.Sprintf("%d 项待处理", total), badgeTone)
 					ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
 				}).OnClick(func() {
@@ -404,19 +404,19 @@ func (a *App) trayFlyoutAlertsSection(c *ui.Context) {
 		}
 		if len(progress) > 0 {
 			ui.Row(c).FillWidth().Padding(4, 0, 0, 0).Children(func() {
-				ui.Text(c, "进行中与待提炼").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+				ui.Text(c, "进行中与待提炼").Font(fontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 			})
 			for _, item := range progress {
 				prog := item
 				row := ui.ButtonBase(c.Key("tray-progress-"+prog.ProjectID)).Role(ui.RoleButton).
 					Label(fmt.Sprintf("查看项目进度：%s", prog.ProjectName)).
-					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 6).Gap(6).
+					Cursor(ui.CursorPointer).FillWidth().MinHeight(trayAlertRowHeight).Padding(4, 8).Gap(8).
 					Radius(radiusSmall).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Start)
 				row.Background(homeHoverColor(row, "tray-progress-bg", ui.Transparent, tok.Hover))
 				v4ButtonPress(row, 0.99)
 				row.Children(func() {
-					v4StatusDot(c, "run").Margin(1, 0, 0, 0)
-					ui.Text(c, prog.ProjectName).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 1, 0).Grow(1).MinWidth(0)
+					v4StatusDot(c, "run").Margin(0, 0, 0, 0)
+					ui.Text(c, prog.ProjectName).Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine().Padding(0, 0, 0, 0).Grow(1).MinWidth(0)
 					v4Badge(c, fmt.Sprintf("%d 项进行中", prog.Count), "accent")
 					ui.Icon(c, v4IconChev).FontSize(12).TextColor(tok.Text4).Shrink(0)
 				}).OnClick(func() {
@@ -441,9 +441,9 @@ func (a *App) trayFlyoutQuickSettingsSection(c *ui.Context) {
 	keepAlive := a.KeepAliveOnQuit()
 	openAtLogin := a.OpenAtLogin()
 
-	ui.Column(c.Key("tray-settings")).FillWidth().Padding(sp2, sp3).Gap(6).Children(func() {
+	ui.Column(c.Key("tray-settings")).FillWidth().Padding(sp2, sp3).Gap(sp1).Children(func() {
 		ui.Row(c).FillWidth().MinHeight(28).AlignItems(ui.Center).Gap(sp2).Children(func() {
-			ui.Text(c, "外观").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, "外观").Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
 			ui.Spacer(c)
 			v4Segmented(c, "tray-appearance", "外观模式", &selected, []string{"跟随系统", "浅色", "深色"}, func() {
 				a.setAppearancePreference(appearanceModes[selected])
@@ -453,7 +453,7 @@ func (a *App) trayFlyoutQuickSettingsSection(c *ui.Context) {
 			})
 		})
 		ui.Row(c).FillWidth().MinHeight(26).AlignItems(ui.Center).Gap(sp2).Children(func() {
-			ui.Text(c, "退出时保持后台运行").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, "退出时保持后台运行").Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
 			ui.Spacer(c)
 			v4Switch(c, "tray-keep-alive", &keepAlive, "", func() {
 				a.SetKeepAliveOnQuit(keepAlive)
@@ -463,7 +463,7 @@ func (a *App) trayFlyoutQuickSettingsSection(c *ui.Context) {
 			}).Label("退出时保持后台运行开关")
 		})
 		ui.Row(c).FillWidth().MinHeight(26).AlignItems(ui.Center).Gap(sp2).Children(func() {
-			ui.Text(c, "登录时静默启动").Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, "登录时静默启动").Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
 			ui.Spacer(c)
 			v4Switch(c, "tray-open-at-login", &openAtLogin, "", func() {
 				a.ToggleOpenAtLogin(openAtLogin)
@@ -473,9 +473,9 @@ func (a *App) trayFlyoutQuickSettingsSection(c *ui.Context) {
 			}).Label("登录时静默启动开关")
 		})
 		if a.desktopPrefs.LoginError != "" {
-			ui.Text(c, a.desktopPrefs.LoginError).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Warning).LineHeight(1.4)
+			ui.Text(c, a.desktopPrefs.LoginError).Font(fontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Warning).LineHeight(1.4)
 		}
-		ui.Column(c).FillWidth().Padding(4, 0, 0, 0).Gap(2).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+		ui.Column(c).FillWidth().Padding(sp1, 0, 0, 0).Gap(0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 			trayNavLink(c, "tray-go-processing", "记忆提炼设置", func() {
 				a.openSettingsFromTray("记忆提炼")
 			})
@@ -499,7 +499,7 @@ func trayNavLink(c *ui.Context, key, label string, fn func()) ui.Element {
 		chevCol = tok.Text2
 	}
 	btn.Children(func() {
-		ui.Text(c, label).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(txtCol).SingleLine().Grow(1).MinWidth(0)
+		ui.Text(c, label).Font(fontUI).FontSize(fsFootnote).FontWeight(400).TextColor(txtCol).SingleLine().Grow(1).MinWidth(0)
 		ui.Icon(c, v4IconChev).FontSize(12).TextColor(chevCol).Shrink(0)
 	}).OnClick(fn)
 	return btn
@@ -511,7 +511,7 @@ func (a *App) trayFlyoutFooter(c *ui.Context) {
 	if keepAlive {
 		primaryLabel = "退出界面（后台保活）"
 	}
-	ui.Column(c.Key("tray-footer")).FillWidth().Shrink(0).Padding(sp2, sp3).Gap(6).
+	ui.Column(c.Key("tray-footer")).FillWidth().Shrink(0).Padding(sp2, sp3).Gap(sp1).
 		BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 		primaryBtn := ui.ButtonBase(c.Key("tray-quit-primary")).Role(ui.RoleButton).Label(primaryLabel).
 			Cursor(ui.CursorPointer).FillWidth().Height(28).Padding(0, sp3).
@@ -519,7 +519,7 @@ func (a *App) trayFlyoutFooter(c *ui.Context) {
 		primaryBtn.Background(homeHoverColor(primaryBtn, "tray-quit-bg", tok.Fill1, tok.Hover))
 		v4ButtonPress(primaryBtn, 0.98)
 		primaryBtn.Children(func() {
-			ui.Text(c, primaryLabel).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, primaryLabel).Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).SingleLine()
 		}).OnClick(func() {
 			a.requestQuit(!keepAlive)
 		})
@@ -531,7 +531,7 @@ func (a *App) trayFlyoutFooter(c *ui.Context) {
 			hardBtn.Background(homeHoverColor(hardBtn, "tray-quit-hard-bg", ui.Transparent, tok.Danger.Alpha(0.10)))
 			v4ButtonPress(hardBtn, 0.98)
 			hardBtn.Children(func() {
-				ui.Text(c, "彻底停止并退出").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Danger).SingleLine()
+				ui.Text(c, "彻底停止并退出").Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Danger).SingleLine()
 			}).OnClick(a.openForceQuitConfirm)
 		}
 	})

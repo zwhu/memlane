@@ -24,7 +24,7 @@ func (a *App) commonDeletionBanner(c *ui.Context, i Item) {
 	ui.Row(c).Shrink(0).Padding(sp2, sp10).Gap(sp3).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Danger.Alpha(.35)).Background(tok.Danger.Alpha(.08)).Children(func() {
 		v4StatusDot(c, "fail")
-		ui.Text(c, "删除结果尚未确认，请核对原操作，不重复删除。").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text1).Grow(1).MinWidth(0).MaxLines(2)
+		ui.Text(c, "删除结果尚未确认，请核对原操作，不重复删除。").Font(fontUI).FontSize(fsCaption).TextColor(tok.Text1).Grow(1).MinWidth(0).MaxLines(2)
 		v4SmallButton(c, "核对原删除结果", nil, a.confirmCommonDeletion).Disabled(e.Busy)
 	})
 }
@@ -102,7 +102,7 @@ func (a *App) commonKnowledgeEditor(c *ui.Context) {
 				if e.Submitted {
 					title = "保存结果"
 				}
-				ui.Text(c, title).Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
+				ui.Text(c, title).Font(fontUI).FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
 				ui.Spacer(c)
 				catIdx := 0
 				if e.Draft.Category == "experience" {

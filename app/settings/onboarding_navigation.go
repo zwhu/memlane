@@ -33,7 +33,7 @@ func (a *Controller) onboardingBar(c *ui.Context, page onboardingPage, centered 
 		bar.BorderWidth(0, 0, 1, 0).BorderColor(tok.Border)
 	}
 	bar.Children(func() {
-		ui.Row(c).Width(240).Height(52).Padding(0, 0, 0, 70).Gap(sp2).DragWindow().AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Width(240).Height(52).Padding(0, 0, 0, 72).Gap(sp2).DragWindow().AlignItems(ui.Center).Children(func() {
 			ui.Image(c, a.host.BrandMark).Size(20, 20).Fit(ui.Contain)
 			kitui.Text(c, tok, "Memlane", kitui.RoleBody).FontWeight(600)
 		})
@@ -81,11 +81,11 @@ func (a *Controller) onboardingStep(c *ui.Context, current, step onboardingPage,
 		ui.Text(c, title).FontSize(fsFootnote).TextColor(fg).SingleLine()
 	}
 	if done && !a.onboardingBusy() {
-		button := ui.ButtonBase(c.Key(step)).Role(ui.RoleButton).Label(title).Height(28).Padding(0, sp2).Gap(6).
+		button := ui.ButtonBase(c.Key(step)).Role(ui.RoleButton).Label(title).Height(28).Padding(0, sp2).Gap(8).
 			Radius(radius).BorderWidth(0).AlignItems(ui.Center).Cursor(ui.CursorPointer).OnClick(func() { a.navigateOnboarding(step) })
 		button.Background(kitui.HoverColor(button, "step", ui.Transparent, tok.Hover)).Children(body)
 	} else {
-		ui.Row(c.Key(step)).Height(28).Padding(0, sp2).Gap(6).AlignItems(ui.Center).Children(body)
+		ui.Row(c.Key(step)).Height(28).Padding(0, sp2).Gap(8).AlignItems(ui.Center).Children(body)
 	}
 }
 
@@ -127,10 +127,10 @@ func (a *Controller) onboardingFooter(c *ui.Context, page onboardingPage, label 
 			kitui.GhostButton(c, tok, "稍后配置，先进入 Memlane", nil, a.deferFirstGenerationSetup).Disabled(!a.canDeferFirstGenerationSetup())
 		}
 		ui.Text(c, hint).FontSize(fsFootnote).TextColor(tok.Text3).Grow(1).MinWidth(0).SingleLine().TextAlign(ui.Center)
-		kitui.OutlineButton(c, tok, "上一步", nil, func() { a.navigateOnboarding(page - 1) }).Height(32).Padding(0, 14).Disabled(a.onboardingBusy())
+		kitui.OutlineButton(c, tok, "上一步", nil, func() { a.navigateOnboarding(page - 1) }).Height(32).Padding(0, 16).Disabled(a.onboardingBusy())
 		if page == onboardingProcess {
 			if edit := a.onboardingProcessEditAction(); edit != nil {
-				kitui.OutlineButton(c, tok, "修改配置", nil, edit).Height(32).Padding(0, 14)
+				kitui.OutlineButton(c, tok, "修改配置", nil, edit).Height(32).Padding(0, 16)
 			}
 		}
 		onboardingPrimary(tok, c, label, disabled, run)

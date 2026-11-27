@@ -26,9 +26,9 @@ func v4TriAccessSelect(tok *kitui.Tokens, c *ui.Context, key, agentName string, 
 	return ui.Column(c.Key(key + "-wrap")).AlignItems(ui.End).Gap(4).Shrink(0).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(sp2).Shrink(0).Children(func() {
 			if state.Saving {
-				ui.Row(c).AlignItems(ui.Center).Gap(5).Shrink(0).Children(func() {
+				ui.Row(c).AlignItems(ui.Center).Gap(4).Shrink(0).Children(func() {
 					kitui.Spinner(c, tok)
-					ui.Text(c, "保存中…").Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
+					ui.Text(c, "保存中…").Font(kitui.FontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Text3).SingleLine()
 				})
 			}
 			label := "访问权限"
@@ -38,7 +38,7 @@ func v4TriAccessSelect(tok *kitui.Tokens, c *ui.Context, key, agentName string, 
 			kitui.Select(c, tok, key, label, state.Value, v4TriAccessOptions, state.Disabled || state.Saving, state.Error != "", onSelect)
 		})
 		if state.Error != "" {
-			ui.Text(c, state.Error).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.35)
+			ui.Text(c, state.Error).Font(kitui.FontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Danger).LineHeight(1.35)
 		}
 	})
 }

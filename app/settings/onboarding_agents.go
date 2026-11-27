@@ -215,11 +215,11 @@ func (a *Controller) onboardingAgentCard(c *ui.Context, host bootstrap.DetectedH
 	kitui.ButtonPress(card, 0.99)
 	card.Children(func() {
 		ui.Image(c, agentOriginalIcon(host.Kind)).Size(28, 28).Shrink(0).Fit(ui.Contain)
-		ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				kitui.Text(c, tok, host.DisplayName, kitui.RoleBody).FontWeight(600).SingleLine()
 				if host.Version != "" {
-					ui.Text(c, host.Version).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+					ui.Text(c, host.Version).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 				}
 			})
 			capability := "自动采集与召回"
@@ -247,7 +247,7 @@ func (a *Controller) onboardingSupportRows(c *ui.Context) {
 			Leading: func() { ui.Image(c, agentOriginalIcon(host.Kind)).Size(22, 22).Fit(ui.Contain) },
 			DescExtra: func() {
 				if !host.Detected && host.InstallCommand != "" {
-					ui.Text(c, host.InstallCommand).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3)
+					ui.Text(c, host.InstallCommand).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3)
 				}
 			},
 			Control: func() {

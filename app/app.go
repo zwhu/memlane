@@ -154,9 +154,9 @@ func New(c Config, err error) *App {
 	a.initSearch()
 	a.md = markdown.Options{Theme: &markdown.Theme{FontSize: 12, LineHeight: 1.9, Text: ink, Muted: muted, CodeSize: 11.0 / 12, CodeBlockBackground: lightPalette.Fill1, CodeBlockBorder: border}, CodeBlock: func(c *ui.Context, b *markdown.CodeBlockView) {
 		ui.Column(c).Background(tok.Fill1).Border(1, tok.Border).Radius(radius).Children(func() {
-			row := ui.Row(c).Padding(6, 12).Gap(4).AlignItems(ui.Center)
+			row := ui.Row(c).Padding(8, 12).Gap(4).AlignItems(ui.Center)
 			row.Children(func() {
-				ui.Text(c, strings.ToUpper(b.Language)).FontSize(10).TextColor(muted)
+				ui.Text(c, strings.ToUpper(b.Language)).FontSize(fsCaption).TextColor(muted)
 				hoverCopyAction(c, row, "复制代码", func() { c.WriteClipboard(b.Code()) })
 			})
 			b.Body(c).Label("代码横向滚动")

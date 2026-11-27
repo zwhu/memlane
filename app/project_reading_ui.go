@@ -101,7 +101,7 @@ var readingClose = homeSVG(`<path d="m6 6 12 12M18 6 6 18"/>`)
 
 func readingAction(c *ui.Context, label string, icon *ui.SVG, fn func()) ui.Element {
 	b := ui.ButtonBase(c).Role(ui.RoleButton).Cursor(ui.CursorPointer).Label(label).Tooltip(label).
-		MinWidth(26).MinHeight(26).Padding(5).Gap(6).Radius(radius).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center)
+		MinWidth(26).MinHeight(26).Padding(4).Gap(8).Radius(radius).BorderWidth(0).AlignItems(ui.Center).Justify(ui.Center)
 	b.Background(homeHoverColor(b, "reading-act-bg", ui.Transparent, tok.Hover))
 	v4ButtonPress(b, 0.94)
 	icoCol := tok.Text3

@@ -34,7 +34,7 @@ func TestInlineCopyHoverFocusGeometryAndClipboard(t *testing.T) {
 	}, 600, 100)
 	text, _ := tt.Find(raw)
 	button, ok := tt.Find("复制项目路径")
-	if !ok || button.W != 22 || button.H != 22 || button.X-text.X-text.W > 5 {
+	if !ok || button.W != 24 || button.H != 24 || button.X-text.X-text.W > 5 {
 		t.Fatalf("copy is not a small inline action: text=%v copy=%v", text, button)
 	}
 	hidden := tt.Image()
@@ -72,7 +72,7 @@ func TestRefreshIconKeepsLabelKeyboardAndDisabledState(t *testing.T) {
 		refreshAction(c, "刷新待处理文档", func() { count++ }).Disabled(disabled)
 	}, 160, 80)
 	r, ok := tt.Find("刷新待处理文档")
-	if !ok || r.W != 22 || r.H != 22 {
+	if !ok || r.W != 24 || r.H != 24 {
 		t.Fatal("refresh icon or accessible label missing", r)
 	}
 	tt.Key(0, ui.KeyTab)
@@ -94,7 +94,7 @@ func TestRefreshIconLoadingKeepsGeometryAndDisablesClicks(t *testing.T) {
 		refreshActionLoading(c, "重新检测", loading, func() { count++ })
 	}, 160, 80)
 	r, ok := tt.Find("重新检测")
-	if !ok || r.W != 22 || r.H != 22 {
+	if !ok || r.W != 24 || r.H != 24 {
 		t.Fatal("loading refresh icon or accessible label missing", r)
 	}
 	tt.Click("重新检测")

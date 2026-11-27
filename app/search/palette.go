@@ -38,12 +38,12 @@ func highlightInlineMarkdown(c *ui.Context, tok *kitui.Tokens, raw, query string
 	for _, sp := range baseSpans {
 		out = append(out, HighlightSpans(sp, terms, markBg)...)
 	}
-	return ui.RichText(c, out...).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+	return ui.RichText(c, out...).Font(kitui.FontUI).FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
 }
 
 func scopeChip(c *ui.Context, tok *kitui.Tokens, key, label, text string, active bool, onClick func()) ui.Element {
 	b := ui.ButtonBase(c.Key(key)).Role(ui.RoleButton).Label(label).Tooltip(text).
-		Cursor(ui.CursorPointer).Height(26).MaxWidth(210).Padding(0, kitui.Sp2).Gap(6).
+		Cursor(ui.CursorPointer).Height(26).MaxWidth(210).Padding(0, kitui.Sp2).Gap(8).
 		Radius(kitui.Radius).AlignItems(ui.Center).Shrink(0)
 	borderCol := tok.BorderStrong
 	bgNormal := ui.Transparent
@@ -61,27 +61,24 @@ func scopeChip(c *ui.Context, tok *kitui.Tokens, key, label, text string, active
 	kitui.ButtonPress(b, 0.97)
 	b.Children(func() {
 		ui.Icon(c, ico).FontSize(13).TextColor(fgCol).Shrink(0)
-		ui.Text(c, text).Font("system-ui").FontSize(kitui.FSFootnote).FontWeight(weight).TextColor(fgCol).SingleLine().MinWidth(0)
+		ui.Text(c, text).Font(kitui.FontUI).FontSize(kitui.FSFootnote).FontWeight(weight).TextColor(fgCol).SingleLine().MinWidth(0)
 	}).OnClick(onClick)
 	return b
 }
 
 func KeyboardHint(c *ui.Context, tok *kitui.Tokens, keycap, desc string) {
-	ui.Row(c).AlignItems(ui.Center).Gap(5).Shrink(0).Children(func() {
-		ui.Row(c).MinWidth(18).Height(18).Padding(0, 5).Radius(kitui.RadiusSmall).
+	ui.Row(c).AlignItems(ui.Center).Gap(kitui.Sp1).Shrink(0).Children(func() {
+		ui.Row(c).MinWidth(20).Height(20).Padding(0, kitui.Sp1).Radius(kitui.RadiusSmall).
 			Background(tok.Fill2).AlignItems(ui.Center).Justify(ui.Center).Shrink(0).Children(func() {
-			ui.Text(c, keycap).Font("system-ui").FontSize(10).FontWeight(500).
+			ui.Text(c, keycap).Font(kitui.FontUI).FontSize(kitui.FSCaption).FontWeight(500).
 				TextColor(tok.Text2).SingleLine()
 		})
-		ui.Text(c, desc).Font("system-ui").FontSize(kitui.FSCaption).TextColor(tok.Text3).SingleLine()
+		ui.Text(c, desc).Font(kitui.FontUI).FontSize(kitui.FSCaption).TextColor(tok.Text3).SingleLine()
 	})
 }
 
 func scrimBg(tok *kitui.Tokens) ui.Color {
-	if tok.Dark {
-		return ui.RGBA(0, 0, 0, 0.52)
-	}
-	return ui.RGBA(0, 0, 0, 0.28)
+	return tok.Backdrop
 }
 
 func (a *ControllerOf[T, L]) RenderDialog(c *ui.Context) {
@@ -105,7 +102,7 @@ func (a *ControllerOf[T, L]) RenderDialog(c *ui.Context) {
 	panel := ui.DialogBase(c.Key("unified-search-modal"), &s.Open, func(backdrop, panel ui.Element) {
 		backdrop.Background(scrimBg(tok)).Justify(ui.Start).AlignItems(ui.Center).Padding(topInset, 0, 0, 0)
 		panel.Width(panelW).Height(panelH).Padding(0).Gap(0).
-			Background(tok.BgElevated).Radius(kitui.RadiusMenu).Border(1, tok.Border).
+			Background(tok.BgElevated).Radius(kitui.RadiusDialog).Border(1, tok.Border).
 			Shadow(0, 12, 32, 0, tok.ShadowLift).
 			Label("搜索记忆与原始记录弹框").Transition(kitui.DialogTransition()).
 			Children(func() {
@@ -128,12 +125,12 @@ func (a *ControllerOf[T, L]) RenderDialog(c *ui.Context) {
 					}
 					if s.Query != "" {
 						clearBtn := ui.ButtonBase(c.Key("cmdk-clear")).Role(ui.RoleButton).Label("清空关键词").Tooltip("清空关键词").
-							Cursor(ui.CursorPointer).Height(22).Padding(0, 7).Radius(kitui.RadiusSmall).BorderWidth(0).
+							Cursor(ui.CursorPointer).Height(22).Padding(0, 8).Radius(kitui.RadiusSmall).BorderWidth(0).
 							AlignItems(ui.Center).Justify(ui.Center).Shrink(0)
 						clearBtn.Background(kitui.HoverColor(clearBtn, "cmdk-clear-bg", tok.Fill1, tok.Hover))
 						kitui.ButtonPress(clearBtn, 0.96)
 						clearBtn.Children(func() {
-							ui.Text(c, "清空").Font("system-ui").FontSize(kitui.FSCaption).FontWeight(500).TextColor(tok.Text2).SingleLine()
+							ui.Text(c, "清空").Font(kitui.FontUI).FontSize(kitui.FSCaption).FontWeight(500).TextColor(tok.Text2).SingleLine()
 						}).OnClick(func() {
 							s.Query = ""
 							s.HistoryDirty = false
@@ -246,7 +243,7 @@ func (a *ControllerOf[T, L]) RenderDialog(c *ui.Context) {
 								if group == "" {
 									topPad = kitui.Sp1
 								}
-								ui.Text(c, title).Font("system-ui").FontSize(kitui.FSCaption).FontWeight(600).
+								ui.Text(c, title).Font(kitui.FontUI).FontSize(kitui.FSCaption).FontWeight(600).
 									TextColor(tok.Text3).Padding(topPad, kitui.Sp2, kitui.Sp1, kitui.Sp2)
 								group = kind
 							}
@@ -351,14 +348,14 @@ func (a *ControllerOf[T, L]) cmdkResultRow(c *ui.Context, tok *kitui.Tokens, row
 	b.Tooltip(tip)
 
 	b.Children(func() {
-		ui.Box(c).Margin(2, 0, 0, 0).Shrink(0).Children(func() {
+		ui.Box(c).Margin(4, 0, 0, 0).Shrink(0).Children(func() {
 			if a.RenderIcon != nil {
 				a.RenderIcon(c, row)
 			} else {
 				ui.Icon(c, kitui.IconDoc).FontSize(20).TextColor(tok.Text3)
 			}
 		})
-		ui.Column(c).Grow(1).MinWidth(0).Gap(5).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 			displayBody := title
 			if query != "" && preview != "" {
 				displayBody = title + " — " + preview
@@ -371,7 +368,7 @@ func (a *ControllerOf[T, L]) cmdkResultRow(c *ui.Context, tok *kitui.Tokens, row
 				}
 				if a.ProjectName != nil {
 					if name := a.ProjectName(i.DatasetID); name != "" {
-						ui.Text(c, name).Font("system-ui").FontSize(kitui.FSCaption).TextColor(tok.Text3).SingleLine().Shrink(0)
+						ui.Text(c, name).Font(kitui.FontUI).FontSize(kitui.FSCaption).TextColor(tok.Text3).SingleLine().Shrink(0)
 					}
 				}
 				if a.RenderMetadata != nil {
@@ -383,7 +380,7 @@ func (a *ControllerOf[T, L]) cmdkResultRow(c *ui.Context, tok *kitui.Tokens, row
 					kitui.Badge(c, tok, i.SearchMatch, "accent")
 				}
 				ui.Spacer(c)
-				ui.Text(c, i.Date).Font("system-ui").FontSize(kitui.FSCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+				ui.Text(c, i.Date).Font(kitui.FontUI).FontSize(kitui.FSCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 			})
 		})
 	}).OnClick(func() {
@@ -406,9 +403,9 @@ func (a *ControllerOf[T, L]) RenderTrigger(c *ui.Context) {
 	kitui.ButtonPress(b, 0.98)
 	b.Children(func() {
 		ui.Icon(c, kitui.IconSearch).FontSize(14).TextColor(tok.Text3).Shrink(0)
-		ui.Text(c, "搜索记忆与原始记录").Font("system-ui").FontSize(kitui.FSFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
+		ui.Text(c, "搜索记忆与原始记录").Font(kitui.FontUI).FontSize(kitui.FSFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
 		ui.Spacer(c)
-		ui.Text(c, "⌘ K").Font("system-ui").FontSize(kitui.FSCaption).FontWeight(400).TextColor(tok.Text4).SingleLine()
+		ui.Text(c, "⌘ K").Font(kitui.FontUI).FontSize(kitui.FSCaption).FontWeight(400).TextColor(tok.Text4).SingleLine()
 	}).OnClick(func() {
 		if a.OnTrigger != nil {
 			a.OnTrigger()

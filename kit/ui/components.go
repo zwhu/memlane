@@ -16,7 +16,7 @@ const (
 
 func SolidSVG(color, paths string) *mygoui.SVG {
 	return mygoui.MustParseSVG([]byte(fmt.Sprintf(
-		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="%s" stroke="%s" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">%s</svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%s" stroke="%s" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><g transform="translate(2 2)">%s</g></svg>`,
 		color, color, paths,
 	)))
 }
@@ -30,7 +30,22 @@ func MonoIcon(paths string) *mygoui.SVG {
 }
 
 func IconSVG(paths string) *mygoui.SVG {
-	return mygoui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">` + paths + `</svg>`))
+	return mygoui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><g transform="translate(2 2)">` + paths + `</g></svg>`))
+}
+
+// IconFrame draws an SVG icon centered inside a fixed transparent square frame
+// (defaults to IconBox = 24x24 with IconGlyph = 18px glyph) so rows of icons
+// share one visual center line regardless of path aspect ratio.
+func IconFrame(c *mygoui.Context, icon *mygoui.SVG, glyphSize float32, color mygoui.Color) mygoui.Element {
+	if glyphSize <= 0 {
+		glyphSize = IconGlyph
+	}
+	return mygoui.Box(c).Size(IconBox, IconBox).Shrink(0).
+		AlignItems(mygoui.Center).Justify(mygoui.Center).
+		Background(mygoui.Transparent).
+		Children(func() {
+			mygoui.Icon(c, icon).FontSize(glyphSize).TextColor(color).Shrink(0)
+		})
 }
 
 var (
@@ -55,18 +70,18 @@ var (
 // CategoryChip draws a neutral category tag (V4 never color-codes categories).
 func CategoryChip(c *mygoui.Context, tok *Tokens, label, tooltip string) mygoui.Element {
 	return mygoui.Text(c, label).
-		Font("system-ui").FontSize(FSCaption).FontWeight(400).
+		Font(FontUI).FontSize(FSCaption).FontWeight(400).
 		SingleLine().Shrink(0).Tooltip(tooltip).
-		Padding(2, 6).Radius(RadiusSmall).
+		Padding(Sp1, Sp2).Radius(RadiusSmall).
 		Background(tok.Fill2).TextColor(tok.Text2)
 }
 
 // AccentChip draws a calm accent-tinted pill for subagent and parent-child badges.
 func AccentChip(c *mygoui.Context, tok *Tokens, label, tip string) mygoui.Element {
 	el := mygoui.Text(c, label).
-		Font("system-ui").FontSize(FSCaption).FontWeight(500).
+		Font(FontUI).FontSize(FSCaption).FontWeight(500).
 		SingleLine().Shrink(0).
-		Padding(2, 6).Radius(RadiusSmall).
+		Padding(Sp1, Sp2).Radius(RadiusSmall).
 		Background(tok.AccentSoft).TextColor(tok.Accent)
 	if tip != "" {
 		el.Tooltip(tip)
@@ -78,12 +93,12 @@ func AccentChip(c *mygoui.Context, tok *Tokens, label, tip string) mygoui.Elemen
 // subtle muted text when 0 or unavailable.
 func RecallChip(c *mygoui.Context, tok *Tokens, label, tip string, count int) mygoui.Element {
 	if count > 0 {
-		return mygoui.Row(c).AlignItems(mygoui.Center).Gap(3).Padding(2, 6).Radius(RadiusSmall).Background(tok.AccentSoft).Tooltip(tip).Shrink(0).Children(func() {
-			mygoui.Icon(c, IconRecall).FontSize(10).TextColor(tok.Accent).Shrink(0)
-			mygoui.Text(c, label).Font("system-ui").FontSize(FSCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Accent).SingleLine()
+		return mygoui.Row(c).AlignItems(mygoui.Center).Gap(Sp1).Padding(Sp1, Sp2).Radius(RadiusSmall).Background(tok.AccentSoft).Tooltip(tip).Shrink(0).Children(func() {
+			mygoui.Icon(c, IconRecall).FontSize(12).TextColor(tok.Accent).Shrink(0)
+			mygoui.Text(c, label).Font(FontUI).FontSize(FSCaption).FontWeight(500).FontFeatures("tnum").TextColor(tok.Accent).SingleLine()
 		})
 	}
-	return mygoui.Text(c, label).Font("system-ui").FontSize(FSCaption).FontWeight(400).FontFeatures("tnum").TextColor(tok.Text4).SingleLine().Tooltip(tip).Shrink(0)
+	return mygoui.Text(c, label).Font(FontUI).FontSize(FSCaption).FontWeight(400).FontFeatures("tnum").TextColor(tok.Text4).SingleLine().Tooltip(tip).Shrink(0)
 }
 
 // UnreadDot draws the 6px accent indicator dot for unread knowledge.
@@ -94,7 +109,7 @@ func UnreadDot(c *mygoui.Context, tok *Tokens, label, tooltip string) mygoui.Ele
 // Switch renders a compact V4 toggle switch (26x16) with a bouncy spring knob.
 func Switch(c *mygoui.Context, tok *Tokens, key string, on *bool, label string, onChange func()) mygoui.Element {
 	btn := mygoui.ButtonBase(c.Key(key)).Role(mygoui.RoleSwitch).Label(label).
-		Cursor(mygoui.CursorPointer).Height(26).Padding(0, 2).Gap(6).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, 0).Gap(Sp2).
 		AlignItems(mygoui.Center).Background(mygoui.Transparent).BorderWidth(0).Shrink(0)
 	target := float32(0)
 	if *on {
@@ -115,7 +130,7 @@ func Switch(c *mygoui.Context, tok *Tokens, key string, on *bool, label string, 
 			p.Fill(mygoui.Rect{X: r.X + 2 + knobX, Y: r.Y + 2, W: 12, H: 12}, tok.OnAccent, 6)
 		})
 		if label != "" {
-			mygoui.Text(c, label).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(textColor).SingleLine()
+			mygoui.Text(c, label).Font(FontUI).FontSize(FSFootnote).FontWeight(400).TextColor(textColor).SingleLine()
 		}
 	}).OnClick(func() {
 		*on = !*on
@@ -126,10 +141,10 @@ func Switch(c *mygoui.Context, tok *Tokens, key string, on *bool, label string, 
 	return btn
 }
 
-// DropdownButton renders a V4 filter/sort trigger button (height 26, Radius 6).
+// DropdownButton renders a V4 filter/sort trigger button (height 28, Radius 6).
 func DropdownButton(c *mygoui.Context, tok *Tokens, key, label, prefix, value string, active bool) mygoui.Element {
 	b := mygoui.ButtonBase(c.Key(key)).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(26).Padding(0, Sp2).Gap(5).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp2).Gap(Sp1).
 		Radius(Radius).AlignItems(mygoui.Center).Shrink(0)
 	borderColor := tok.BorderStrong
 	bgNormal := mygoui.Transparent
@@ -143,10 +158,10 @@ func DropdownButton(c *mygoui.Context, tok *Tokens, key, label, prefix, value st
 	ButtonPress(b, 0.97)
 	b.Children(func() {
 		if prefix != "" {
-			mygoui.Text(c, prefix).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
+			mygoui.Text(c, prefix).Font(FontUI).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text3).SingleLine()
 		}
-		mygoui.Text(c, value).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(valColor).SingleLine()
-		mygoui.Icon(c, IconDown).FontSize(11).TextColor(tok.Text3).Shrink(0)
+		mygoui.Text(c, value).Font(FontUI).FontSize(FSFootnote).FontWeight(400).TextColor(valColor).SingleLine()
+		mygoui.Icon(c, IconDown).FontSize(12).TextColor(tok.Text3).Shrink(0)
 	})
 	return b
 }
@@ -154,7 +169,7 @@ func DropdownButton(c *mygoui.Context, tok *Tokens, key, label, prefix, value st
 // OutlineButton renders the standard V4 secondary action button (height 28, Radius 6).
 func OutlineButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG, fn func()) mygoui.Element {
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(6).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(Sp2).
 		Radius(Radius).Border(1, tok.BorderStrong).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "btn-bg", mygoui.Transparent, tok.Hover))
 	ButtonPress(b, 0.96)
@@ -162,7 +177,7 @@ func OutlineButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SV
 		if icon != nil {
 			mygoui.Icon(c, icon).FontSize(14).TextColor(tok.Text2).Shrink(0)
 		}
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -173,12 +188,12 @@ func OutlineButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SV
 // PrimaryButton renders the V4 accent primary button (height 28, Radius 6).
 func PrimaryButton(c *mygoui.Context, tok *Tokens, label string, fn func()) mygoui.Element {
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(6).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(Sp2).
 		Radius(Radius).BorderWidth(0).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "pbtn-bg", tok.Accent, tok.AccentHover))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSFootnote).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSFootnote).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -197,7 +212,7 @@ func UnderlineTabs(c *mygoui.Context, tok *Tokens, key, label string, selected *
 		bar = mygoui.Box(c.Key(key + "-bar")).Absolute().Bottom(0).Left(0).Height(2).Radius(1).Background(tok.Accent).PassThrough()
 		for idx, text := range labels {
 			on := idx == *selected
-			tab := parts.Tab(idx).Cursor(mygoui.CursorPointer).Height(tabH).Padding(0, 1).AlignItems(mygoui.Center).FocusRing(false)
+			tab := parts.Tab(idx).Cursor(mygoui.CursorPointer).Height(tabH).Padding(0, 0).AlignItems(mygoui.Center).FocusRing(false)
 			color := tok.Text2
 			weight := 400
 			if on {
@@ -208,7 +223,7 @@ func UnderlineTabs(c *mygoui.Context, tok *Tokens, key, label string, selected *
 				color = tok.Text1
 			}
 			tab.Children(func() {
-				mygoui.Text(c, text).Font("system-ui").FontSize(FSBody).FontWeight(weight).TextColor(color).SingleLine()
+				mygoui.Text(c, text).Font(FontUI).FontSize(FSBody).FontWeight(weight).TextColor(color).SingleLine()
 			})
 		}
 	})
@@ -236,17 +251,17 @@ func Segmented(c *mygoui.Context, tok *Tokens, key, label string, selected *int,
 	host.Children(func() {
 		// Normal-flow 0x0 layer declared before track paints strictly behind segment text.
 		mygoui.Box(c.Key(key+"-bg")).Size(0, 0).Shrink(0).PassThrough().Children(func() {
-			thumb = mygoui.Box(c.Key(key+"-thumb")).Margin(2, 0, 0, 0).Height(22).Radius(RadiusSmall).Background(tok.SegThumb).PassThrough()
+			thumb = mygoui.Box(c.Key(key+"-thumb")).Margin(Sp1, 0, 0, 0).Height(24).Radius(RadiusSmall).Background(tok.SegThumb).PassThrough()
 			if !tok.Dark {
 				thumb.Border(1, tok.Border)
 			}
 		})
 		parts := mygoui.SegmentedBase(c.Key(key), selected, len(labels))
-		track = parts.Track.Label(label).Padding(2).Radius(Radius).Background(mygoui.Transparent).AlignItems(mygoui.Center).Shrink(0)
+		track = parts.Track.Label(label).Padding(Sp1).Radius(Radius).Background(mygoui.Transparent).AlignItems(mygoui.Center).Shrink(0)
 		track.Children(func() {
 			for idx, text := range labels {
 				on := idx == *selected
-				seg := parts.Segment(idx).Cursor(mygoui.CursorPointer).Height(22).Padding(0, 10).Radius(RadiusSmall).Background(mygoui.Transparent).BorderWidth(0)
+				seg := parts.Segment(idx).Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp3).Radius(RadiusSmall).Background(mygoui.Transparent).BorderWidth(0)
 				color := tok.Text2
 				weight := 400
 				if on {
@@ -255,7 +270,7 @@ func Segmented(c *mygoui.Context, tok *Tokens, key, label string, selected *int,
 					activeSeg = seg
 				}
 				seg.Children(func() {
-					mygoui.Text(c, text).Font("system-ui").FontSize(FSFootnote).FontWeight(weight).TextColor(color).SingleLine()
+					mygoui.Text(c, text).Font(FontUI).FontSize(FSFootnote).FontWeight(weight).TextColor(color).SingleLine()
 				})
 			}
 		})
@@ -265,7 +280,7 @@ func Segmented(c *mygoui.Context, tok *Tokens, key, label string, selected *int,
 	targetX := segBox.X - trackBox.X
 	targetW := segBox.W
 	if targetW <= 0 {
-		targetX, targetW = 2, 44
+		targetX, targetW = Sp1, 44
 	}
 	thumb.Width(targetW).AnimatePose(mygoui.Pose{X: targetX, Scale: 1}, Snappy)
 	if onChange != nil {
@@ -280,11 +295,11 @@ func CountBadge(c *mygoui.Context, tok *Tokens, label string, active bool) mygou
 		bg, fg = tok.Accent, tok.OnAccent
 	}
 	return mygoui.Row(c).
-		MinWidth(20).Height(18).Padding(0, 6).Radius(9).
+		MinWidth(20).Height(20).Padding(0, Sp2).Radius(10).
 		Background(bg).AlignItems(mygoui.Center).Justify(mygoui.Center).Shrink(0).
 		Children(func() {
 			mygoui.Text(c, label).
-				Font("system-ui").FontSize(FSCaption).FontWeight(600).FontFeatures("tnum").
+				Font(FontUI).FontSize(FSCaption).FontWeight(600).FontFeatures("tnum").
 				TextColor(fg).SingleLine()
 		})
 }

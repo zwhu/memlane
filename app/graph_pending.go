@@ -78,7 +78,7 @@ func (a *App) graphPendingHint(c *ui.Context, p Project) {
 	ui.Row(c).Shrink(0).MinHeight(32).Padding(sp1, sp4).Gap(sp2).AlignItems(ui.Center).
 		Background(tok.Fill1).BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		v4StatusDot(c, dotState)
-		ui.Text(c, label).Font("system-ui").FontSize(fsCaption).FontWeight(400).TextColor(tok.Text2).Grow(1).MinWidth(0).MaxLines(2)
+		ui.Text(c, label).Font(fontUI).FontSize(fsCaption).FontWeight(400).TextColor(tok.Text2).Grow(1).MinWidth(0).MaxLines(2)
 		if s.Preview != nil && s.Preview.Steps > 0 {
 			v4SmallButton(c, "查看提炼范围", nil, func() { a.previewToolGraph(p.ID) })
 		}

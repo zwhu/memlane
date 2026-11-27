@@ -78,7 +78,7 @@ func (a *App) commonListHeader(c *ui.Context) {
 	e := &a.commonEdit
 	ui.Row(c).Label("通用记忆列表头部").Height(listHeaderH).Shrink(0).Padding(0, sp3, 0, sp4).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).AlignItems(ui.Center).Gap(sp2).Children(func() {
-		ui.Text(c, "记忆库").Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
+		ui.Text(c, "记忆库").Font(fontUI).FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
 		ui.Spacer(c)
 		label := "新增通用记忆"
 		icon := v4IconPlus
@@ -160,7 +160,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 				a.commonFilterBar(c)
 				if len(s.Knowledge.RecallFilter) > 0 {
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Padding(sp1, 0, 0, 0).Children(func() {
-						ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
+						ui.Text(c, fmt.Sprintf("本次召回 · %d 条", len(s.Knowledge.RecallFilter))).Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine()
 						ui.Spacer(c)
 						v4SmallButton(c, "显示全部记忆", nil, func() {
 							s.Knowledge.RecallFilter = nil
@@ -178,7 +178,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 						message = "未能刷新，显示上次结果 · " + s.Error
 					}
 					ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-						ui.Text(c, message).Font("system-ui").FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
+						ui.Text(c, message).Font(fontUI).FontSize(fsCaption).TextColor(tok.Danger).Grow(1).MinWidth(0).MaxLines(2)
 						v4SmallButton(c, "重试读取", nil, func() { a.load(s) })
 					})
 				}
@@ -207,7 +207,7 @@ func (a *App) commonKnowledgePage(c *ui.Context) {
 						a.load(s)
 					}
 				}).Disabled(prevDisabled)
-				ui.Text(c, fmt.Sprint(pageNum)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				ui.Text(c, fmt.Sprint(pageNum)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 				v4SmallButton(c, "下一页", nil, func() {
 					if s.CommonV2Mode {
 						a.stepCommonKnowledgeV2(s, 1)
@@ -256,7 +256,7 @@ func (a *App) commonKnowledgeList(c *ui.Context, s *pane) {
 	if !s.Loaded && s.Loading && len(s.Items) == 0 {
 		ui.Column(c).Grow(1).MinHeight(0).Padding(sp2, sp4).Gap(sp3).Label("正在读取通用记忆…").Children(func() {
 			for n := 0; n < 5; n++ {
-				ui.Column(c).FillWidth().Padding(10, sp2).Gap(6).Children(func() {
+				ui.Column(c).FillWidth().Padding(12, sp2).Gap(8).Children(func() {
 					ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(240).Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(140).Height(9).Radius(3).Background(tok.Fill1)
@@ -299,7 +299,7 @@ func (a *App) commonKnowledgeList(c *ui.Context, s *pane) {
 		ui.List(c.Key("common-list-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 			i := s.Items[n]
 			a.commonListItem(c, s, i, n, n == s.ListSelection)
-		}).Label("通用记忆列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(2).OnChange(func() {
+		}).Label("通用记忆列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(4).OnChange(func() {
 			if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 				return
 			}
@@ -311,7 +311,7 @@ func (a *App) commonKnowledgeList(c *ui.Context, s *pane) {
 }
 
 func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected bool) {
-	col := ui.Column(c.Key("citem-"+i.Key())).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
+	col := ui.Column(c.Key("citem-"+i.Key())).FillWidth().MinWidth(0).Padding(12, sp3).Gap(8)
 	if index > 0 && !selected && index-1 != s.ListSelection {
 		col.BorderWidth(1, 0, 0, 0).BorderColor(tok.Border)
 	}
@@ -322,7 +322,7 @@ func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected
 			homeText(c, "标题读取失败", homeMeta)
 			v4SmallButton(c, "重试读取", nil, func() { a.retryReadingTitle(s, i) })
 		case preview == "":
-			ui.Column(c).FillWidth().MinHeight(38).Gap(6).Justify(ui.Center).Children(func() {
+			ui.Column(c).FillWidth().MinHeight(38).Gap(8).Justify(ui.Center).Children(func() {
 				ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 				ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
 			})
@@ -338,7 +338,7 @@ func (a *App) commonListItem(c *ui.Context, s *pane, i Item, index int, selected
 			v4CategoryChip(c, commonCategoryLabel(i.CommonCategory))
 			v4RecallChip(c, i)
 			ui.Spacer(c)
-			ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+			ui.Text(c, displayDate(i.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 		})
 	})
 }

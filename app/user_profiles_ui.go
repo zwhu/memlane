@@ -101,7 +101,7 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 		// Header (36px)
 		ui.Row(c).Label("用户画像来源头部").Height(listHeaderH).Shrink(0).Padding(0, sp3, 0, sp4).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
-			ui.Text(c, "来源").Font("system-ui").FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
+			ui.Text(c, "来源").Font(fontUI).FontSize(fsBody).FontWeight(550).TextColor(tok.Text1).SingleLine()
 			ui.Spacer(c)
 			refreshAction(c, "刷新画像列表", func() { s.BodyKey = ""; a.refreshUserProfiles() }).Disabled(s.Loading)
 		})
@@ -139,7 +139,7 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 						if previousGroup == "" {
 							topPad = sp1
 						}
-						ui.Text(c, group).Font("system-ui").FontSize(fsCaption).FontWeight(600).
+						ui.Text(c, group).Font(fontUI).FontSize(fsCaption).FontWeight(600).
 							TextColor(tok.Text3).Padding(topPad, sp2, sp1, sp2)
 						previousGroup = group
 					}
@@ -148,7 +148,7 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 
 					btn := ui.ButtonBase(c.Key("profile-source-"+p.ID)).Role(ui.RoleButton).
 						Label(p.Name+"用户画像").Cursor(ui.CursorPointer).
-						FillWidth().MinHeight(52).Padding(sp2, sp2).Gap(10).
+						FillWidth().MinHeight(52).Padding(sp2, sp2).Gap(12).
 						Justify(ui.Start).AlignItems(ui.Center).BorderWidth(0).Radius(radius)
 					if on {
 						btn.Background(ui.Transparent)
@@ -167,15 +167,15 @@ func (a *App) userProfileSourceColumn(c *ui.Context) {
 					}
 					btn.Children(func() {
 						agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
-						ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-							ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(6).Children(func() {
-								ui.Text(c, p.Name).Font("system-ui").FontSize(fsBody).FontWeight(500).
+						ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+							ui.Row(c).FillWidth().MinWidth(0).AlignItems(ui.Center).Gap(8).Children(func() {
+								ui.Text(c, p.Name).Font(fontUI).FontSize(fsBody).FontWeight(500).
 									TextColor(nameCol).SingleLine().Grow(1).MinWidth(0)
 								if dotState != "" {
 									v4StatusDot(c, dotState).Tooltip(p.Label())
 								}
 							})
-							ui.Text(c, metaText).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").
+							ui.Text(c, metaText).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").
 								TextColor(metaCol).SingleLine()
 						})
 					}).OnClick(func() { a.selectUserProfile(p.ID) })
@@ -250,7 +250,7 @@ func (a *App) userProfileReaderHeader(c *ui.Context, p userProfile, s *userProfi
 	ui.Row(c).Label("用户画像内容工具栏").FillWidth().MinHeight(28).Padding(0, 0, sp4, 0).Gap(sp2).AlignItems(ui.Center).
 		BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 		agentLogo(c, agentBrandIconFor(p.Kind, p.Name), 22)
-		ui.Text(c, p.Name+" 对你的了解").Font("system-ui").FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()
+		ui.Text(c, p.Name+" 对你的了解").Font(fontUI).FontSize(fsHeading).FontWeight(600).TextColor(tok.Text1).SingleLine()
 		homeText(c, "·", homeMeta)
 		homeText(c, groupLabel, homeMeta).SingleLine()
 		homeText(c, "·", homeMeta)

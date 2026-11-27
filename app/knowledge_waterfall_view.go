@@ -107,7 +107,7 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 	if !s.Loaded && s.Loading && len(s.Items) == 0 {
 		ui.Column(c).Grow(1).MinHeight(0).Padding(sp2, sp4).Gap(sp3).Label("正在读取记忆…").Children(func() {
 			for n := 0; n < 5; n++ {
-				ui.Column(c).FillWidth().Padding(10, sp2).Gap(6).Children(func() {
+				ui.Column(c).FillWidth().Padding(12, sp2).Gap(8).Children(func() {
 					ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(240).Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(140).Height(9).Radius(3).Background(tok.Fill1)
@@ -158,7 +158,7 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 		ui.List(c.Key("knowledge-list-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 			i := s.Items[n]
 			a.knowledgeListItem(c, s, i, n, n == s.ListSelection)
-		}).Label("记忆列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(2).OnChange(func() {
+		}).Label("记忆列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(4).OnChange(func() {
 			if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 				return
 			}
@@ -171,7 +171,7 @@ func (a *App) knowledgeList(c *ui.Context, s *pane) {
 
 func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selected bool) {
 	itemKey := fmt.Sprintf("kitem-%d-%s", a.motionRuns.projectList, i.Key())
-	col := ui.Column(c.Key(itemKey)).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
+	col := ui.Column(c.Key(itemKey)).FillWidth().MinWidth(0).Padding(12, sp3).Gap(8)
 	a.v4StaggerEnter(c, col, "kitem-"+i.Key(), index, a.motionRuns.projectList, false)
 	col.Children(func() {
 		body := knowledgeCardBody(i)
@@ -194,7 +194,7 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 				fallbackTitle := strings.TrimSpace(i.Title)
 				ui.Column(c).FillWidth().MinHeight(54).Children(func() {
 					if fallbackTitle == "" {
-						ui.Column(c).FillWidth().Gap(6).Children(func() {
+						ui.Column(c).FillWidth().Gap(8).Children(func() {
 							ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 							ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
 						})
@@ -216,7 +216,7 @@ func (a *App) knowledgeListItem(c *ui.Context, s *pane, i Item, index int, selec
 				v4CategoryChip(c, fields[0].Value)
 			}
 			ui.Spacer(c)
-			ui.Text(c, knowledgeDateLabel(i)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+			ui.Text(c, knowledgeDateLabel(i)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 		})
 	})
 }

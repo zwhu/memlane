@@ -31,7 +31,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 	if !s.Loaded && s.Loading && len(s.Items) == 0 {
 		ui.Column(c).Grow(1).MinHeight(0).Padding(sp2, sp4).Gap(sp3).Label("正在读取原始记录…").Children(func() {
 			for n := 0; n < 5; n++ {
-				ui.Column(c).FillWidth().Padding(10, sp2).Gap(6).Children(func() {
+				ui.Column(c).FillWidth().Padding(12, sp2).Gap(8).Children(func() {
 					ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(240).Height(11).Radius(radiusSmall).Background(tok.Fill2)
 					ui.Box(c).Width(140).Height(9).Radius(3).Background(tok.Fill1)
@@ -81,7 +81,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 		ui.List(c.Key("items-"+a.routeKey()), &s.WidgetList, len(s.Items), func(n int) {
 			i := s.Items[n]
 			itemKey := fmt.Sprintf("ritem-%d-%s", a.motionRuns.rawList, i.Key())
-			col := ui.Column(c.Key(itemKey)).FillWidth().MinWidth(0).Padding(10, sp3).Gap(6)
+			col := ui.Column(c.Key(itemKey)).FillWidth().MinWidth(0).Padding(12, sp3).Gap(8)
 			if !common {
 				a.v4StaggerEnter(c, col, "ritem-"+i.Key(), n, a.motionRuns.rawList, false)
 			}
@@ -96,7 +96,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 						case hasTopic:
 							v4InlineMarkdown(c, strings.TrimSpace(i.Title), fsFootnote, 400, 1.55, tok.Text1).MaxLines(2).Tooltip(idLabel)
 						case i.ReadingState == "pending":
-							ui.Column(c).FillWidth().Gap(6).Children(func() {
+							ui.Column(c).FillWidth().Gap(8).Children(func() {
 								ui.Box(c).FillWidth().Height(11).Radius(radiusSmall).Background(tok.Fill2)
 								ui.Box(c).Width(180).Height(11).Radius(radiusSmall).Background(tok.Fill1)
 							})
@@ -106,7 +106,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 							if i.Session.IsSubagent && subagentRoleLabel(i.Session) != "" {
 								color = tok.Text1
 							}
-							ui.Text(c, fallback).Font("system-ui").FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(color).MaxLines(2).Tooltip(idLabel)
+							ui.Text(c, fallback).Font(fontUI).FontSize(fsFootnote).FontWeight(400).LineHeight(1.55).TextColor(color).MaxLines(2).Tooltip(idLabel)
 						}
 					})
 					ui.Row(c).FillWidth().MinWidth(0).Height(18).Shrink(0).AlignItems(ui.Center).Gap(sp2).Children(func() {
@@ -127,7 +127,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 						} else {
 							ui.Spacer(c)
 						}
-						ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+						ui.Text(c, displayDate(i.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 					})
 					if i.ReadingState == "failed" {
 						projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
@@ -148,13 +148,13 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 					agentLogo(c, recentAgentIcon(i), 16).Tooltip("来源 Agent：" + sourceAgentName(i))
 					v4CategoryChip(c, kind)
 					ui.Spacer(c)
-					ui.Text(c, displayDate(i.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+					ui.Text(c, displayDate(i.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 				})
 				if i.ReadingState == "failed" {
 					projectLink(c, "标题读取失败 · 重试", func() { a.retryReadingTitle(s, i) })
 				}
 			})
-		}).Label("原始记录列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(2).OnChange(func() {
+		}).Label("原始记录列表").Grow(1).MinHeight(0).TrackScroll(&s.ListScroll).Padding(sp1, sp2, sp3, sp2).Gap(4).OnChange(func() {
 			if s.ListSelection < 0 || s.ListSelection >= len(s.Items) {
 				return
 			}
@@ -168,5 +168,5 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 }
 
 func appToolbar(c *ui.Context, label string, fn func()) ui.Element {
-	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, paneInset).Gap(10)
+	return ui.Toolbar(c, fn).Label(label).Height(62).Shrink(0).Padding(0, paneInset).Gap(12)
 }

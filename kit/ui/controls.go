@@ -13,7 +13,7 @@ func SmallButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG,
 		bgNormal = tok.BgElevated
 	}
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp2).Gap(5).
+		Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp2).Gap(Sp1).
 		Radius(Radius).Border(1, tok.BorderStrong).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "sbtn-bg", bgNormal, tok.Hover))
 	ButtonPress(b, 0.96)
@@ -21,7 +21,7 @@ func SmallButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG,
 		if icon != nil {
 			mygoui.Icon(c, icon).FontSize(12).TextColor(tok.Text2).Shrink(0)
 		}
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSCaption).FontWeight(500).TextColor(tok.Text1).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSCaption).FontWeight(500).TextColor(tok.Text1).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -32,12 +32,12 @@ func SmallButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG,
 // SmallPrimaryButton renders a compact 24px V4 accent primary button.
 func SmallPrimaryButton(c *mygoui.Context, tok *Tokens, label string, fn func()) mygoui.Element {
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp2).Gap(5).
+		Cursor(mygoui.CursorPointer).Height(24).Padding(0, Sp2).Gap(Sp1).
 		Radius(Radius).BorderWidth(0).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "spbtn-bg", tok.Accent, tok.AccentHover))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSCaption).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSCaption).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -48,12 +48,12 @@ func SmallPrimaryButton(c *mygoui.Context, tok *Tokens, label string, fn func())
 // DangerButton renders a solid 28px V4 destructive primary button for confirmation dialogs.
 func DangerButton(c *mygoui.Context, tok *Tokens, label string, fn func()) mygoui.Element {
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(6).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp3).Gap(Sp2).
 		Radius(Radius).BorderWidth(0).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "dbtn-bg", tok.Danger, tok.Danger.Alpha(0.88)))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSFootnote).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSFootnote).FontWeight(500).TextColor(tok.OnAccent).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -72,12 +72,12 @@ func DangerOutlineButton(c *mygoui.Context, tok *Tokens, label string, small boo
 		bgNormal = tok.BgElevated
 	}
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(h).Padding(0, padX).Gap(5).
+		Cursor(mygoui.CursorPointer).Height(h).Padding(0, padX).Gap(Sp1).
 		Radius(Radius).Border(1, tok.Danger).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "dobtn-bg", bgNormal, tok.Danger.Alpha(0.10)))
 	ButtonPress(b, 0.96)
 	b.Children(func() {
-		mygoui.Text(c, label).Font("system-ui").FontSize(fs).FontWeight(500).TextColor(tok.Danger).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(fs).FontWeight(500).TextColor(tok.Danger).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -88,7 +88,7 @@ func DangerOutlineButton(c *mygoui.Context, tok *Tokens, label string, small boo
 // GhostButton renders a borderless V4 action button with subtle hover tint.
 func GhostButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG, fn func()) mygoui.Element {
 	b := mygoui.ButtonBase(c).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp2).Gap(5).
+		Cursor(mygoui.CursorPointer).Height(28).Padding(0, Sp2).Gap(Sp1).
 		Radius(Radius).BorderWidth(0).AlignItems(mygoui.Center).Shrink(0)
 	b.Background(HoverColor(b, "gbtn-bg", mygoui.Transparent, tok.Hover))
 	ButtonPress(b, 0.96)
@@ -100,7 +100,7 @@ func GhostButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG,
 		if icon != nil {
 			mygoui.Icon(c, icon).FontSize(14).TextColor(txtCol).Shrink(0)
 		}
-		mygoui.Text(c, label).Font("system-ui").FontSize(FSFootnote).FontWeight(500).TextColor(txtCol).SingleLine()
+		mygoui.Text(c, label).Font(FontUI).FontSize(FSFootnote).FontWeight(500).TextColor(txtCol).SingleLine()
 	})
 	if fn != nil {
 		b.OnClick(fn)
@@ -138,11 +138,11 @@ func Badge(c *mygoui.Context, tok *Tokens, label, tone string) mygoui.Element {
 		bg, fg = tok.Danger.Alpha(0.12), tok.Danger
 	}
 	return mygoui.Row(c).
-		Height(20).Padding(0, 7).Radius(RadiusSmall).
+		Height(20).Padding(0, Sp2).Radius(RadiusSmall).
 		Background(bg).AlignItems(mygoui.Center).Justify(mygoui.Center).Shrink(0).
 		Children(func() {
 			mygoui.Text(c, label).
-				Font("system-ui").FontSize(FSCaption).FontWeight(500).FontFeatures("tnum").
+				Font(FontUI).FontSize(FSCaption).FontWeight(500).FontFeatures("tnum").
 				TextColor(fg).SingleLine()
 		})
 }
@@ -200,14 +200,14 @@ func Select(c *mygoui.Context, tok *Tokens, key, label, value string, options []
 		bgNormal = tok.BgElevated
 	}
 	btn := mygoui.ButtonBase(c.Key(key)).Role(mygoui.RoleButton).Label(label).
-		Cursor(mygoui.CursorPointer).Height(26).MinWidth(96).Padding(0, Sp2).Gap(6).
+		Cursor(mygoui.CursorPointer).Height(28).MinWidth(96).Padding(0, Sp2).Gap(Sp2).
 		Radius(Radius).Border(1, borderCol).AlignItems(mygoui.Center).Justify(mygoui.SpaceBetween).
 		Shrink(0).Disabled(disabled)
 	btn.Background(HoverColor(btn, "v4-sel-bg", bgNormal, tok.Hover))
 	ButtonPress(btn, 0.97)
 	btn.Children(func() {
-		mygoui.Text(c, display).Font("system-ui").FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
-		mygoui.Icon(c, IconDown).FontSize(11).TextColor(tok.Text3).Shrink(0)
+		mygoui.Text(c, display).Font(FontUI).FontSize(FSFootnote).FontWeight(400).TextColor(tok.Text1).SingleLine()
+		mygoui.Icon(c, IconDown).FontSize(12).TextColor(tok.Text3).Shrink(0)
 	})
 	if !disabled {
 		btn.PopoverMenuButton(func(m *mygoui.Menu) {
@@ -237,14 +237,14 @@ func SkeletonRow(c *mygoui.Context, tok *Tokens, lines int, avatar, rightPill bo
 	padV := Sp2
 	if double {
 		minH = 54
-		padV = 10
+		padV = Sp3
 	}
 	return mygoui.Row(c).FillWidth().MinHeight(minH).Padding(padV, Sp4).Gap(Sp3).
 		AlignItems(mygoui.Center).Children(func() {
 		if avatar {
 			SkeletonBar(c, tok, 20, 20, RadiusSmall)
 		}
-		mygoui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+		mygoui.Column(c).Grow(1).MinWidth(0).Gap(Sp2).Children(func() {
 			SkeletonBar(c, tok, 160, 11, RadiusSmall)
 			if lines > 1 {
 				SkeletonBar(c, tok, 260, 9, RadiusSmall)
@@ -291,8 +291,8 @@ func IconButton(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG, 
 // Use the SDK button for focus, disabled state, tooltips and activation.
 func SmallIconAction(c *mygoui.Context, tok *Tokens, label string, icon *mygoui.SVG, fn func()) mygoui.Element {
 	return mygoui.Button(c, "").Label(label).Tooltip(label).Cursor(mygoui.CursorPointer).
-		Width(22).MinWidth(22).Height(22).MinHeight(22).Shrink(0).
-		Padding(3).Gap(0).Radius(4).BorderWidth(0).Background(mygoui.Transparent).
+		Width(IconBox).MinWidth(IconBox).Height(IconBox).MinHeight(IconBox).Shrink(0).
+		Padding(Sp1).Gap(0).Radius(RadiusSmall).BorderWidth(0).Background(mygoui.Transparent).
 		Children(func() { mygoui.Icon(c, icon).FontSize(14).TextColor(tok.Accent) }).OnClick(fn)
 }
 
@@ -318,12 +318,22 @@ func RefreshAction(c *mygoui.Context, tok *Tokens, label string, fn func()) mygo
 	return SmallIconAction(c, tok, label, IconRefresh24, fn)
 }
 
+// IntentReveal renders secondary action controls that stay invisible until the
+// enclosing row/container is hovered or focused, keeping layout stable.
+func IntentReveal(c *mygoui.Context, host mygoui.Element, content func()) mygoui.Element {
+	row := mygoui.Row(c).AlignItems(mygoui.Center).Gap(Sp2).Shrink(0).Children(content)
+	if !host.Hovered() && !host.FocusWithin() {
+		row.Opacity(0)
+	}
+	return row
+}
+
 func RefreshActionLoading(c *mygoui.Context, tok *Tokens, label string, loading bool, fn func()) mygoui.Element {
 	if !loading {
 		return RefreshAction(c, tok, label, fn)
 	}
 	return mygoui.Button(c, "").Label(label).Tooltip("正在" + label).Disabled(true).
-		Width(22).MinWidth(22).Height(22).MinHeight(22).Shrink(0).
-		Padding(3).Gap(0).Radius(4).BorderWidth(0).Background(mygoui.Transparent).
+		Width(IconBox).MinWidth(IconBox).Height(IconBox).MinHeight(IconBox).Shrink(0).
+		Padding(Sp1).Gap(0).Radius(RadiusSmall).BorderWidth(0).Background(mygoui.Transparent).
 		Children(func() { mygoui.Spinner(c).Size(14, 14).TextColor(tok.Accent) })
 }

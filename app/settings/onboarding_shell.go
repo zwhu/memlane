@@ -102,7 +102,7 @@ func (a *Controller) showOnboardingToast(message string) {
 }
 
 func onboardingHeading(tok *kitui.Tokens, c *ui.Context, step onboardingPage, title, description string) {
-	ui.Column(c).FillWidth().Gap(6).Children(func() {
+	ui.Column(c).FillWidth().Gap(sp1).Children(func() {
 		kitui.Text(c, tok, fmt.Sprintf("第 %d 步，共 4 步", step), kitui.RoleMeta).FontSize(fsCaption)
 		setupHeading(tok, c, title)
 		setupDescription(tok, c, description)
@@ -114,7 +114,7 @@ func onboardingPrimary(tok *kitui.Tokens, c *ui.Context, label string, disabled 
 	if !disabled {
 		caption += "  ↵"
 	}
-	return kitui.PrimaryButton(c, tok, caption, run).Label(label).Height(32).Padding(0, 14).Disabled(disabled)
+	return kitui.PrimaryButton(c, tok, caption, run).Label(label).Height(32).Padding(0, 16).Disabled(disabled)
 }
 
 func (a *Controller) initialSetupShell(c *ui.Context) {

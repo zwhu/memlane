@@ -75,7 +75,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 						if on {
 							icon = solid
 						}
-						item := ui.SidebarItem(c.Key("nav-item-"+id), id, icon, label).Height(rowHeight1).Gap(10).Padding(0, sp2)
+						item := ui.SidebarItem(c.Key("nav-item-"+id), id, icon, label).Height(rowHeight1).Gap(12).Padding(0, sp2)
 						if on {
 							activeItem = item
 						}
@@ -92,12 +92,12 @@ func (a *App) overviewNavigation(c *ui.Context) {
 				navEntry("用户画像", "用户画像", v4IconProfile, tok.SolidProfile)
 
 				ui.Row(c).Padding(sp5, sp1, sp1, sp2).AlignItems(ui.Center).Gap(sp1).Children(func() {
-					ui.Text(c, "项目").Font("system-ui").FontSize(fsCaption).FontWeight(550).TextColor(tok.Text3)
+					ui.Text(c, "项目").Font(fontUI).FontSize(fsCaption).FontWeight(550).TextColor(tok.Text3)
 					ui.Spacer(c)
 					allBtn := ui.ButtonBase(c).Role(ui.RoleButton).Label(fmt.Sprintf("全部 %d", len(a.Config.Projects))).
-						Cursor(ui.CursorPointer).Height(22).Padding(0, 6).Radius(radiusSmall).BorderWidth(0)
+						Cursor(ui.CursorPointer).Height(22).Padding(0, 8).Radius(radiusSmall).BorderWidth(0)
 					allBtn.Background(homeHoverColor(allBtn, "all-proj-bg", ui.Transparent, tok.Hover)).Children(func() {
-						ui.Text(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
+						ui.Text(c, fmt.Sprintf("全部 %d", len(a.Config.Projects))).Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
 					}).OnClick(a.openAllProjects)
 					a.projectAddMenu(c)
 				})
@@ -166,7 +166,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 		ui.Toolbar(c, func() {
 			on := a.page == "设置" && a.settingsOrigin == nil
 			entry := ui.ButtonBase(c).Role(ui.RoleButton).Cursor(ui.CursorPointer).Label("设置").
-				FillWidth().Height(rowHeight1).Padding(0, sp2).Gap(10).Radius(radius).
+				FillWidth().Height(rowHeight1).Padding(0, sp2).Gap(12).Radius(radius).
 				AlignItems(ui.Center).Justify(ui.Start).BorderWidth(0)
 			if on {
 				entry.Background(tok.AccentSoft)
@@ -180,7 +180,7 @@ func (a *App) overviewNavigation(c *ui.Context) {
 			}
 			entry.Children(func() {
 				ui.Icon(c, v4IconSettings).FontSize(16).TextColor(icoColor)
-				ui.Text(c, "设置").Font("system-ui").FontSize(fsBody).FontWeight(weight).TextColor(txtColor)
+				ui.Text(c, "设置").Font(fontUI).FontSize(fsBody).FontWeight(weight).TextColor(txtColor)
 			}).OnClick(func() { a.settingsOrigin = nil; a.access.OpenProject = ""; a.navigate("设置", 0) })
 		}).Height(40).Shrink(0).Padding(0, sp2)
 
@@ -195,8 +195,10 @@ func (a *App) overviewNavigation(c *ui.Context) {
 				v4StatusDot(c, overallDot)
 				homeText(c, overallLabel, homeMeta).SingleLine()
 			}).OnClick(func() {
-				a.closeServicePopover()
-				a.servicePopover.popoverClicked = true
+				a.servicePopover.hoverIntent().MarkClicked()
+				a.servicePopover.PopoverOpen = false
+				a.servicePopover.popoverBtnHover = false
+				a.servicePopover.popoverPanelHover = false
 				a.settingsOrigin = nil
 				a.access.OpenProject = ""
 				a.access.SettingsSection = "服务"
@@ -211,95 +213,41 @@ func (a *App) overviewNavigation(c *ui.Context) {
 }
 
 func (a *App) cancelServicePopoverTimers() {
-	if a.servicePopover.popoverShowTimer != nil {
-		a.servicePopover.popoverShowTimer.Stop()
-		a.servicePopover.popoverShowTimer = nil
-	}
-	if a.servicePopover.popoverHideTimer != nil {
-		a.servicePopover.popoverHideTimer.Stop()
-		a.servicePopover.popoverHideTimer = nil
+	if a.servicePopover.intent != nil {
+		a.servicePopover.intent.Cancel()
 	}
 }
 
 func (a *App) closeServicePopover() {
-	a.cancelServicePopoverTimers()
+	a.servicePopover.hoverIntent().SetOpen(false)
 	a.servicePopover.PopoverOpen = false
 	a.servicePopover.popoverBtnHover = false
 	a.servicePopover.popoverPanelHover = false
 }
 
-// syncServicePopoverHover implements 300ms hover-open / 200ms leave-close
-// debounce using one-shot time.AfterFunc timers (zero idle polling), and opens
-// immediately on keyboard focus per #15.
+// syncServicePopoverHover delegates 300ms hover-open / 200ms leave-close +
+// safe-triangle cursor protection to kit/ui.HoverIntent (zero idle polling),
+// and opens immediately on keyboard focus per #15.
 func (a *App) syncServicePopoverHover(btnHover, panelHover, btnFocus bool) {
-	prevFocus := a.servicePopover.popoverBtnFocus
-	a.servicePopover.popoverBtnFocus = btnFocus
-	if !btnFocus {
-		a.servicePopover.popoverClicked = false
+	intent := a.servicePopover.hoverIntent()
+	if intent.Open() != a.servicePopover.PopoverOpen {
+		intent.SetOpen(a.servicePopover.PopoverOpen)
 	}
-	if btnFocus && !prevFocus && !a.servicePopover.popoverClicked {
-		if a.servicePopover.popoverHideTimer != nil {
-			a.servicePopover.popoverHideTimer.Stop()
-			a.servicePopover.popoverHideTimer = nil
-		}
-		if a.servicePopover.popoverShowTimer != nil {
-			a.servicePopover.popoverShowTimer.Stop()
-			a.servicePopover.popoverShowTimer = nil
-		}
-		a.servicePopover.popoverBtnHover = true
-		a.servicePopover.PopoverOpen = true
-		return
-	}
-	if a.servicePopover.popoverClicked && btnFocus {
-		return
-	}
-	prevAny := a.servicePopover.popoverBtnHover || a.servicePopover.popoverPanelHover
-	nextAny := btnHover || panelHover
 	a.servicePopover.popoverBtnHover = btnHover
 	a.servicePopover.popoverPanelHover = panelHover
-	if prevAny == nextAny {
-		return
-	}
-	if nextAny {
-		if a.servicePopover.popoverHideTimer != nil {
-			a.servicePopover.popoverHideTimer.Stop()
-			a.servicePopover.popoverHideTimer = nil
-		}
-		if a.servicePopover.PopoverOpen || a.servicePopover.popoverShowTimer != nil {
-			return
-		}
-		if a.Update == nil {
-			return
-		}
-		a.servicePopover.popoverShowTimer = time.AfterFunc(300*time.Millisecond, func() {
+	var updateFn func(func())
+	if a.Update != nil {
+		updateFn = func(fn func()) {
 			a.Update(func() {
-				a.servicePopover.popoverShowTimer = nil
-				if a.servicePopover.popoverBtnHover || a.servicePopover.popoverPanelHover {
-					a.servicePopover.PopoverOpen = true
+				if fn != nil {
+					fn()
 				}
+				a.servicePopover.PopoverOpen = intent.Open()
 			})
-		})
-		return
+		}
 	}
-	if a.servicePopover.popoverShowTimer != nil {
-		a.servicePopover.popoverShowTimer.Stop()
-		a.servicePopover.popoverShowTimer = nil
-	}
-	if !a.servicePopover.PopoverOpen || a.servicePopover.popoverHideTimer != nil {
-		return
-	}
-	if a.Update == nil {
-		a.servicePopover.PopoverOpen = false
-		return
-	}
-	a.servicePopover.popoverHideTimer = time.AfterFunc(200*time.Millisecond, func() {
-		a.Update(func() {
-			a.servicePopover.popoverHideTimer = nil
-			if !a.servicePopover.popoverBtnHover && !a.servicePopover.popoverPanelHover {
-				a.servicePopover.PopoverOpen = false
-			}
-		})
-	})
+	intent.Sync(btnHover, panelHover, btnFocus, nil, a.servicePopover.panelBounds, updateFn)
+	a.servicePopover.PopoverOpen = intent.Open()
 }
 
 func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallDot, overallLabel string) {
@@ -314,19 +262,20 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallDot
 	}
 	panelHovered := false
 	ui.PopoverBase(c.Key("sidebar-service-popover"), anchor, &a.servicePopover.PopoverOpen, func(panel ui.Element) {
-		panel.AttachTo(anchor, ui.AnchorTopStart, ui.AnchorBottomStart).Margin(0, 0, 6, 0).
-			Width(312).Padding(0).Gap(0).Radius(radiusMenu).Background(tok.BgElevated).
+		panel.AttachTo(anchor, ui.AnchorTopStart, ui.AnchorBottomStart).Margin(0, 0, 8, 0).
+			Width(312).Padding(0).Gap(0).Radius(radiusPopover).Background(tok.BgElevated).
 			Border(1, tok.Border).Shadow(0, 10, 28, 0, tok.ShadowLift).
 			Label("服务组件状态").Transition(v4DialogTransition())
 		panelHovered = panel.Hovered() || panel.FocusWithin()
+		a.servicePopover.panelBounds = panel.Bounds()
 		panel.Children(func() {
 			// Header
 			ui.Row(c).FillWidth().Padding(sp3, sp3, sp2, sp3).Gap(sp2).AlignItems(ui.Center).
 				BorderWidth(0, 0, 1, 0).BorderColor(tok.Border).Children(func() {
 				v4StatusDot(c, overallDot)
-				ui.Text(c, overallLabel).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
+				ui.Text(c, overallLabel).Font(fontUI).FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).SingleLine()
 				ui.Spacer(c)
-				ui.Text(c, checkedLabel).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
+				ui.Text(c, checkedLabel).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine()
 			})
 
 			// Component rows (unified with Settings › Service and tray flyout)
@@ -339,14 +288,14 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallDot
 					}
 					ui.Row(c).FillWidth().Padding(sp2, 0).Gap(sp2).AlignItems(ui.Start).
 						BorderWidth(0, 0, borderBottom, 0).BorderColor(tok.Border).Children(func() {
-						ui.Box(c).Padding(5, 0, 0, 0).Shrink(0).Children(func() { v4StatusDot(c, comp.DotState) })
-						ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+						ui.Box(c).Padding(4, 0, 0, 0).Shrink(0).Children(func() { v4StatusDot(c, comp.DotState) })
+						ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 							ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
-								ui.Text(c, comp.Name).Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).LineHeight(1.35).Grow(1).MinWidth(0).SingleLine()
-								ui.Text(c, comp.StatusText).Font("system-ui").FontSize(fsCaption).FontWeight(400).FontFeatures("tnum").TextColor(comp.StatusColor).Shrink(0).SingleLine()
+								ui.Text(c, comp.Name).Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Text1).LineHeight(1.35).Grow(1).MinWidth(0).SingleLine()
+								ui.Text(c, comp.StatusText).Font(fontUI).FontSize(fsCaption).FontWeight(400).FontFeatures("tnum").TextColor(comp.StatusColor).Shrink(0).SingleLine()
 							})
 							if comp.CompactMetrics != "" {
-								ui.Text(c, comp.CompactMetrics).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).LineHeight(1.4)
+								ui.Text(c, comp.CompactMetrics).Font(fontMono).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).LineHeight(1.4)
 							}
 						})
 					})
@@ -359,7 +308,7 @@ func (a *App) sidebarServicePopover(c *ui.Context, anchor ui.Element, overallDot
 					Cursor(ui.CursorPointer).FillWidth().Height(28).Padding(0, sp2).Radius(radius).BorderWidth(0).
 					AlignItems(ui.Center).Justify(ui.SpaceBetween)
 				detailBtn.Background(homeHoverColor(detailBtn, "sp-go-bg", ui.Transparent, tok.AccentSofter)).Children(func() {
-					ui.Text(c, "在设置中查看详情").Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+					ui.Text(c, "在设置中查看详情").Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
 					ui.Icon(c, v4IconChev).FontSize(14).TextColor(tok.Accent).Shrink(0)
 				}).OnClick(func() {
 					a.closeServicePopover()

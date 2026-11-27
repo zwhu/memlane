@@ -7,11 +7,11 @@ import (
 )
 
 func setupHeading(tok *kitui.Tokens, c *ui.Context, text string) {
-	ui.Text(c, text).Font("system-ui").FontSize(fsTitle).FontWeight(600).TextColor(tok.Text1).LineHeight(1.3)
+	ui.Text(c, text).Font(kitui.FontUI).FontSize(fsTitle).FontWeight(600).TextColor(tok.Text1).LineHeight(1.3)
 }
 
 func setupDescription(tok *kitui.Tokens, c *ui.Context, text string) {
-	ui.Text(c, text).Font("system-ui").FontSize(fsBody).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
+	ui.Text(c, text).Font(kitui.FontUI).FontSize(fsBody).FontWeight(400).TextColor(tok.Text2).LineHeight(1.6)
 }
 
 func environmentDotState(status bootstrap.Status) string {
@@ -49,10 +49,10 @@ func (a *Controller) setupStageBanner(c *ui.Context, title, subtitle string, sto
 	ui.Row(c.Key("setup-stage-banner")).FillWidth().Padding(sp4).Gap(sp4).
 		Radius(radius).Background(tok.Fill1).AlignItems(ui.Center).Children(func() {
 		kitui.StageBlocks(c, tok)
-		ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-			ui.Text(c, title).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).LineHeight(1.4)
+		ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
+			ui.Text(c, title).Font(kitui.FontUI).FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).LineHeight(1.4)
 			if subtitle != "" {
-				ui.Text(c, subtitle).Font("system-ui").FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.45)
+				ui.Text(c, subtitle).Font(kitui.FontUI).FontSize(fsFootnote).FontWeight(400).TextColor(tok.Text2).LineHeight(1.45)
 			}
 		})
 		if stopFn != nil {
@@ -128,7 +128,7 @@ func (a *Controller) environmentReviewModal(c *ui.Context) {
 			}
 		},
 		Body: func() {
-			ui.Text(c, modalIntro).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
+			ui.Text(c, modalIntro).Font(kitui.FontUI).FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 			if plainLanguage {
 				environmentCapabilities(tok, c)
 				label := "查看技术清单"
@@ -154,13 +154,13 @@ func (a *Controller) environmentReviewModal(c *ui.Context) {
 								kitui.StatusDot(c, tok, "run")
 							}
 							dependencyMark(tok, c, r.ID)
-							ui.Text(c, r.Name+" · "+r.Version).Font("system-ui").FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
+							ui.Text(c, r.Name+" · "+r.Version).Font(kitui.FontUI).FontSize(fsBody).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
 							if isPluginPolicyUpdate(item, item.Observation.Status) {
 								ui.Text(c, "策略有更新").FontSize(fsCaption).TextColor(tok.Accent).SingleLine()
 							}
-							ui.Text(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes)).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
+							ui.Text(c, "下载 "+environmentSize(r.DownloadBytes)+"，占用 "+environmentSize(r.InstalledBytes)).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).SingleLine()
 						})
-						ui.Text(c, r.Purpose).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
+						ui.Text(c, r.Purpose).Font(kitui.FontUI).FontSize(fsFootnote).TextColor(tok.Text2).LineHeight(1.5)
 						if item.Observation.Status == bootstrap.Incompatible {
 							if hint := environmentIncompatibleHint(a, item); hint != "" {
 								prefix := "原因："
@@ -169,30 +169,30 @@ func (a *Controller) environmentReviewModal(c *ui.Context) {
 									prefix = "说明："
 									col = tok.Text2
 								}
-								ui.Text(c, prefix+hint).Font("system-ui").FontSize(fsCaption).TextColor(col).LineHeight(1.5)
+								ui.Text(c, prefix+hint).Font(kitui.FontUI).FontSize(fsCaption).TextColor(col).LineHeight(1.5)
 							}
 							if s.Details && item.Observation.Reason != "" && isDailyPluginUpdateAvailable(a, item, item.Observation.Status) {
-								ui.Text(c, "技术详情："+bootstrap.RedactInstallerText(item.Observation.Reason)).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+								ui.Text(c, "技术详情："+bootstrap.RedactInstallerText(item.Observation.Reason)).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 							}
 						}
 						if r.SizeNote != "" {
-							ui.Text(c, r.SizeNote).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+							ui.Text(c, r.SizeNote).Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 						}
 						sourceLabel := "来源：" + r.Source
 						if r.OfficialSource != "" && r.OfficialSource != r.Source {
 							sourceLabel = "当前来源：" + r.Source
 						}
-						ui.Text(c, sourceLabel).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						ui.Text(c, sourceLabel).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 						if r.OfficialSource != "" && r.OfficialSource != r.Source {
-							ui.Text(c, "官方原址："+r.OfficialSource).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+							ui.Text(c, "官方原址："+r.OfficialSource).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 						}
-						ui.Text(c, "位置："+r.Destination).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+						ui.Text(c, "位置："+r.Destination).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 						if r.Digest != "" {
-							ui.Text(c, "SHA-256 "+r.Digest).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
+							ui.Text(c, "SHA-256 "+r.Digest).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text3).LineHeight(1.45)
 						}
 						switch r.ID {
 						case "uv", "python", "runtime", "cognee-source", "embedding", "agent-plugin":
-							ui.Row(c).FillWidth().Padding(2, 0, 0, 0).Children(func() {
+							ui.Row(c).FillWidth().Padding(4, 0, 0, 0).Children(func() {
 								kitui.SmallButton(c, tok, "复制此项安装命令", kitui.IconCopy, func() {
 									c.WriteClipboard(bootstrap.ManualInstallCommand(itemCopy, s.Environment, s.DownloadSource))
 									s.Message = "已复制 " + r.Name + " 安装命令"
@@ -231,7 +231,7 @@ func (a *Controller) initialEnvironmentDetails(c *ui.Context) {
 		Body: func() {
 			a.environmentDiagnosticAgents(c)
 			if s.Error != "" {
-				ui.Text(c, s.Error).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Danger).LineHeight(1.6)
+				ui.Text(c, s.Error).Font(kitui.FontUI).FontSize(fsFootnote).TextColor(tok.Danger).LineHeight(1.6)
 			}
 			kitui.Group(c, tok, "已检测组件路径", "", nil, func() {
 				for _, item := range s.Plan.Items {
@@ -258,7 +258,7 @@ func (a *Controller) initialEnvironmentDetails(c *ui.Context) {
 			})
 			if s.Manual {
 				ui.Column(c).FillWidth().Gap(sp2).Margin(sp2, 0, 0, 0).Children(func() {
-					ui.Text(c, "指定已有路径").Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3)
+					ui.Text(c, "指定已有路径").Font(kitui.FontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3)
 					for _, field := range []struct {
 						label string
 						value *string
@@ -271,7 +271,7 @@ func (a *Controller) initialEnvironmentDetails(c *ui.Context) {
 						{"已有 Agent 插件目录", &s.Plugin},
 					} {
 						ui.Column(c).FillWidth().Gap(4).Children(func() {
-							ui.Text(c, field.label).Font("system-ui").FontSize(fsFootnote).TextColor(tok.Text2)
+							ui.Text(c, field.label).Font(kitui.FontUI).FontSize(fsFootnote).TextColor(tok.Text2)
 							ui.TextInput(c.Key(field.label), field.value).FillWidth().Label(field.label).Disabled(s.Busy || s.Loading)
 						})
 					}

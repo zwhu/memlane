@@ -91,7 +91,7 @@ func loadingRows(c *ui.Context, tok *kitui.Tokens, label string, compact bool) {
 			count = 4
 		}
 		for n := 0; n < count; n++ {
-			row := ui.Row(c).FillWidth().Padding(sp2+2, 0).Gap(sp3).AlignItems(ui.Center)
+			row := ui.Row(c).FillWidth().Padding(sp3, 0).Gap(sp3).AlignItems(ui.Center)
 			if compact {
 				row.MinHeight(52)
 			} else {
@@ -103,7 +103,7 @@ func loadingRows(c *ui.Context, tok *kitui.Tokens, label string, compact bool) {
 				} else {
 					ui.Box(c).Size(22, 22).Shrink(0).Radius(radius).Background(tok.Fill2)
 				}
-				ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(8).Children(func() {
 					width := float32(360)
 					if compact {
 						width = 150

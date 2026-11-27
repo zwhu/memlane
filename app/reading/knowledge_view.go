@@ -16,7 +16,7 @@ func CopyBody(body string, loaded, unavailable bool) (string, bool) {
 func CatalogUpdateBanner(c *ui.Context, tokens *kitui.Tokens, renderRefresh func()) {
 	ui.Row(c.Key("knowledge-new-catalog-banner")).FillWidth().Padding(kitui.Sp1, kitui.Sp4).
 		Gap(kitui.Sp2).AlignItems(ui.Center).Background(tokens.AccentSofter).Shrink(0).Children(func() {
-		ui.Text(c, "有新记忆可用").Font("system-ui").FontSize(kitui.FSCaption).FontWeight(500).TextColor(tokens.Text1).SingleLine()
+		ui.Text(c, "有新记忆可用").Font(kitui.FontUI).FontSize(kitui.FSCaption).FontWeight(500).TextColor(tokens.Text1).SingleLine()
 		ui.Spacer(c)
 		renderRefresh()
 	})

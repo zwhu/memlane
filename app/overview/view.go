@@ -20,7 +20,7 @@ func (a *ControllerOf[T]) RenderHome(c *ui.Context) {
 	}
 	ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {
 		pageKey := fmt.Sprintf("overview-page-%d", v.PageRun)
-		page := ui.Column(c.Key(pageKey)).Grow(1).MinHeight(0).FillWidth().MaxWidth(1040).Padding(0, sp8).Font("system-ui").FontWeight(400)
+		page := ui.Column(c.Key(pageKey)).Grow(1).MinHeight(0).FillWidth().MaxWidth(1040).Padding(0, sp8).Font(kitui.FontUI).FontWeight(400)
 		a.pageEnter(c, page, "overview-page", v.PageRun)
 		page.Children(func() {
 			if a.RenderTopBanners != nil {
@@ -109,7 +109,7 @@ func (a *ControllerOf[T]) knowledgeRow(c *ui.Context, now time.Time, item T, idx
 	rowKey := fmt.Sprintf("recent-%d-%s", v.KnowledgeRun, i.Key())
 	row := ui.ButtonBase(c.Key(rowKey)).Role(ui.RoleButton).Cursor(ui.CursorPointer).
 		Label(i.Title).FillWidth().Justify(ui.Start).AlignItems(ui.Center).
-		MinHeight(rowHeight2).Padding(sp2+2, sp2).Radius(radius).Gap(sp3).BorderWidth(0)
+		MinHeight(rowHeight2).Padding(sp3, sp2).Radius(radius).Gap(sp3).BorderWidth(0)
 	hovered := row.Hovered()
 	hoverBg := tok.BgElevated
 	if tok.Dark {
@@ -141,7 +141,7 @@ func (a *ControllerOf[T]) knowledgeRow(c *ui.Context, now time.Time, item T, idx
 			titlePending := i.TitlePending
 			ui.Column(c).FillWidth().MinHeight(38).Justify(ui.Center).Children(func() {
 				if titlePending {
-					ui.Column(c).FillWidth().Gap(6).Children(func() {
+					ui.Column(c).FillWidth().Gap(8).Children(func() {
 						ui.Box(c).FillWidth().Height(12).Radius(4).Background(tok.Fill2)
 						ui.Box(c).Width(220).Height(12).Radius(4).Background(tok.Fill1)
 					})

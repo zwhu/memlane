@@ -15,7 +15,7 @@ func settingsListSurface(tok *kitui.Tokens, c *ui.Context, content func()) {
 
 func settingsSectionHeader(tok *kitui.Tokens, c *ui.Context, title string, status, actions func()) {
 	ui.Row(c).FillWidth().Padding(0, sp1, sp2, sp1).AlignItems(ui.Center).Gap(sp2).Children(func() {
-		ui.Text(c, title).Font("system-ui").FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
+		ui.Text(c, title).Font(kitui.FontUI).FontSize(fsCaption).FontWeight(600).TextColor(tok.Text3).SingleLine()
 		if status != nil {
 			status()
 		}

@@ -71,7 +71,7 @@ func (a *App) recallActivityGroups(event RecallEvent) []appoverview.RecallGroup 
 func (a *App) recallActivityAction(c *ui.Context, event RecallEvent) {
 	groups := a.recallActivityGroups(event)
 	if len(groups) == 1 {
-		b := textButton(c, fmt.Sprintf("查看 %d 条记忆", groups[0].Count), func() { a.openRecalledCards(event, groups[0].Dataset) }).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 2)
+		b := textButton(c, fmt.Sprintf("查看 %d 条记忆", groups[0].Count), func() { a.openRecalledCards(event, groups[0].Dataset) }).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 4)
 		if !b.Hovered() {
 			b.TextColor(tok.Text3)
 		}
@@ -81,7 +81,7 @@ func (a *App) recallActivityAction(c *ui.Context, event RecallEvent) {
 		homeText(c, "记忆库暂不可用", homeMeta)
 		return
 	}
-	b := textButton(c, "查看召回记忆", nil).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 2)
+	b := textButton(c, "查看召回记忆", nil).AlignSelf(ui.Start).FontSize(fsCaption).Padding(0, 4)
 	if !b.Hovered() {
 		b.TextColor(tok.Text3)
 	}

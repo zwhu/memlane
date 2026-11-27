@@ -92,7 +92,7 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 		for _, group := range groups {
 			if edit && group.Key != "agent" {
 				ui.Row(c).FillWidth().Padding(sp2, sp4, sp1, sp4).Children(func() {
-					ui.Text(c, group.Title).Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
+					ui.Text(c, group.Title).Font(kitui.FontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Text3).SingleLine()
 				})
 			}
 			for _, item := range group.Items {
@@ -327,7 +327,7 @@ func (a *Controller) recommendedProcessingCLIRows(c *ui.Context, message *string
 			Key: "recommended-cli-" + cli.Kind, Title: cli.DisplayName, Desc: cli.LoginHint,
 			DescExtra: func() {
 				if cli.InstallCommand != "" {
-					ui.Text(c, cli.InstallCommand).Font("ui-monospace").FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.45)
+					ui.Text(c, cli.InstallCommand).Font(kitui.FontMono).FontSize(fsCaption).TextColor(tok.Text2).LineHeight(1.45)
 				}
 			},
 			Control: func() {

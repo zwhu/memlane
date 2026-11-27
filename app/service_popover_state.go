@@ -1,13 +1,21 @@
 package app
 
-import "time"
+import (
+	"github.com/egoist/mygo/ui"
+	kitui "github.com/zwhu/memlane/kit/ui"
+)
 
 type servicePopoverState struct {
 	PopoverOpen       bool
 	popoverBtnHover   bool
-	popoverBtnFocus   bool
-	popoverClicked    bool
 	popoverPanelHover bool
-	popoverShowTimer  *time.Timer
-	popoverHideTimer  *time.Timer
+	panelBounds       ui.Rect
+	intent            *kitui.HoverIntent
+}
+
+func (s *servicePopoverState) hoverIntent() *kitui.HoverIntent {
+	if s.intent == nil {
+		s.intent = kitui.DefaultHoverIntent()
+	}
+	return s.intent
 }

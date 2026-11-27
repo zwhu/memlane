@@ -118,7 +118,7 @@ func (a *Controller) projectQueueSection(c *ui.Context, p AccessProject) {
 					},
 				})
 				if q.ShowFailureTech && tech != "" {
-					ui.Column(c.Key("proj-inbox-tech-" + p.ID)).FillWidth().Padding(0, sp4, sp3, sp4+18).Children(func() {
+					ui.Column(c.Key("proj-inbox-tech-"+p.ID)).FillWidth().Padding(0, sp4, sp3, sp4+20).Children(func() {
 						ui.Column(c).FillWidth().Padding(sp2, sp3).Gap(sp1).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 							for _, line := range strings.Split(tech, "\n") {
 								if line != "" {

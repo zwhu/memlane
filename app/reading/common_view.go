@@ -10,7 +10,7 @@ func ConfirmDiscard(c *ui.Context, tokens *kitui.Tokens, open *bool, confirm fun
 		Key: "common-discard-draft", Title: "放弃未保存的草稿？", Width: kitui.DialogSmall,
 		Danger: true, CancelText: "继续编辑", ConfirmText: "放弃并返回", OnConfirm: confirm,
 		Body: func() {
-			ui.Text(c, "草稿尚未保存，放弃后将清除本次编辑。").Font("system-ui").FontSize(kitui.FSBody).TextColor(tokens.Text2).LineHeight(1.6)
+			ui.Text(c, "草稿尚未保存，放弃后将清除本次编辑。").Font(kitui.FontUI).FontSize(kitui.FSBody).TextColor(tokens.Text2).LineHeight(1.6)
 		},
 	})
 }
@@ -21,7 +21,7 @@ func ConfirmDelete(c *ui.Context, tokens *kitui.Tokens, open *bool, id string, b
 		Danger: true, CancelText: "保留记忆", ConfirmText: "确认删除此条", ConfirmDisabled: busy,
 		OnCancel: cancel, OnConfirm: confirm,
 		Body: func() {
-			ui.Text(c, "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。").Font("system-ui").FontSize(kitui.FSBody).TextColor(tokens.Text2).LineHeight(1.6)
+			ui.Text(c, "官方确认后将移除记忆及关联索引。此操作无法在客户端撤销。").Font(kitui.FontUI).FontSize(kitui.FSBody).TextColor(tokens.Text2).LineHeight(1.6)
 		},
 	})
 }

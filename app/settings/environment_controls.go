@@ -25,7 +25,7 @@ func (a *Controller) environmentDiagnosticAgents(c *ui.Context) {
 	s := &a.environment
 	if s.AgentOpen {
 		ui.Column(c).FillWidth().Gap(sp2).Margin(sp2, 0).Children(func() {
-			ui.Text(c, "在已有 Agent 的新会话中粘贴提示词").Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3)
+			ui.Text(c, "在已有 Agent 的新会话中粘贴提示词").Font(kitui.FontUI).FontSize(fsCaption).TextColor(tok.Text3)
 			ui.Row(c).Gap(sp2).Children(func() {
 				for _, entry := range s.DiagnosticAgents {
 					agent := entry

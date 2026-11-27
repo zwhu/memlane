@@ -263,6 +263,6 @@ func renderSearchMetadata(c *ui.Context, i Item) {
 	}
 	v4CategoryChip(c, rawTag)
 	if i.SessionSummary != "" {
-		ui.Text(c, i.SessionSummary).Font("system-ui").FontSize(fsCaption).TextColor(tok.Text3).SingleLine().MinWidth(0)
+		ui.Text(c, i.SessionSummary).Font(fontUI).FontSize(fsCaption).TextColor(tok.Text3).SingleLine().MinWidth(0)
 	}
 }

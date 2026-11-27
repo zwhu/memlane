@@ -212,7 +212,7 @@ func InlineMarkdown(c *mygoui.Context, tok *Tokens, raw string, size float32, we
 		inlineMarkdownMu.Unlock()
 	}
 	if len(entry.spans) == 0 {
-		return mygoui.Text(c, entry.preview).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+		return mygoui.Text(c, entry.preview).Font(FontUI).FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
 	}
-	return mygoui.RichText(c, entry.spans...).Font("system-ui").FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
+	return mygoui.RichText(c, entry.spans...).Font(FontUI).FontSize(size).FontWeight(weight).LineHeight(lineHeight).TextColor(color)
 }

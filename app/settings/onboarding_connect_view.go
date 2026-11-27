@@ -105,12 +105,12 @@ func (a *Controller) onboardingConnectRow(c *ui.Context, row AgentConnection) {
 		version = s.HostVersions[row.Kind]
 	}
 	locked := a.onboardingConnectionBusy()
-	ui.Column(c.Key("onboarding-connect-item-"+row.Kind)).FillWidth().Gap(0).Children(func() {
+	ui.Column(c.Key("onboarding-connect-item-" + row.Kind)).FillWidth().Gap(0).Children(func() {
 		kitui.Row(c, tok, kitui.RowOptions{
 			Key: "onboarding-connect-" + row.Kind, Title: name, Desc: path, DescMono: true, Tooltip: path,
 			TitleExtra: func() {
 				if version != "" {
-					kitui.Text(c, tok, version, kitui.RoleMeta).Font("ui-monospace").Label(name + " 版本：" + version).SingleLine()
+					kitui.Text(c, tok, version, kitui.RoleMeta).Font(kitui.FontMono).Label(name + " 版本：" + version).SingleLine()
 				}
 			},
 			Leading: func() {
@@ -160,7 +160,7 @@ func (a *Controller) onboardingConnectRow(c *ui.Context, row AgentConnection) {
 				btn.PopoverMenuButton(func(m *ui.Menu) { a.onboardingConnectionMenu(m, row, status) })
 			},
 		})
-		ui.Column(c.Key("onboarding-connect-details-"+row.Kind)).FillWidth().Padding(0, sp4, 0, sp4+34).Gap(sp1).Children(func() {
+		ui.Column(c.Key("onboarding-connect-details-"+row.Kind)).FillWidth().Padding(0, sp4, 0, sp4+36).Gap(sp1).Children(func() {
 			a.onboardingConnectionRowDetails(c, row, preview, status)
 		})
 	})

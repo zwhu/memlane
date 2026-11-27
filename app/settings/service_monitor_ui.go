@@ -109,10 +109,10 @@ func (a *Controller) serviceMonitorDetails(c *ui.Context) {
 					kitui.Text(c, tok, heading, kitui.RoleMeta).Grow(1).MinWidth(0)
 					kitui.SmallButton(c, tok, toggleLabel, nil, func() { m.ShowRawLogs = !m.ShowRawLogs })
 				})
-				ui.Column(c).FillWidth().Padding(sp3).Gap(3).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+				ui.Column(c).FillWidth().Padding(sp3).Gap(4).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 					for _, line := range lines {
 						if m.ShowRawLogs {
-							ui.Text(c, stripANSIEscapes(line)).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
+							ui.Text(c, stripANSIEscapes(line)).Font(kitui.FontMono).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text2).LineHeight(1.55)
 							continue
 						}
 						display, level := formatServiceLogLine(line)
@@ -126,7 +126,7 @@ func (a *Controller) serviceMonitorDetails(c *ui.Context) {
 						case "warning":
 							textCol = tok.Warning
 						}
-						ui.Text(c, display).Font("ui-monospace").FontSize(fsCaption).FontFeatures("tnum").TextColor(textCol).LineHeight(1.55)
+						ui.Text(c, display).Font(kitui.FontMono).FontSize(fsCaption).FontFeatures("tnum").TextColor(textCol).LineHeight(1.55)
 					}
 				})
 			})

@@ -99,7 +99,7 @@ func Dialog(c *mygoui.Context, tok *Tokens, open *bool, opts DialogOptions) mygo
 					mygoui.Row(c).Shrink(0).AlignItems(mygoui.Center).Justify(mygoui.Center).Children(opts.Leading)
 				}
 				if opts.Title != "" {
-					mygoui.Text(c, opts.Title).Font("system-ui").FontSize(FSHeading).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
+					mygoui.Text(c, opts.Title).Font(FontUI).FontSize(FSHeading).FontWeight(600).TextColor(tok.Text1).Grow(1).MinWidth(0)
 				} else {
 					mygoui.Spacer(c)
 				}
@@ -109,7 +109,7 @@ func Dialog(c *mygoui.Context, tok *Tokens, open *bool, opts DialogOptions) mygo
 						closeLbl = "关闭" + opts.Title
 					}
 					closeBtn := mygoui.ButtonBase(c.Key(key+"-close")).Role(mygoui.RoleButton).Label(closeLbl).
-						Cursor(mygoui.CursorPointer).Size(26, 26).Radius(Radius).BorderWidth(0).
+						Cursor(mygoui.CursorPointer).Size(28, 28).Radius(Radius).BorderWidth(0).
 						AlignItems(mygoui.Center).Justify(mygoui.Center).Shrink(0).Disabled(opts.CancelDisabled)
 					closeBtn.Background(HoverColor(closeBtn, "dlg-close-bg", mygoui.Transparent, tok.Hover))
 					ButtonPress(closeBtn, 0.92)
@@ -141,7 +141,7 @@ func Dialog(c *mygoui.Context, tok *Tokens, open *bool, opts DialogOptions) mygo
 			mygoui.Row(c).FillWidth().Padding(Sp3, Sp5).Gap(Sp2).AlignItems(mygoui.Center).
 				BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 				if opts.Hint != "" {
-					mygoui.Text(c, opts.Hint).Font("system-ui").FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).Grow(1).MinWidth(0)
+					mygoui.Text(c, opts.Hint).Font(FontUI).FontSize(FSCaption).FontWeight(400).TextColor(tok.Text3).Grow(1).MinWidth(0)
 				} else {
 					mygoui.Spacer(c)
 				}
@@ -165,7 +165,7 @@ func Dialog(c *mygoui.Context, tok *Tokens, open *bool, opts DialogOptions) mygo
 				}
 			})
 		}
-	}).Width(width).Padding(0).Gap(0).Radius(RadiusMenu).Background(tok.BgElevated).
+	}).Width(width).Padding(0).Gap(0).Radius(RadiusDialog).Background(tok.BgElevated).
 		Border(1, tok.Border).Shadow(0, 12, 32, 0, tok.ShadowLift).Transition(DialogTransition())
 	if label != "" {
 		modal.Label(label)

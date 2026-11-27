@@ -143,7 +143,7 @@ func (a *App) subagentContext(c *ui.Context, s *pane, i Item) {
 	if i.Session.NestingDepth > 1 {
 		badge += fmt.Sprintf(" · L%d", i.Session.NestingDepth)
 	}
-	ui.Column(c).FillWidth().Padding(sp2+2, sp3).Gap(6).Radius(radius).Background(tok.AccentSofter).Border(1, tok.AccentSoft).Children(func() {
+	ui.Column(c).FillWidth().Padding(sp3, sp3).Gap(8).Radius(radius).Background(tok.AccentSofter).Border(1, tok.AccentSoft).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 			if hasParent {
 				back := ui.ButtonBase(c.Key("subagent-return-parent-btn")).Role(ui.RoleButton).Label("返回主会话").
@@ -152,7 +152,7 @@ func (a *App) subagentContext(c *ui.Context, s *pane, i Item) {
 				v4ButtonPress(back, 0.96)
 				back.Children(func() {
 					ui.Icon(c, readingBack).FontSize(12).TextColor(tok.Accent).Shrink(0)
-					ui.Text(c, "返回主会话").Font("system-ui").FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
+					ui.Text(c, "返回主会话").Font(fontUI).FontSize(fsFootnote).FontWeight(500).TextColor(tok.Accent).SingleLine()
 				}).OnClick(func() { a.returnToParentSession(s) })
 				ui.Box(c).Size(1, 12).Background(tok.Border).Shrink(0)
 			}
@@ -173,7 +173,7 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 	childTitle := projectDisplayTitle(child)
 	label := fmt.Sprintf("%s：%s", subagentBadgeLabel(child.Session), childTitle)
 	card := ui.ButtonBase(c.Key("subagent-card-"+child.Key())).Role(ui.RoleButton).Label(label).
-		Cursor(ui.CursorPointer).FillWidth().Padding(sp3, sp3+2).Radius(radius).Border(1, tok.Border).
+		Cursor(ui.CursorPointer).FillWidth().Padding(sp3, sp4).Radius(radius).Border(1, tok.Border).
 		AlignItems(ui.Stretch).Justify(ui.Start)
 	if card.Hovered() {
 		card.Background(tok.Hover)
@@ -182,7 +182,7 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 	}
 	v4ButtonPress(card, 0.99)
 	card.Children(func() {
-		ui.Column(c).FillWidth().Gap(6).Children(func() {
+		ui.Column(c).FillWidth().Gap(8).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 				agentLogo(c, recentAgentIcon(child), 14)
 				v4SubagentChip(c, subagentBadgeLabel(child.Session), sessionIdentity(child.ID))
@@ -190,7 +190,7 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 					v4CategoryChip(c, fmt.Sprintf("L%d", child.Session.NestingDepth))
 				}
 				ui.Spacer(c)
-				ui.Text(c, displayDate(child.Date)).Font("system-ui").FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
+				ui.Text(c, displayDate(child.Date)).Font(fontUI).FontSize(fsCaption).FontFeatures("tnum").TextColor(tok.Text3).SingleLine().Shrink(0)
 			})
 			if sessionHasTopic(child) {
 				v4InlineMarkdown(c, strings.TrimSpace(child.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2)
@@ -203,7 +203,7 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 					summary = sessionIdentity(child.ID)
 				}
 				homeText(c, summary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
-				ui.Text(c, "查看完整记录 ›").Font("system-ui").FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine().Shrink(0)
+				ui.Text(c, "查看完整记录 ›").Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine().Shrink(0)
 			})
 		})
 	}).OnClick(func() { a.openSubagentSession(s, parent, child) })

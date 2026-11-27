@@ -33,10 +33,10 @@ func knowledgeBasis(c *ui.Context, i Item) {
 		return
 	}
 	// V4: hairline divider section instead of filled gray card.
-	ui.Column(c.Key("knowledge-basis-"+i.Key())).FillWidth().Gap(6).Margin(sp4, 0, 0, 0).Padding(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
+	ui.Column(c.Key("knowledge-basis-"+i.Key())).FillWidth().Gap(8).Margin(sp4, 0, 0, 0).Padding(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 			ui.Icon(c, v4IconInfo).FontSize(14).TextColor(tok.Text3).Shrink(0)
-			ui.Text(c, "记忆点").Font("system-ui").FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
+			ui.Text(c, "记忆点").Font(fontUI).FontSize(fsFootnote).FontWeight(600).TextColor(tok.Text1)
 		})
 		missing := []string{}
 		for _, field := range fields[1:] {
