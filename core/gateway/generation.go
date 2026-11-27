@@ -1,20 +1,26 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
@@ -158,6 +164,9 @@ func detectBridgeDefaultsForKind(opts agents.DiscoveryOptions, kind string, cred
 
 func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if hasPending, err := s.hasPendingGenerationHandoffs(ctx); err == nil && hasPending {
+		s.maybeReconcileHandoffs(ctx, false)
+	}
 	state, err := s.cfg.Store.GetGenerationState(ctx)
 	if err != nil {
 		writeDomainError(w, err)
@@ -211,15 +220,23 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 			model = status
 		}
 	}
-	startup := sanitizeError(errors.New(state.StartupError))
+	startupRaw := state.StartupError
+	if startupRaw == "" {
+		startupRaw = s.startupModelError()
+	}
+	startup := sanitizeError(errors.New(startupRaw))
 	for _, key := range credentials {
 		startup = strings.ReplaceAll(startup, key, "[REDACTED]")
 	}
-	writeJSON(w, 200, map[string]any{"state": map[string]any{"active_profile_id": state.ActiveProfileID,
+	resp := map[string]any{"state": map[string]any{"active_profile_id": state.ActiveProfileID,
 		"active_revision": state.ActiveRevision, "next_profile_id": state.NextProfileID, "next_revision": state.NextRevision,
 		"revision": state.Revision, "startup_error": startup}, "profiles": out, "model_status": model, "validations": validations,
 		"handoff_available": s.cfg.Models != nil, "output_language": outputLanguage, "detected_processing_clis": processing,
-		"agent_defaults": agentDefaults, "agent_bridges": agentBridges})
+		"agent_defaults": agentDefaults, "agent_bridges": agentBridges}
+	if pending, ok, err := s.latestPendingHandoff(ctx); err == nil && ok {
+		resp["active_handoff"] = publicHandoff(pending)
+	}
+	writeJSON(w, 200, resp)
 }
 
 type validationView struct {
@@ -449,6 +466,17 @@ func (s *Server) removeProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if state.ActiveProfileID == id || state.NextProfileID == id {
 		writeError(w, 409, "active_profile_cannot_be_removed", "selected generation profile cannot be removed")
+		return
+	}
+	var pendingRef bool
+	if err := s.cfg.Store.DB().QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM generation_handoffs WHERE profile_id=? AND status IN ('applying','result_unknown'))`,
+		id).Scan(&pendingRef); err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	if pendingRef {
+		writeError(w, 409, "pending_handoff_profile_cannot_be_removed", "profile referenced by a pending handoff cannot be removed")
 		return
 	}
 	receipt := map[string]any{"id": id, "deleted": true}
@@ -747,6 +775,10 @@ func (s *Server) validateProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (map[string]any, string, error) {
+	return s.applyConfigWithEvidence(ctx, p, nil)
+}
+
+func (s *Server) applyConfigWithEvidence(ctx context.Context, p domain.GenerationProfile, frozenEvidence map[string]string) (map[string]any, string, error) {
 	_, endpoint, key, err := s.modelConnection(p)
 	if err != nil {
 		return nil, "", err
@@ -771,27 +803,91 @@ func (s *Server) applyConfig(ctx context.Context, p domain.GenerationProfile) (m
 		cfg["max_concurrent_requests"] = *p.MaxConcurrentRequests
 	}
 	if p.Provider == "ollama" {
-		var raw string
-		err := s.cfg.Store.DB().QueryRowContext(ctx, `SELECT payload_json FROM generation_validations WHERE digest=?
-			ORDER BY registered_revision DESC LIMIT 1`, p.Digest).Scan(&raw)
-		if err != nil {
-			return nil, "", err
+		if len(frozenEvidence) > 0 {
+			cfg["ollama_schema_evidence"] = maps.Clone(frozenEvidence)
+		} else {
+			evidence, err := s.latestOllamaSchemaEvidence(ctx, p.Digest)
+			if err != nil {
+				return nil, "", err
+			}
+			if len(evidence) > 0 {
+				cfg["ollama_schema_evidence"] = evidence
+			}
 		}
+	}
+	return cfg, key, nil
+}
+
+func (s *Server) latestOllamaSchemaEvidence(ctx context.Context, digest string) (map[string]string, error) {
+	rows, err := readRows(ctx, s.cfg.Store.DB(), `SELECT status,schema_passed,payload_json FROM generation_validations
+		WHERE digest=? ORDER BY registered_revision DESC`, []any{digest},
+		func(row rowScanner) (struct {
+			status       string
+			schemaPassed bool
+			payloadJSON  string
+		}, error) {
+			var r struct {
+				status       string
+				schemaPassed bool
+				payloadJSON  string
+			}
+			err := row.Scan(&r.status, &r.schemaPassed, &r.payloadJSON)
+			return r, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, sql.ErrNoRows
+	}
+	var fallback map[string]string
+	for _, r := range rows {
 		var payload struct {
 			Evidence       map[string]string `json:"ollama_schema_evidence"`
 			LegacyEvidence map[string]string `json:"native_schema_evidence"`
 		}
-		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-			return nil, "", err
+		if err := json.Unmarshal([]byte(r.payloadJSON), &payload); err != nil {
+			continue
 		}
-		if payload.Evidence == nil {
-			payload.Evidence = payload.LegacyEvidence
+		ev := payload.Evidence
+		if len(ev) == 0 {
+			ev = payload.LegacyEvidence
 		}
-		if payload.Evidence != nil {
-			cfg["ollama_schema_evidence"] = payload.Evidence
+		if len(ev) == 0 {
+			continue
+		}
+		if r.status == "passed" && r.schemaPassed {
+			return ev, nil
+		}
+		if r.status == "passed" && fallback == nil {
+			fallback = ev
 		}
 	}
-	return cfg, key, nil
+	return fallback, nil
+}
+
+type handoffStoredPayload struct {
+	OllamaSchemaEvidence map[string]string `json:"ollama_schema_evidence,omitempty"`
+	AppliedModelDigest   string            `json:"applied_model_digest,omitempty"`
+}
+
+func decodeHandoffPayload(raw string) handoffStoredPayload {
+	var out handoffStoredPayload
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	return out
+}
+
+func encodeHandoffPayload(p handoffStoredPayload) string {
+	if len(p.OllamaSchemaEvidence) == 0 && p.AppliedModelDigest == "" {
+		return "{}"
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func (s *Server) serveHandoffs(w http.ResponseWriter, r *http.Request) {
@@ -809,6 +905,12 @@ func (s *Server) serveHandoffs(w http.ResponseWriter, r *http.Request) {
 			writeDomainError(w, err)
 			return
 		}
+		if row.Status == "result_unknown" || row.Status == "applying" {
+			s.maybeReconcileHandoffs(ctx, true)
+			if refreshed, refreshErr := s.cfg.Store.GetGenerationHandoff(ctx, op); refreshErr == nil {
+				row = refreshed
+			}
+		}
 		result = publicHandoff(row)
 	}
 	writeJSON(w, 200, map[string]any{"handoff": result, "pending_sessions": inbox.Pending, "running_sessions": inbox.Processing})
@@ -824,7 +926,7 @@ func publicHandoff(v domain.GenerationHandoff) map[string]any {
 	}
 	reason := ""
 	switch v.Reason {
-	case "model_apply_failed", "operation_receipt_mismatch", "active_commit_failed":
+	case "model_apply_failed", "model_apply_unconfirmed", "operation_receipt_mismatch", "active_commit_failed":
 		reason = v.Reason
 	}
 	return map[string]any{"operation_id": safeModelDigest(v.OperationID), "status": status, "reason": reason,
@@ -928,25 +1030,72 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, domain.ErrInvalidArgument)
 		return
 	}
-	if r.Pattern == "POST /v1/generation/handoffs" {
-		existing, err := s.cfg.Store.GetGenerationHandoff(ctx, op)
-		if err == nil {
-			if existing.ProfileID != p.ProfileID || existing.ProfileRevision != p.Revision {
-				writeError(w, 409, "operation_id_conflict", "handoff operation already recorded")
-				return
+	if existing, err := s.cfg.Store.GetGenerationHandoff(ctx, op); err == nil {
+		if existing.ProfileID != p.ProfileID || existing.ProfileRevision != p.Revision {
+			writeError(w, 409, "operation_id_conflict", "handoff operation already recorded")
+			return
+		}
+		if existing.Status == "result_unknown" || existing.Status == "applying" {
+			s.reconcileHandoffsLocked(ctx, true)
+			if refreshed, refreshErr := s.cfg.Store.GetGenerationHandoff(ctx, op); refreshErr == nil {
+				existing = refreshed
 			}
+		}
+		if r.Pattern == "POST /v1/generation/handoffs" {
 			writeJSON(w, 200, map[string]any{"handoff": publicHandoff(existing)})
 			return
 		}
-		if !errors.Is(err, domain.ErrNotFound) {
+		if !existing.ActiveCommitted {
+			if existing.Status == "result_unknown" || existing.Status == "applying" {
+				writeError(w, 502, "result_unknown", "model activation outcome unconfirmed")
+				return
+			}
+			writeError(w, 502, "model_apply_failed", "engine did not confirm activation")
+			return
+		}
+		frozen := decodeHandoffPayload(existing.PayloadJSON).AppliedModelDigest
+		writeJSON(w, 200, map[string]any{"ok": true, "applied": true, "active_committed": true, "operation_id": op,
+			"profile_id": p.ProfileID, "revision": p.Revision, "model_digest": safeModelDigest(frozen, key)})
+		return
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		writeDomainError(w, err)
+		return
+	}
+
+	// R1-04: Reject concurrent second switch while another handoff is still unconfirmed.
+	if hasPending, err := s.hasPendingGenerationHandoffs(ctx); err != nil {
+		writeDomainError(w, err)
+		return
+	} else if hasPending {
+		s.reconcileHandoffsLocked(ctx, true)
+		stillPending, err := s.hasPendingGenerationHandoffs(ctx)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if stillPending {
+			writeError(w, 409, "generation_handoff_in_progress", "another model handoff is awaiting confirmation")
+			return
+		}
+		// Reload prior state if reconciliation just committed a different active profile.
+		prior, err = s.cfg.Store.GetGenerationState(ctx)
+		if err != nil {
+			writeDomainError(w, err)
+			return
+		}
+		if err := checkGenerationRevision(prior, in.ExpectedRevision); err != nil {
 			writeDomainError(w, err)
 			return
 		}
 	}
 
+	storedPayload := handoffStoredPayload{}
+	if ev, ok := cfg["ollama_schema_evidence"].(map[string]string); ok && len(ev) > 0 {
+		storedPayload.OllamaSchemaEvidence = maps.Clone(ev)
+	}
 	receipt := domain.GenerationHandoff{OperationID: op, ProfileID: p.ProfileID, ProfileRevision: p.Revision, Digest: p.Digest,
 		PreviousProfileID: prior.ActiveProfileID, PreviousRevision: prior.ActiveRevision, Status: "applying",
-		StartedAt: float64(time.Now().UnixMilli()) / 1000}
+		StartedAt: float64(time.Now().UnixMilli()) / 1000, PayloadJSON: encodeHandoffPayload(storedPayload)}
 	if err := s.cfg.Store.UpsertGenerationHandoff(ctx, receipt); err != nil {
 		writeDomainError(w, err)
 		return
@@ -956,14 +1105,28 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	receipt.EndedAt = float64(time.Now().UnixMilli()) / 1000
 	switch {
-	case applyErr != nil || !res.OK || !res.Applied:
+	case applyErr != nil && isExplicitEngineRejection(applyErr):
 		receipt.Status, receipt.Reason = "failed", "model_apply_failed"
+	case applyErr == nil && (!res.OK || !res.Applied):
+		receipt.Status, receipt.Reason = "failed", "model_apply_failed"
+	case applyErr != nil:
+		receipt.Status, receipt.Reason = "result_unknown", "model_apply_unconfirmed"
 	case res.OperationID != "" && res.OperationID != op:
 		receipt.Status, receipt.Reason = "result_unknown", "operation_receipt_mismatch"
 	default:
 		err = s.cfg.Store.SetActiveGeneration(persist, p.ProfileID, p.Revision)
 		if err == nil {
+			err = s.clearStartupModelError(persist)
+		}
+		if err == nil {
+			appliedDigest := safeModelDigest(res.ModelDigest, key)
+			if appliedDigest == "" {
+				appliedDigest, _ = computeApplyModelDigest(cfg)
+			}
+			storedPayload.AppliedModelDigest = appliedDigest
+			receipt.PayloadJSON = encodeHandoffPayload(storedPayload)
 			receipt.Status, receipt.ActiveCommitted = "applied", true
+			s.freezeActiveDigest(p.ProfileID, p.Revision, appliedDigest)
 		} else {
 			receipt.Status, receipt.Reason = "result_unknown", "active_commit_failed"
 		}
@@ -972,11 +1135,21 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+	if receipt.Status == "result_unknown" {
+		s.resetReconcileBackoff()
+	} else if receipt.ActiveCommitted && s.inbox != nil {
+		s.inbox.resetExtractBackoff()
+		s.inbox.Notify()
+	}
 	if r.Pattern == "POST /v1/generation/handoffs" {
 		writeJSON(w, 200, map[string]any{"handoff": publicHandoff(receipt)})
 		return
 	}
 	if !receipt.ActiveCommitted {
+		if receipt.Status == "result_unknown" {
+			writeError(w, 502, "result_unknown", "model activation outcome unconfirmed")
+			return
+		}
 		writeError(w, 502, "model_apply_failed", "engine did not confirm activation")
 		return
 	}
@@ -988,35 +1161,55 @@ func (s *Server) activateProfile(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ApplyActiveGeneration(ctx context.Context) error {
 	s.generationMu.Lock()
 	defer s.generationMu.Unlock()
+	// R2-01: Reconcile any pending handoffs before applying Store's active profile so
+	// reconnecting to a live engine that already switched to B never overwrites B with old A.
+	if hasPending, err := s.hasPendingGenerationHandoffs(ctx); err == nil && hasPending {
+		s.reconcileHandoffsLocked(ctx, true)
+	}
 	state, err := s.cfg.Store.GetGenerationState(ctx)
 	if err != nil {
+		s.setStartupModelError("startup_state_unavailable")
 		return errors.New("could not read active generation selection")
 	}
 	if state.ActiveProfileID == "" || state.ActiveRevision <= 0 {
+		s.setStartupModelError("")
+		s.freezeActiveDigest("", 0, "")
+		if state.StartupError != "" {
+			persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			_ = s.cfg.Store.SetGenerationStartupError(persist, "")
+		}
 		return nil
 	}
 	p, err := s.cfg.Store.GetGenerationProfile(ctx, state.ActiveProfileID, state.ActiveRevision)
 	var reason string
+	var appliedDigest string
 	switch {
-	case err != nil:
+	case err != nil || p.Removed:
 		reason = "startup_profile_unavailable"
-	case p.Removed:
-		return nil
 	case s.cfg.Models == nil:
 		reason = "startup_model_controller_unavailable"
 	default:
-		config, _, configErr := s.applyConfig(ctx, p)
+		frozenEv := s.latestAppliedEvidenceForProfile(ctx, p.ProfileID, p.Revision)
+		config, key, configErr := s.applyConfigWithEvidence(ctx, p, frozenEv)
 		if configErr != nil {
 			reason = "startup_model_configuration_unavailable"
 		} else {
+			op := "startup-" + rand.Text()
 			res, applyErr := s.cfg.Models.ApplyModel(ctx, engine.ApplyModelRequest{
-				GenerationConfig: config, OutputLanguage: s.cfg.OutputLanguage, OperationID: "startup",
+				GenerationConfig: config, OutputLanguage: s.cfg.OutputLanguage, OperationID: op,
 			})
-			if applyErr != nil || !res.OK || !res.Applied || (res.OperationID != "" && res.OperationID != "startup") {
+			if applyErr != nil || !res.OK || !res.Applied || (res.OperationID != "" && res.OperationID != op) {
 				reason = "startup_model_apply_failed"
+			} else {
+				appliedDigest = safeModelDigest(res.ModelDigest, key)
+				if appliedDigest == "" {
+					appliedDigest, _ = computeApplyModelDigest(config)
+				}
 			}
 		}
 	}
+	s.setStartupModelError(reason)
 	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := s.cfg.Store.SetGenerationStartupError(persist, reason); err != nil {
@@ -1025,5 +1218,572 @@ func (s *Server) ApplyActiveGeneration(ctx context.Context) error {
 	if reason != "" {
 		return errors.New(reason)
 	}
+	s.freezeActiveDigest(state.ActiveProfileID, state.ActiveRevision, appliedDigest)
+	if s.inbox != nil {
+		s.inbox.resetExtractBackoff()
+		s.inbox.Notify()
+	}
 	return nil
+}
+
+// RecordStartupGenerationFailure ensures startup model failures remain visible
+// and pause extraction even when persisting startup_error failed.
+func (s *Server) RecordStartupGenerationFailure(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+	code := s.startupModelError()
+	if code == "" {
+		code = cleanReceipt(err.Error())
+	}
+	if code == "" {
+		code = "startup_model_apply_failed"
+	}
+	s.setStartupModelError(code)
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = s.cfg.Store.SetGenerationStartupError(persist, code)
+}
+
+func (s *Server) startupModelError() string {
+	s.startupModelMu.Lock()
+	defer s.startupModelMu.Unlock()
+	return s.startupModelErr
+}
+
+func (s *Server) setStartupModelError(code string) {
+	s.startupModelMu.Lock()
+	s.startupModelErr = code
+	s.startupModelMu.Unlock()
+}
+
+func (s *Server) clearStartupModelError(ctx context.Context) error {
+	if err := s.cfg.Store.SetGenerationStartupError(ctx, ""); err != nil {
+		return err
+	}
+	s.setStartupModelError("")
+	return nil
+}
+
+func (s *Server) freezeActiveDigest(profileID string, revision int, modelDigest string) {
+	s.activeDigestMu.Lock()
+	s.activeDigestProfileID = profileID
+	s.activeDigestRevision = revision
+	s.activeDigestValue = modelDigest
+	s.activeDigestMu.Unlock()
+}
+
+func (s *Server) frozenActiveDigest(profileID string, revision int) string {
+	s.activeDigestMu.Lock()
+	defer s.activeDigestMu.Unlock()
+	if s.activeDigestProfileID == profileID && s.activeDigestRevision == revision && s.activeDigestValue != "" {
+		return s.activeDigestValue
+	}
+	return ""
+}
+
+func (s *Server) latestAppliedPayloadForProfile(ctx context.Context, profileID string, revision int) handoffStoredPayload {
+	rows, err := s.cfg.Store.ListGenerationHandoffs(ctx)
+	if err != nil {
+		return handoffStoredPayload{}
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].ProfileID == profileID && rows[i].ProfileRevision == revision && rows[i].Status == "applied" {
+			return decodeHandoffPayload(rows[i].PayloadJSON)
+		}
+	}
+	return handoffStoredPayload{}
+}
+
+func (s *Server) latestAppliedEvidenceForProfile(ctx context.Context, profileID string, revision int) map[string]string {
+	return s.latestAppliedPayloadForProfile(ctx, profileID, revision).OllamaSchemaEvidence
+}
+
+func isExplicitEngineRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(err.Error(), "generation_stop_unconfirmed") {
+		return true
+	}
+	if errors.Is(err, engine.ErrConflict) || errors.Is(err, engine.ErrModelDigestMismatch) {
+		return false
+	}
+	var engErr *engine.EngineError
+	if errors.As(err, &engErr) && engErr != nil {
+		if engErr.Code == "generation_stop_unconfirmed" {
+			return true
+		}
+		if engErr.StatusCode == http.StatusConflict {
+			return false
+		}
+		if engErr.StatusCode >= 400 && engErr.StatusCode < 500 {
+			return true
+		}
+		if engErr.StatusCode >= 500 || engErr.StatusCode == 0 {
+			return false
+		}
+	}
+	return errors.Is(err, engine.ErrInvalidArgument) ||
+		errors.Is(err, engine.ErrUnauthorized) ||
+		errors.Is(err, engine.ErrForbidden) ||
+		errors.Is(err, engine.ErrNotFound)
+}
+
+func computeApplyModelDigest(cfg map[string]any) (string, error) {
+	raw, err := encodePythonCanonicalJSON(cfg)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// encodePythonCanonicalJSON mirrors Python's
+// json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+// for objects transmitted from Go over HTTP JSON.
+func encodePythonCanonicalJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writePythonJSONValue(&buf, v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func writePythonJSONValue(buf *bytes.Buffer, v any) error {
+	switch val := v.(type) {
+	case nil:
+		buf.WriteString("null")
+		return nil
+	case bool:
+		if val {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+		return nil
+	case string:
+		writePythonJSONString(buf, val)
+		return nil
+	case int:
+		buf.WriteString(strconv.Itoa(val))
+		return nil
+	case int64:
+		buf.WriteString(strconv.FormatInt(val, 10))
+		return nil
+	case float64:
+		s, err := formatPythonJSONFloat(val)
+		if err != nil {
+			return err
+		}
+		buf.WriteString(s)
+		return nil
+	case map[string]string:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writePythonJSONString(buf, k)
+			buf.WriteByte(':')
+			writePythonJSONString(buf, val[k])
+		}
+		buf.WriteByte('}')
+		return nil
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		buf.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			writePythonJSONString(buf, k)
+			buf.WriteByte(':')
+			if err := writePythonJSONValue(buf, val[k]); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+		return nil
+	case []any:
+		buf.WriteByte('[')
+		for i, item := range val {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := writePythonJSONValue(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+		return nil
+	default:
+		var tmp bytes.Buffer
+		enc := json.NewEncoder(&tmp)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(val); err != nil {
+			return err
+		}
+		var normalized any
+		dec := json.NewDecoder(bytes.NewReader(tmp.Bytes()))
+		dec.UseNumber()
+		if err := dec.Decode(&normalized); err != nil {
+			return err
+		}
+		return writePythonJSONValue(buf, normalized)
+	}
+}
+
+func writePythonJSONString(buf *bytes.Buffer, s string) {
+	buf.WriteByte('"')
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < utf8.RuneSelf {
+			switch b {
+			case '"':
+				buf.WriteString(`\"`)
+			case '\\':
+				buf.WriteString(`\\`)
+			case '\b':
+				buf.WriteString(`\b`)
+			case '\f':
+				buf.WriteString(`\f`)
+			case '\n':
+				buf.WriteString(`\n`)
+			case '\r':
+				buf.WriteString(`\r`)
+			case '\t':
+				buf.WriteString(`\t`)
+			default:
+				if b < 0x20 {
+					fmt.Fprintf(buf, `\u%04x`, b)
+				} else {
+					buf.WriteByte(b)
+				}
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			buf.WriteString(`\ufffd`)
+		} else {
+			buf.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	buf.WriteByte('"')
+}
+
+func formatPythonJSONFloat(f float64) (string, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return "", errors.New("non-finite float in generation config")
+	}
+	// Go's encoding/json sends integral floats in [1e-6, 1e21) (e.g. 0, 1, 2) without a
+	// decimal point, which Python's json.loads parses as int and re-dumps without ".0".
+	goWire, err := json.Marshal(f)
+	if err != nil {
+		return "", err
+	}
+	wireStr := string(goWire)
+	if !strings.ContainsAny(wireStr, ".eE") {
+		return wireStr, nil
+	}
+	// Otherwise Python parses it as float and json.dumps formats via Python repr(float):
+	// scientific notation when abs < 1e-4 or abs >= 1e16, fixed decimal otherwise.
+	abs := math.Abs(f)
+	if abs != 0 && (abs < 1e-4 || abs >= 1e16) {
+		return strconv.FormatFloat(f, 'e', -1, 64), nil
+	}
+	out := strconv.FormatFloat(f, 'f', -1, 64)
+	if !strings.ContainsRune(out, '.') {
+		out += ".0"
+	}
+	return out, nil
+}
+
+func (s *Server) expectedProfileDigest(ctx context.Context, profileID string, revision int) (string, error) {
+	return s.expectedProfileDigestWithEvidence(ctx, profileID, revision, nil)
+}
+
+func (s *Server) expectedProfileDigestWithEvidence(ctx context.Context, profileID string, revision int, frozenEvidence map[string]string) (string, error) {
+	if profileID == "" || revision <= 0 {
+		return "", domain.ErrNotFound
+	}
+	p, err := s.cfg.Store.GetGenerationProfile(ctx, profileID, revision)
+	if err != nil {
+		return "", err
+	}
+	if p.Removed {
+		return "", domain.ErrForbidden
+	}
+	cfg, _, err := s.applyConfigWithEvidence(ctx, p, frozenEvidence)
+	if err != nil {
+		return "", err
+	}
+	return computeApplyModelDigest(cfg)
+}
+
+func (s *Server) hasPendingGenerationHandoffs(ctx context.Context) (bool, error) {
+	var exists bool
+	err := s.cfg.Store.DB().QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM generation_handoffs WHERE status IN ('applying','result_unknown'))`).Scan(&exists)
+	return exists, err
+}
+
+func (s *Server) latestPendingHandoff(ctx context.Context) (domain.GenerationHandoff, bool, error) {
+	rows, err := s.cfg.Store.ListGenerationHandoffs(ctx)
+	if err != nil {
+		return domain.GenerationHandoff{}, false, err
+	}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Status == "applying" || rows[i].Status == "result_unknown" {
+			return rows[i], true, nil
+		}
+	}
+	return domain.GenerationHandoff{}, false, nil
+}
+
+func (s *Server) resetReconcileBackoff() {
+	s.reconcileMu.Lock()
+	s.reconcileNext = time.Time{}
+	s.reconcileBackoff = 0
+	s.reconcileMu.Unlock()
+}
+
+func (s *Server) advanceReconcileBackoff() {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	if s.reconcileBackoff <= 0 {
+		s.reconcileBackoff = time.Second
+	} else {
+		s.reconcileBackoff = min(s.reconcileBackoff*2, 15*time.Second)
+	}
+	s.reconcileNext = time.Now().Add(s.reconcileBackoff)
+}
+
+func (s *Server) maybeReconcileHandoffs(ctx context.Context, force bool) {
+	if s.cfg.Models == nil {
+		return
+	}
+	if !force {
+		s.reconcileMu.Lock()
+		wait := !s.reconcileNext.IsZero() && time.Now().Before(s.reconcileNext)
+		s.reconcileMu.Unlock()
+		if wait {
+			return
+		}
+	}
+	s.generationMu.Lock()
+	defer s.generationMu.Unlock()
+	s.reconcileHandoffsLocked(ctx, force)
+}
+
+func (s *Server) reconcileHandoffsLocked(ctx context.Context, force bool) {
+	if s.cfg.Models == nil {
+		return
+	}
+	if !force {
+		s.reconcileMu.Lock()
+		wait := !s.reconcileNext.IsZero() && time.Now().Before(s.reconcileNext)
+		s.reconcileMu.Unlock()
+		if wait {
+			return
+		}
+	}
+	rows, err := s.cfg.Store.ListGenerationHandoffs(ctx)
+	if err != nil {
+		s.advanceReconcileBackoff()
+		return
+	}
+	var pending []domain.GenerationHandoff
+	for _, row := range rows {
+		if row.Status == "result_unknown" || row.Status == "applying" {
+			pending = append(pending, row)
+		}
+	}
+	if len(pending) == 0 {
+		s.resetReconcileBackoff()
+		return
+	}
+	persist, pCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer pCancel()
+	resolvedAny := false
+	stillPending := false
+	now := float64(time.Now().UnixMilli()) / 1000
+	readStatus := func() (engine.ModelStatusResult, error) {
+		statusCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		return s.cfg.Models.ModelStatus(statusCtx)
+	}
+	for _, row := range pending {
+		stored := decodeHandoffPayload(row.PayloadJSON)
+		status, statusErr := readStatus()
+		p, pErr := s.cfg.Store.GetGenerationProfile(persist, row.ProfileID, row.ProfileRevision)
+		if errors.Is(pErr, domain.ErrNotFound) || (pErr == nil && p.Removed) {
+			// R2-03: Unlock orphaned legacy handoffs whose target profile was removed,
+			// once live ModelStatus confirms the engine is not running that target digest.
+			if statusErr == nil && status.OK && status.ModelDigest != "" &&
+				status.ModelDigest != row.Digest && status.ModelDigest != stored.AppliedModelDigest {
+				row.Status = "failed"
+				row.Reason = "model_apply_failed"
+				row.ActiveCommitted = false
+				row.EndedAt = now
+				if upsertErr := s.cfg.Store.UpsertGenerationHandoff(persist, row); upsertErr == nil {
+					resolvedAny = true
+					continue
+				}
+			}
+			stillPending = true
+			continue
+		}
+		if pErr != nil {
+			stillPending = true
+			continue
+		}
+		cfg, key, cfgErr := s.applyConfigWithEvidence(persist, p, stored.OllamaSchemaEvidence)
+		if cfgErr != nil {
+			stillPending = true
+			continue
+		}
+		targetDigest, digestErr := computeApplyModelDigest(cfg)
+		if digestErr != nil {
+			stillPending = true
+			continue
+		}
+
+		// 1. Fast path: fresh ModelStatus already confirmed targetDigest.
+		if statusErr == nil && status.OK && status.ModelDigest != "" && status.ModelDigest == targetDigest {
+			if s.commitReconciledApplied(persist, &row, stored, targetDigest, now) {
+				resolvedAny = true
+			} else {
+				stillPending = true
+			}
+			continue
+		}
+
+		// 2. R1-03: Never infer failure from an old ModelStatus snapshot (engine may still be in _drain()).
+		// Replay ApplyModel idempotently with the original OperationID to learn the authoritative outcome.
+		replayCtx, replayCancel := context.WithTimeout(ctx, 5*time.Second)
+		res, applyErr := s.cfg.Models.ApplyModel(replayCtx, engine.ApplyModelRequest{
+			GenerationConfig: cfg,
+			OutputLanguage:   s.cfg.OutputLanguage,
+			OperationID:      row.OperationID,
+		})
+		replayCancel()
+
+		switch {
+		case applyErr == nil && res.OK && res.Applied && (res.OperationID == "" || res.OperationID == row.OperationID):
+			appliedDigest := safeModelDigest(res.ModelDigest, key)
+			if appliedDigest == "" {
+				appliedDigest = targetDigest
+			}
+			// R2-01/R2-02: Verify live ModelStatus matches appliedDigest before committing active,
+			// preventing a stale cached receipt from committing B when the engine is actually on A.
+			verifyStatus, verifyErr := readStatus()
+			if verifyErr != nil || !verifyStatus.OK || verifyStatus.ModelDigest != appliedDigest {
+				stillPending = true
+				continue
+			}
+			if s.commitReconciledApplied(persist, &row, stored, appliedDigest, now) {
+				resolvedAny = true
+			} else {
+				stillPending = true
+			}
+		case (applyErr != nil && isExplicitEngineRejection(applyErr)) || (applyErr == nil && (!res.OK || !res.Applied)):
+			row.Status = "failed"
+			row.Reason = "model_apply_failed"
+			row.ActiveCommitted = false
+			row.EndedAt = now
+			if upsertErr := s.cfg.Store.UpsertGenerationHandoff(persist, row); upsertErr == nil {
+				resolvedAny = true
+			} else {
+				stillPending = true
+			}
+		default:
+			// 409 busy/in_progress/operation_id_conflict, 5xx, or transport error -> remain result_unknown and backoff.
+			stillPending = true
+		}
+	}
+	if stillPending {
+		s.advanceReconcileBackoff()
+	} else {
+		s.resetReconcileBackoff()
+	}
+	if resolvedAny && s.inbox != nil {
+		s.inbox.resetExtractBackoff()
+		s.inbox.Notify()
+	}
+}
+
+func (s *Server) commitReconciledApplied(ctx context.Context, row *domain.GenerationHandoff, stored handoffStoredPayload, appliedDigest string, now float64) bool {
+	if err := s.cfg.Store.SetActiveGeneration(ctx, row.ProfileID, row.ProfileRevision); err != nil {
+		return false
+	}
+	if err := s.clearStartupModelError(ctx); err != nil {
+		return false
+	}
+	stored.AppliedModelDigest = appliedDigest
+	row.PayloadJSON = encodeHandoffPayload(stored)
+	row.Status = "applied"
+	row.Reason = ""
+	row.ActiveCommitted = true
+	row.EndedAt = now
+	if err := s.cfg.Store.UpsertGenerationHandoff(ctx, *row); err != nil {
+		return false
+	}
+	s.freezeActiveDigest(row.ProfileID, row.ProfileRevision, appliedDigest)
+	return true
+}
+
+func (s *Server) expectedActiveModelDigest(ctx context.Context) (string, error) {
+	// R1-06: Always allow pending handoff reconciliation to run before checking startup_error,
+	// so a successful recovery handoff can commit and clear startup_error.
+	if hasPending, err := s.hasPendingGenerationHandoffs(ctx); err != nil {
+		return "", err
+	} else if hasPending {
+		s.maybeReconcileHandoffs(ctx, false)
+		stillPending, checkErr := s.hasPendingGenerationHandoffs(ctx)
+		if checkErr != nil {
+			return "", checkErr
+		}
+		if stillPending {
+			return "", fmt.Errorf("%w: handoff_unconfirmed", errExtractionPausedModelUnverified)
+		}
+	}
+	if code := s.startupModelError(); code != "" {
+		return "", fmt.Errorf("%w: %s", errExtractionPausedModelUnverified, code)
+	}
+	state, err := s.cfg.Store.GetGenerationState(ctx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(state.StartupError) != "" {
+		return "", fmt.Errorf("%w: %s", errExtractionPausedModelUnverified, state.StartupError)
+	}
+	if state.ActiveProfileID == "" || state.ActiveRevision <= 0 {
+		return "", fmt.Errorf("%w: no_active_profile", errExtractionPausedModelUnverified)
+	}
+	if frozen := s.frozenActiveDigest(state.ActiveProfileID, state.ActiveRevision); frozen != "" {
+		return frozen, nil
+	}
+	appliedPayload := s.latestAppliedPayloadForProfile(ctx, state.ActiveProfileID, state.ActiveRevision)
+	if appliedPayload.AppliedModelDigest != "" {
+		s.freezeActiveDigest(state.ActiveProfileID, state.ActiveRevision, appliedPayload.AppliedModelDigest)
+		return appliedPayload.AppliedModelDigest, nil
+	}
+	digest, err := s.expectedProfileDigestWithEvidence(ctx, state.ActiveProfileID, state.ActiveRevision, appliedPayload.OllamaSchemaEvidence)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
+	}
+	return digest, nil
 }

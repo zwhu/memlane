@@ -71,7 +71,11 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 	}
 	groups := generationWorkspaceGroups(s.Generation, s.DraftMode)
 	setup := a.initialSetup || a.canActivateFirstRuntimeFromSettings()
-	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != ""
+	confirmingModel := false
+	if row := s.activeHandoffReceipt(); row != nil && isConfirmingHandoffStatus(row.Status) {
+		confirmingModel = true
+	}
+	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || confirmingModel
 
 	renderRows := func() {
 		if len(groups) == 0 {
@@ -115,7 +119,11 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 						},
 						Control: func() {
 							if isActive {
-								kitui.Badge(c, tok, "使用中", "ok")
+								if confirmingModel {
+									kitui.Badge(c, tok, "正在确认使用的模型", "warn")
+								} else {
+									kitui.Badge(c, tok, "使用中", "ok")
+								}
 							} else if !available {
 								status := "未检测到 CLI"
 								if a.isDetectedProcessingCLI(iconKind) {
@@ -139,7 +147,9 @@ func (a *Controller) generationProfileCards(c *ui.Context, editable ...bool) {
 					state, tone = "已验证", "ok"
 				}
 				if isActive {
-					if edit {
+					if confirmingModel {
+						state, tone = "正在确认使用的模型", "warn"
+					} else if edit {
 						state, tone = "当前使用", "ok"
 					} else {
 						state, tone = "使用中", "ok"

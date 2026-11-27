@@ -873,6 +873,12 @@ func TestGatewayWireParityInboxTimeoutAndRetryRecovery(t *testing.T) {
 	})
 	check(err)
 
+	activeGen, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "wire-retry-bridge", Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-5.4",
+	})
+	check(err)
+	check(store.SetActiveGeneration(ctx, activeGen.ProfileID, activeGen.Revision))
+
 	const gatewayURL = "http://127.0.0.1:61258"
 	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
 	apiClient, err := api.NewClient(api.Config{
@@ -1287,6 +1293,12 @@ func TestGatewayWireParityGenerationBridgesAndConnections(t *testing.T) {
 		},
 	}
 
+	activeGen, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "wire-conn-bridge", Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-5.4",
+	})
+	check(err)
+	check(store.SetActiveGeneration(ctx, activeGen.ProfileID, activeGen.Revision))
+
 	eng := wireBridgeProbeEngine{}
 	server, err := gateway.NewServer(gateway.Config{
 		Store:            store,
@@ -1427,5 +1439,104 @@ func TestGatewayWireParityGenerationBridgesAndConnections(t *testing.T) {
 	if claudeConn.Status != "registered" || !claudeConn.Detected ||
 		claudeConn.Profile != filepath.Join(home, ".claude") || claudeConn.Capture != nil {
 		t.Fatalf("wire agent-claude connection mismatch: %+v", claudeConn)
+	}
+}
+
+type wireHandoffTimeoutEngine struct {
+	wireEngine
+}
+
+func (wireHandoffTimeoutEngine) ApplyModel(context.Context, engine.ApplyModelRequest) (engine.ApplyModelResult, error) {
+	return engine.ApplyModelResult{}, &engine.EngineError{
+		Code:    "engine_timeout",
+		Message: "connection reset",
+		Err:     errors.Join(engine.ErrUnavailable, context.DeadlineExceeded),
+	}
+}
+
+func (wireHandoffTimeoutEngine) ModelStatus(context.Context) (engine.ModelStatusResult, error) {
+	return engine.ModelStatusResult{}, &engine.EngineError{
+		Code:    "unavailable",
+		Message: "engine unreachable",
+		Err:     engine.ErrUnavailable,
+	}
+}
+
+func TestGatewayWireParityGenerationActiveHandoffAndStartupError(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(dir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const token = "wire-parity-handoff-management-token"
+	tokenFile := filepath.Join(dir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(token), 0o600))
+
+	p1, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "agent-codex", Mode: "agent_bridge", BridgeKind: "codex", Model: "gpt-5.4",
+	})
+	check(err)
+	p2, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "agent-traex", Mode: "agent_bridge", BridgeKind: "traex", Model: "gpt-6.2",
+	})
+	check(err)
+	check(store.SetActiveGeneration(ctx, p1.ProfileID, p1.Revision))
+	check(store.SetGenerationStartupError(ctx, "startup_model_apply_failed"))
+
+	eng := wireHandoffTimeoutEngine{}
+	server, err := gateway.NewServer(gateway.Config{
+		Store: store, Engine: eng, Models: eng, ManagementToken: token,
+	})
+	check(err)
+
+	const gatewayURL = "http://127.0.0.1:61260"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	control := settings.ProjectControlClient{
+		Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		HTTP:   httpClient,
+	}
+	apiClient, err := api.NewClient(api.Config{BaseURL: gatewayURL, ManagementToken: token, HTTPClient: httpClient})
+	check(err)
+
+	// Trigger real POST /v1/generation/handoffs against transport-timeout engine -> result_unknown.
+	var handoffResp settings.GenerationHandoffDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodPost, "/v1/generation/handoffs", nil, map[string]any{
+		"profile":      map[string]any{"id": p2.ProfileID, "revision": p2.Revision},
+		"operation_id": "wire-handoff-unknown",
+	}, &handoffResp, 0))
+	if handoffResp.Handoff == nil || handoffResp.Handoff.Status != "unknown" || handoffResp.Handoff.Reason != "model_apply_unconfirmed" {
+		t.Fatalf("POST /v1/generation/handoffs = %+v", handoffResp.Handoff)
+	}
+
+	// Verify real GET /api/generation -> app/api decoding parity.
+	typedGen, err := apiClient.GetGeneration(ctx)
+	check(err)
+	if typedGen.State.StartupError != "startup_model_apply_failed" {
+		t.Fatalf("api.GetGeneration startup_error = %q", typedGen.State.StartupError)
+	}
+	if typedGen.ActiveHandoff == nil || typedGen.ActiveHandoff.OperationID != "wire-handoff-unknown" ||
+		typedGen.ActiveHandoff.Status != "unknown" || typedGen.ActiveHandoff.Reason != "model_apply_unconfirmed" ||
+		typedGen.ActiveHandoff.Reference.ID != p2.ProfileID || typedGen.ActiveHandoff.Reference.Revision != p2.Revision {
+		t.Fatalf("api.GetGeneration active_handoff mismatch: %+v", typedGen.ActiveHandoff)
+	}
+
+	// Verify real GET /v1/generation -> app/settings GenerationDirectory decoding parity.
+	var settingsGen settings.GenerationDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/generation", nil, nil, &settingsGen, 0))
+	if settingsGen.StartupError != "startup_model_apply_failed" {
+		t.Fatalf("settings.GenerationDirectory startup_error = %q", settingsGen.StartupError)
+	}
+	if settingsGen.ActiveHandoff == nil || settingsGen.ActiveHandoff.Operation != "wire-handoff-unknown" ||
+		settingsGen.ActiveHandoff.Status != "unknown" || settingsGen.ActiveHandoff.Reason != "model_apply_unconfirmed" ||
+		settingsGen.ActiveHandoff.Reference.ID != p2.ProfileID || settingsGen.ActiveHandoff.Reference.Revision != int64(p2.Revision) {
+		t.Fatalf("settings.GenerationDirectory active_handoff mismatch: %+v", settingsGen.ActiveHandoff)
 	}
 }

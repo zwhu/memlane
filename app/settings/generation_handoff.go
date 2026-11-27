@@ -104,14 +104,40 @@ func (a *Controller) generationHandoffPanel(c *ui.Context) {
 	})
 }
 
+func isConfirmingHandoffStatus(status string) bool {
+	return status == "applying" || status == "unknown" || status == "result_unknown"
+}
+
+func (s *IntegrationState) activeHandoffReceipt() *GenerationHandoffReceipt {
+	if s.Generation.ActiveHandoff != nil {
+		if isConfirmingHandoffStatus(s.Generation.ActiveHandoff.Status) {
+			return s.Generation.ActiveHandoff
+		}
+		if s.Handoff.Handoff == nil || s.Handoff.Handoff.Operation != s.Generation.ActiveHandoff.Operation {
+			return s.Generation.ActiveHandoff
+		}
+	}
+	return s.Handoff.Handoff
+}
+
 func (a *Controller) generationHandoffStatus(c *ui.Context) {
 	tok := a.tokens()
 	s := &a.integrations
-	if s.Handoff.Handoff == nil {
+	row := s.activeHandoffReceipt()
+	if row == nil {
 		return
 	}
-	row := s.Handoff.Handoff
-	label := map[string]string{"queued": "切换已登记", "preparing": "正在准备新模型", "stopping": "正在停止旧任务并核对结果", "applying": "正在切换模型", "reconciling": "正在恢复剩余会话提炼", "applied": "已切换，剩余会话继续提炼", "not_applied": "未切换，仍使用原模型", "unknown": "切换结果待核对"}[row.Status]
+	label := map[string]string{
+		"queued":         "切换已登记",
+		"preparing":      "正在准备新模型",
+		"stopping":       "正在停止旧任务并核对结果",
+		"applying":       "正在确认使用的模型",
+		"reconciling":    "正在恢复剩余会话提炼",
+		"applied":        "已切换，剩余会话继续提炼",
+		"not_applied":    "未切换，仍使用原模型",
+		"unknown":        "正在确认使用的模型",
+		"result_unknown": "正在确认使用的模型",
+	}[row.Status]
 	if label == "" {
 		return
 	}
@@ -120,7 +146,7 @@ func (a *Controller) generationHandoffStatus(c *ui.Context) {
 	}
 	ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 		kitui.Text(c, tok, label, kitui.RoleMeta)
-		if row.Status == "unknown" {
+		if (row.Status == "unknown" || row.Status == "result_unknown") && row.Operation != "" {
 			kitui.TextButton(c, tok, "核对结果", func() { a.pollGenerationHandoff(row.Operation) }).Disabled(s.Busy)
 		}
 	})
@@ -213,6 +239,14 @@ func (a *Controller) pollGenerationHandoff(operation string) {
 				}
 				s.HandoffOpen = false
 				s.Error = ""
+			} else if readErr == nil && directory.ActiveHandoff == nil && directory.Active != nil && *directory.Active == value.Handoff.Reference {
+				if a.finishGenerationOperation(operation) {
+					s.HandoffOperation = ""
+				}
+				s.Handoff = GenerationHandoffDirectory{}
+				s.HandoffOpen = false
+				s.Error = ""
+				s.Message = ""
 			}
 		})
 	}()

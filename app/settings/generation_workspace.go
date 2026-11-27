@@ -193,7 +193,11 @@ func (a *Controller) generationCandidateStatus(c *ui.Context) {
 	}
 	nextSelected := saved && s.Generation.Next != nil && *s.Generation.Next == *s.Saved
 	needsValidation := bridge && setup && !s.Generation.validated(s.Saved)
-	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != ""
+	confirmingModel := false
+	if row := s.activeHandoffReceipt(); row != nil && isConfirmingHandoffStatus(row.Status) {
+		confirmingModel = true
+	}
+	busy := a.environment.Busy || s.Busy || s.HandoffOpen || s.HandoffOperation != "" || s.SaveOperation != "" || confirmingModel
 	if !current && (!setup || !nextSelected || needsValidation) {
 		ui.Row(c).FillWidth().MinHeight(44).Padding(sp2, sp4).AlignItems(ui.Center).Justify(ui.End).Children(func() {
 			available := !bridge || s.availableProcessingBridge(s.BridgeKind)
@@ -266,9 +270,14 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 	}
 	title := "模型配置"
 	desc := ""
+	activeHandoff := s.activeHandoffReceipt()
 	if enable {
 		title = "提炼方式"
-		desc = "当前：" + generationLabel(s.Generation, s.Generation.Active)
+		if activeHandoff != nil && isConfirmingHandoffStatus(activeHandoff.Status) {
+			desc = "正在确认使用的模型"
+		} else {
+			desc = "当前：" + generationLabel(s.Generation, s.Generation.Active)
+		}
 	}
 	selected := 0
 	if s.DraftMode == "provider" {
@@ -294,7 +303,7 @@ func (a *Controller) generationWorkspaceContent(c *ui.Context, edit, enable bool
 	}
 
 	kitui.Group(c, tok, title, desc, groupActions, func() {
-		if enable && s.Handoff.Handoff != nil {
+		if enable && activeHandoff != nil {
 			ui.Row(c).FillWidth().Padding(sp2, sp4).Children(func() {
 				a.generationHandoffStatus(c)
 			})

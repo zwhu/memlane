@@ -231,7 +231,9 @@ func TestInboxFailureAndRetry(t *testing.T) {
 	if fmt.Sprint(fake.calls) != "[ingest extract sync]" {
 		t.Fatal(fake.calls)
 	}
-	if d := fake.extract[0]; d.OutputLanguage != "fr" || d.ExpectedModelDigest != "live-digest" || len(d.DocIDs) != 1 {
+	wantDigest, err := s.expectedActiveModelDigest(ctx)
+	must(t, err)
+	if d := fake.extract[0]; d.OutputLanguage != "fr" || d.ExpectedModelDigest != wantDigest || d.ExpectedModelDigest == "live-digest" || len(d.DocIDs) != 1 {
 		t.Fatal(d)
 	}
 	fake.syncErr = nil

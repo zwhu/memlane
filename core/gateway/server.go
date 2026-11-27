@@ -61,6 +61,16 @@ type Server struct {
 	generationMu sync.Mutex
 	commonMu     sync.Mutex
 
+	startupModelMu        sync.Mutex
+	startupModelErr       string
+	activeDigestMu        sync.Mutex
+	activeDigestProfileID string
+	activeDigestRevision  int
+	activeDigestValue     string
+	reconcileMu           sync.Mutex
+	reconcileNext         time.Time
+	reconcileBackoff      time.Duration
+
 	monitorHistory runtimeMonitorHistory
 }
 
@@ -125,7 +135,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	cfg.ConflictPolicy = &policy
 	s := &Server{cfg: cfg, cursors: cursorCodec{secret}, since: time.Now()}
-	s.inbox = &InboxWorker{cfg: cfg, wake: make(chan struct{}, cfg.InboxWorkers)}
+	s.inbox = &InboxWorker{cfg: cfg, wake: make(chan struct{}, cfg.InboxWorkers), server: s}
 	s.handler = s.routes()
 	return s, nil
 }

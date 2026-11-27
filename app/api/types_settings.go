@@ -46,12 +46,24 @@ type ModelStatus struct {
 	Error          string `json:"error,omitempty"`
 }
 
+type GenerationHandoffReceipt struct {
+	OperationID string `json:"operation_id"`
+	Status      string `json:"status"`
+	Reason      string `json:"reason"`
+	Reference   struct {
+		ID       string `json:"id"`
+		Revision int    `json:"revision"`
+	} `json:"reference"`
+	CancelledSessions int `json:"cancelled_sessions"`
+}
+
 type GenerationOverviewResponse struct {
 	State                  GenerationState                 `json:"state"`
 	Profiles               []GenerationProfile             `json:"profiles"`
 	ModelStatus            *ModelStatus                    `json:"model_status"`
 	Validations            map[string]GenerationValidation `json:"validations"`
 	HandoffAvailable       bool                            `json:"handoff_available"`
+	ActiveHandoff          *GenerationHandoffReceipt       `json:"active_handoff,omitempty"`
 	DetectedProcessingCLIs []string                        `json:"detected_processing_clis"`
 	OutputLanguage         string                          `json:"output_language"`
 }

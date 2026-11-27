@@ -21,6 +21,8 @@ import (
 func TestGenerationValidationAndActivation(t *testing.T) {
 	s, store, fake := testServer(t, nil)
 	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `UPDATE generation_state SET active_profile_id='', active_revision=0, revision=0 WHERE singleton=1`)
+	must(t, err)
 	secret := "privatecredentialabc123"
 	profile := fmt.Sprintf(`{"mode":"provider","provider":"openai","model":"model","endpoint":"https://provider.invalid/v1","api_key":%q,"temperature":0}`, secret)
 	save := manage(t, s, "PUT", "/api/generation/profiles/p1", profile, 200)
@@ -326,6 +328,8 @@ func copyDailyFile(t *testing.T, source, dest string) {
 func TestApplyActiveGenerationStartup(t *testing.T) {
 	s, store, fake := testServer(t, nil)
 	ctx := context.Background()
+	_, err := store.DB().ExecContext(ctx, `UPDATE generation_state SET active_profile_id='', active_revision=0 WHERE singleton=1`)
+	must(t, err)
 	must(t, s.ApplyActiveGeneration(ctx))
 	if len(fake.apply) != 0 {
 		t.Fatal("unselected generation was applied")
@@ -352,7 +356,7 @@ func TestApplyActiveGenerationStartup(t *testing.T) {
 		t.Fatal(state)
 	}
 	request := fake.apply[1]
-	if request.OperationID != "startup" || request.OutputLanguage != "zh-CN" ||
+	if !strings.HasPrefix(request.OperationID, "startup-") || request.OperationID == fake.apply[0].OperationID || request.OutputLanguage != "zh-CN" ||
 		request.GenerationConfig["temperature"] != float64(0) || request.GenerationConfig["max_output_tokens"] != 42 ||
 		request.GenerationConfig["max_concurrent_requests"] != nil || request.GenerationConfig["api_key"] != secret {
 		t.Fatal("startup request does not match the selected revision")
@@ -365,6 +369,9 @@ func TestApplyActiveGenerationStartup(t *testing.T) {
 		RegisteredRevision: 1, PayloadJSON: `{"native_schema_evidence":{"status":"verified"}}`}))
 	must(t, store.SetActiveGeneration(ctx, ollama.ProfileID, ollama.Revision))
 	must(t, s.ApplyActiveGeneration(ctx))
+	if !strings.HasPrefix(fake.apply[2].OperationID, "startup-") || fake.apply[2].OperationID == fake.apply[1].OperationID {
+		t.Fatalf("consecutive startup calls reused operation_id: %q vs %q", fake.apply[1].OperationID, fake.apply[2].OperationID)
+	}
 	evidence, ok := fake.apply[2].GenerationConfig["ollama_schema_evidence"].(map[string]string)
 	if !ok || evidence["status"] != "verified" {
 		t.Fatal("missing imported Ollama evidence")

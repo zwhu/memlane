@@ -36,6 +36,7 @@ type fakeEngine struct {
 	probeReply                                          engine.ProbeResult
 	ingestErr, extractErr, syncErr, applyErr, searchErr error
 	modelDigest, outputLanguage                         string
+	keepDigestOnApply                                   bool
 	documents                                           map[string]engine.Item
 	common                                              map[string]domain.CatalogDoc
 	deleted                                             map[string]string
@@ -139,6 +140,11 @@ func (f *fakeEngine) ApplyModel(_ context.Context, in engine.ApplyModelRequest) 
 	if f.applyErr != nil {
 		return engine.ApplyModelResult{}, f.applyErr
 	}
+	if !f.keepDigestOnApply {
+		if d, err := computeApplyModelDigest(in.GenerationConfig); err == nil {
+			f.modelDigest = d
+		}
+	}
 	key, _ := in.GenerationConfig["api_key"].(string)
 	return engine.ApplyModelResult{OK: true, Applied: true, OperationID: in.OperationID, ModelDigest: key}, nil
 }
@@ -186,6 +192,19 @@ func (f *fakeEngine) ReadLocalBody(_ context.Context, in engine.LocalBodyRef) (s
 	return "projector body", nil
 }
 
+func seedDefaultActiveGeneration(t *testing.T, store *domain.Store) {
+	t.Helper()
+	ctx := context.Background()
+	p, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID:  "default-bridge",
+		Mode:       "agent_bridge",
+		BridgeKind: "codex",
+		Model:      "test-model",
+	})
+	must(t, err)
+	must(t, store.SetActiveGeneration(ctx, p.ProfileID, p.Revision))
+}
+
 func openTestStore(t *testing.T) *domain.Store {
 	t.Helper()
 	store, err := domain.OpenStore(filepath.Join(t.TempDir(), "store.sqlite3"))
@@ -201,6 +220,7 @@ func testServer(t *testing.T, configure func(*Config)) (*Server, *domain.Store, 
 	must(t, store.UpsertProject(ctx, domain.Project{ID: "p", Name: "Project", DatasetID: "ds", AutoCapture: true, Aliases: []string{t.TempDir()}}))
 	must(t, store.UpsertCommonConfig(ctx, domain.CommonConfig{ID: "general", Name: "Common", DatasetID: "common"}))
 	must(t, store.ConnectAgent(ctx, domain.Agent{ID: "agent", Name: "agent", Kind: "codex"}))
+	seedDefaultActiveGeneration(t, store)
 	cfg := Config{Store: store, Engine: fake, ManagementToken: testManagement, AgentTokens: map[string]string{"agent": testAgent},
 		InboxPollInterval: 10 * time.Millisecond}
 	if configure != nil {

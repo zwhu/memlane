@@ -319,7 +319,8 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 
 func prepareGatewayStartup(ctx context.Context, server *gateway.Server) error {
 	if err := server.ApplyActiveGeneration(ctx); err != nil {
-		log.Printf("generation startup: %s", err)
+		server.RecordStartupGenerationFailure(ctx, err)
+		log.Printf("generation startup failed (extraction paused until model is verified): %s", err)
 	}
 	started := time.Now()
 	stats, err := server.SyncCatalog(ctx)

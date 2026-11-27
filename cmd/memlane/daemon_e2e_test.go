@@ -62,7 +62,7 @@ class Backend(CogneeBackend):
 
     async def extract(self, payload):
         await self._dataset(payload.scope, 'write', allow_provision=True)
-        assert handoff.status_reads > 0
+        assert payload.expected_model_digest == handoff.active_digest
         if payload.doc_ids == ['fresh-session']:
             return {'touched_doc_ids': []}
         for doc in payload.doc_ids:
@@ -91,7 +91,7 @@ class HarnessHandoff(ModelHandoffController):
         assert generation_config['endpoint'] == sys.argv[3] + '/v1'
         assert 'temperature' not in generation_config
         assert 'max_output_tokens' not in generation_config
-        assert output_language == 'zh-CN' and operation_id == 'startup'
+        assert output_language == 'zh-CN' and operation_id.startswith('startup-')
         return await super().apply(operation_id, generation_config, output_language=output_language)
 
 handoff = HarnessHandoff(background=lambda: [], factory=lambda env: env)

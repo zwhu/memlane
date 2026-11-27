@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -16,19 +18,25 @@ import (
 
 const maxSessionFlushQueue = 256
 
+var errExtractionPausedModelUnverified = errors.New("extraction paused: active model unverified")
+
 type sessionFlushKey struct {
 	datasetID string
 	sessionID string
 }
 
 type InboxWorker struct {
-	cfg         Config
-	wake        chan struct{}
-	mu          sync.Mutex
-	run         *inboxRun
-	flushQueued map[sessionFlushKey]bool
-	flushActive map[sessionFlushKey]bool
-	flushOrder  []sessionFlushKey
+	cfg                Config
+	server             *Server
+	wake               chan struct{}
+	mu                 sync.Mutex
+	run                *inboxRun
+	flushQueued        map[sessionFlushKey]bool
+	flushActive        map[sessionFlushKey]bool
+	flushOrder         []sessionFlushKey
+	extractBackoffMu   sync.Mutex
+	extractBackoffNext time.Time
+	extractBackoffDur  time.Duration
 }
 
 type inboxRun struct {
@@ -261,11 +269,16 @@ func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) err
 		Mode:                engine.ExtractModeDefault,
 	})
 	if err != nil {
+		if isRetryableModelConflict(err) {
+			w.advanceExtractBackoff()
+			return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
+		}
 		return fmt.Errorf("extract session end: %w", err)
 	}
 	if !extracted.OK {
 		return errors.New("engine did not complete session-end extraction")
 	}
+	w.resetExtractBackoff()
 	if w.cfg.Projector != nil {
 		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {
 			return fmt.Errorf("publish catalog: %w", err)
@@ -275,6 +288,14 @@ func (w *InboxWorker) flushSession(ctx context.Context, key sessionFlushKey) err
 }
 
 func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
+	if w.inExtractBackoff() {
+		return false, nil
+	}
+	if _, gateErr := w.expectedDigest(ctx); errors.Is(gateErr, errExtractionPausedModelUnverified) {
+		return false, nil
+	} else if gateErr != nil {
+		return false, gateErr
+	}
 	item, err := w.cfg.Store.ClaimNextInboxItem(ctx)
 	if errors.Is(err, domain.ErrNotFound) {
 		key, ok, claimErr := w.claimNextSessionFlush(ctx)
@@ -286,6 +307,10 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		}
 		defer w.finishSessionFlush(key)
 		if flushErr := w.flushSession(ctx, key); flushErr != nil {
+			if errors.Is(flushErr, errExtractionPausedModelUnverified) {
+				w.requeueSessionFlush(key)
+				return false, nil
+			}
 			return true, flushErr
 		}
 		return true, nil
@@ -296,6 +321,12 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 	err = w.process(ctx, item)
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	if errors.Is(err, errExtractionPausedModelUnverified) {
+		if requeueErr := w.requeueInboxItem(finish, item.ID); requeueErr != nil {
+			return true, requeueErr
+		}
+		return false, nil
+	}
 	if err != nil {
 		if persistErr := w.cfg.Store.MarkInboxFailed(finish, item.ID, sanitizeError(err)); persistErr != nil {
 			return true, errors.Join(err, persistErr)
@@ -312,6 +343,27 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		w.Notify()
 	}
 	return true, nil
+}
+
+func (w *InboxWorker) requeueInboxItem(ctx context.Context, id string) error {
+	return w.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE capture_inbox SET status='pending', updated_at=? WHERE id=? AND status='processing'`,
+			domain.NowUTCMicro(), id)
+		return err
+	})
+}
+
+func (w *InboxWorker) requeueSessionFlush(key sessionFlushKey) {
+	w.mu.Lock()
+	if w.flushQueued == nil {
+		w.flushQueued = make(map[sessionFlushKey]bool)
+	}
+	if !w.flushQueued[key] && len(w.flushOrder) < maxSessionFlushQueue {
+		w.flushQueued[key] = true
+		w.flushOrder = append(w.flushOrder, key)
+	}
+	w.mu.Unlock()
 }
 
 func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem) error {
@@ -357,6 +409,10 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
 			IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
 		if err != nil {
+			if isRetryableModelConflict(err) {
+				w.advanceExtractBackoff()
+				return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
+			}
 			return fmt.Errorf("ingest inbox: %w", err)
 		}
 		if !result.OK || result.DocumentID == "" && result.EntryID == "" {
@@ -389,11 +445,16 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 		extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{Scope: scope, DocIDs: []string{docID},
 			ExpectedModelDigest: model, OutputLanguage: w.cfg.OutputLanguage, Mode: mode})
 		if err != nil {
+			if isRetryableModelConflict(err) {
+				w.advanceExtractBackoff()
+				return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
+			}
 			return fmt.Errorf("extract inbox: %w", err)
 		}
 		if !extracted.OK {
 			return errors.New("engine did not complete extraction")
 		}
+		w.resetExtractBackoff()
 	}
 	if w.cfg.Projector != nil {
 		if _, err := w.cfg.Projector.SyncCatalog(ctx, w.cfg.Store); err != nil {
@@ -403,31 +464,66 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 	return nil
 }
 
-func (w *InboxWorker) expectedDigest(ctx context.Context) (string, error) {
-	var statusErr error
-	if w.cfg.Models != nil {
-		status, err := w.cfg.Models.ModelStatus(ctx)
-		if err == nil && status.OK && status.ModelDigest != "" {
-			return status.ModelDigest, nil
-		}
-		statusErr = err
+func isRetryableModelConflict(err error) bool {
+	if err == nil {
+		return false
 	}
-	health, healthErr := w.cfg.Engine.Health(ctx)
-	if healthErr == nil && health.OK && health.ModelDigest != "" {
-		return health.ModelDigest, nil
+	if errors.Is(err, engine.ErrModelDigestMismatch) || errors.Is(err, engine.ErrConflict) {
+		return true
+	}
+	var engErr *engine.EngineError
+	if errors.As(err, &engErr) && engErr != nil && engErr.StatusCode == http.StatusConflict {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "generation_handoff_in_progress") ||
+		strings.Contains(msg, "generation_handoff_busy") ||
+		strings.Contains(msg, "model_digest_mismatch")
+}
+
+func (w *InboxWorker) inExtractBackoff() bool {
+	w.extractBackoffMu.Lock()
+	defer w.extractBackoffMu.Unlock()
+	return !w.extractBackoffNext.IsZero() && time.Now().Before(w.extractBackoffNext)
+}
+
+func (w *InboxWorker) advanceExtractBackoff() {
+	w.extractBackoffMu.Lock()
+	defer w.extractBackoffMu.Unlock()
+	if w.extractBackoffDur <= 0 {
+		w.extractBackoffDur = time.Second
+	} else {
+		w.extractBackoffDur = min(w.extractBackoffDur*2, 15*time.Second)
+	}
+	w.extractBackoffNext = time.Now().Add(w.extractBackoffDur)
+}
+
+func (w *InboxWorker) resetExtractBackoff() {
+	w.extractBackoffMu.Lock()
+	w.extractBackoffNext = time.Time{}
+	w.extractBackoffDur = 0
+	w.extractBackoffMu.Unlock()
+}
+
+func (w *InboxWorker) expectedDigest(ctx context.Context) (string, error) {
+	if w.server != nil {
+		return w.server.expectedActiveModelDigest(ctx)
 	}
 	state, err := w.cfg.Store.GetGenerationState(ctx)
 	if err != nil {
-		return "", errors.Join(statusErr, healthErr, err)
+		return "", err
 	}
-	if state.ActiveProfileID != "" {
-		profile, err := w.cfg.Store.GetGenerationProfile(ctx, state.ActiveProfileID, state.ActiveRevision)
-		if err != nil {
-			return "", errors.Join(statusErr, healthErr, err)
-		}
-		return profile.Digest, nil
+	if strings.TrimSpace(state.StartupError) != "" {
+		return "", fmt.Errorf("%w: %s", errExtractionPausedModelUnverified, state.StartupError)
 	}
-	return "", errors.Join(statusErr, healthErr)
+	if state.ActiveProfileID == "" || state.ActiveRevision <= 0 {
+		return "", fmt.Errorf("%w: no_active_profile", errExtractionPausedModelUnverified)
+	}
+	profile, err := w.cfg.Store.GetGenerationProfile(ctx, state.ActiveProfileID, state.ActiveRevision)
+	if err != nil || profile.Removed {
+		return "", fmt.Errorf("%w: active_profile_unavailable", errExtractionPausedModelUnverified)
+	}
+	return profile.Digest, nil
 }
 
 func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]string, error) {

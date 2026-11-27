@@ -137,6 +137,16 @@ func (a *Controller) switchAgentBridge() {
 	revision := s.Generation.Revision
 	handoffAvailable := s.Generation.HandoffAvailable
 	label := generationBridgeLabel(draft.BridgeKind)
+	handoffOp := integrationOperation()
+	opsDir := a.generationOperationsDir()
+	if handoffAvailable && !needsSave {
+		op := generationUIOperation{Operation: handoffOp, Kind: "handoffs", Profile: targetRef.ID, Revision: targetRef.Revision}
+		if err := a.recordGenerationOperation(op); err != nil {
+			s.Error = "无法记录切换操作，尚未发送"
+			return
+		}
+		s.HandoffOperation = handoffOp
+	}
 	s.Busy = true
 	s.Error = ""
 	s.Message = "正在切换到 " + label + "…"
@@ -144,6 +154,7 @@ func (a *Controller) switchAgentBridge() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		var recordedPending []generationUIOperation
 		if needsSave {
 			var saveResp struct {
 				Result GenerationRef `json:"result"`
@@ -162,6 +173,23 @@ func (a *Controller) switchAgentBridge() {
 				return
 			}
 			targetRef = saveResp.Result
+			if handoffAvailable {
+				pending, recErr := recordGenerationOperationAt(opsDir, generationUIOperation{
+					Operation: handoffOp,
+					Kind:      "handoffs",
+					Profile:   targetRef.ID,
+					Revision:  targetRef.Revision,
+				})
+				if recErr != nil {
+					a.dispatch(func() {
+						s.Busy = false
+						s.Message = ""
+						s.Error = "无法记录切换操作，尚未发送"
+					})
+					return
+				}
+				recordedPending = pending
+			}
 		}
 		var handoffDir GenerationHandoffDirectory
 		var switchErr error
@@ -169,33 +197,88 @@ func (a *Controller) switchAgentBridge() {
 			switchErr = client.request(ctx, "POST", "/v1/generation/handoffs", map[string]any{
 				"profile":           targetRef,
 				"expected_revision": revision,
-				"operation_id":      integrationOperation(),
+				"operation_id":      handoffOp,
 			}, &handoffDir)
 		} else {
 			var ignored any
 			switchErr = client.request(ctx, "PUT", "/v1/generation/next", map[string]any{
 				"profile":           targetRef,
 				"expected_revision": revision,
-				"operation_id":      integrationOperation(),
+				"operation_id":      handoffOp,
 			}, &ignored)
 		}
 		var directory GenerationDirectory
 		readErr := client.request(ctx, "GET", "/v1/generation", nil, &directory)
 		a.dispatch(func() {
 			s.Busy = false
+			if len(recordedPending) > 0 {
+				s.PendingOperations = recordedPending
+			}
 			if readErr == nil {
 				s.Generation = directory
 			}
 			if switchErr != nil {
-				s.Message = ""
-				s.Error = "切换失败：" + ControlUserError(switchErr)
+				var rejected *ControlResponseError
+				if !handoffAvailable || (errors.As(switchErr, &rejected) && rejected.Status >= 400 && rejected.Status < 500) {
+					s.Message = ""
+					if a.finishGenerationOperation(handoffOp) {
+						s.HandoffOperation = ""
+					}
+					s.Error = "切换失败：" + ControlUserError(switchErr)
+					return
+				}
+				// Transport or 5xx error: outcome is unknown, enter confirming state and reconcile.
+				s.Error = ""
+				s.Message = "正在确认使用的模型"
+				s.MessageScope = "generation"
+				s.HandoffOperation = handoffOp
+				s.Handoff = GenerationHandoffDirectory{
+					Handoff: &GenerationHandoffReceipt{
+						Operation: handoffOp,
+						Reference: targetRef,
+						Status:    "unknown",
+					},
+				}
+				a.pollGenerationHandoff(handoffOp)
 				return
 			}
-			if handoffAvailable && handoffDir.Handoff != nil && handoffDir.Handoff.Status != "applied" {
-				s.Message = ""
-				s.Handoff = handoffDir
-				s.Error = "切换未生效，仍使用原模型"
-				return
+			if handoffAvailable && handoffDir.Handoff != nil {
+				switch handoffDir.Handoff.Status {
+				case "applied":
+					if a.finishGenerationOperation(handoffOp) {
+						s.HandoffOperation = ""
+					}
+				case "not_applied":
+					s.Message = ""
+					s.Handoff = handoffDir
+					if a.finishGenerationOperation(handoffOp) {
+						s.HandoffOperation = ""
+					}
+					s.Error = "切换未生效，仍使用原模型"
+					return
+				case "unknown", "result_unknown":
+					if readErr == nil && directory.Active != nil && *directory.Active == targetRef && directory.ActiveHandoff == nil {
+						if a.finishGenerationOperation(handoffOp) {
+							s.HandoffOperation = ""
+						}
+						break
+					}
+					s.Error = ""
+					s.Message = "正在确认使用的模型"
+					s.MessageScope = "generation"
+					s.HandoffOperation = handoffOp
+					s.Handoff = handoffDir
+					a.pollGenerationHandoff(handoffOp)
+					return
+				default:
+					s.Error = ""
+					s.Message = "正在确认使用的模型"
+					s.MessageScope = "generation"
+					s.HandoffOperation = handoffOp
+					s.Handoff = handoffDir
+					a.pollGenerationHandoff(handoffOp)
+					return
+				}
 			}
 			if row, found := s.Generation.row(&targetRef); found {
 				s.editProfile(targetRef.ID, row)

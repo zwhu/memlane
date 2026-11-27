@@ -143,6 +143,19 @@ func openContractStoreAndServer(t *testing.T, eng *contractMockEngine, agentToke
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	p, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID:  "contract-bridge",
+		Mode:       "agent_bridge",
+		BridgeKind: "codex",
+		Model:      "contract-model",
+	})
+	if err != nil {
+		t.Fatalf("PutGenerationProfile: %v", err)
+	}
+	if err := store.SetActiveGeneration(ctx, p.ProfileID, p.Revision); err != nil {
+		t.Fatalf("SetActiveGeneration: %v", err)
+	}
 
 	srv, err := gateway.NewServer(gateway.Config{
 		Store:           store,
@@ -1057,6 +1070,15 @@ func TestContractConnectionsReturnsRichCaptureAndProfileState(t *testing.T) {
 		if err := store.UpsertAgent(ctx, ag); err != nil {
 			t.Fatalf("UpsertAgent %s: %v", ag.ID, err)
 		}
+	}
+	activeProfile, err := store.PutGenerationProfile(ctx, domain.GenerationProfile{
+		ProfileID: "conn-bridge", Mode: "agent_bridge", BridgeKind: agents.HostCodex, Model: "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("PutGenerationProfile: %v", err)
+	}
+	if err := store.SetActiveGeneration(ctx, activeProfile.ProfileID, activeProfile.Revision); err != nil {
+		t.Fatalf("SetActiveGeneration: %v", err)
 	}
 
 	const codexTok = "tok-conn-codex"

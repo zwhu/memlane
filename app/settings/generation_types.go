@@ -75,6 +75,7 @@ type GenerationDirectory struct {
 	AgentBridges           map[string]GenerationProfile  `json:"agent_bridges"`
 
 	HandoffAvailable bool                            `json:"handoff_available"`
+	ActiveHandoff    *GenerationHandoffReceipt       `json:"active_handoff,omitempty"`
 	Revision         int64                           `json:"revision"`
 	Active           *GenerationRef                  `json:"active"`
 	Next             *GenerationRef                  `json:"next"`

@@ -25,27 +25,33 @@
 | TraeX | `traecli.toml`，支持选中 profile | 精确 TRAE 会话身份；兼容身份仅在该 Trae home 官方数据库中确实存在时生效 | model、provider、reasoning effort、service tier |
 | pi | `settings.json` | 当前实现使用默认配置，尚未接入会话临时覆盖 | defaultProvider、defaultModel、defaultThinkingLevel |
 
-读取入口：`engine/python/agent_bridge_runtime.py` 的 `read_agent_defaults`（其中 `antigravity` 委托给 `engine/python/antigravity_defaults.py` 的 `read_defaults` / `settings_path`）、`current_session_model`、`snapshot_agent_defaults`。会话数据库只读连接、参数化精确查找，只取模型字段，不读取会话正文。返回来源及会话标识供诊断；服务 tier 未出现在会话元数据时，只继承配置中显式值，例如 `fast`。不能把界面显示的 Fast 凭空补成默认。
+读取入口：`kit/agents` 的 `ReadModelDefaults`（按宿主读取 `codex` / `traex` / `pi` / `antigravity` 默认与会话配置，其中 `antigravity` 读自同级 `../antigravity-cli/settings.json`）与 `CheckBridgeRuntime` / `BridgeRuntimeFingerprint`。会话数据库只读连接、参数化精确查找，只取模型字段，不读取会话正文。返回来源及会话标识供诊断；服务 tier 未出现在会话元数据时，只继承配置中显式值，例如 `fast`。不能把界面显示的 Fast 凭空补成默认。
 
 ## 调用隔离
 
-认证继续引用原 Agent 的登录，不读取、展示或复制密钥到 Provider。Agent 模型代理（`agent_bridge`）只建立任务私有配置，继承已解析的模型标量，禁用工具、hooks、插件和采集，防止提炼结果回采与循环。并发请求上限在 `generation_config.py` 与 `codex_completion_endpoint.py` 统一收敛为 `AGENT_BRIDGE_MAX_CONCURRENT_REQUESTS = 32`；LLM 出站改写传输层（`generation_http.py` `ClientCache.set_cache`）在启用并发闸门或语言出站改写（`gate is not None or request_rewriter is not None`）时均生效。
+认证继续引用原 Agent 的登录，不读取、展示或复制密钥到 Provider。Agent 模型代理（`agent_bridge`）由 Go 网关内嵌的 OpenAI 兼容端点（`core/gateway/completion/server.go` + `kit/agents/bridge`）承载，只建立任务私有配置，继承已解析的模型标量，禁用工具、hooks、插件和采集，防止提炼结果回采与循环。并发请求上限在 `core/domain/generation.go` 与 `core/gateway/completion/server.go` 统一收敛为 `MaxBridgeConcurrencyLimit = 32`；LLM 出站改写与并发闸门在无状态引擎薄壳 `engines/cognee/` 生效。
 
-Codex / TraeX 代理通过官方 app-server；Antigravity（Gemini App）代理（`engine/python/antigravity_completion.py`）通过原生 `agy --input-format stream-json --output-format stream-json --model <model> --agent memlane-processing --json-schema <schema> --disable-slash-commands` 在仓库外临时工作区与私有 `.gemini/config`（清空 `plugins`/`hooks`/`mcpServers` 与 `tools: []`）中运行，复用操作系统用户 keyring 登录而不复制凭据、历史或自定义配置。画像导入通过各宿主只读 CLI 链路执行，与后台提炼链路分别验收、不能互相替代：画像只读导出原生已有记忆，不启动原生记忆生成任务；内部记忆模型若必须传入，统一使用同一模型快照。此约束仅覆盖 Memlane 发起的调用，不修改独立运行的外部 Agent 行为。
+**运行期跟随本机 CLI 默认模型（`FollowAgentDefaults: true`）**：
+- `cmd/memlane/daemon.go` 的 `activeProfileGate` 对处于 `active` 状态的 `agent_bridge` 配置统一设置 `FollowAgentDefaults: true` 并保留 `RouteModel = p.Model`。
+- 当用户在本机更改 Codex / TRAE CLI / Gemini CLI / pi 的默认模型时，`core/gateway/completion/server.go` 接收来自引擎的 `RouteModel` 路由占位并在进入执行槽时实时冻结该 Agent 当前的默认模型快照执行推理，不因本机默认模型升级而返回 `409 bridge_profile_mismatch` 卡死后台提炼；无关联的未知模型名仍返回 `400` 拒绝。
+- 验证探测（`POST /v1/generation/validations`）使用独立临时 completion 端点且 `FollowAgentDefaults: false`，严格按待验证配置精确核对。
 
-Codex 画像使用官方 `exec --ignore-user-config` 后显式传入所需模型参数（并按命名 profile 合并 `features`/`memories`），保持原 home 与原生记忆可读；Antigravity 画像（`engine/python/user_profiles/providers/antigravity.py`）与 pi 画像（`providers/pi.py`）均统一经 `read_agent_defaults` 读取有效模型，前者在临时隔离 git 工作区中通过 `agy --output-format json --mode plan --model <model> --disable-slash-commands --sandbox --print=...` 配合 `PreToolUse` 工具拒绝钩子执行，后者沿用原配置与结构化适配不固定替代模型；TraeX home 与 CLI home 分别指向选定目录及其 `cli` 子目录。画像运行器（`user_profiles/runner.py`）启动子进程前剥离 `LLM_*`、`OPENAI_*`、`ANTHROPIC_*`、`GEMINI_*`、`OLLAMA_*`、`FALLBACK_*`、`COGNEE_*` 与 `MEMLANE_PROJECT_*` 环境变量，杜绝跨通道环境污染。
+Codex / TraeX 代理通过官方 app-server；Antigravity（Gemini App）代理通过原生 `agy --input-format stream-json --output-format stream-json --model <model> --agent memlane-processing --json-schema <schema> --disable-slash-commands` 在仓库外临时工作区与私有 `.gemini/config`（清空 `plugins`/`hooks`/`mcpServers` 与 `tools: []`）中运行，复用操作系统用户 keyring 登录而不复制凭据、历史或自定义配置。画像导入通过 `core/profiles` 调度各宿主只读 CLI 链路执行，与后台提炼链路分别验收、不能互相替代：画像只读导出原生已有记忆，不启动原生记忆生成任务；内部记忆模型若必须传入，统一使用同一模型快照。此约束仅覆盖 Memlane 发起的调用，不修改独立运行的外部 Agent 行为。
 
-直连 Provider 仍由用户明确选择模型，与 Agent 继承规则分开。采样/输出参数共用 `generation_config.native_llm_configuration` / `native_llm_kwargs`；未配置保持未配置，显式 0 保留，不继承前一配置环境。
+Codex 画像使用官方 `exec --ignore-user-config` 后显式传入所需模型参数（并按命名 profile 合并 `features`/`memories`），保持原 home 与原生记忆可读；Antigravity 画像与 pi 画像均统一经 `kit/agents` `ReadModelDefaults` 读取有效模型，前者在临时隔离 git 工作区中通过 `agy --output-format json --mode plan --model <model> --disable-slash-commands --sandbox --print=...` 配合 `PreToolUse` 工具拒绝钩子执行，后者沿用原配置与结构化适配不固定替代模型；TraeX home 与 CLI home 分别指向选定目录及其 `cli` 子目录。画像运行器（`core/profiles`）启动子进程前剥离 `LLM_*`、`OPENAI_*`、`ANTHROPIC_*`、`GEMINI_*`、`OLLAMA_*`、`FALLBACK_*`、`COGNEE_*` 与 `MEMLANE_PROJECT_*` 环境变量，杜绝跨通道环境污染。
+
+直连 Provider 仍由用户明确选择模型，与 Agent 继承规则分开。采样/输出参数共用 `engines/cognee/llm_config.py` 的 `native_llm_configuration` / `native_llm_kwargs`；未配置保持未配置，显式 0 保留，不继承前一配置环境。
 
 ## 状态与错误
 
 设置及初始化共用解析结果展示模型、显式思考级别与服务 tier，不再让用户在 Memlane 重填 Agent 模型。
 
-**统一启动与热切换校验契约（2026-11-22 同步）**：
-- `engine/python/agent_bridge_runtime.py` 提供单一启动门禁 `require_bridge_startup(store, runtime, row)` 及共享辅助 `mark_connected_bridge_selection`、`bridge_selection_authorized`、`require_bridge_validation`，由 `scripts/dev.py`、`generation_startup.py`、`generation_handoff.py`、`generation_config.py` 与 `generation_bridge.py` 统一调用，消除热切换与重启校验口径分叉。
-- 通过「已连接 Agent 选择」授权（在账本中记录 `connected_agent_selections[digest] = True`）或存在历史 `status == 'applied'` 热切换回执的 `agent_bridge` 修订，重启时统一核对 `check_bridge_runtime`、`read_agent_defaults`（及 `pi` 的 `models.json` 合法性）后放行；未经已连接选择授权的非 Codex 修订仍须具备与当前 `bridge_runtime_fingerprint` 一致的显式验证通过回执，依赖或配置漂移时拒绝启动（`generation_bridge_changed_revalidate`）。
-- 热切换收尾 `generation_handoff.py:apply_receipt()` 确认引擎 `runtime_active` 后先原子持久化 `active`、`connected_agent_selections`、清 `next` 与 `status='applied'`，随后再以只读方式（`write=False`）逐会话容错对账取消会话，避免旧撤权项目 403/409 造成引擎与控制面 `active` 脑裂或 `review()` 永久卡死。
-- 运行期热切换（`generation_handoff_runtime.py`）同步清理/恢复 `litellm.model_cost` 注册、Ollama `register_verified_schema` 的 `restore()` 回调及 Cognee `CHUNKS_PER_BATCH` 缓存；桌面端（`integrations.go`、`generation_workspace.go`）在任意保存错误或表单切换时清零 `GenerationAgentApply`，杜绝残留误触发切换。
+**统一启动、防脑裂门控与热切换状态机契约（2026-11-27 同步）**：
+- **Store 单一真相与 `expectedDigest` 防脑裂门控**：`core/gateway/inbox_worker.go` 的 `expectedDigest()` 严禁向引擎调用 `ModelStatus`/`Health` 取回引擎自身 digest 反向背书；必须仅基于 `core/domain`（`memlane.sqlite3`）已提交的 `active` 配置按与 `engines/cognee/llm_config.py:compute_model_digest` 一致的规范计算预期 digest，并核查 `startup_error == ""` 且 `generation_handoffs` 中无在途 `applying`/`result_unknown` 交接。若无有效 `active`、启动应用失败或存在未核实交接，后台必须暂停 `Extract`（保留收件箱任务为 `pending` 待核实后自动恢复，不丢失数据、不使用未确认模型）。在 `agent_bridge` 启用 `FollowAgentDefaults: true` 时，预期 digest 按 Store 中已提交的 `active` 路由配置计算，不因本机 CLI 默认模型切换而误判卡死。
+- **启动应用唯一 `operation_id` 与失败可见性**：`cmd/memlane/daemon.go` 调用 `Server.ApplyActiveGeneration` 时不再静默吞错放行；每次启动应用生成唯一 `operation_id`（`startup-<random>`），避免引擎存活期重放不同配置撞 `engines/cognee/handoff.py` 的 `409 operation_id_conflict`。启动应用失败时持久化并内存记录 `startup_error`，同步暂停提炼并在 `GET /api/generation` 如实暴露。
+- **热切换传输错误与引擎明确拒绝分离及自动核对**：`core/gateway/generation.go` 区分引擎明确拒绝（4xx 或结构化 `ok=false`/`applied=false`，落 `failed` / `not_applied`）与通信超时/断连/5xx 传输错误（落 `result_unknown` / `unknown`，原因 `model_apply_unconfirmed`，保留原已提交 `active` 不擅自篡改）。网关对 `result_unknown`/`applying` 交接提供自动与按需核对（reconcile，带退避防抖）：向引擎查询 `ModelStatus` 并与目标/原配置的 Store 预期 digest 比对，确认命中目标则原子提交 `active`、清理 `startup_error`、置 `applied` 并唤醒收件箱；确认仍为原配置则置 `failed`/`not_applied` 并恢复提炼；否则继续暂停并保留 `result_unknown`。
+- **桌面端统一 handoff 语义**：`app/settings/generation_activation.go` 的 `switchAgentBridge()` 统一接入标准 handoff 状态机，严禁对 `unknown`/`applying` 误报「切换未生效，仍使用原模型」；当存在 `applying` 或 `unknown` 交接（包括 `GET /v1/generation` 返回的 `active_handoff`）时，设置页明确呈现 **「正在确认使用的模型」** 并锁定重复切换，直至核对收敛。
+- **运行期热切换资源隔离**：`engines/cognee/handoff.py` 同步清理/恢复 `litellm.model_cost` 注册、Ollama `register_verified_schema` 的 `restore()` 回调及 Cognee `CHUNKS_PER_BATCH` 缓存；桌面端（`integrations.go`、`generation_workspace.go`）在任意保存错误或表单切换时清零 `GenerationAgentApply`，杜绝残留误触发切换。
 
 画像主界面只保留自动导入、手动导入及已有文档。失败显示脱敏原生错误与退出码；不以泛化提示代替实际错误，不保存原始 stderr。重试保留原操作元数据；保存结果未知先核对，不能重复生成。
 
