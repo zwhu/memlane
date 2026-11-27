@@ -19,6 +19,7 @@ import (
 	"github.com/zwhu/memlane/core/engine"
 	"github.com/zwhu/memlane/core/gateway/agentauth"
 	"github.com/zwhu/memlane/kit/agents"
+	"github.com/zwhu/memlane/kit/agents/bridge"
 )
 
 type Config struct {
@@ -66,12 +67,10 @@ type Server struct {
 	commonMu     sync.Mutex
 	catalogSync  catalogSyncCoordinator
 
-	validationMu           sync.Mutex
-	activeValidations      map[string]*activeValidation
-	validationClosing      bool
-	validationBudget       time.Duration
-	ephemeralBridgeTimeout time.Duration
-	validationCancelWait   time.Duration
+	validationMu        sync.Mutex
+	activeValidations   map[string]*activeValidation
+	validationClosing   bool
+	probeBridgeExecutor func(context.Context, bridge.ExecOptions, *bridge.ParsedRequest) (string, error)
 
 	startupModelMu        sync.Mutex
 	startupModelErr       string

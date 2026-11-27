@@ -16,6 +16,8 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/kit/agents"
+	"github.com/zwhu/memlane/kit/agents/bridge"
 )
 
 type controllableProbeEngine struct {
@@ -544,5 +546,113 @@ func TestDeleteReportsCleanupUnconfirmedWhenSubprocessGroupFailsToExit(t *testin
 	got := decodeResponse[map[string]any](t, manage(t, s, "GET", "/v1/generation/validations/op-stuck", "", http.StatusOK))
 	if got["status"] != "result_unknown" || got["error_code"] != "validation_cleanup_unconfirmed" {
 		t.Fatalf("unexpected cleanup_unconfirmed receipt: %+v", got)
+	}
+}
+
+func TestDeleteReportsCleanupUnconfirmedWhenEphemeralBridgeCleanupFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	binDir := filepath.Join(root, "bin")
+	codexDir := filepath.Join(home, ".codex")
+	must(t, os.MkdirAll(binDir, 0o755))
+	must(t, os.MkdirAll(codexDir, 0o700))
+	codexBin := filepath.Join(binDir, "codex")
+	must(t, os.WriteFile(codexBin, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	must(t, os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte("model = \"gpt-5.4\"\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{"tokens":{"access_token":"test-tok"}}`), 0o600))
+
+	execStarted := make(chan struct{}, 1)
+	ctrl := &controllableProbeEngine{fakeEngine: newFakeEngine()}
+	ctrl.probeFn = func(probeCtx context.Context, req engine.ProbeRequest) (engine.ProbeResult, error) {
+		httpReq, err := http.NewRequestWithContext(
+			probeCtx,
+			http.MethodPost,
+			req.Environment["LLM_ENDPOINT"]+"/chat/completions",
+			strings.NewReader(`{"model":"gpt-5.4","messages":[{"role":"user","content":"ping"}]}`),
+		)
+		if err != nil {
+			return engine.ProbeResult{}, err
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+req.Environment["LLM_API_KEY"])
+		httpReq.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{}).Do(httpReq)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		return engine.ProbeResult{}, probeCtx.Err()
+	}
+
+	bridgeTokenFile := filepath.Join(root, "bridge.token")
+	must(t, os.WriteFile(bridgeTokenFile, []byte("test-bridge-token-for-cleanup-unknown"), 0o600))
+	s, store, _ := testServer(t, func(c *Config) {
+		c.Engine = ctrl
+		c.Models = ctrl
+		c.BridgeEndpoint = "http://127.0.0.1:18174/v1"
+		c.BridgeTokenFile = bridgeTokenFile
+		c.DiscoveryOptions = agents.DiscoveryOptions{
+			Home:  home,
+			Kinds: []string{agents.HostCodex},
+			LookPath: func(name string) (string, error) {
+				if name == "codex" {
+					return codexBin, nil
+				}
+				return "", errors.New("not found")
+			},
+			RuntimeOverrides: map[string]agents.HostOverride{
+				agents.HostCodex: {Executable: codexBin, ProfileDir: codexDir},
+			},
+		}
+	})
+	s.probeBridgeExecutor = func(execCtx context.Context, _ bridge.ExecOptions, _ *bridge.ParsedRequest) (string, error) {
+		select {
+		case execStarted <- struct{}{}:
+		default:
+		}
+		<-execCtx.Done()
+		time.Sleep(30 * time.Millisecond)
+		return "", &bridge.BridgeError{Code: "codex_process_cleanup_unknown", Status: http.StatusServiceUnavailable}
+	}
+
+	manage(t, s, "PUT", "/api/generation/profiles/agent-codex",
+		`{"mode":"agent_bridge","bridge_kind":"codex","model":"gpt-5.4"}`, http.StatusOK)
+	manage(t, s, "POST", "/v1/generation/validations",
+		`{"profile":{"id":"agent-codex","revision":1},"operation_id":"op-bridge-cleanup-unknown"}`, http.StatusAccepted)
+
+	select {
+	case <-execStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ephemeral bridge executor was not invoked")
+	}
+
+	delRes := decodeResponse[struct {
+		Result struct {
+			OperationID        string `json:"operation_id"`
+			LocalProcessExited bool   `json:"local_process_exited"`
+		} `json:"result"`
+	}](t, manage(t, s, "DELETE", "/v1/generation/validations/op-bridge-cleanup-unknown", "", http.StatusOK))
+	if delRes.Result.OperationID != "op-bridge-cleanup-unknown" || delRes.Result.LocalProcessExited {
+		t.Fatalf("expected local_process_exited=false when bridge reports process_cleanup_unknown: %+v", delRes)
+	}
+
+	got := decodeResponse[map[string]any](t, manage(t, s, "GET", "/v1/generation/validations/op-bridge-cleanup-unknown", "", http.StatusOK))
+	if got["status"] != "result_unknown" || got["error_code"] != "validation_cleanup_unconfirmed" {
+		t.Fatalf("GET receipt = %+v, want result_unknown / validation_cleanup_unconfirmed", got)
+	}
+	rec, err := store.GetGenerationValidation(ctx, "op-bridge-cleanup-unknown")
+	must(t, err)
+	if rec.Status != "result_unknown" || rec.ErrorCode != "validation_cleanup_unconfirmed" {
+		t.Fatalf("SQLite record = %+v, want result_unknown / validation_cleanup_unconfirmed", rec)
+	}
+
+	// Idempotent DELETE on persisted validation_cleanup_unconfirmed must continue reporting false.
+	idem := decodeResponse[struct {
+		Result struct {
+			OperationID        string `json:"operation_id"`
+			LocalProcessExited bool   `json:"local_process_exited"`
+		} `json:"result"`
+	}](t, manage(t, s, "DELETE", "/v1/generation/validations/op-bridge-cleanup-unknown", "", http.StatusOK))
+	if idem.Result.LocalProcessExited {
+		t.Fatalf("idempotent DELETE reported local_process_exited=true for cleanup_unconfirmed: %+v", idem)
 	}
 }

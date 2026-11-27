@@ -126,8 +126,7 @@ func (r *onboardingGenerationRun) validate(parent context.Context, progress func
 	}
 	if r.validation.Status != "passed" || !r.validation.Plain || !r.validation.Schema || !r.validation.Quality ||
 		r.directory.Validations[op.Operation].Digest != row.Digest || !r.directory.validated(r.ref) {
-		if r.validation.Status == "failed" || r.validation.Status == "passed" ||
-			(r.validation.Status == "result_unknown" && r.validation.ErrorCode != "" && r.validation.ErrorCode != "validation_cleanup_unconfirmed") {
+		if generationValidationCanFinish(r.validation) {
 			if err = controlplane.FinishUIOperation(r.operations, op.Operation); err != nil {
 				return err
 			}

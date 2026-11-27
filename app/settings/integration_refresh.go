@@ -76,15 +76,14 @@ func (a *Controller) RefreshIntegrations() {
 				s.Generation = generation
 				s.GenerationLoaded = true
 				s.Loaded = true
-				// Auto-reconcile completed validation receipts (including finished
-				// result_unknown probes carrying a recorded error_code) so stale
-				// journal files never linger after restart.
+				// Auto-reconcile completed validation receipts (excluding
+				// validation_cleanup_unconfirmed so orphan-process locks survive
+				// refresh/reopen) so stale journal files never linger after restart.
 				for _, op := range append([]generationUIOperation(nil), s.PendingOperations...) {
 					if op.Kind != "validations" {
 						continue
 					}
-					if v, ok := generation.Validations[op.Operation]; ok &&
-						(v.Status == "passed" || v.Status == "failed" || (v.Status == "result_unknown" && v.ErrorCode != "")) {
+					if v, ok := generation.Validations[op.Operation]; ok && generationValidationCanFinish(v) {
 						a.finishGenerationOperation(op.Operation)
 					}
 				}

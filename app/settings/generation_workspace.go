@@ -116,11 +116,19 @@ func (a *Controller) discardGenerationDraft() {
 	}
 	s.GenerationAgentApply = false
 	id := s.ProfileID
+	activeVal := s.ValidationOperation != "" && generationValidationActive(s.Validation)
+	valOp, valState, valStarted := s.ValidationOperation, s.Validation, s.ValidationStartedAt
 	delete(s.GenerationDrafts, id)
 	rows := s.Generation.Profiles[id]
 	if len(rows) > 0 {
 		s.Editor = false
 		a.selectGenerationProfile(id, rows[len(rows)-1])
+		if activeVal {
+			s.ValidationOperation = valOp
+			s.Validation = valState
+			s.ValidationStartedAt = valStarted
+			a.pollGenerationValidation(valOp)
+		}
 		return
 	}
 	mode := s.DraftMode

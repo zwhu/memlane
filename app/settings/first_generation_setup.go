@@ -64,6 +64,17 @@ func generationValidationActive(v GenerationValidation) bool {
 	return v.Status == "queued" || v.Status == "running"
 }
 
+func generationValidationCanFinish(v GenerationValidation) bool {
+	switch v.Status {
+	case "passed", "failed":
+		return true
+	case "result_unknown":
+		return v.ErrorCode != "" && v.ErrorCode != "validation_cleanup_unconfirmed"
+	default:
+		return false
+	}
+}
+
 func generationValidationStageLabel(v GenerationValidation) string {
 	switch v.Status {
 	case "queued":

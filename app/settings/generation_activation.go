@@ -79,7 +79,9 @@ func (a *Controller) generationAction(action string) {
 				s.Validation = validationReceipt
 				s.Message = ""
 				s.MessageScope = ""
-				a.finishGenerationOperation(op)
+				if generationValidationCanFinish(validationReceipt) {
+					a.finishGenerationOperation(op)
+				}
 				return
 			} else {
 				if generationValidationActive(validationReceipt) {

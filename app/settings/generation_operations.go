@@ -112,6 +112,9 @@ func (a *Controller) reviewPendingGeneration(o generationUIOperation) {
 	case "validations":
 		if row, found := s.Generation.row(&GenerationRef{ID: o.Profile, Revision: o.Revision}); found {
 			s.editProfile(o.Profile, row)
+			if row.Profile.Mode == "provider" && !a.initialSetup && !a.config.GenerationSetupOnly {
+				s.GenerationProviderDialog = true
+			}
 		}
 		s.ValidationOperation = o.Operation
 		a.pollGenerationValidation(o.Operation)

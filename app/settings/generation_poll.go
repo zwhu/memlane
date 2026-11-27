@@ -69,8 +69,7 @@ func (a *Controller) pollGenerationValidationWithTiming(operation string, interv
 					}
 				} else {
 					a.integrations.Validation = receipt
-					if receipt.Status == "passed" || receipt.Status == "failed" ||
-						(receipt.Status == "result_unknown" && receipt.ErrorCode != "" && receipt.ErrorCode != "validation_cleanup_unconfirmed") {
+					if generationValidationCanFinish(receipt) {
 						a.finishGenerationOperation(operation)
 					}
 				}
@@ -127,7 +126,7 @@ func (a *Controller) cancelGenerationValidation() {
 					return
 				}
 				s.Error = "停止验证的结果未确认，请核对原验证"
-			} else if receipt.Result.Operation != "" && (receipt.Result.Operation != operation || !receipt.Result.Exited) {
+			} else if receipt.Result.Operation != operation || !receipt.Result.Exited {
 				s.Error = "尚未确认验证进程已退出，请核对原验证"
 			} else {
 				s.Error = ""

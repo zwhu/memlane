@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/zwhu/memlane/core/engine"
 	"github.com/zwhu/memlane/core/gateway/completion"
 	"github.com/zwhu/memlane/kit/agents"
+	"github.com/zwhu/memlane/kit/agents/bridge"
 	"github.com/zwhu/memlane/kit/daemon"
 )
 
@@ -311,27 +313,6 @@ func (av *activeValidation) view() validationView {
 	v.Reference.ID = av.profileID
 	v.Reference.Revision = av.revision
 	return v
-}
-
-func (s *Server) effectiveValidationBudget() time.Duration {
-	if s.validationBudget > 0 {
-		return s.validationBudget
-	}
-	return defaultValidationBudget
-}
-
-func (s *Server) effectiveEphemeralBridgeTimeout() time.Duration {
-	if s.ephemeralBridgeTimeout > 0 {
-		return s.ephemeralBridgeTimeout
-	}
-	return ephemeralBridgeStopTimeout
-}
-
-func (s *Server) effectiveValidationCancelWait() time.Duration {
-	if s.validationCancelWait > 0 {
-		return s.validationCancelWait
-	}
-	return cancelValidationWaitBudget
 }
 
 func (s *Server) beginValidationShutdown() []*activeValidation {
@@ -864,7 +845,7 @@ func (s *Server) prepareValidation(w http.ResponseWriter, r *http.Request, async
 		writeDomainError(w, err)
 		return nil, false
 	}
-	budget := s.effectiveValidationBudget()
+	budget := defaultValidationBudget
 	parentCtx := context.Background()
 	if !async {
 		parentCtx = ctx
@@ -894,10 +875,10 @@ func (s *Server) prepareValidation(w http.ResponseWriter, r *http.Request, async
 	}, true
 }
 
-func (s *Server) startEphemeralProbeBridge(p domain.GenerationProfile) (*completion.Server, string, string, error) {
+func (s *Server) startEphemeralProbeBridge(p domain.GenerationProfile) (*completion.Server, string, string, *atomic.Bool, error) {
 	var secret [32]byte
 	if _, randErr := rand.Read(secret[:]); randErr != nil {
-		return nil, "", "", randErr
+		return nil, "", "", nil, randErr
 	}
 	probeToken := hex.EncodeToString(secret[:])
 	candidate := &completion.ActiveProfile{
@@ -917,18 +898,31 @@ func (s *Server) startEphemeralProbeBridge(p domain.GenerationProfile) (*complet
 			candidate.AuthHome = agents.DefaultProfileDir(p.BridgeKind, s.cfg.DiscoveryOptions)
 		}
 	}
+	baseExecutor := s.probeBridgeExecutor
+	if baseExecutor == nil {
+		baseExecutor = bridge.Execute
+	}
+	var cleanupUnknown atomic.Bool
 	probeSrv, srvErr := completion.NewServer(completion.Config{
 		Token: probeToken,
 		Gate:  completion.StaticProfileGate{Profile: candidate},
+		Executor: func(ctx context.Context, opts bridge.ExecOptions, req *bridge.ParsedRequest) (string, error) {
+			out, err := baseExecutor(ctx, opts, req)
+			var be *bridge.BridgeError
+			if errors.As(err, &be) && be != nil && strings.HasSuffix(be.Code, "_process_cleanup_unknown") {
+				cleanupUnknown.Store(true)
+			}
+			return out, err
+		},
 	})
 	if srvErr != nil {
-		return nil, "", "", srvErr
+		return nil, "", "", nil, srvErr
 	}
 	addr, listenErr := probeSrv.StartLoopback("127.0.0.1:0")
 	if listenErr != nil {
-		return nil, "", "", listenErr
+		return nil, "", "", nil, listenErr
 	}
-	return probeSrv, probeToken, addr, nil
+	return probeSrv, probeToken, addr, &cleanupUnknown, nil
 }
 
 func isSubprocessGroupCleanupFailure(err error) bool {
@@ -957,7 +951,7 @@ func (s *Server) executeValidation(pv *preparedValidation) (engine.ProbeResult, 
 	defer func() {
 		if !cleanedUp {
 			if probeSrv != nil {
-				shutCtx, shutCancel := context.WithTimeout(context.Background(), s.effectiveEphemeralBridgeTimeout())
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), ephemeralBridgeStopTimeout)
 				_ = probeSrv.Shutdown(shutCtx)
 				shutCancel()
 			}
@@ -980,10 +974,11 @@ func (s *Server) executeValidation(pv *preparedValidation) (engine.ProbeResult, 
 	// ephemeral completion bridge for that candidate so probing an inactive CLI
 	// never collides with the currently active profile.
 	var bridgeStartErr error
+	var bridgeCleanupUnknown *atomic.Bool
 	if p.Mode == "agent_bridge" && s.cfg.BridgeEndpoint != "" && probeCtx.Err() == nil {
 		av.setPhase("bridge_start")
 		var addr string
-		probeSrv, probeKey, addr, bridgeStartErr = s.startEphemeralProbeBridge(p)
+		probeSrv, probeKey, addr, bridgeCleanupUnknown, bridgeStartErr = s.startEphemeralProbeBridge(p)
 		if bridgeStartErr == nil {
 			probeEndpoint = "http://" + addr + "/v1"
 		}
@@ -1016,12 +1011,15 @@ func (s *Server) executeValidation(pv *preparedValidation) (engine.ProbeResult, 
 	av.setPhase("cleanup")
 	bridgeExited := true
 	if probeSrv != nil {
-		shutCtx, shutCancel := context.WithTimeout(context.Background(), s.effectiveEphemeralBridgeTimeout())
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), ephemeralBridgeStopTimeout)
 		if shutErr := probeSrv.Shutdown(shutCtx); shutErr != nil {
 			bridgeExited = false
 		}
 		shutCancel()
 		probeSrv = nil
+	}
+	if bridgeCleanupUnknown != nil && bridgeCleanupUnknown.Load() {
+		bridgeExited = false
 	}
 	exited := probeExited && bridgeExited
 	av.setLocalProcessExited(exited)
@@ -1172,7 +1170,7 @@ func (s *Server) cancelGenerationValidation(w http.ResponseWriter, r *http.Reque
 	s.validationMu.Unlock()
 	if av != nil {
 		av.requestCancel("user")
-		waitTimer := time.NewTimer(s.effectiveValidationCancelWait())
+		waitTimer := time.NewTimer(cancelValidationWaitBudget)
 		defer waitTimer.Stop()
 		exited := false
 		select {

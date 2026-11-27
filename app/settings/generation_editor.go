@@ -71,7 +71,12 @@ func (a *Controller) generationPendingOperations(c *ui.Context) {
 	s := &a.integrations
 	var visible []generationUIOperation
 	for _, pending := range s.PendingOperations {
-		if pending.connection() || pending.Kind == "validations" {
+		if pending.connection() {
+			continue
+		}
+		if pending.Kind == "validations" &&
+			s.ValidationOperation == pending.Operation &&
+			generationValidationActive(s.Validation) {
 			continue
 		}
 		visible = append(visible, pending)
@@ -82,7 +87,7 @@ func (a *Controller) generationPendingOperations(c *ui.Context) {
 	settingsCard(tok, c, "待核对操作", "上次操作尚未确认，点击核对最新状态。", func() {
 		for _, o := range visible {
 			op := o
-			label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "切换提炼模型", "delete": "删除配置"}[op.Kind]
+			label := map[string]string{"save": "保存配置", "next": "下次启动设置", "handoffs": "切换提炼模型", "delete": "删除配置", "validations": "验证配置"}[op.Kind]
 			ui.Row(c.Key("pending-generation-" + op.Operation)).Gap(12).Children(func() {
 				kitui.Text(c, tok, label+" · "+op.Profile, kitui.RoleMeta).Grow(1)
 				kitui.TextButton(c, tok, "核对原操作", nil).Label("核对原操作：" + op.Operation).Disabled(s.Busy).OnClick(func() { a.reviewPendingGeneration(op) })
