@@ -39,6 +39,8 @@ var (
 	_ engine.CatalogProjector     = (*Adapter)(nil)
 	_ engine.DatasetDiscoverer    = (*Adapter)(nil)
 	_ engine.SessionHistoryReader = (*Adapter)(nil)
+	_ engine.CodeIndexer          = (*Adapter)(nil)
+	_ engine.ActivityReader       = (*Adapter)(nil)
 )
 
 func init() {
@@ -283,6 +285,44 @@ func (a *Adapter) HydrateSessionsFromCache(ctx context.Context, refs []engine.Se
 
 func (a *Adapter) ReadSessionHistory(ctx context.Context, req engine.SessionHistoryRequest) (engine.SessionHistoryResult, error) {
 	return a.projector.ReadSessionHistory(ctx, req)
+}
+
+func (a *Adapter) EnsureDataset(ctx context.Context, name string) (engine.DatasetRecord, error) {
+	if strings.TrimSpace(name) == "" {
+		return engine.DatasetRecord{}, invalidArgument("dataset name required", nil)
+	}
+	var resp struct {
+		OK        bool   `json:"ok"`
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		CreatedAt string `json:"created_at"`
+	}
+	if err := a.client.request(ctx, http.MethodPost, "/datasets", nil, map[string]string{"name": strings.TrimSpace(name)}, &resp); err != nil {
+		return engine.DatasetRecord{}, err
+	}
+	if !resp.OK || strings.TrimSpace(resp.ID) == "" {
+		return engine.DatasetRecord{}, runnerUnavailable("invalid ensure dataset response", nil)
+	}
+	return engine.DatasetRecord{ID: resp.ID, Name: resp.Name, CreatedAt: resp.CreatedAt}, nil
+}
+
+func (a *Adapter) IndexCode(ctx context.Context, req engine.CodeIndexRequest) (engine.CodeIndexResult, error) {
+	if strings.TrimSpace(req.DatasetID) == "" || strings.TrimSpace(req.RepoPath) == "" {
+		return engine.CodeIndexResult{}, invalidArgument("dataset_id and repo_path required", nil)
+	}
+	var result engine.CodeIndexResult
+	if err := a.client.request(ctx, http.MethodPost, "/code-index", nil, req, &result); err != nil {
+		return engine.CodeIndexResult{}, err
+	}
+	return result, nil
+}
+
+func (a *Adapter) ProjectCodeActivity(ctx context.Context, datasetID string) (engine.CodeActivitySnapshot, error) {
+	return a.projector.ProjectCodeActivity(ctx, datasetID)
+}
+
+func (a *Adapter) ListPipelineRuns(ctx context.Context, query engine.PipelineRunsQuery) ([]engine.PipelineRun, error) {
+	return a.projector.ListPipelineRuns(ctx, query)
 }
 
 func qaWithContextDate(req engine.IngestRequest, now time.Time, loc *time.Location) (engine.IngestRequest, error) {

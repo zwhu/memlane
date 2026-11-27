@@ -400,6 +400,9 @@ func TestRunnerStatusMapping(t *testing.T) {
 		{401, "private upstream error", "unauthorized", engine.ErrUnauthorized},
 		{403, "", "forbidden", engine.ErrForbidden},
 		{404, "", "not_found", engine.ErrNotFound},
+		{404, "dataset_not_provisioned: non-json text", "not_found", engine.ErrNotFound},
+		{404, `{"detail":"dataset_not_provisioned: extra"}`, "not_found", engine.ErrNotFound},
+		{404, `{"detail":"dataset_not_provisioned"}`, datasetNotProvisionedCode, engine.ErrDatasetNotProvisioned},
 		{409, `{"code":"write_conflict"}`, "conflict", engine.ErrConflict},
 		{409, `{"code":"model_digest_mismatch"}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
 		{409, `{"error":"model_digest_mismatch"}`, modelDigestMismatchCode, engine.ErrModelDigestMismatch},
@@ -430,7 +433,22 @@ func TestRunnerStatusMapping(t *testing.T) {
 
 func TestAdapterRejectsInvalidToken(t *testing.T) {
 	config := testConfig(t, "http://127.0.0.1:1")
-	invalidPaths := map[string]string{"missing": filepath.Join(config.StorePath, "missing"), "symlink": filepath.Join(config.StorePath, "link")}
+	emptyPathCfg := config
+	emptyPathCfg.TokenFile = "  "
+	if _, err := New(emptyPathCfg); !errors.Is(err, engine.ErrUnauthorized) {
+		t.Fatalf("New with empty TokenFile = %v, want unauthorized", err)
+	}
+
+	// Missing token file is allowed at construction time (lazy check) and returns ErrUnavailable on request.
+	missingCfg := config
+	missingCfg.TokenFile = filepath.Join(config.StorePath, "missing")
+	lazyAdapter, err := New(missingCfg)
+	requireNoError(t, err)
+	if _, err := lazyAdapter.Health(context.Background()); !errors.Is(err, engine.ErrUnavailable) {
+		t.Fatalf("Health with missing token = %v, want unavailable", err)
+	}
+
+	invalidPaths := map[string]string{"symlink": filepath.Join(config.StorePath, "link")}
 	requireNoError(t, os.Symlink(config.TokenFile, invalidPaths["symlink"]))
 	for _, mode := range []struct {
 		name string
@@ -450,8 +468,10 @@ func TestAdapterRejectsInvalidToken(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			bad := config
 			bad.TokenFile = path
-			if _, err := New(bad); !errors.Is(err, engine.ErrUnauthorized) {
-				t.Fatalf("New with invalid token = %v, want unauthorized", err)
+			a, err := New(bad)
+			requireNoError(t, err)
+			if _, err := a.Health(context.Background()); !errors.Is(err, engine.ErrUnauthorized) {
+				t.Fatalf("Health with invalid token = %v, want unauthorized", err)
 			}
 		})
 	}

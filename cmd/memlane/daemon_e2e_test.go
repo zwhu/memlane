@@ -379,7 +379,7 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 	if _, err := uuid.Parse(freshDataset); err != nil || freshDataset == dataset || freshDataset == common {
 		t.Fatalf("expected a fresh dataset UUID: %v", fresh)
 	}
-	if denied := internal("GET", "/items?dataset_id="+freshDataset, nil, 403); denied["detail"] != "dataset_access_required" {
+	if denied := internal("GET", "/items?dataset_id="+freshDataset, nil, 404); denied["detail"] != "dataset_not_provisioned" {
 		t.Fatal(denied)
 	}
 	manage("PUT", "/api/projects/fresh/acl/agent", map[string]any{"access": "maintain", "capture": true, "auto_process": false}, 200)

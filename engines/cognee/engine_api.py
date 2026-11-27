@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -70,6 +71,13 @@ class ModelApply(BaseModel):
     output_language: str | None = None
     operation_id: str
 
+class DatasetEnsure(BaseModel):
+    name: str = Field(min_length=1)
+
+class CodeIndex(BaseModel):
+    dataset_id: str
+    repo_path: str = Field(min_length=1)
+
 
 class EngineBackend(Protocol):
     async def ingest(self, payload: Ingest, content: str | dict) -> dict: ...
@@ -79,6 +87,8 @@ class EngineBackend(Protocol):
     async def get_item(self, scope: Scope, item_id: str) -> dict: ...
     async def delete_item(self, scope: Scope, item_id: str) -> dict: ...
     async def graph(self, dataset_id: str, filter_text: str | None) -> dict: ...
+    async def ensure_dataset(self, name: str) -> dict: ...
+    async def index_code(self, payload: CodeIndex) -> dict: ...
 
 
 def _uuid(value):
@@ -104,7 +114,9 @@ class CogneeBackend:
         try:
             user = await get_user(_uuid(user_id)) if user_id else await get_default_user()
         except DatabaseNotCreatedError:
-            if user_id or not allow_provision:
+            if not allow_provision:
+                raise PolicyError('dataset_not_provisioned', 404) from None
+            if user_id:
                 raise PolicyError('dataset_access_required', 403) from None
             from cognee.modules.engine.operations.setup import setup
             async with self._provision_lock:
@@ -117,18 +129,34 @@ class CogneeBackend:
             try:
                 return await get_authorized_existing_datasets(
                     user=user, datasets=[dataset], permission_type=permission)
-            except PermissionDeniedError:
+            except (PermissionDeniedError, DatabaseNotCreatedError):
                 return []
 
         if await authorized():
             return user, dataset
-        if allow_provision and (not user_id or user.id == (await get_default_user()).id):
+        if not allow_provision:
+            if not await self._dataset_exists(dataset):
+                raise PolicyError('dataset_not_provisioned', 404)
+            raise PolicyError('dataset_access_required', 403)
+        if not user_id or user.id == (await get_default_user()).id:
             # Serialize new owner writes until the dataset and its ACLs are visible.
             async with self._provision_lock:
                 await self._provision_owner_dataset(user, dataset)
                 if await authorized():
                     return user, dataset
         raise PolicyError('dataset_access_required', 403)
+
+    @staticmethod
+    async def _dataset_exists(dataset) -> bool:
+        from cognee.infrastructure.databases.exceptions import DatabaseNotCreatedError
+        from cognee.infrastructure.databases.relational import get_relational_engine
+        from cognee.modules.data.models import Dataset
+
+        try:
+            async with get_relational_engine().get_async_session() as session:
+                return await session.get(Dataset, dataset) is not None
+        except DatabaseNotCreatedError:
+            return False
 
     @staticmethod
     async def _provision_owner_dataset(user, dataset):
@@ -423,6 +451,44 @@ class CogneeBackend:
             return {'nodes': nodes, 'edges': [edge for edge in graph['edges']
                                               if edge['source'] in ids and edge['target'] in ids]}
         return graph
+
+    async def ensure_dataset(self, name: str) -> dict:
+        from cognee.infrastructure.databases.exceptions import DatabaseNotCreatedError
+        from cognee.modules.data.methods.create_authorized_dataset import create_authorized_dataset
+        from cognee.modules.users.methods.get_default_user import get_default_user
+
+        clean = name.strip()
+        if not clean:
+            raise PolicyError('invalid_dataset_name', 422)
+        async with self._provision_lock:
+            try:
+                user = await get_default_user()
+            except DatabaseNotCreatedError:
+                from cognee.modules.engine.operations.setup import setup
+                await setup()
+                user = await get_default_user()
+            ds = await create_authorized_dataset(clean, user)
+        created = getattr(ds, 'created_at', None)
+        return {'id': str(ds.id), 'name': ds.name, 'created_at': created.isoformat() if hasattr(created, 'isoformat') else _text(created)}
+
+    async def index_code(self, payload: CodeIndex) -> dict:
+        from cognee import remember
+
+        repo = payload.repo_path.strip()
+        lower = repo.lower()
+        if (not repo or '://' in repo or lower.startswith(('http:', 'https:', 'ssh:', 'git@', 'file:'))
+                or not os.path.isabs(repo) or os.path.islink(repo) or not os.path.isdir(repo)):
+            raise PolicyError('invalid_repo_path', 422)
+        user, dataset = await self._dataset(Scope(dataset_id=payload.dataset_id), 'write', allow_provision=True)
+        result = await remember(
+            [repo], dataset_id=dataset, user=user, content_type='code',
+            run_in_background=False, index_vectors=False, self_improvement=False, raise_on_error=False,
+        )
+        as_dict = _as_dict(result) or {}
+        status = _text(getattr(result, 'status', None) if not isinstance(result, dict) else as_dict.get('status'))
+        run_id = _text(getattr(result, 'pipeline_run_id', None) if not isinstance(result, dict) else as_dict.get('pipeline_run_id'))
+        raw_items = getattr(result, 'items_processed', None) if not isinstance(result, dict) else as_dict.get('items_processed')
+        return {'status': status, 'dataset_id': str(dataset), 'pipeline_run_id': run_id, 'items_processed': int(raw_items or 0)}
 
 
 def _empty_scope_result() -> dict:
@@ -1010,5 +1076,13 @@ def install_engine_api(app, *, handoff, store_path, token=None, token_file=None,
     @router.get('/model/status')
     async def model_status():
         return handoff.status()
+
+    @router.post('/datasets')
+    async def ensure_dataset(payload: DatasetEnsure):
+        return {'ok': True, **await backend.ensure_dataset(payload.name)}
+
+    @router.post('/code-index')
+    async def index_code(payload: CodeIndex):
+        return {'ok': True, **await backend.index_code(payload)}
 
     app.include_router(router)

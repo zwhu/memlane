@@ -63,6 +63,12 @@ class Backend:
     async def graph(self, dataset_id, filter_text):
         return {'nodes': [{'id': dataset_id, 'label': filter_text}], 'edges': []}
 
+    async def ensure_dataset(self, name):
+        return {'id': 'ds-ensured', 'name': name, 'created_at': '2026-11-27T00:00:00Z'}
+
+    async def index_code(self, payload):
+        return {'status': 'completed', 'dataset_id': payload.dataset_id, 'pipeline_run_id': 'run-1', 'items_processed': 3}
+
 
 class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -164,9 +170,60 @@ class CogneeBackendTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(operation=operation.__name__):
                 with self.assertRaises(PolicyError) as raised:
                     await operation(*args)
-                self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_access_required', 403))
-        session.get.assert_not_awaited()
+                self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_not_provisioned', 404))
+        self.assertEqual(session.get.await_count, 5)
         grant.assert_not_awaited()
+
+    async def test_existing_dataset_without_permission_returns_403(self):
+        backend, _, _, _, session, grant = self.dataset_access(existing=object())
+        with self.assertRaises(PolicyError) as raised:
+            await backend.search(Search(scopes=[self.scope], query='test'), 1)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_access_required', 403))
+        session.get.assert_awaited_once()
+        grant.assert_not_awaited()
+
+    async def test_database_not_created_on_read_returns_dataset_not_provisioned(self):
+        from cognee.infrastructure.databases.exceptions import DatabaseNotCreatedError
+
+        backend, _, default, _, _, _ = self.dataset_access()
+        default.side_effect = DatabaseNotCreatedError()
+        with self.assertRaises(PolicyError) as raised:
+            await backend.search(Search(scopes=[self.scope], query='test'), 1)
+        self.assertEqual((raised.exception.code, raised.exception.status), ('dataset_not_provisioned', 404))
+
+    async def test_ensure_dataset_and_index_code(self):
+        import tempfile
+        from engines.cognee.engine_api import CodeIndex
+
+        backend, owner, _, _, _, _ = self.dataset_access()
+        created_ds = SimpleNamespace(id=self.dataset, name='proj-code', created_at='2026-11-27T00:00:00Z')
+        with patch('cognee.modules.data.methods.create_authorized_dataset.create_authorized_dataset',
+                   new_callable=AsyncMock, return_value=created_ds) as create_ds:
+            res_ds = await backend.ensure_dataset('proj-code')
+        self.assertEqual(res_ds, {'id': str(self.dataset), 'name': 'proj-code', 'created_at': '2026-11-27T00:00:00Z'})
+        create_ds.assert_awaited_once_with('proj-code', owner)
+
+        for bad_path in ('https://example.com/repo.git', 'git@github.com:org/repo.git', 'relative/path', '/nonexistent/path/xyz'):
+            with self.assertRaises(PolicyError) as raised:
+                await backend.index_code(CodeIndex(dataset_id=str(self.dataset), repo_path=bad_path))
+            self.assertEqual((raised.exception.code, raised.exception.status), ('invalid_repo_path', 422))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = os.path.join(tmpdir, 'sym')
+            os.symlink(tmpdir, link_path)
+            with self.assertRaises(PolicyError) as raised:
+                await backend.index_code(CodeIndex(dataset_id=str(self.dataset), repo_path=link_path))
+            self.assertEqual((raised.exception.code, raised.exception.status), ('invalid_repo_path', 422))
+
+            with (patch.object(backend, '_dataset', return_value=(owner, self.dataset)),
+                  patch('cognee.remember', new_callable=AsyncMock,
+                        return_value=SimpleNamespace(status='completed', pipeline_run_id='run-42', items_processed=7)) as remember):
+                res = await backend.index_code(CodeIndex(dataset_id=str(self.dataset), repo_path=tmpdir))
+            self.assertEqual(res, {'status': 'completed', 'dataset_id': str(self.dataset), 'pipeline_run_id': 'run-42', 'items_processed': 7})
+            remember.assert_awaited_once_with(
+                [tmpdir], dataset_id=self.dataset, user=owner, content_type='code',
+                run_in_background=False, index_vectors=False, self_improvement=False, raise_on_error=False,
+            )
 
     async def test_insert_race_rolls_back_and_rechecks_acl(self):
         from sqlalchemy.exc import IntegrityError
@@ -906,3 +963,12 @@ class EngineAPITests(unittest.IsolatedAsyncioTestCase):
         })
         invalid_mode = await self.client.post('search', json={'query': 'auth', 'mode': 'bogus', 'scopes': [self.scope]})
         self.assertEqual(invalid_mode.status_code, 422)
+
+    async def test_datasets_and_code_index_routes(self):
+        await self.apply()
+        ds_resp = await self.client.post('datasets', json={'name': 'demo-code'})
+        self.assertEqual(ds_resp.status_code, 200)
+        self.assertEqual(ds_resp.json(), {'ok': True, 'id': 'ds-ensured', 'name': 'demo-code', 'created_at': '2026-11-27T00:00:00Z'})
+        idx_resp = await self.client.post('code-index', json={'dataset_id': 'ds-ensured', 'repo_path': '/tmp/demo'})
+        self.assertEqual(idx_resp.status_code, 200)
+        self.assertEqual(idx_resp.json(), {'ok': True, 'status': 'completed', 'dataset_id': 'ds-ensured', 'pipeline_run_id': 'run-1', 'items_processed': 3})

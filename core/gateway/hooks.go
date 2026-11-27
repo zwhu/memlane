@@ -16,6 +16,7 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/core/gateway/recall"
 )
 
 const (
@@ -687,12 +688,9 @@ func validRecallPurpose(purpose string) bool {
 	}
 }
 
-func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent domain.Agent) ([]engine.Scope, bool, string, error) {
-	projects, err := s.cfg.Store.ListProjects(ctx)
-	if err != nil {
-		return nil, false, "", err
-	}
+func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent domain.Agent) ([]recall.AuthorizedScope, bool, string, error) {
 	explicit := req.ProjectID != "" || req.Workspace != "" || req.SessionID != ""
+	var projects []domain.Project
 	if explicit {
 		p, err := s.hookProject(ctx, req.hookScope, agent.ID)
 		if err != nil {
@@ -701,86 +699,19 @@ func (s *Server) recallScopes(ctx context.Context, req recallRequest, agent doma
 		projects = []domain.Project{p}
 	}
 	codeOnly := strings.EqualFold(req.Kind, "code") || strings.EqualFold(req.Scope, "code") || req.Mode == engine.SearchModeCode
-	type target struct {
-		projectID string
-		code      bool
-	}
-	targets := make(map[string][]target)
-	for _, p := range projects {
-		if p.DatasetID != "" {
-			targets[p.DatasetID] = append(targets[p.DatasetID], target{p.ID, false})
-		}
-		if p.CodeEnabled && p.CodeDatasetID != "" {
-			targets[p.CodeDatasetID] = append(targets[p.CodeDatasetID], target{p.ID, true})
-		}
-	}
-	common, err := s.cfg.Store.GetCommonConfig(ctx)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+	resolved, err := recall.ResolveScopes(ctx, recall.ResolveInput{
+		Store:      s.cfg.Store,
+		Agent:      agent,
+		UserID:     "",
+		Projects:   projects,
+		Explicit:   explicit,
+		DatasetIDs: req.DatasetIDs,
+		CodeOnly:   codeOnly,
+	})
+	if err != nil {
 		return nil, false, "", err
 	}
-	ids := req.DatasetIDs
-	if len(ids) == 0 {
-		for _, p := range projects {
-			if (!codeOnly || !p.CodeEnabled || p.CodeDatasetID == "") && p.DatasetID != "" {
-				ids = append(ids, p.DatasetID)
-			}
-			if codeOnly && p.CodeEnabled && p.CodeDatasetID != "" {
-				ids = append(ids, p.CodeDatasetID)
-			}
-		}
-	}
-	scopes := make([]engine.Scope, 0)
-	seen := make(map[string]bool)
-	allCode := true
-	commonRequested := false
-	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		if id != "" && id == common.DatasetID {
-			commonRequested = true
-			continue
-		}
-		if len(targets[id]) != 1 {
-			return nil, false, "", domain.ErrForbidden
-		}
-		target := targets[id][0]
-		acl, err := s.cfg.Store.EvaluateProjectACL(ctx, target.projectID, agent.ID)
-		if err != nil {
-			return nil, false, "", err
-		}
-		if acl.Access != domain.AccessRead && acl.Access != domain.AccessMaintain {
-			if explicit || len(req.DatasetIDs) > 0 {
-				return nil, false, "", domain.ErrForbidden
-			}
-			continue
-		}
-		seen[id] = true
-		allCode = allCode && target.code
-		scopes = append(scopes, engine.Scope{DatasetID: id})
-	}
-	if explicit && len(scopes) == 0 {
-		return nil, false, "", domain.ErrForbidden
-	}
-	include := false
-	commonEligible := !codeOnly && !(len(scopes) > 0 && allCode)
-	if common.DatasetID != "" && (commonRequested || commonEligible) {
-		acl, err := s.cfg.Store.EvaluateCommonACL(ctx, agent.ID)
-		if err != nil {
-			return nil, false, "", err
-		}
-		if commonRequested && acl.Access != domain.AccessRead {
-			return nil, false, "", domain.ErrForbidden
-		}
-		if commonEligible && acl.Access == domain.AccessRead {
-			scopes = append(scopes, engine.Scope{DatasetID: common.DatasetID})
-			include = true
-		}
-	}
-	if len(scopes) == 0 {
-		return nil, false, "", domain.ErrForbidden
-	}
-	return scopes, include, common.DatasetID, nil
+	return resolved.Scopes, resolved.CommonIncluded, resolved.CommonDatasetID, nil
 }
 
 func projectScopeDatasets(scopes []engine.Scope, commonDatasetID string) []string {
@@ -1078,7 +1009,7 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 	}
 	ctx := r.Context()
 	s.registryMu.Lock()
-	scopes, include, commonDatasetID, err := s.recallScopes(ctx, req, agent)
+	authScopes, include, commonDatasetID, err := s.recallScopes(ctx, req, agent)
 	s.registryMu.Unlock()
 	if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) {
 		writeError(w, 403, "dataset_read_denied", "dataset read access required")
@@ -1087,6 +1018,10 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+	scopes := make([]engine.Scope, 0, len(authScopes))
+	for _, sc := range authScopes {
+		scopes = append(scopes, sc.Scope)
 	}
 	ownership, sessionUserID := s.verifyAuthorizedSession(ctx, agent, req.SessionID, scopes, commonDatasetID)
 	if query == "" {
@@ -1101,6 +1036,7 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 				"hits":            []engine.SearchHit{},
 				"context":         "",
 				"mode":            mode,
+				"partial":         false,
 			})
 			return
 		}
@@ -1130,31 +1066,26 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		searchSessionID = strings.TrimSpace(req.SessionID)
 		includeSessionCtx = req.IncludeSessionContext && searchSessionID != ""
 	}
-	result, err := s.cfg.Engine.Search(searchCtx, engine.SearchRequest{
-		Scopes: scopes,
-		Query:  query,
-		Mode:   mode,
-		Limit:  limit,
-		Filters: engine.SearchFilters{
-			Kind:                  kind,
-			Limit:                 limit,
-			NodeSets:              nodeSets,
-			SessionID:             searchSessionID,
-			IncludeSessionContext: includeSessionCtx,
+	out, err := recall.Execute(searchCtx, recall.SearchOptions{
+		Engine:                s.cfg.Engine,
+		Scopes:                authScopes,
+		Query:                 query,
+		Mode:                  mode,
+		Limit:                 limit,
+		Kind:                  kind,
+		NodeSets:              nodeSets,
+		SessionID:             searchSessionID,
+		IncludeSessionContext: includeSessionCtx,
+		HitFilter: func(raw []engine.SearchHit) []engine.SearchHit {
+			return filterCurrentSessionHits(raw, req.SessionID, req.Purpose)
 		},
 	})
-	if err == nil {
-		err = searchCtx.Err()
-	}
-	if err == nil && !result.OK {
-		err = engine.ErrUnavailable
-	}
 	if err != nil {
 		writeEngineError(w, err)
 		return
 	}
-	hits := authorizedHits(filterCurrentSessionHits(result.Hits, req.SessionID, req.Purpose), scopes, limit)
-	graphContext, degraded := authorizedGraphContext(result.GraphContext, scopes)
+	hits := out.Hits
+	graphContext, degraded := out.GraphContext, out.DegradedToChunks
 	contextText := formatRecallContext(hits, graphContext, recallFormatOptions{
 		CommonDatasetID: commonDatasetID,
 		SessionID:       req.SessionID,
@@ -1168,13 +1099,11 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 			event.Hits = append(event.Hits, domain.RecallHit{DatasetID: hit.DatasetID, DocumentID: hit.DocumentID})
 		}
 		if _, err := s.cfg.Store.RecordRecallEvent(ctx, event); err != nil {
-			writeDomainError(w, err)
-			return
+			log.Printf("gateway recall record event: %s", sanitizeError(err))
 		}
 	}
 	if err := s.cfg.Store.RecordRecallQueryStat(ctx, req.Channel, len(hits), ""); err != nil {
-		writeDomainError(w, err)
-		return
+		log.Printf("gateway recall record query stat: %s", sanitizeError(err))
 	}
 	resp := map[string]any{
 		"ok":                 true,
@@ -1186,6 +1115,10 @@ func (s *Server) recall(w http.ResponseWriter, r *http.Request, agent domain.Age
 		"context":            contextText,
 		"mode":               mode,
 		"degraded_to_chunks": degraded,
+		"partial":            out.Partial,
+	}
+	if len(out.ScopeErrors) > 0 {
+		resp["scope_errors"] = out.ScopeErrors
 	}
 	if graphContext != nil {
 		resp["graph_context"] = graphContext

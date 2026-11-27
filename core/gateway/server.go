@@ -3,8 +3,6 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"maps"
 	"net"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/core/gateway/agentauth"
 	"github.com/zwhu/memlane/kit/agents"
 )
 
@@ -55,6 +54,7 @@ type Server struct {
 	handler      http.Handler
 	inbox        *InboxWorker
 	cursors      cursorCodec
+	auth         *agentauth.Authenticator
 	secrets      secretFileCache
 	searches     userSearchHistory
 	prompts      pendingPromptStore
@@ -75,6 +75,9 @@ type Server struct {
 	reconcileMu           sync.Mutex
 	reconcileNext         time.Time
 	reconcileBackoff      time.Duration
+
+	codeIndexMu       sync.Mutex
+	codeIndexInFlight map[string]struct{}
 
 	monitorHistory runtimeMonitorHistory
 }
@@ -152,7 +155,14 @@ func NewServer(cfg Config) (*Server, error) {
 		policy.WorkspaceDirs = slices.Clone(policy.WorkspaceDirs)
 	}
 	cfg.ConflictPolicy = &policy
-	s := &Server{cfg: cfg, cursors: cursorCodec{secret}, since: time.Now()}
+	auth := agentauth.New(agentauth.Config{
+		Store:       cfg.Store,
+		AgentTokens: cfg.AgentTokens,
+	})
+	if setter, ok := cfg.MCPHandler.(interface{ SetAuthenticator(*agentauth.Authenticator) }); ok {
+		setter.SetAuthenticator(auth)
+	}
+	s := &Server{cfg: cfg, cursors: cursorCodec{secret}, auth: auth, since: time.Now()}
 	s.inbox = &InboxWorker{cfg: cfg, wake: make(chan struct{}, cfg.InboxWorkers), server: s}
 	s.handler = s.routes()
 	return s, nil
@@ -184,6 +194,10 @@ func (s *Server) routes() http.Handler {
 	both("POST", "/projects/{id}/aliases", s.addAlias)
 	both("DELETE", "/projects/{id}", s.deleteProject)
 	both("POST", "/projects/{id}/retry", s.retryProject)
+	both("GET", "/projects/{id}/code-activity", s.projectCodeActivity)
+	both("POST", "/projects/{id}/code-dataset", s.ensureProjectCodeDataset)
+	both("POST", "/projects/{id}/code-index", s.triggerProjectCodeIndex)
+	both("GET", "/activity/pipeline-runs", s.listPipelineRuns)
 	mux.HandleFunc("PUT /api/projects/{id}/acl", s.projectACL)
 	mux.HandleFunc("PUT /api/projects/{id}/acl/{agent_id}", s.projectACL)
 	mux.HandleFunc("PUT /v1/projects/{id}/overrides", s.projectACL)
@@ -281,69 +295,68 @@ func isManagementPath(p string) bool {
 }
 
 func bearer(r *http.Request) string {
-	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-	if ok && strings.EqualFold(scheme, "Bearer") {
-		return strings.TrimSpace(token)
-	}
-	return ""
+	return agentauth.BearerToken(r)
 }
 
 func secretMatch(a, b string) bool {
-	left, right := sha256.Sum256([]byte(a)), sha256.Sum256([]byte(b))
-	return subtle.ConstantTimeCompare(left[:], right[:]) == 1 && a != "" && b != ""
+	return agentauth.SecretMatch(a, b)
 }
 
 func (s *Server) matchingAgent(ctx context.Context, tokens ...string) (domain.Agent, string, error) {
-	all, err := s.cfg.Store.ListAgents(ctx, true)
+	res, err := s.auth.Authenticate(ctx, tokens...)
 	if err != nil {
 		return domain.Agent{}, "", err
 	}
-	var matched domain.Agent
-	active, retired := 0, false
-	for _, a := range all {
-		secrets := []string{s.cfg.AgentTokens[a.ID]}
-		for _, path := range []string{a.KeyFile, a.ControlTokenFile} {
-			if path == "" {
-				continue
-			}
-			// Only a verified private file can contribute an agent credential.
-			if value, err := s.secrets.read(path); err == nil {
-				secrets = append(secrets, value)
-			}
-		}
-		found := false
-		for _, token := range tokens {
-			for _, key := range secrets {
-				if secretMatch(token, key) {
-					found = true
-				}
-			}
-		}
-		if !found {
-			continue
-		}
-		if a.Archived || strings.TrimSpace(a.RetiredAt) != "" {
-			retired = true
-		} else {
-			matched, active = a, active+1
-		}
+	if res.Status == agentauth.StatusOK {
+		return res.Agent, "", nil
 	}
-	switch {
-	case retired:
-		return domain.Agent{}, "agent_retired", nil
-	case active == 1:
-		return matched, "", nil
-	default:
-		return domain.Agent{}, "agent_not_registered", nil
-	}
+	return domain.Agent{}, res.Code, nil
 }
 
 func (s *Server) management(w http.ResponseWriter, r *http.Request) bool {
-	token, header := bearer(r), r.Header.Get("X-Memlane-Management")
+	authVals := r.Header.Values("Authorization")
+	mgmtVals := r.Header.Values("X-Memlane-Management")
+	apiKeyVals := r.Header.Values("X-Api-Key")
+	if len(authVals) > 1 || len(mgmtVals) > 1 || len(apiKeyVals) > 1 {
+		writeError(w, 401, "unauthorized", "management credentials required")
+		return false
+	}
+	var token string
+	if len(authVals) == 1 {
+		fields := strings.Fields(authVals[0])
+		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
+			writeError(w, 401, "unauthorized", "management credentials required")
+			return false
+		}
+		token = fields[1]
+	}
+	header := ""
+	if len(mgmtVals) == 1 {
+		header = strings.TrimSpace(mgmtVals[0])
+		if header == "" {
+			writeError(w, 401, "unauthorized", "management credentials required")
+			return false
+		}
+	}
+	agentKey := ""
+	if len(apiKeyVals) == 1 {
+		agentKey = strings.TrimSpace(apiKeyVals[0])
+		if agentKey == "" {
+			writeError(w, 401, "unauthorized", "management credentials required")
+			return false
+		}
+	}
+	if token != "" && header != "" && !secretMatch(token, header) {
+		writeError(w, 401, "unauthorized", "management credentials required")
+		return false
+	}
+	if agentKey != "" && ((token != "" && !secretMatch(agentKey, token)) || (header != "" && !secretMatch(agentKey, header))) {
+		writeError(w, 401, "unauthorized", "management credentials required")
+		return false
+	}
 	if secretMatch(token, s.cfg.ManagementToken) || secretMatch(header, s.cfg.ManagementToken) {
 		return true
 	}
-	agentKey := r.Header.Get("X-Api-Key")
 	if token != "" || header != "" || agentKey != "" {
 		if _, code, err := s.matchingAgent(r.Context(), token, header, agentKey); err != nil {
 			writeDomainError(w, err)
@@ -359,12 +372,12 @@ func (s *Server) management(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) agentOnly(f func(http.ResponseWriter, *http.Request, domain.Agent)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key, token := r.Header.Get("X-Api-Key"), bearer(r)
-		if key == "" && token == "" {
+		token := agentauth.RequestToken(r)
+		if token == "" {
 			writeError(w, 401, "unauthorized", "agent credentials required")
 			return
 		}
-		a, code, err := s.matchingAgent(r.Context(), key, token)
+		a, code, err := s.matchingAgent(r.Context(), token)
 		if err != nil {
 			writeDomainError(w, err)
 			return

@@ -23,11 +23,12 @@ const (
 	defaultHTTPTimeout      = 10 * time.Second
 	defaultExtractTimeout   = 30 * time.Minute
 	maxRunnerResponseBytes  = 2 << 20
-	maxRunnerErrorBytes     = 4096
-	maxInternalTokenBytes   = 4096
-	modelDigestMismatchCode = "model_digest_mismatch"
-	extractTimeoutCode      = "extract_timeout"
-	engineTimeoutCode       = "engine_timeout"
+	maxRunnerErrorBytes       = 4096
+	maxInternalTokenBytes     = 4096
+	modelDigestMismatchCode   = "model_digest_mismatch"
+	datasetNotProvisionedCode = "dataset_not_provisioned"
+	extractTimeoutCode        = "extract_timeout"
+	engineTimeoutCode         = "engine_timeout"
 )
 
 type client struct {
@@ -42,8 +43,8 @@ func newClient(cfg Config) (*client, error) {
 	if err != nil || (cfg.Endpoint != origin && cfg.Endpoint != origin+"/") {
 		return nil, invalidArgument("engine endpoint must be an explicit loopback HTTP origin", nil)
 	}
-	if _, err := readInternalToken(cfg.TokenFile); err != nil {
-		return nil, err
+	if strings.TrimSpace(cfg.TokenFile) == "" {
+		return nil, invalidInternalToken()
 	}
 
 	timeout := cfg.HTTPTimeout
@@ -71,6 +72,9 @@ func invalidInternalToken() error {
 
 func readInternalToken(path string) (string, error) {
 	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", runnerUnavailable("engine token file not ready", err)
+	}
 	if err != nil || info.Mode() != 0o600 {
 		return "", invalidInternalToken()
 	}
@@ -126,7 +130,7 @@ func (c *client) request(ctx context.Context, method, path string, query url.Val
 	}
 
 	httpClient := c.http
-	if path == "/extract" || path == "/model/apply" {
+	if path == "/extract" || path == "/model/apply" || path == "/code-index" {
 		httpClient = c.extractHTTP
 	}
 	resp, err := httpClient.Do(req)
@@ -199,9 +203,13 @@ func runnerStatusError(resp *http.Response) error {
 		code, cause = "forbidden", engine.ErrForbidden
 	case http.StatusNotFound:
 		code, cause = "not_found", engine.ErrNotFound
+		if exactJSONErrorCode(resp.Body, datasetNotProvisionedCode) {
+			code = datasetNotProvisionedCode
+			cause = errors.Join(engine.ErrDatasetNotProvisioned, engine.ErrNotFound)
+		}
 	case http.StatusConflict:
 		code, cause = "conflict", engine.ErrConflict
-		if digestMismatchResponse(resp.Body) {
+		if responseContainsCode(resp.Body, modelDigestMismatchCode) {
 			code, cause = modelDigestMismatchCode, engine.ErrModelDigestMismatch
 		}
 	}
@@ -213,20 +221,50 @@ func runnerStatusError(resp *http.Response) error {
 	}
 }
 
-func digestMismatchResponse(body io.Reader) bool {
+func exactJSONErrorCode(body io.Reader, target string) bool {
+	data, err := io.ReadAll(io.LimitReader(body, maxRunnerErrorBytes+1))
+	if err != nil || len(data) > maxRunnerErrorBytes {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return false
+	}
+	return containsExactErrorCode(fields, target)
+}
+
+func containsExactErrorCode(fields map[string]json.RawMessage, target string) bool {
+	for _, key := range []string{"code", "error", "detail"} {
+		raw := fields[key]
+		if len(raw) == 0 {
+			continue
+		}
+		var value string
+		if json.Unmarshal(raw, &value) == nil && value == target {
+			return true
+		}
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(raw, &nested) == nil && nested != nil && containsExactErrorCode(nested, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func responseContainsCode(body io.Reader, target string) bool {
 	data, err := io.ReadAll(io.LimitReader(body, maxRunnerErrorBytes+1))
 	if err != nil || len(data) > maxRunnerErrorBytes {
 		return false
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
-		return bytes.Contains(data, []byte(modelDigestMismatchCode))
+		return bytes.Contains(data, []byte(target))
 	}
-	return containsDigestMismatch(fields)
+	return containsErrorCode(fields, target)
 }
 
-func containsDigestMismatch(fields map[string]json.RawMessage) bool {
-	if bytes.Contains(fields["detail"], []byte(modelDigestMismatchCode)) {
+func containsErrorCode(fields map[string]json.RawMessage, target string) bool {
+	if bytes.Contains(fields["detail"], []byte(target)) {
 		return true
 	}
 	for _, key := range []string{"code", "error", "detail"} {
@@ -235,12 +273,12 @@ func containsDigestMismatch(fields map[string]json.RawMessage) bool {
 			continue
 		}
 		var value string
-		if json.Unmarshal(raw, &value) == nil && (value == modelDigestMismatchCode ||
-			key == "detail" && strings.Contains(value, modelDigestMismatchCode)) {
+		if json.Unmarshal(raw, &value) == nil && (value == target ||
+			key == "detail" && strings.Contains(value, target)) {
 			return true
 		}
 		var nested map[string]json.RawMessage
-		if json.Unmarshal(raw, &nested) == nil && nested != nil && containsDigestMismatch(nested) {
+		if json.Unmarshal(raw, &nested) == nil && nested != nil && containsErrorCode(nested, target) {
 			return true
 		}
 	}

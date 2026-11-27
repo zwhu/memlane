@@ -243,3 +243,78 @@ func AsSessionHistoryReader(e MemoryEngine) (SessionHistoryReader, bool) {
 	reader, ok := e.(SessionHistoryReader)
 	return reader, ok
 }
+
+type DatasetRecord struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+type CodeIndexRequest struct {
+	DatasetID string `json:"dataset_id"`
+	RepoPath  string `json:"repo_path"`
+}
+
+type CodeIndexResult struct {
+	OK             bool   `json:"ok,omitempty"`
+	Status         string `json:"status"`
+	DatasetID      string `json:"dataset_id"`
+	PipelineRunID  string `json:"pipeline_run_id"`
+	ItemsProcessed int    `json:"items_processed"`
+}
+
+type CodeIndexer interface {
+	EnsureDataset(ctx context.Context, name string) (DatasetRecord, error)
+	IndexCode(ctx context.Context, req CodeIndexRequest) (CodeIndexResult, error)
+}
+
+func AsCodeIndexer(e MemoryEngine) (CodeIndexer, bool) {
+	indexer, ok := e.(CodeIndexer)
+	return indexer, ok
+}
+
+type CodeActivitySnapshot struct {
+	CodeDatasetID    string `json:"code_dataset_id"`
+	DatasetCreatedAt string `json:"dataset_created_at"`
+	Active           bool   `json:"active"`
+	Status           string `json:"status"`
+	RunID            string `json:"run_id"`
+	LatestCreatedAt  string `json:"latest_created_at"`
+	LatestStartedAt  string `json:"latest_started_at"`
+	LatestEndedAt    string `json:"latest_ended_at"`
+}
+
+type PipelineRunsQuery struct {
+	DatasetID         string
+	AllowedDatasetIDs []string
+	Limit             int
+	Offset            int
+}
+
+type PipelineRun struct {
+	ID                string `json:"id"`
+	PipelineRunID     string `json:"pipeline_run_id"`
+	ParentOperationID string `json:"parent_operation_id"`
+	DatasetID         string `json:"dataset_id"`
+	Kind              string `json:"kind"`
+	PipelineName      string `json:"pipeline_name"`
+	OperationName     string `json:"operation_name"`
+	Status            string `json:"status"`
+	Outcome           string `json:"outcome"`
+	Background        bool   `json:"background"`
+	ErrorClass        string `json:"error_class"`
+	Origin            string `json:"origin"`
+	CreatedAt         string `json:"created_at"`
+	StartedAt         string `json:"started_at"`
+	EndedAt           string `json:"ended_at"`
+}
+
+type ActivityReader interface {
+	ProjectCodeActivity(ctx context.Context, datasetID string) (CodeActivitySnapshot, error)
+	ListPipelineRuns(ctx context.Context, query PipelineRunsQuery) ([]PipelineRun, error)
+}
+
+func AsActivityReader(e MemoryEngine) (ActivityReader, bool) {
+	reader, ok := e.(ActivityReader)
+	return reader, ok
+}

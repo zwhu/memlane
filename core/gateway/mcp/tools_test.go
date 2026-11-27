@@ -173,10 +173,13 @@ func TestToolsUseOwnerForInvalidPrincipal(t *testing.T) {
 func TestRecallAuthorizationFilteringAndTelemetry(t *testing.T) {
 	store, eng := fixture(t)
 	configureScopes(t, store)
+	var searchMu sync.Mutex
 	var searches []engine.SearchRequest
 	var observations []RecallObservation
 	eng.search = func(_ context.Context, req engine.SearchRequest) (engine.SearchResult, error) {
+		searchMu.Lock()
 		searches = append(searches, req)
+		searchMu.Unlock()
 		return engine.SearchResult{OK: true, Hits: []engine.SearchHit{
 			{DatasetID: "hidden-dataset", DocumentID: "hidden"},
 			{DatasetID: "private-profiles", DocumentID: "profile"},
@@ -190,6 +193,9 @@ func TestRecallAuthorizationFilteringAndTelemetry(t *testing.T) {
 	h := newTestServer(t, Config{Store: store, Engine: eng, OnRecall: func(obs RecallObservation) { observations = append(observations, obs) }})
 	check := func(args string, datasets, documents []string, limit int) {
 		t.Helper()
+		searchMu.Lock()
+		before := len(searches)
+		searchMu.Unlock()
 		data, msg := callTool(t, h, "recall", args)
 		if msg != "" {
 			t.Fatal(msg)
@@ -199,28 +205,38 @@ func TestRecallAuthorizationFilteringAndTelemetry(t *testing.T) {
 			Hits    []engine.SearchHit
 		}
 		requireOK(t, json.Unmarshal(data, &result))
-		req := searches[len(searches)-1]
-		gotScopes := make([]string, 0, len(req.Scopes))
-		for _, scope := range req.Scopes {
-			gotScopes = append(gotScopes, scope.DatasetID)
-			if scope.UserID != activePrincipalID {
-				t.Fatalf("wrong scope principal: %+v", scope)
+		searchMu.Lock()
+		batch := append([]engine.SearchRequest(nil), searches[before:]...)
+		searchMu.Unlock()
+		gotScopes := make([]string, 0, len(batch))
+		for _, req := range batch {
+			if req.Limit != limit {
+				t.Fatalf("recall request limit = %d, want %d", req.Limit, limit)
+			}
+			for _, scope := range req.Scopes {
+				gotScopes = append(gotScopes, scope.DatasetID)
+				if scope.UserID != activePrincipalID {
+					t.Fatalf("wrong scope principal: %+v", scope)
+				}
 			}
 		}
+		slices.Sort(gotScopes)
+		wantScopes := slices.Clone(datasets)
+		slices.Sort(wantScopes)
 		ids := make([]string, 0, len(result.Hits))
 		for _, hit := range result.Hits {
 			ids = append(ids, hit.DocumentID)
 		}
-		if result.Channel != "mcp" || !slices.Equal(gotScopes, datasets) || !slices.Equal(ids, documents) || req.Limit != limit {
-			t.Fatalf("recall request %+v response %s, want datasets %v documents %v limit %d", req, data, datasets, documents, limit)
+		if result.Channel != "mcp" || !slices.Equal(gotScopes, wantScopes) || !slices.Equal(ids, documents) {
+			t.Fatalf("recall batch %+v response %s, want datasets %v documents %v limit %d", batch, data, datasets, documents, limit)
 		}
 	}
 	check(`{"query":"text","project_id":"read"}`, []string{"read-dataset"}, []string{"read-doc"}, 10)
 	allow(t, store, "common", "common", domain.AccessRead)
 	check(`{"query":"text","project_id":"read","limit":100}`, []string{"read-dataset", "common-dataset"}, []string{"read-doc", "common-doc"}, 50)
 	check(`{"query":"text","kind":"code"}`, []string{"write-code"}, []string{"code-doc"}, 10)
-	check(`{"query":"text"}`, []string{"read-dataset", "write-dataset", "common-dataset"}, []string{"read-doc", "common-doc", "write-doc"}, 10)
-	check(`{"query":"text","project_id":"write"}`, []string{"write-dataset", "common-dataset"}, []string{"common-doc", "write-doc"}, 10)
+	check(`{"query":"text"}`, []string{"read-dataset", "write-dataset", "common-dataset"}, []string{"read-doc", "write-doc", "common-doc"}, 10)
+	check(`{"query":"text","project_id":"write"}`, []string{"write-dataset", "common-dataset"}, []string{"write-doc", "common-doc"}, 10)
 	if len(observations) != 5 || observations[1].Channel != "mcp" || !strings.HasPrefix(observations[1].EventID, "mcp:") ||
 		observations[1].AgentID != "active" || len(observations[1].Hits) != 2 {
 		t.Fatalf("observations %+v", observations)

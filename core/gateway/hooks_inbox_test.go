@@ -825,17 +825,22 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 		"include_session_context":true,"node_sets":["session_learnings","session_learnings","user_context"]
 	}`, 200)
 
-	// Verify SearchRequest fields passed to engine.
-	if len(fake.search) != 1 {
-		t.Fatalf("search count = %d, want 1", len(fake.search))
+	// Verify SearchRequest fields passed to engine (one per authorized scope: project + common).
+	if len(fake.search) != 2 {
+		t.Fatalf("search count = %d, want 2", len(fake.search))
 	}
-	req := fake.search[0]
-	if req.Mode != engine.SearchModeHybrid {
-		t.Fatalf("default mode = %q, want hybrid", req.Mode)
+	var primaryReq engine.SearchRequest
+	for _, sr := range fake.search {
+		if len(sr.Scopes) == 1 && sr.Scopes[0].DatasetID == "ds" {
+			primaryReq = sr
+		}
 	}
-	if !req.Filters.IncludeSessionContext || req.Filters.SessionID != "sess-1" ||
-		!slices.Equal(req.Filters.NodeSets, []string{"session_learnings", "user_context"}) {
-		t.Fatalf("unexpected search filters: %+v", req.Filters)
+	if primaryReq.Mode != engine.SearchModeHybrid {
+		t.Fatalf("default mode = %q, want hybrid", primaryReq.Mode)
+	}
+	if !primaryReq.Filters.IncludeSessionContext || primaryReq.Filters.SessionID != "sess-1" ||
+		!slices.Equal(primaryReq.Filters.NodeSets, []string{"session_learnings", "user_context"}) {
+		t.Fatalf("unexpected search filters: %+v", primaryReq.Filters)
 	}
 
 	// Verify response metadata & ACL-filtered hits (current session excluded, prefix neighbor kept, secret excluded).
@@ -931,9 +936,12 @@ func TestRecallHybridFormattingDenoisingAndACL(t *testing.T) {
 	}
 
 	// When session_id is empty, include_session_context must be false even if requested true.
+	beforeEmpty := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","query":"no session","include_session_context":true}`, 200)
-	if fake.search[1].Filters.IncludeSessionContext {
-		t.Fatal("IncludeSessionContext should be false when session_id is empty")
+	for _, sr := range fake.search[beforeEmpty:] {
+		if sr.Filters.IncludeSessionContext {
+			t.Fatal("IncludeSessionContext should be false when session_id is empty")
+		}
 	}
 }
 
@@ -1195,37 +1203,58 @@ func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
 
 	// 1. Forged session_id belonging to unauthorized project B must NOT enable IncludeSessionContext, store prompt, or call SessionHistoryReader.
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-b","query":"probe","include_session_context":true}`, 200)
-	if len(fake.search) != 1 || fake.search[0].Filters.IncludeSessionContext || fake.search[0].Filters.SessionID != "" {
-		t.Fatalf("forged project-B session leaked into search filters: %+v", fake.search[0].Filters)
+	if len(fake.search) != 2 {
+		t.Fatalf("expected 2 per-scope searches (project+common), got %d", len(fake.search))
 	}
+	for _, sr := range fake.search {
+		if sr.Filters.IncludeSessionContext || sr.Filters.SessionID != "" {
+			t.Fatalf("forged project-B session leaked into search filters: %+v", sr.Filters)
+		}
+	}
+	afterForged := len(fake.search)
 	forgedCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-b","purpose":"compact_restore","include_session_context":true}`, 200)
-	if len(fake.search) != 1 || forgedCompact["context"] != "" || len(forgedCompact["hits"].([]any)) != 0 || historyCalls != 0 {
+	if len(fake.search) != afterForged || forgedCompact["context"] != "" || len(forgedCompact["hits"].([]any)) != 0 || historyCalls != 0 {
 		t.Fatalf("forged project-B compact_restore leaked history or ran search: searches=%d out=%+v historyCalls=%d", len(fake.search), forgedCompact, historyCalls)
 	}
 
 	// 2. Unbound/unknown session_id (even with PrincipalID set) must NOT enable IncludeSessionContext or SessionHistoryReader.
 	unknownCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-unknown","purpose":"precompact","include_session_context":true}`, 200)
-	if len(fake.search) != 1 || unknownCompact["context"] != "" || historyCalls != 0 {
+	if len(fake.search) != afterForged || unknownCompact["context"] != "" || historyCalls != 0 {
 		t.Fatalf("unbound session called SessionHistoryReader or search: searches=%d out=%+v historyCalls=%d", len(fake.search), unknownCompact, historyCalls)
 	}
+	beforeUnknown := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-unknown","query":"probe","include_session_context":true}`, 200)
-	if last := fake.search[len(fake.search)-1]; last.Filters.IncludeSessionContext || last.Filters.SessionID != "" {
-		t.Fatalf("unbound session enabled session context: %+v", last.Filters)
+	for _, sr := range fake.search[beforeUnknown:] {
+		if sr.Filters.IncludeSessionContext || sr.Filters.SessionID != "" {
+			t.Fatalf("unbound session enabled session context: %+v", sr.Filters)
+		}
 	}
 
-	// 3. Authorized session via session_bindings allows IncludeSessionContext=true and passes SessionID.
+	// 3. Authorized session via session_bindings allows IncludeSessionContext=true and passes SessionID on primary scope.
+	beforeBound := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-p-bound","query":"probe","include_session_context":true}`, 200)
-	if last := fake.search[len(fake.search)-1]; !last.Filters.IncludeSessionContext || last.Filters.SessionID != "sess-p-bound" {
-		t.Fatalf("session_bindings authorized session was blocked: %+v", last.Filters)
+	var sawBoundPrimary bool
+	for _, sr := range fake.search[beforeBound:] {
+		if len(sr.Scopes) == 1 && sr.Scopes[0].DatasetID == "ds" && sr.Filters.IncludeSessionContext && sr.Filters.SessionID == "sess-p-bound" {
+			sawBoundPrimary = true
+		}
+	}
+	if !sawBoundPrimary {
+		t.Fatalf("session_bindings authorized session was blocked: %+v", fake.search[beforeBound:])
 	}
 
 	// 4. Authorized session via catalog_sessions allows IncludeSessionContext=true AND SessionHistoryReader.
 	beforeCat := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-p-cat","purpose":"compact_restore","include_session_context":true}`, 200)
-	if historyCalls != 1 || len(fake.search) != beforeCat+1 ||
-		!fake.search[beforeCat].Filters.IncludeSessionContext ||
-		fake.search[beforeCat].Filters.SessionID != "sess-p-cat" ||
-		fake.search[beforeCat].Query != "secret project B prompt" {
+	var sawCatPrimary bool
+	for _, sr := range fake.search[beforeCat:] {
+		if len(sr.Scopes) == 1 && sr.Scopes[0].DatasetID == "ds" &&
+			sr.Filters.IncludeSessionContext && sr.Filters.SessionID == "sess-p-cat" &&
+			sr.Query == "secret project B prompt" {
+			sawCatPrimary = true
+		}
+	}
+	if historyCalls != 1 || len(fake.search) != beforeCat+2 || !sawCatPrimary {
 		t.Fatalf("catalog_sessions authorized compact_restore failed: historyCalls=%d search=%+v", historyCalls, fake.search[beforeCat:])
 	}
 
@@ -1264,11 +1293,17 @@ func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
 	beforeAttack := len(fake.search)
 	beforeHistory := historyCalls
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-active-b","query":"steal","include_session_context":true}`, 200)
-	if len(fake.search) != beforeAttack+1 || fake.search[beforeAttack].Filters.IncludeSessionContext || fake.search[beforeAttack].Filters.SessionID != "" {
-		t.Fatalf("two-step capture_receipts/inbox bypass succeeded: %+v", fake.search[beforeAttack].Filters)
+	if len(fake.search) != beforeAttack+2 {
+		t.Fatalf("expected 2 per-scope searches, got %d", len(fake.search)-beforeAttack)
 	}
+	for _, sr := range fake.search[beforeAttack:] {
+		if sr.Filters.IncludeSessionContext || sr.Filters.SessionID != "" {
+			t.Fatalf("two-step capture_receipts/inbox bypass succeeded: %+v", sr.Filters)
+		}
+	}
+	afterAttack := len(fake.search)
 	attackCompact := agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-active-b","purpose":"compact_restore","include_session_context":true}`, 200)
-	if len(fake.search) != beforeAttack+1 || attackCompact["context"] != "" || historyCalls != beforeHistory {
+	if len(fake.search) != afterAttack || attackCompact["context"] != "" || historyCalls != beforeHistory {
 		t.Fatalf("two-step compact_restore bypass leaked history/prompt: searches=%d out=%+v history=%d", len(fake.search), attackCompact, historyCalls)
 	}
 
@@ -1277,8 +1312,13 @@ func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
 	must(t, store.UpsertSessionBinding(ctx, sessionBindingKey("agent", "sess-victim-bound"), "p", 201))
 	beforeCrossBind := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-victim-bound","query":"steal","include_session_context":true}`, 200)
-	if len(fake.search) != beforeCrossBind+1 || fake.search[beforeCrossBind].Filters.IncludeSessionContext || fake.search[beforeCrossBind].Filters.SessionID != "" {
-		t.Fatalf("cross-agent session_bindings bypass succeeded: %+v", fake.search[beforeCrossBind].Filters)
+	if len(fake.search) != beforeCrossBind+2 {
+		t.Fatalf("expected 2 per-scope searches, got %d", len(fake.search)-beforeCrossBind)
+	}
+	for _, sr := range fake.search[beforeCrossBind:] {
+		if sr.Filters.IncludeSessionContext || sr.Filters.SessionID != "" {
+			t.Fatalf("cross-agent session_bindings bypass succeeded: %+v", sr.Filters)
+		}
 	}
 
 	// 8. Positive ownership via capture_receipts alone (only authorized dataset ds) enables IncludeSessionContext.
@@ -1289,8 +1329,14 @@ func TestRecallSessionOwnershipACLAndPromptScopeIsolation(t *testing.T) {
 	must(t, err)
 	beforeReceiptOnly := len(fake.search)
 	agentRequest(t, s, "/recall", `{"project_id":"p","session_id":"sess-receipt-only","query":"legit","include_session_context":true}`, 200)
-	if len(fake.search) != beforeReceiptOnly+1 || !fake.search[beforeReceiptOnly].Filters.IncludeSessionContext || fake.search[beforeReceiptOnly].Filters.SessionID != "sess-receipt-only" {
-		t.Fatalf("authorized capture_receipts session was blocked: %+v", fake.search[beforeReceiptOnly].Filters)
+	var sawReceiptPrimary bool
+	for _, sr := range fake.search[beforeReceiptOnly:] {
+		if len(sr.Scopes) == 1 && sr.Scopes[0].DatasetID == "ds" && sr.Filters.IncludeSessionContext && sr.Filters.SessionID == "sess-receipt-only" {
+			sawReceiptPrimary = true
+		}
+	}
+	if len(fake.search) != beforeReceiptOnly+2 || !sawReceiptPrimary {
+		t.Fatalf("authorized capture_receipts session was blocked: %+v", fake.search[beforeReceiptOnly:])
 	}
 }
 

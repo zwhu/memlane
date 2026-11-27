@@ -13,6 +13,7 @@ import (
 
 	"github.com/zwhu/memlane/core/domain"
 	"github.com/zwhu/memlane/core/engine"
+	"github.com/zwhu/memlane/core/gateway/agentauth"
 )
 
 const ProtocolVersion = "2025-03-26"
@@ -81,6 +82,8 @@ type Server struct {
 	rememberMu     sync.RWMutex
 	rememberSvc    RememberService
 	registryLocker sync.Locker
+	authMu         sync.RWMutex
+	auth           *agentauth.Authenticator
 }
 
 func NewServer(cfg Config) (*Server, error) {
@@ -90,12 +93,29 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.SearchTimeout <= 0 {
 		cfg.SearchTimeout = 15 * time.Second
 	}
-	if cfg.SecretReader == nil {
-		cfg.SecretReader = readSecret
-	}
-	s := &Server{cfg: cfg, rememberSvc: cfg.RememberService, registryLocker: cfg.RegistryLocker}
+	auth := agentauth.New(agentauth.Config{
+		Store:        cfg.Store,
+		SecretReader: cfg.SecretReader,
+	})
+	s := &Server{cfg: cfg, rememberSvc: cfg.RememberService, registryLocker: cfg.RegistryLocker, auth: auth}
 	s.tools = s.memoryTools()
 	return s, nil
+}
+
+func (s *Server) SetAuthenticator(auth *agentauth.Authenticator) {
+	if auth == nil {
+		return
+	}
+	s.authMu.Lock()
+	s.auth = auth
+	s.authMu.Unlock()
+}
+
+func (s *Server) authenticator() *agentauth.Authenticator {
+	s.authMu.RLock()
+	auth := s.auth
+	s.authMu.RUnlock()
+	return auth
 }
 
 func (s *Server) SetRememberService(svc RememberService) {
@@ -167,19 +187,35 @@ func validID(raw json.RawMessage) bool {
 	return first == '"' || first == '-' || first >= '0' && first <= '9'
 }
 
-func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
+type mcpHandler struct {
+	server *Server
+}
+
+func (h *mcpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.server.serveHTTP(w, r)
+}
+
+func (h *mcpHandler) SetAuthenticator(auth *agentauth.Authenticator) {
+	h.server.SetAuthenticator(auth)
+}
+
+func (s *Server) Handler() http.Handler { return &mcpHandler{server: s} }
 
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/mcp" && r.URL.Path != "/" && r.URL.Path != "" {
 		http.NotFound(w, r)
 		return
 	}
-	agent, status := s.authenticate(r)
+	agent, status, code := s.authenticate(r)
 	if status != http.StatusOK {
 		if status == http.StatusUnauthorized {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 		}
-		http.Error(w, http.StatusText(status), status)
+		msg := http.StatusText(status)
+		if status == http.StatusForbidden && code != "" {
+			msg = code
+		}
+		http.Error(w, msg, status)
 		return
 	}
 	switch r.Method {

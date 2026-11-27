@@ -1,6 +1,9 @@
 package engine
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // MemoryEngine is the storage and retrieval contract shared by engine implementations.
 type MemoryEngine interface {
@@ -123,12 +126,41 @@ type SearchRequest struct {
 }
 
 type SearchHit struct {
-	DatasetID  string         `json:"dataset_id"`
-	DocumentID string         `json:"document_id"`
-	Title      string         `json:"title"`
-	Snippet    string         `json:"snippet"`
-	Score      float64        `json:"score"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
+	DatasetID    string         `json:"dataset_id"`
+	DocumentID   string         `json:"document_id"`
+	Title        string         `json:"title"`
+	Snippet      string         `json:"snippet"`
+	Score        float64        `json:"score"`
+	ScoreMissing bool           `json:"-"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+func (h *SearchHit) UnmarshalJSON(data []byte) error {
+	type rawSearchHit struct {
+		DatasetID  string         `json:"dataset_id"`
+		DocumentID string         `json:"document_id"`
+		Title      string         `json:"title"`
+		Snippet    string         `json:"snippet"`
+		Score      *float64       `json:"score"`
+		Metadata   map[string]any `json:"metadata,omitempty"`
+	}
+	var raw rawSearchHit
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	h.DatasetID = raw.DatasetID
+	h.DocumentID = raw.DocumentID
+	h.Title = raw.Title
+	h.Snippet = raw.Snippet
+	h.Metadata = raw.Metadata
+	if raw.Score == nil {
+		h.Score = 0
+		h.ScoreMissing = true
+	} else {
+		h.Score = *raw.Score
+		h.ScoreMissing = false
+	}
+	return nil
 }
 
 type GraphSearchEdge struct {

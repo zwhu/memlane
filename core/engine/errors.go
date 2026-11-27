@@ -19,6 +19,7 @@ var (
 	ErrNotUTF8Text           = errors.New("content is not UTF-8 text")
 	ErrUnknownEngine         = errors.New("unknown engine")
 	ErrUnsupportedCapability = errors.New("unsupported engine capability")
+	ErrDatasetNotProvisioned = errors.New("dataset not provisioned")
 )
 
 type EngineError struct {
