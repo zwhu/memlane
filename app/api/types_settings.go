@@ -125,6 +125,43 @@ type ListAgentsResponse struct {
 	RegisteredAgents []AgentView    `json:"registered_agents"`
 }
 
+type AgentCaptureStatus struct {
+	ProjectID   string  `json:"project_id,omitempty"`
+	State       string  `json:"state"`
+	Permission  string  `json:"permission,omitempty"`
+	ReviewSHA   string  `json:"review_sha,omitempty"`
+	Reason      string  `json:"reason,omitempty"`
+	SavedCount  int     `json:"saved_count,omitempty"`
+	LastSavedAt float64 `json:"last_saved_at,omitempty"`
+	CheckedAt   float64 `json:"checked_at,omitempty"`
+}
+
+type AgentConnection struct {
+	ID                  string              `json:"instance_id"`
+	Kind                string              `json:"kind"`
+	Status              string              `json:"status"`
+	Detected            bool                `json:"detected"`
+	AgentRegistered     bool                `json:"agent_registered"`
+	HostVersion         string              `json:"host_version,omitempty"`
+	Profile             string              `json:"profile,omitempty"`
+	NewSessions         int                 `json:"new_sessions"`
+	NeedsHookRepair     bool                `json:"needs_hook_repair"`
+	NeedsHookTrust      bool                `json:"needs_hook_trust,omitempty"`
+	UntrustedHookCount  int                 `json:"untrusted_hook_count,omitempty"`
+	ModifiedHookCount   int                 `json:"modified_hook_count,omitempty"`
+	DisabledHookCount   int                 `json:"disabled_hook_count,omitempty"`
+	UntrustedHookEvents []string            `json:"untrusted_hook_events,omitempty"`
+	LastReceiptAt       float64             `json:"last_receipt_at,omitempty"`
+	PluginVersion       string              `json:"plugin_version,omitempty"`
+	EnvironmentVerified bool                `json:"environment_verified,omitempty"`
+	Capture             *AgentCaptureStatus `json:"capture,omitempty"`
+}
+
+type ListConnectionsResponse struct {
+	Revision    int64             `json:"revision"`
+	Connections []AgentConnection `json:"connections"`
+}
+
 type ConnectAgentRequest struct {
 	ID               string `json:"id"`
 	AgentID          string `json:"agent_id"`

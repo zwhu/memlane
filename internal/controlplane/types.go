@@ -14,6 +14,11 @@ type AgentHookError struct {
 }
 type AgentConnection struct {
 	NeedsHookRepair            bool                            `json:"needs_hook_repair,omitempty"`
+	NeedsHookTrust             bool                            `json:"needs_hook_trust,omitempty"`
+	UntrustedHookCount         int                             `json:"untrusted_hook_count,omitempty"`
+	ModifiedHookCount          int                             `json:"modified_hook_count,omitempty"`
+	DisabledHookCount          int                             `json:"disabled_hook_count,omitempty"`
+	UntrustedHookEvents        []string                        `json:"untrusted_hook_events,omitempty"`
 	RepairReason               string                          `json:"repair_reason,omitempty"`
 	RepairSummary              string                          `json:"repair_summary,omitempty"`
 	HostVersion                string                          `json:"host_version,omitempty"`

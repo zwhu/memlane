@@ -87,7 +87,7 @@ func (s *session) doctor() {
 				needsActivation := unprepared(row.Status) || oneOf(row.Status, "prepared", "ready_to_activate")
 				inScope := s.has("agent") || slices.Contains(s.Environment.SelectedAgents, row.Kind) ||
 					(s.Environment.StoreMode == "first_install_setup" && row.Detected && captureMonitoredHost(row.Kind))
-				if row.NeedsHookRepair || unknownConnection(row.Status) || s.activationPending(row) || (needsActivation && inScope) {
+				if row.NeedsHookRepair || rowNeedsHookTrust(row) || unknownConnection(row.Status) || s.activationPending(row) || (needsActivation && inScope) {
 					s.connectionOutcome(row, false)
 				}
 			}
@@ -121,6 +121,7 @@ func (s *session) doctor() {
 	hosts := s.localHosts()
 	s.showLocalHosts(hosts, client == nil, client != nil && genOK)
 	s.inspectHostConflicts(hosts)
+	s.inspectHostHookTrust(hosts)
 	if (client == nil || genOK) && len(s.Generation.AvailableBridges) == 0 && s.Generation.Active == nil {
 		detected := s.Generation.DetectedUnconfiguredCLIs
 		recommendations := bootstrap.RecommendedProcessingCLIs()
@@ -229,5 +230,48 @@ func (s *session) inspectHostConflicts(hosts []agents.DetectedHost) {
 		} else {
 			s.action(readOnly, "connect", "--agent", host.Kind, "--dry-run")
 		}
+	}
+}
+
+func (s *session) inspectHostHookTrust(hosts []agents.DetectedHost) {
+	for _, host := range hosts {
+		if !host.Detected || (host.Kind != agents.HostCodex && host.Kind != agents.HostTraeX) || !filepath.IsAbs(host.ProfileDir) ||
+			s.has("agent") && s.get("agent") != host.Kind {
+			continue
+		}
+		alreadyFlagged := false
+		for _, h := range s.Connections.Hosts {
+			if h.Kind == host.Kind && (h.NeedsHookRepair || h.NeedsHookTrust) {
+				alreadyFlagged = true
+				break
+			}
+		}
+		if alreadyFlagged {
+			continue
+		}
+		hookPaths, _ := agents.HookTrustConfigFiles(host.Kind, host.ProfileDir)
+		hasHookFile := false
+		for _, p := range hookPaths {
+			if _, err := os.Stat(p); err == nil {
+				hasHookFile = true
+				break
+			}
+		}
+		if !hasHookFile {
+			continue
+		}
+		report := s.ProbeHookTrustFn(s.ctx, host.Kind, host.Executable, host.ProfileDir, hookPaths)
+		if !report.NeedsTrust() {
+			continue
+		}
+		for i := range s.Connections.Hosts {
+			if s.Connections.Hosts[i].Kind == host.Kind {
+				s.Connections.Hosts[i].NeedsHookTrust = true
+				s.Connections.Hosts[i].UntrustedHookCount = report.UntrustedCount
+				s.Connections.Hosts[i].ModifiedHookCount = report.ModifiedCount
+				s.Connections.Hosts[i].DisabledHookCount = report.DisabledCount
+			}
+		}
+		s.hookTrustAdvice(host.Kind, report.UntrustedCount, report.ModifiedCount, report.DisabledCount)
 	}
 }

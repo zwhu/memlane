@@ -23,6 +23,7 @@ type IntegrationState struct {
 	ConnectionBulk                                                                                              bool
 	EnvironmentOpen                                                                                             map[string]bool
 	CaptureHelpCollapsed                                                                                        map[string]bool
+	HookCommandCopiedAt                                                                                         map[string]time.Time
 	PendingReconcile                                                                                            map[string]controlplane.ConnectionOperationReceipt
 	PendingReconcileHasRevision                                                                                 map[string]bool
 	TraeRepairPreview                                                                                           map[string]controlplane.TraeHooksRepairResult

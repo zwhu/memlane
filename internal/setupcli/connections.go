@@ -58,6 +58,10 @@ func (s *session) showConnections(dir controlplane.ConnectionsDirectory) {
 		s.Connections.Hosts = append(s.Connections.Hosts, hostSummary{
 			ID: safeInstanceID(row.ID), Kind: row.Kind, Status: known(row.Status, connectionStatuses...),
 			Detected: row.Detected, NeedsHookRepair: row.NeedsHookRepair,
+			NeedsHookTrust:     rowNeedsHookTrust(row),
+			UntrustedHookCount: row.UntrustedHookCount,
+			ModifiedHookCount:  row.ModifiedHookCount,
+			DisabledHookCount:  row.DisabledHookCount,
 			AwaitingPostUpgradeReceipt: row.AwaitingPostUpgradeReceipt, Capabilities: caps,
 		})
 	}
@@ -615,18 +619,40 @@ func captureMonitoredHost(kind string) bool {
 	return oneOf(kind, "codex", "pi", "traex", "trae_ide", "antigravity")
 }
 
+func rowNeedsHookTrust(row controlplane.AgentConnection) bool {
+	if row.NeedsHookRepair {
+		return false
+	}
+	return row.NeedsHookTrust || (row.Capture != nil && row.Capture.State == "needs_hook_trust")
+}
+
+func hostDisplayName(kind string) string {
+	switch kind {
+	case agents.HostCodex:
+		return "Codex"
+	case agents.HostTraeX:
+		return "TRAE CLI"
+	case agents.HostTraeIDE:
+		return "TRAE CN"
+	case agents.HostAntigravity:
+		return "Antigravity"
+	default:
+		return kind
+	}
+}
+
 func (s *session) activationPending(row controlplane.AgentConnection) bool {
 	if s.connectionVerified(row) {
 		return false
 	}
-	return row.AwaitingPostUpgradeReceipt || oneOf(row.Status, "configured_pending_new_session", "environment_receipt_unconfirmed",
+	return rowNeedsHookTrust(row) || row.AwaitingPostUpgradeReceipt || oneOf(row.Status, "configured_pending_new_session", "environment_receipt_unconfirmed",
 		"first_install_setup", "awaiting_generation_activation") ||
 		row.Capture != nil && oneOf(row.Capture.State, "awaiting_generation_activation", "waiting_session",
-			"waiting_for_first_session", "awaiting_first_session", "permission_pending", "check_failed")
+			"waiting_for_first_session", "awaiting_first_session", "permission_pending", "check_failed", "needs_hook_trust")
 }
 
 func (s *session) connectionVerified(row controlplane.AgentConnection) bool {
-	if s.Environment.StoreMode == "first_install_setup" || row.NeedsHookRepair || row.AwaitingPostUpgradeReceipt || row.Status != "configured_pending_new_session" {
+	if s.Environment.StoreMode == "first_install_setup" || row.NeedsHookRepair || rowNeedsHookTrust(row) || row.AwaitingPostUpgradeReceipt || row.Status != "configured_pending_new_session" {
 		return false
 	}
 	if captureMonitoredHost(row.Kind) {
@@ -646,6 +672,8 @@ func (s *session) connectionOutcome(row controlplane.AgentConnection, applied bo
 				s.action(readOnly, "connect", "--agent", row.Kind, "--dry-run")
 			}
 		}
+	case rowNeedsHookTrust(row):
+		s.hookTrustAdvice(row.Kind, row.UntrustedHookCount, row.ModifiedHookCount, row.DisabledHookCount)
 	case unknownConnection(row.Status):
 		s.block(ExitNeedsReview, "connection_state_unknown")
 	case unavailableConnection(row):
@@ -662,10 +690,53 @@ func (s *session) connectionOutcome(row controlplane.AgentConnection, applied bo
 	}
 }
 
+func (s *session) hookTrustAdvice(kind string, untrusted, modified, disabled int) {
+	s.block(ExitHumanRequired, "host_hooks_untrusted")
+	name := hostDisplayName(kind)
+	var steps []string
+	total := untrusted + modified + disabled
+	if total > 0 {
+		var parts []string
+		if untrusted > 0 {
+			parts = append(parts, fmt.Sprintf("%d 条新增", untrusted))
+		}
+		if modified > 0 {
+			parts = append(parts, fmt.Sprintf("%d 条已变更", modified))
+		}
+		if disabled > 0 {
+			parts = append(parts, fmt.Sprintf("%d 条已禁用", disabled))
+		}
+		steps = append(steps, fmt.Sprintf("%s 中有 %d 条 Memlane Hook 待信任（%s），当前不会触发采集。", name, total, strings.Join(parts, "、")))
+	}
+	steps = append(steps,
+		"新开或重启 "+name+"；如弹出「Hooks need review」，选择「Trust all and continue」。",
+		"若未自动弹窗（或此前选过跳过），在 "+name+" 中输入 /hooks，选择 Trust all（trust all）批准带 Memlane 的条目。",
+		"在已添加的项目目录发送一条新消息，确认采集恢复正常。",
+	)
+	for _, step := range steps {
+		if !slices.Contains(s.HumanSteps, step) {
+			s.HumanSteps = append(s.HumanSteps, step)
+		}
+	}
+	if isAgent(kind) {
+		s.action(readOnly, "verify", "--stage", "connection", "--agent", kind)
+		if !s.has("config") && !s.has("component-root") {
+			step := "运行 verify --stage connection --agent " + kind + " --json 检查 Hook 信任状态与采集回执。"
+			if !slices.Contains(s.HumanSteps, step) {
+				s.HumanSteps = append(s.HumanSteps, step)
+			}
+		}
+	}
+}
+
 func (s *session) reloadSteps(kind string) {
 	steps := []string{"完全退出宿主应用（⌘Q）并重新打开。终端宿主请退出后重新启动。"}
 	if kind == "trae_ide" {
 		steps = append(steps, "在 TRAE 的「设置 → Hooks」中确认「全局开关」已开启。")
+	}
+	if kind == agents.HostCodex || kind == agents.HostTraeX {
+		name := hostDisplayName(kind)
+		steps = append(steps, "新开或重启 "+name+"；如弹出「Hooks need review」选择「Trust all and continue」，或在 CLI 中输入 /hooks 并选择 Trust all（trust all）确认信任 Memlane Hook。")
 	}
 	steps = append(steps, "在已确认的项目中新建会话，执行一次工具调用，等待记忆采集回执。")
 	if s.Environment.StoreMode == "first_install_setup" {
@@ -1046,12 +1117,26 @@ func (s *session) verifyHostHooks() {
 		if !ok {
 			continue
 		}
-		s.Connections.Hosts = append(s.Connections.Hosts, hostSummary{
+		summary := hostSummary{
 			Kind: kind, Detected: true, NeedsHookRepair: len(result.Previews) != 0,
-		})
+		}
 		if len(result.Previews) != 0 {
+			s.Connections.Hosts = append(s.Connections.Hosts, summary)
 			s.block(ExitActionRequired, "connection_confirmation_required")
 			s.action(readOnly, "connect", "--agent", kind, "--dry-run")
+			continue
 		}
+		if kind == agents.HostCodex || kind == agents.HostTraeX {
+			hookPaths, _ := agents.HookTrustConfigFiles(kind, host.ProfileDir)
+			report := s.ProbeHookTrustFn(s.ctx, kind, host.Executable, host.ProfileDir, hookPaths)
+			if report.NeedsTrust() {
+				summary.NeedsHookTrust = true
+				summary.UntrustedHookCount = report.UntrustedCount
+				summary.ModifiedHookCount = report.ModifiedCount
+				summary.DisabledHookCount = report.DisabledCount
+				s.hookTrustAdvice(kind, report.UntrustedCount, report.ModifiedCount, report.DisabledCount)
+			}
+		}
+		s.Connections.Hosts = append(s.Connections.Hosts, summary)
 	}
 }

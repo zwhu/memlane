@@ -2,6 +2,8 @@ package settings
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zwhu/memlane/internal/controlplane"
@@ -38,6 +40,9 @@ func connectionStatus(row AgentConnection) string {
 	if needsHookRepair(row) {
 		return "Hooks 需修复"
 	}
+	if needsHookTrust(row) {
+		return "待信任 Hooks"
+	}
 	if row.Capture != nil && row.Capture.State == "awaiting_generation_activation" {
 		return "等待启用提炼后验证保存"
 	}
@@ -46,6 +51,8 @@ func connectionStatus(row AgentConnection) string {
 			return "等待采集验证"
 		}
 		switch row.Capture.State {
+		case "needs_hook_trust":
+			return "待信任 Hooks"
 		case "needs_permission":
 			return "需要允许自动采集"
 		case "deferred":
@@ -129,6 +136,35 @@ func isTraeIDEHookRepairErrorCode(code string) bool {
 
 func needsHookRepair(row AgentConnection) bool {
 	return row.NeedsHookRepair || isTraeIDEHookRepairErrorCode(row.ErrorCode)
+}
+
+func needsHookTrust(row AgentConnection) bool {
+	if needsHookRepair(row) {
+		return false
+	}
+	return row.NeedsHookTrust || (row.Capture != nil && row.Capture.State == "needs_hook_trust")
+}
+
+func hookTrustSummary(row AgentConnection) string {
+	name := connectionName(row.Kind)
+	if name == "" {
+		name = "宿主 CLI"
+	}
+	total := row.UntrustedHookCount + row.ModifiedHookCount + row.DisabledHookCount
+	if total <= 0 {
+		return name + " 中有 Memlane Hook 待信任，当前不会触发采集"
+	}
+	var parts []string
+	if row.UntrustedHookCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条新增", row.UntrustedHookCount))
+	}
+	if row.ModifiedHookCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条已变更", row.ModifiedHookCount))
+	}
+	if row.DisabledHookCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条已禁用", row.DisabledHookCount))
+	}
+	return fmt.Sprintf("%s 中有 %d 条 Memlane Hook 待信任（%s），当前不会触发采集", name, total, strings.Join(parts, "、"))
 }
 
 func needsTraeIDEHooksRepair(row AgentConnection) bool {

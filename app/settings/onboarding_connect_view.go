@@ -94,6 +94,8 @@ func (a *Controller) onboardingConnectRow(c *ui.Context, row AgentConnection) {
 	}
 	if status == "写入中" {
 		path = "正在写入接入配置并备份原文件…"
+	} else if path == "" && status == "待信任 Hooks" && row.Profile != "" {
+		path = "配置目录 " + bootstrap.RedactInstallerText(compactHomePath(row.Profile))
 	} else if path == "" && status != "已跳过" {
 		path = "正在核对配置文件…"
 		if !s.Busy && !s.Loading {

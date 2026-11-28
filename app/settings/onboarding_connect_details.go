@@ -36,7 +36,7 @@ func (a *Controller) onboardingConnectionMenu(m *ui.Menu, row AgentConnection, s
 		{Label: "只接入这个", Disabled: !eligible || a.onboardingConnection.previewNeedsDisplay(p) || (status != "待接入" && status != "已跳过"), OnSelect: func() {
 			a.confirmOnboardingConnection(row)
 		}},
-		{Label: "跳过这个", Disabled: status != "待接入" && status != "待修复" && status != "待核对", OnSelect: func() {
+		{Label: "跳过这个", Disabled: status != "待接入" && status != "待修复" && status != "待核对" && status != "待信任 Hooks", OnSelect: func() {
 			a.skipOnboardingConnection(row.Kind)
 		}},
 		{Label: "更换配置目录…", Disabled: row.ID == "" || a.integrations.pendingConnection(row.ID) != nil ||
@@ -117,6 +117,9 @@ func (a *Controller) onboardingConnectionRowDetails(c *ui.Context, row AgentConn
 			}
 			copyConnectionTroubleshooting(tok, c, effectiveKind)
 		})
+	case needsHookTrust(row):
+		kitui.Text(c, tok, hookTrustSummary(row), kitui.RoleMeta).TextColor(tok.Warning).LineHeight(1.5)
+		a.hookTrustStepsCard(c, row, false)
 	case connectionNeedsReview(row):
 		kitui.SmallButton(c, tok, "核对连接", nil, func() { a.connectAgents("review", []string{row.ID}) }).Disabled(locked).AlignSelf(ui.Start)
 	}

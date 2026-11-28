@@ -1,11 +1,18 @@
 package settings
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 	kitui "github.com/zwhu/memlane/kit/ui"
 )
 
+const hookCommandCopyFeedbackDuration = 3 * time.Second
+
 func captureVerifiedHealthy(row AgentConnection) bool {
+	if needsHookTrust(row) {
+		return false
+	}
 	if row.Capture != nil {
 		return row.Capture.State == "healthy"
 	}
@@ -16,13 +23,16 @@ func shouldExpandChecklist(row AgentConnection) bool {
 	if needsHookRepair(row) && !needsTraeIDEHooksRepair(row) {
 		return false
 	}
+	if needsHookTrust(row) {
+		return true
+	}
 	if captureVerifiedHealthy(row) {
 		return false
 	}
 	if row.Capture != nil {
 		switch row.Capture.State {
 		case "waiting_session", "waiting_message", "awaiting_generation_activation", "needs_permission",
-			"check_failed", "project_disabled", "project_write_denied", "project_pending", "needs_hook_repair":
+			"needs_hook_trust", "check_failed", "project_disabled", "project_write_denied", "project_pending", "needs_hook_repair":
 			return true
 		}
 	}
@@ -104,6 +114,10 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 	if !shouldExpandChecklist(row) || s.CaptureHelpCollapsed[row.ID] {
 		return
 	}
+	if needsHookTrust(row) {
+		a.hookTrustStepsCard(c, row, true)
+		return
+	}
 	ui.Column(c.Key("capture-steps-"+row.ID)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(func() {
 		ui.Column(c).FillWidth().Padding(sp3).Gap(8).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
 			projectState := ""
@@ -153,6 +167,62 @@ func (a *Controller) captureConnectionDetails(c *ui.Context, row AgentConnection
 			})
 		})
 	})
+}
+
+func (a *Controller) hookTrustStepsCard(c *ui.Context, row AgentConnection, inset bool) {
+	tok := a.tokens()
+	s := &a.integrations
+	hostName := connectionName(row.Kind)
+	if hostName == "" {
+		hostName = "CLI"
+	}
+	copyKey := row.ID
+	if copyKey == "" {
+		copyKey = row.Kind
+	}
+	copiedRecently := false
+	if copiedAt := s.HookCommandCopiedAt[copyKey]; !copiedAt.IsZero() {
+		elapsed := c.Now().Sub(copiedAt)
+		if elapsed < hookCommandCopyFeedbackDuration {
+			copiedRecently = true
+			c.After(hookCommandCopyFeedbackDuration - elapsed)
+		}
+	}
+	renderCard := func() {
+		ui.Column(c.Key("hook-trust-card-"+copyKey)).FillWidth().Padding(sp3).Gap(sp2).Background(tok.Bg).Border(1, tok.Border).Radius(radius).Children(func() {
+			kitui.Text(c, tok, "1. 新开或重启 "+hostName+"；如弹出「Hooks need review」，选择「Trust all and continue」。", kitui.RoleMeta).
+				FontWeight(500).TextColor(tok.Text1).LineHeight(1.5)
+			kitui.Text(c, tok, "2. 若未自动弹窗（或此前选过跳过），在 CLI 中输入 /hooks，选择 trust all（或批准带 Memlane 的条目）。", kitui.RoleMeta).
+				LineHeight(1.5)
+			kitui.Text(c, tok, "3. 在已添加的项目目录发送一条新消息，再点击下方「重新检测」确认变绿。", kitui.RoleMeta).
+				LineHeight(1.5)
+			ui.Row(c).Gap(sp2).AlignItems(ui.Center).AlignSelf(ui.Start).Children(func() {
+				kitui.SmallButton(c, tok, "复制 /hooks", kitui.IconCopy, func() {
+					c.WriteClipboard("/hooks")
+					if s.HookCommandCopiedAt == nil {
+						s.HookCommandCopiedAt = make(map[string]time.Time)
+					}
+					s.HookCommandCopiedAt[copyKey] = c.Now()
+				}).Label("复制 /hooks：" + hostName)
+				if copiedRecently {
+					ui.Row(c).Gap(sp1).AlignItems(ui.Center).Children(func() {
+						ui.Icon(c, kitui.IconCheck).FontSize(12).TextColor(tok.OK)
+						kitui.Text(c, tok, "已复制", kitui.RoleMeta).TextColor(tok.OK).SingleLine()
+					})
+				}
+				kitui.SmallButton(c, tok, "重新检测", kitui.IconRefresh, a.RefreshConnections).
+					Label("重新检测自动采集：" + hostName).Disabled(s.Busy || s.Loading)
+				if s.Loading {
+					ui.Spinner(c).Size(13, 13).TextColor(tok.Accent)
+				}
+			})
+		})
+	}
+	if inset {
+		ui.Column(c.Key("hook-trust-steps-"+copyKey)).FillWidth().Padding(0, sp4, sp3, sp4+36).Children(renderCard)
+		return
+	}
+	ui.Column(c.Key("hook-trust-steps-"+copyKey)).FillWidth().Padding(0, 0, sp2, 0).Children(renderCard)
 }
 
 func hookErrorSummary(e *AgentHookError) string {

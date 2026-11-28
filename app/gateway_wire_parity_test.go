@@ -2189,3 +2189,239 @@ func TestGatewayWireParitySlowValidationSettingsAndOnboardingCancelAndRetry(t *t
 		t.Fatalf("onboarding PUT /v1/generation/next failed: %+v", nextResp)
 	}
 }
+
+func TestGatewayWireParityNeedsHookTrustCodexAndTraeX(t *testing.T) {
+	ctx := context.Background()
+	check := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	home := t.TempDir()
+	binDir := filepath.Join(home, "bin")
+	codexProfile := filepath.Join(home, ".codex")
+	codexHooks := filepath.Join(codexProfile, "hooks.json")
+	codexTOML := filepath.Join(codexProfile, "config.toml")
+	traexProfile := filepath.Join(home, ".trae")
+	traexHooks := filepath.Join(traexProfile, "cli", "hooks.json")
+	check(os.MkdirAll(codexProfile, 0o700))
+	check(os.MkdirAll(filepath.Dir(traexHooks), 0o700))
+
+	check(os.WriteFile(codexHooks, []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook codex Stop --gateway-url 'http://127.0.0.1:61264' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`), 0o600))
+	check(os.WriteFile(codexTOML, []byte("model = \"gpt-5.4\"\n"), 0o600))
+	check(os.WriteFile(traexHooks, []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:61264' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`), 0o600))
+
+	writeRPCResp := func(outPath, hooksPath, hostKind string, specs []struct {
+		event, trust string
+	}) {
+		items := make([]map[string]any, 0, len(specs))
+		for i, sp := range specs {
+			items = append(items, map[string]any{
+				"key":         fmt.Sprintf("%s:%s:%d:0", hooksPath, strings.ToLower(sp.event), i),
+				"eventName":   sp.event,
+				"command":     fmt.Sprintf("'/bin/memlane' hook %s %s --gateway-url 'http://127.0.0.1:61264' --key-file '/tmp/k'", hostKind, sp.event),
+				"sourcePath":  hooksPath,
+				"enabled":     true,
+				"trustStatus": sp.trust,
+			})
+		}
+		raw, err := json.Marshal(map[string]any{
+			"id":     2,
+			"result": map[string]any{"data": []any{map[string]any{"hooks": items}}},
+		})
+		check(err)
+		check(os.WriteFile(outPath, raw, 0o600))
+	}
+	writeFakeCLI := func(binPath, respPath string) string {
+		check(os.MkdirAll(filepath.Dir(binPath), 0o700))
+		script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "app-server" ]; then exit 0; fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"hooks/list"'*) IFS= read -r resp < %q; printf '%%s\n' "$resp" ;;
+  esac
+done
+`, respPath)
+		check(os.WriteFile(binPath, []byte(script), 0o700))
+		return binPath
+	}
+
+	codexRespPath := filepath.Join(home, "codex_rpc.json")
+	writeRPCResp(codexRespPath, codexHooks, agents.HostCodex, []struct{ event, trust string }{
+		{"SessionStart", "untrusted"},
+		{"UserPromptSubmit", "untrusted"},
+		{"PostToolUse", "untrusted"},
+		{"PostToolUseFailure", "modified"},
+		{"Stop", "modified"},
+		{"PreCompact", "modified"},
+	})
+	codexBin := writeFakeCLI(filepath.Join(binDir, "codex"), codexRespPath)
+
+	traexRespPath := filepath.Join(home, "traex_rpc.json")
+	writeRPCResp(traexRespPath, traexHooks, agents.HostTraeX, []struct{ event, trust string }{
+		{"SessionStart", "untrusted"},
+		{"UserPromptSubmit", "untrusted"},
+		{"PostToolUse", "untrusted"},
+		{"PostToolUseFailure", "untrusted"},
+		{"Stop", "untrusted"},
+		{"PreCompact", "untrusted"},
+		{"SessionEnd", "untrusted"},
+	})
+	traexBin := writeFakeCLI(filepath.Join(binDir, "traecli"), traexRespPath)
+
+	storeDir := t.TempDir()
+	store, err := domain.OpenStore(filepath.Join(storeDir, "memlane.sqlite3"))
+	check(err)
+	t.Cleanup(func() { check(store.Close()) })
+
+	const mgmtToken = "wire-parity-hook-trust-management-token"
+	tokenFile := filepath.Join(storeDir, "management.token")
+	check(os.WriteFile(tokenFile, []byte(mgmtToken), 0o600))
+
+	check(store.UpsertAgent(ctx, domain.Agent{ID: "agent-codex", Kind: agents.HostCodex, Name: "Codex", PrincipalID: "u-codex", DefaultAccess: domain.AccessMaintain}))
+	check(store.UpsertAgent(ctx, domain.Agent{ID: "agent-traex", Kind: agents.HostTraeX, Name: "TRAE CLI", PrincipalID: "u-traex", DefaultAccess: domain.AccessMaintain}))
+	// Seed a historical receipt for codex so we verify needs_hook_trust strictly overrides historical healthy evidence.
+	_, _, err = store.ReserveCaptureReceipt(ctx, domain.CaptureReceipt{
+		CaptureKey: "wire-trust-codex", UserID: "u-codex", DatasetID: "ds-wire", SessionID: "sess-old",
+		MessageID: "msg-old", PayloadSHA256: "sha-old", EntryType: "capture_qa",
+	})
+	check(err)
+	check(store.MarkCaptureReceiptSaved(ctx, "wire-trust-codex", "entry-old"))
+
+	server, err := gateway.NewServer(gateway.Config{
+		Store:           store,
+		Engine:          wireEngine{},
+		ManagementToken: mgmtToken,
+		DiscoveryOptions: agents.DiscoveryOptions{
+			Home:  home,
+			Kinds: []string{agents.HostCodex, agents.HostTraeX},
+			LookPath: func(name string) (string, error) {
+				candidate := filepath.Join(binDir, name)
+				if _, err := os.Stat(candidate); err == nil {
+					return candidate, nil
+				}
+				return "", errors.New("not found")
+			},
+			Environ: func(string) string { return "" },
+			RuntimeOverrides: map[string]agents.HostOverride{
+				agents.HostCodex: {Executable: codexBin, ProfileDir: codexProfile},
+				agents.HostTraeX: {Executable: traexBin, ProfileDir: traexProfile},
+			},
+		},
+	})
+	check(err)
+
+	const gatewayURL = "http://127.0.0.1:61264"
+	httpClient := &http.Client{Transport: queueTestTransport(server.Handler().ServeHTTP)}
+	control := settings.ProjectControlClient{
+		Config: settings.ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+		HTTP:   httpClient,
+	}
+
+	// 1. Direct real gateway GET /v1/connections -> settings.ConnectionsDirectory parity.
+	var settingsConns settings.ConnectionsDirectory
+	check(control.RequestWithHeaders(ctx, http.MethodGet, "/v1/connections", nil, nil, &settingsConns, 0))
+	byID := map[string]settings.AgentConnection{}
+	for _, row := range settingsConns.Connections {
+		byID[row.ID] = row
+	}
+	codexRow := byID["agent-codex"]
+	if !codexRow.NeedsHookTrust || codexRow.UntrustedHookCount != 3 || codexRow.ModifiedHookCount != 3 ||
+		codexRow.EnvironmentVerified || codexRow.Capture == nil || codexRow.Capture.State != "needs_hook_trust" {
+		t.Fatalf("wire settings agent-codex needs_hook_trust mismatch: %+v", codexRow)
+	}
+	traexRow := byID["agent-traex"]
+	if !traexRow.NeedsHookTrust || traexRow.UntrustedHookCount != 7 ||
+		traexRow.EnvironmentVerified || traexRow.Capture == nil || traexRow.Capture.State != "needs_hook_trust" {
+		t.Fatalf("wire settings agent-traex needs_hook_trust mismatch: %+v", traexRow)
+	}
+
+	// 2. Direct real gateway GET /api/connections -> api.ListConnectionsResponse decoding parity.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gatewayURL+"/api/connections", nil)
+	check(err)
+	req.Header.Set("Authorization", "Bearer "+mgmtToken)
+	res, err := httpClient.Do(req)
+	check(err)
+	rawBody, err := io.ReadAll(res.Body)
+	check(err)
+	check(res.Body.Close())
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/connections status = %d: %s", res.StatusCode, rawBody)
+	}
+	var apiConns api.ListConnectionsResponse
+	check(json.Unmarshal(rawBody, &apiConns))
+	apiByID := map[string]api.AgentConnection{}
+	for _, row := range apiConns.Connections {
+		apiByID[row.ID] = row
+	}
+	if !apiByID["agent-codex"].NeedsHookTrust || apiByID["agent-codex"].UntrustedHookCount != 3 || apiByID["agent-codex"].ModifiedHookCount != 3 ||
+		apiByID["agent-codex"].Capture == nil || apiByID["agent-codex"].Capture.State != "needs_hook_trust" {
+		t.Fatalf("wire api.ListConnectionsResponse agent-codex mismatch: %+v", apiByID["agent-codex"])
+	}
+	if !apiByID["agent-traex"].NeedsHookTrust || apiByID["agent-traex"].UntrustedHookCount != 7 ||
+		apiByID["agent-traex"].Capture == nil || apiByID["agent-traex"].Capture.State != "needs_hook_trust" {
+		t.Fatalf("wire api.ListConnectionsResponse agent-traex mismatch: %+v", apiByID["agent-traex"])
+	}
+
+	// 3. Render real MyGo desktop App settings -> Agent 连接 against live gateway and verify /hooks copy + force refresh recovery.
+	a := New(Config{
+		ServiceURL:     gatewayURL,
+		ProjectControl: &ProjectControlConfig{URL: gatewayURL, ManagementTokenFile: tokenFile},
+	}, nil)
+	a.Client.HTTP = httpClient
+	a.syncSettingsTransport()
+	a.page = "设置"
+	a.settingsController.SetSection("Agent 连接")
+	a.access.Loaded = true
+	a.access.Next = time.Now().Add(time.Hour)
+	a.monitor.EngineStatus = "已连接"
+	updates := make(chan func(), 64)
+	a.Update = func(fn func()) { updates <- fn }
+	t.Cleanup(func() { a.cancelAndResetPanes() })
+
+	a.settingsController.RefreshConnections()
+	s := a.settingsController.IntegrationState()
+	drainReading(t, updates, func() bool { return s.ConnectionsLoaded && !s.Loading })
+
+	tt := ui.NewTester(a.View, 1200, 1000)
+	tt.Frame()
+	for _, want := range []string{
+		"待信任 Hooks",
+		"Codex 中有 6 条 Memlane Hook 待信任（3 条新增、3 条已变更），当前不会触发采集",
+		"TRAE CLI 中有 7 条 Memlane Hook 待信任（7 条新增），当前不会触发采集",
+		"Hooks need review",
+		"Trust all and continue",
+		"复制 /hooks",
+		"重新检测",
+	} {
+		if !tt.HasText(want) {
+			t.Fatalf("desktop settings view missing %q; texts=%v", want, tt.Texts())
+		}
+	}
+	if tt.HasText("自动采集正常") {
+		t.Fatalf("desktop settings view must not show green 自动采集正常 while hooks untrusted: %v", tt.Texts())
+	}
+	clickProjectUI(t, tt, "复制 /hooks：Codex")
+	if got := tt.Clipboard(); got != "/hooks" || !tt.HasText("已复制") {
+		t.Fatalf("clicking 复制 /hooks failed: clip=%q texts=%v", got, tt.Texts())
+	}
+
+	// Simulate user trusting Codex hooks in CLI -> clicking 重新检测 calls real GET /v1/connections?force=1 -> Codex becomes healthy.
+	writeRPCResp(codexRespPath, codexHooks, agents.HostCodex, []struct{ event, trust string }{
+		{"SessionStart", "trusted"},
+		{"UserPromptSubmit", "trusted"},
+		{"PostToolUse", "trusted"},
+		{"PostToolUseFailure", "trusted"},
+		{"Stop", "trusted"},
+		{"PreCompact", "trusted"},
+	})
+	clickProjectUI(t, tt, "重新检测自动采集：Codex")
+	drainReading(t, updates, func() bool { return !s.Loading })
+	tt.Frame()
+	if !tt.HasText("自动采集正常") {
+		t.Fatalf("expected Codex to flip to 自动采集正常 after trusting hooks and clicking 重新检测: %v", tt.Texts())
+	}
+}

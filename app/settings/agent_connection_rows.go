@@ -33,7 +33,7 @@ func agentConnectionBadgeTone(row AgentConnection, pending *generationUIOperatio
 		}
 		return "warn"
 	}
-	if repair {
+	if repair || needsHookTrust(row) {
 		return "warn"
 	}
 	if captureVerifiedHealthy(row) {
@@ -52,7 +52,7 @@ func agentConnectionBadgeTone(row AgentConnection, pending *generationUIOperatio
 	}
 	if row.Capture != nil {
 		switch row.Capture.State {
-		case "needs_permission", "project_disabled", "project_write_denied", "project_pending":
+		case "needs_permission", "needs_hook_trust", "project_disabled", "project_write_denied", "project_pending":
 			return "warn"
 		}
 	}
@@ -60,6 +60,9 @@ func agentConnectionBadgeTone(row AgentConnection, pending *generationUIOperatio
 }
 
 func agentConnectionDesc(row AgentConnection, pending *generationUIOperation, repair, review bool) (string, bool) {
+	if pending == nil && !repair && needsHookTrust(row) {
+		return hookTrustSummary(row), false
+	}
 	compactProfile := compactHomePath(row.Profile)
 	if row.Capture != nil && row.Capture.LastSavedAt > 0 {
 		saved := "最近采集：" + formatUnixTimeLocal(row.Capture.LastSavedAt)

@@ -29,6 +29,7 @@ type Runner struct {
 	CheckDNSFn                 func(context.Context, string) bool
 	DetectAgentsFn             func(agents.DiscoveryOptions) []agents.DetectedHost
 	ScanConflictsFn            func(agents.DetectedHost, agents.ConflictPolicy) (agents.ConflictReport, error)
+	ProbeHookTrustFn           func(context.Context, string, string, string, []string) agents.HostHookTrustReport
 	InstallHostConfigFn        func(hooks.InstallOptions) (hooks.InstallResult, error)
 	NewEnvFn                   func(context.Context, fs.FS, bootstrap.EnvironmentOptions) (*bootstrap.Environment, error)
 	DetectPlanFn               func(*bootstrap.Environment, context.Context) (bootstrap.Plan, error)
@@ -88,6 +89,9 @@ func (r *Runner) defaults() {
 	}
 	if r.ScanConflictsFn == nil {
 		r.ScanConflictsFn = agents.ScanHostConflicts
+	}
+	if r.ProbeHookTrustFn == nil {
+		r.ProbeHookTrustFn = agents.ProbeHostHookTrust
 	}
 	if r.InstallHostConfigFn == nil {
 		r.InstallHostConfigFn = hooks.InstallHostConfig

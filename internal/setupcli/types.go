@@ -119,6 +119,10 @@ type hostSummary struct {
 	Status                     string                `json:"status,omitempty"`
 	Detected                   bool                  `json:"detected"`
 	NeedsHookRepair            bool                  `json:"needs_hook_repair"`
+	NeedsHookTrust             bool                  `json:"needs_hook_trust,omitempty"`
+	UntrustedHookCount         int                   `json:"untrusted_hook_count,omitempty"`
+	ModifiedHookCount          int                   `json:"modified_hook_count,omitempty"`
+	DisabledHookCount          int                   `json:"disabled_hook_count,omitempty"`
 	AwaitingPostUpgradeReceipt bool                  `json:"awaiting_post_upgrade_receipt"`
 	Capabilities               map[string]capability `json:"capabilities"`
 }

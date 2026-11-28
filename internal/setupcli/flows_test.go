@@ -3,7 +3,9 @@ package setupcli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
@@ -2566,5 +2568,135 @@ func TestEnsureAgentKeyPreservesVerifiedLegacyOfficialToken(t *testing.T) {
 	}
 	if _, err := os.Stat(badKeyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rejected legacy credential created target key: %v", err)
+	}
+}
+
+func TestHookTrustDetectionInDoctorVerifyAndConnect(t *testing.T) {
+	t.Parallel()
+
+	// 1. Control-plane mode: verify & doctor report host_hooks_untrusted + /hooks -> Trust all guidance.
+	f := newFixture(t)
+	f.doc.First.Setup = false
+	f.writeConfig()
+	f.row = controlplane.AgentConnection{
+		ID:                 "agent-codex",
+		Kind:               agents.HostCodex,
+		Detected:           true,
+		AgentRegistered:    true,
+		Status:             "configured_pending_new_session",
+		NewSessions:        2,
+		NeedsHookTrust:     true,
+		UntrustedHookCount: 3,
+		ModifiedHookCount:  3,
+		Capture: &controlplane.AgentCaptureState{
+			State:      "needs_hook_trust",
+			Permission: "observed",
+			Reason:     "host_hooks_untrusted",
+		},
+	}
+
+	ver := f.command(ExitHumanRequired, "verify", "--stage", "connection", "--agent", agents.HostCodex)
+	if !hasBlocker(ver, "host_hooks_untrusted") {
+		t.Fatalf("verify missing host_hooks_untrusted blocker: %+v", ver.Blockers)
+	}
+	if !slices.ContainsFunc(ver.Connections.Hosts, func(h hostSummary) bool {
+		return h.Kind == agents.HostCodex && h.NeedsHookTrust && h.UntrustedHookCount == 3 && h.ModifiedHookCount == 3
+	}) {
+		t.Fatalf("verify host summary missing trust counts: %+v", ver.Connections.Hosts)
+	}
+	verSteps := strings.Join(ver.HumanSteps, "\n")
+	if !strings.Contains(verSteps, "/hooks") || !strings.Contains(verSteps, "Trust all") {
+		t.Fatalf("verify human_steps missing /hooks -> Trust all guidance: %q", verSteps)
+	}
+
+	doc := f.command(ExitHumanRequired, "doctor", "--agent", agents.HostCodex)
+	if !hasBlocker(doc, "host_hooks_untrusted") {
+		t.Fatalf("doctor missing host_hooks_untrusted blocker: %+v", doc.Blockers)
+	}
+	docSteps := strings.Join(doc.HumanSteps, "\n")
+	if !strings.Contains(docSteps, "/hooks") || !strings.Contains(docSteps, "Trust all") {
+		t.Fatalf("doctor human_steps missing /hooks -> Trust all guidance: %q", docSteps)
+	}
+
+	// 2. Option C local mode: connect --apply guides user to confirm trust, and doctor/verify catch untrusted hooks via fake app-server.
+	for _, kind := range []string{agents.HostCodex, agents.HostTraeX} {
+		t.Run("option_c_"+kind, func(t *testing.T) {
+			lf := newFixture(t)
+			lf.doc.Control.PluginDir = ""
+			lf.writeConfig()
+			profile := filepath.Join(lf.base, "profile-"+kind)
+			binPath := filepath.Join(lf.base, "bin", kind)
+			respPath := filepath.Join(lf.base, kind+"_hooks_list.json")
+			hooksPath := filepath.Join(profile, "hooks.json")
+			if kind == agents.HostTraeX {
+				hooksPath = filepath.Join(profile, "cli", "hooks.json")
+			}
+			writeResp := func(trustStatus string) {
+				raw, err := json.Marshal(map[string]any{
+					"id": 2,
+					"result": map[string]any{
+						"data": []any{
+							map[string]any{
+								"hooks": []any{
+									map[string]any{
+										"key":         hooksPath + ":stop:0:0",
+										"eventName":   "stop",
+										"command":     fmt.Sprintf("'/bin/memlane' hook %s Stop --gateway-url 'http://127.0.0.1:18174' --key-file '/tmp/k'", kind),
+										"sourcePath":  hooksPath,
+										"enabled":     true,
+										"trustStatus": trustStatus,
+									},
+								},
+							},
+						},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, respPath, raw)
+			}
+			writeResp("untrusted")
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" != \"app-server\" ]; then exit 0; fi\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"method\":\"initialize\"'*) printf '%%s\\n' '{\"id\":1,\"result\":{}}' ;;\n    *'\"method\":\"hooks/list\"'*) IFS= read -r resp < %q; printf '%%s\\n' \"$resp\" ;;\n  esac\ndone\n", respPath)
+			writeFile(t, binPath, []byte(script))
+			if err := os.Chmod(binPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			lf.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+				return []agents.DetectedHost{{Kind: kind, Detected: true, Executable: binPath, ProfileDir: profile}}
+			}
+			lf.handler = func(req *http.Request, _ requestBody) (*http.Response, error) {
+				switch req.URL.Path {
+				case "/api/generation":
+					return response(200, map[string]any{"state": map[string]int{"active_revision": 1}})
+				case "/api/agents":
+					return response(200, map[string]any{"registered_agents": []any{}})
+				}
+				return nil, nil
+			}
+
+			preview := lf.command(ExitActionRequired, "connect", "--agent", kind, "--dry-run")
+			applied := lf.command(ExitHumanRequired, "connect", "--agent", kind, "--apply", "--reviewed-sha", preview.Artifacts.ReviewedSHA)
+			appliedSteps := strings.Join(applied.HumanSteps, "\n")
+			if !strings.Contains(appliedSteps, "/hooks") || !strings.Contains(appliedSteps, "Trust all") {
+				t.Fatalf("connect --apply for %s missing /hooks -> Trust all step: %q", kind, appliedSteps)
+			}
+
+			localDoc := lf.command(ExitHumanRequired, "doctor", "--agent", kind)
+			if !hasBlocker(localDoc, "host_hooks_untrusted") || !slices.ContainsFunc(localDoc.Connections.Hosts, func(h hostSummary) bool {
+				return h.Kind == kind && h.NeedsHookTrust && h.UntrustedHookCount == 1
+			}) {
+				t.Fatalf("local doctor for %s did not flag host_hooks_untrusted: %+v", kind, localDoc)
+			}
+			localVer := lf.command(ExitHumanRequired, "verify", "--stage", "connection", "--agent", kind)
+			if !hasBlocker(localVer, "host_hooks_untrusted") || !strings.Contains(strings.Join(localVer.HumanSteps, "\n"), "/hooks") {
+				t.Fatalf("local verify for %s did not flag host_hooks_untrusted: %+v", kind, localVer)
+			}
+
+			// After user trusts hooks in CLI, both doctor and verify turn green.
+			writeResp("trusted")
+			lf.command(ExitOK, "doctor", "--agent", kind)
+			lf.command(ExitOK, "verify", "--stage", "connection", "--agent", kind)
+		})
 	}
 }

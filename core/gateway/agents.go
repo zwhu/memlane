@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zwhu/memlane/core/domain"
@@ -191,6 +194,11 @@ type connectionView struct {
 	Profile             string                  `json:"profile,omitempty"`
 	NewSessions         int                     `json:"new_sessions"`
 	NeedsHookRepair     bool                    `json:"needs_hook_repair"`
+	NeedsHookTrust      bool                    `json:"needs_hook_trust,omitempty"`
+	UntrustedHookCount  int                     `json:"untrusted_hook_count,omitempty"`
+	ModifiedHookCount   int                     `json:"modified_hook_count,omitempty"`
+	DisabledHookCount   int                     `json:"disabled_hook_count,omitempty"`
+	UntrustedHookEvents []string                `json:"untrusted_hook_events,omitempty"`
 	LastReceiptAt       float64                 `json:"last_receipt_at,omitempty"`
 	PluginVersion       string                  `json:"plugin_version,omitempty"`
 	EnvironmentVerified bool                    `json:"environment_verified,omitempty"`
@@ -201,9 +209,116 @@ type managedHookStatus struct {
 	installed     bool
 	needsRepair   bool
 	pluginVersion string
+	configPath    string
+	configModAt   float64
 }
 
-const managedHookConfigLimit = 1 << 20
+const (
+	managedHookConfigLimit      = 1 << 20
+	hookTrustCacheTTL           = 60 * time.Second
+	hookTrustCacheMaxItems      = 128
+	hookConfigStaleReceiptGrace = 5 * time.Second
+	minRealisticUnixTimestamp   = 1577836800 // 2020-01-01T00:00:00Z
+)
+
+type hookTrustCacheKey struct {
+	hostKind   string
+	executable string
+	profileDir string
+	stamp      string
+}
+
+type hookTrustCacheEntry struct {
+	report   agents.HostHookTrustReport
+	cachedAt time.Time
+}
+
+var (
+	hookTrustCacheMu sync.RWMutex
+	hookTrustCache   = map[hookTrustCacheKey]hookTrustCacheEntry{}
+)
+
+func fileModUnix(path string) float64 {
+	info, err := os.Stat(path)
+	if err != nil || info.ModTime().IsZero() {
+		return 0
+	}
+	return float64(info.ModTime().UnixMilli()) / 1000
+}
+
+func hookTrustFilesStamp(executable string, hookPaths, tomlPaths []string) string {
+	var b strings.Builder
+	writeStat := func(label, path string) {
+		b.WriteString(label)
+		b.WriteByte('=')
+		b.WriteString(path)
+		b.WriteByte(':')
+		if info, err := os.Stat(path); err == nil {
+			fmt.Fprintf(&b, "%d:%d;", info.ModTime().UnixNano(), info.Size())
+		} else {
+			b.WriteString("missing;")
+		}
+	}
+	if executable != "" {
+		writeStat("exe", executable)
+	}
+	for _, p := range hookPaths {
+		writeStat("h", p)
+	}
+	for _, p := range tomlPaths {
+		writeStat("t", p)
+	}
+	return b.String()
+}
+
+func probeHostHookTrustCached(ctx context.Context, hostKind, executable, profileDir string, force bool) agents.HostHookTrustReport {
+	hookPaths, tomlPaths := agents.HookTrustConfigFiles(hostKind, profileDir)
+	key := hookTrustCacheKey{
+		hostKind:   hostKind,
+		executable: executable,
+		profileDir: profileDir,
+		stamp:      hookTrustFilesStamp(executable, hookPaths, tomlPaths),
+	}
+	now := time.Now()
+	if !force {
+		hookTrustCacheMu.RLock()
+		cached, ok := hookTrustCache[key]
+		hookTrustCacheMu.RUnlock()
+		if ok && now.Sub(cached.cachedAt) < hookTrustCacheTTL {
+			return cached.report
+		}
+	}
+	report := agents.ProbeHostHookTrust(ctx, hostKind, executable, profileDir, hookPaths)
+	hookTrustCacheMu.Lock()
+	if len(hookTrustCache) >= hookTrustCacheMaxItems {
+		for k, v := range hookTrustCache {
+			if now.Sub(v.cachedAt) >= hookTrustCacheTTL {
+				delete(hookTrustCache, k)
+			}
+		}
+		if len(hookTrustCache) >= hookTrustCacheMaxItems {
+			clear(hookTrustCache)
+		}
+	}
+	hookTrustCache[key] = hookTrustCacheEntry{report: report, cachedAt: now}
+	hookTrustCacheMu.Unlock()
+	return report
+}
+
+func isReceiptStaleAfterHookConfig(kind string, hookStatus managedHookStatus, stats captureActivityStats, trustReport agents.HostHookTrustReport) bool {
+	switch kind {
+	case agents.HostCodex, agents.HostTraeX, agents.HostTraeIDE:
+	default:
+		return false
+	}
+	if !hookStatus.installed || stats.newSessions <= 0 || stats.lastSavedAt < minRealisticUnixTimestamp || hookStatus.configModAt < minRealisticUnixTimestamp {
+		return false
+	}
+	if trustReport.Source == "app_server" && trustReport.Evaluated && !trustReport.NeedsTrust() && trustReport.TotalManaged > 0 {
+		return false
+	}
+	return hookStatus.configModAt-stats.lastSavedAt > hookConfigStaleReceiptGrace.Seconds()
+}
 
 func isSupportedTraeIDEHookEvent(event string) bool {
 	switch event {
@@ -326,7 +441,8 @@ func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
 		return managedHookStatus{}
 	}
 	if kind == agents.HostPi {
-		raw, err := agents.SafeReadFile(filepath.Join(profileDir, "extensions", "memlane-cognee", "host-binding.json"), managedHookConfigLimit)
+		bindingPath := filepath.Join(profileDir, "extensions", "memlane-cognee", "host-binding.json")
+		raw, err := agents.SafeReadFile(bindingPath, managedHookConfigLimit)
 		if err != nil {
 			return managedHookStatus{}
 		}
@@ -335,22 +451,25 @@ func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
 			return managedHookStatus{}
 		}
 		if doc["managed_by"] == "memlane" {
-			return managedHookStatus{installed: true, pluginVersion: "memlane-pi"}
+			return managedHookStatus{installed: true, pluginVersion: "memlane-pi", configPath: bindingPath, configModAt: fileModUnix(bindingPath)}
 		}
 		if py, ok := doc["python"].(string); ok && strings.TrimSpace(py) != "" {
-			return managedHookStatus{installed: true, pluginVersion: "memlane-pi"}
+			return managedHookStatus{installed: true, pluginVersion: "memlane-pi", configPath: bindingPath, configModAt: fileModUnix(bindingPath)}
 		}
 		return managedHookStatus{}
 	}
 
 	if kind == agents.HostTraeX {
 		// Current traecli loads hooks from <profile>/cli/hooks.json and ignores deprecated <profile>/hooks.json.
-		activeInstalled, activeRepair := scanHooksFile(filepath.Join(profileDir, "cli", "hooks.json"), kind)
+		cliHooksPath := filepath.Join(profileDir, "cli", "hooks.json")
+		activeInstalled, activeRepair := scanHooksFile(cliHooksPath, kind)
 		deprecatedInstalled, _ := scanHooksFile(filepath.Join(profileDir, "hooks.json"), kind)
 		var result managedHookStatus
 		if activeInstalled {
 			result.installed = true
 			result.pluginVersion = "memlane-hook"
+			result.configPath = cliHooksPath
+			result.configModAt = fileModUnix(cliHooksPath)
 			if activeRepair {
 				result.needsRepair = true
 			}
@@ -361,11 +480,12 @@ func inspectManagedHookStatus(kind, profileDir string) managedHookStatus {
 		return result
 	}
 
-	inst, repair := scanHooksFile(filepath.Join(profileDir, "hooks.json"), kind)
+	hooksPath := filepath.Join(profileDir, "hooks.json")
+	inst, repair := scanHooksFile(hooksPath, kind)
 	if !inst {
 		return managedHookStatus{}
 	}
-	return managedHookStatus{installed: true, needsRepair: repair, pluginVersion: "memlane-hook"}
+	return managedHookStatus{installed: true, needsRepair: repair, pluginVersion: "memlane-hook", configPath: hooksPath, configModAt: fileModUnix(hooksPath)}
 }
 
 type captureActivityStats struct {
@@ -491,6 +611,7 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 		hostByKind[host.Kind] = host
 	}
 	checkedAt := float64(time.Now().UnixMilli()) / 1000
+	force := r.URL.Query().Get("force") == "1"
 	out := make([]connectionView, 0, len(hosts)+len(registered))
 	seen := map[string]bool{}
 	for _, a := range registered {
@@ -501,7 +622,9 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 			Registered: true,
 			Profile:    strings.TrimSpace(a.HostProfile),
 		}
+		var detectedHost agents.DetectedHost
 		if host, ok := hostByKind[a.Kind]; ok {
+			detectedHost = host
 			row.Detected = host.Detected
 			row.Version = host.Version
 			if row.Profile == "" {
@@ -513,9 +636,41 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 		if isCaptureManagedHostKind(a.Kind) && row.Detected {
 			hookStatus := inspectManagedHookStatus(a.Kind, row.Profile)
 			row.NeedsHookRepair = hookStatus.needsRepair
+			var trustReport agents.HostHookTrustReport
+			if hookStatus.installed && (a.Kind == agents.HostCodex || a.Kind == agents.HostTraeX) {
+				trustReport = probeHostHookTrustCached(ctx, a.Kind, detectedHost.Executable, row.Profile, force)
+			}
 			if hookStatus.installed || stats.newSessions > 0 {
 				row.Status = "configured_pending_new_session"
-				if stats.newSessions > 0 {
+				switch {
+				case trustReport.NeedsTrust():
+					row.NeedsHookTrust = true
+					row.UntrustedHookCount = trustReport.UntrustedCount
+					row.ModifiedHookCount = trustReport.ModifiedCount
+					row.DisabledHookCount = trustReport.DisabledCount
+					row.UntrustedHookEvents = trustReport.UntrustedEvents
+					row.PluginVersion = hookStatus.pluginVersion
+					row.LastReceiptAt = stats.lastSavedAt
+					row.Capture = &connectionCaptureState{
+						State:       "needs_hook_trust",
+						Permission:  "observed",
+						Reason:      "host_hooks_untrusted",
+						SavedCount:  stats.savedCount,
+						LastSavedAt: stats.lastSavedAt,
+						CheckedAt:   checkedAt,
+					}
+				case stats.newSessions > 0 && isReceiptStaleAfterHookConfig(a.Kind, hookStatus, stats, trustReport):
+					row.PluginVersion = hookStatus.pluginVersion
+					row.LastReceiptAt = stats.lastSavedAt
+					row.Capture = &connectionCaptureState{
+						State:       "waiting_session",
+						Permission:  "observed",
+						Reason:      "hook_config_updated_after_receipt",
+						SavedCount:  stats.savedCount,
+						LastSavedAt: stats.lastSavedAt,
+						CheckedAt:   checkedAt,
+					}
+				case stats.newSessions > 0:
 					row.Capture = &connectionCaptureState{
 						State:       "healthy",
 						Permission:  "observed",
@@ -528,7 +683,7 @@ func (s *Server) listConnections(w http.ResponseWriter, r *http.Request) {
 						row.EnvironmentVerified = true
 						row.PluginVersion = hookStatus.pluginVersion
 					}
-				} else {
+				default:
 					row.Capture = &connectionCaptureState{
 						State:      "waiting_session",
 						Permission: "observed",
