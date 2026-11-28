@@ -3,11 +3,13 @@ package domain
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSchemaV4ToV5MigrationAndSessionFlushJobs(t *testing.T) {
@@ -500,8 +502,8 @@ func TestSchemaV5ToV6MigrationPreservesRowsAndAcceptsCancelledStatus(t *testing.
 		must(t, err)
 		version, err := store.SchemaVersion()
 		must(t, err)
-		if version != 6 {
-			t.Fatalf("migrated version = %d, want 6", version)
+		if version != SchemaVersion {
+			t.Fatalf("migrated version = %d, want %d", version, SchemaVersion)
 		}
 		item, err := store.GetInboxItem(ctx, "in-keep")
 		must(t, err)
@@ -875,5 +877,87 @@ func TestSchemaV5ToV6NormalizesBraceAndUrnUUIDs(t *testing.T) {
 	must(t, err)
 	if c.DatasetID != "99999999-8888-7777-6666-555544443333" {
 		t.Fatalf("v5->v6 did not normalize common_config UUID: %+v", c)
+	}
+}
+
+func TestSchemaV6ToV7AndDebouncedSessionFlush(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v6-flush.sqlite3")
+	db, err := OpenPrivateSQLite(path)
+	must(t, err)
+	v6Flush := strings.Replace(sessionFlushDDL,
+		" ready_at TEXT NOT NULL DEFAULT '', first_queued_at TEXT NOT NULL DEFAULT '', pending_qa_count INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+	v6DDL := strings.Replace(schemaDDL, sessionFlushDDL, v6Flush, 1)
+	must(t, execSQL(ctx, db, v6DDL+`
+		INSERT INTO schema_meta VALUES(1,6,'created','updated');
+		INSERT INTO projects(id,name,dataset_id) VALUES('p1','P1','ds-1');
+		INSERT INTO session_flush_jobs(id,project_id,dataset_id,session_id,status,last_error,last_error_at,attempts,rerun_requested,created_at,updated_at)
+			VALUES('flush:legacy','p1','ds-1','sess-legacy','pending','','',0,0,'2026-01-01T00:00:00.000000+00:00','2026-01-01T00:00:00.000000+00:00');
+	`))
+	must(t, db.Close())
+
+	s, err := OpenStore(path)
+	must(t, err)
+	defer func() { must(t, s.Close()) }()
+
+	ver, err := s.SchemaVersion()
+	must(t, err)
+	if ver != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", ver, SchemaVersion)
+	}
+	// Legacy row with ready_at='' stays immediately claimable.
+	legacy, err := s.ClaimNextSessionFlushExcludingDatasetsAt(ctx, nil, time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	must(t, err)
+	if legacy.ID != "flush:legacy" {
+		t.Fatalf("claimed legacy job = %+v", legacy)
+	}
+	_, err = s.MarkSessionFlushSucceeded(ctx, legacy.ID)
+	must(t, err)
+
+	base := time.Date(2026, 11, 28, 4, 0, 0, 0, time.UTC)
+	// 1. Quiet window defers claim until ready_at <= now.
+	j1, readyNow, err := s.ScheduleDebouncedSessionFlush(ctx, "p1", "ds-1", "sess-deb", base, 60*time.Second, 2*time.Minute, 3)
+	must(t, err)
+	if readyNow || j1.PendingQACount != 1 || j1.ReadyAt != FormatUTCMicro(base.Add(60*time.Second)) {
+		t.Fatalf("first debounced flush = (%+v, ready=%v)", j1, readyNow)
+	}
+	if _, err := s.ClaimNextSessionFlushExcludingDatasetsAt(ctx, nil, base.Add(30*time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("debounced job claimed early: err=%v", err)
+	}
+	// 2. Second Q&A at +90s pushes ready_at to maxWait (+120s), not +150s.
+	j2, readyNow, err := s.ScheduleDebouncedSessionFlush(ctx, "p1", "ds-1", "sess-deb", base.Add(90*time.Second), 60*time.Second, 2*time.Minute, 3)
+	must(t, err)
+	if readyNow || j2.PendingQACount != 2 || j2.ReadyAt != FormatUTCMicro(base.Add(2*time.Minute)) {
+		t.Fatalf("maxWait cap broken: (%+v, ready=%v)", j2, readyNow)
+	}
+	// 3. Third Q&A hits batchThreshold=3 -> snaps ready_at='' immediately!
+	j3, readyNow, err := s.ScheduleDebouncedSessionFlush(ctx, "p1", "ds-1", "sess-deb", base.Add(95*time.Second), 60*time.Second, 2*time.Minute, 3)
+	must(t, err)
+	if !readyNow || j3.ReadyAt != "" || j3.PendingQACount != 3 {
+		t.Fatalf("batchThreshold did not promote to immediate: (%+v, ready=%v)", j3, readyNow)
+	}
+	claimed, err := s.ClaimNextSessionFlushExcludingDatasetsAt(ctx, nil, base.Add(95*time.Second))
+	must(t, err)
+	if claimed.ID != j3.ID || claimed.PendingQACount != 0 || claimed.ReadyAt != "" {
+		t.Fatalf("claimed job state unexpected: %+v", claimed)
+	}
+	// 4. Q&A arriving while processing sets rerun_requested=1 with debounced ready_at preserved after completion.
+	_, _, err = s.ScheduleDebouncedSessionFlush(ctx, "p1", "ds-1", "sess-deb", base.Add(100*time.Second), 60*time.Second, 2*time.Minute, 3)
+	must(t, err)
+	requeuedNow, err := s.MarkSessionFlushSucceeded(ctx, claimed.ID)
+	must(t, err)
+	if requeuedNow {
+		t.Fatal("debounced rerun should not report immediate wakeup")
+	}
+	got, err := s.GetSessionFlushJob(ctx, "ds-1", "sess-deb")
+	must(t, err)
+	if got.Status != "pending" || got.ReadyAt != FormatUTCMicro(base.Add(160*time.Second)) {
+		t.Fatalf("debounced rerun after processing = %+v", got)
+	}
+	// 5. Immediate EnqueueSessionFlushJob (/session-end) promotes debounced pending job immediately.
+	promoted, queued, err := s.EnqueueSessionFlushJob(ctx, "p1", "ds-1", "sess-deb")
+	must(t, err)
+	if !queued || promoted.ReadyAt != "" {
+		t.Fatalf("EnqueueSessionFlushJob did not promote debounced job: (%+v, queued=%v)", promoted, queued)
 	}
 }

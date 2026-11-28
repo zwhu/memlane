@@ -93,14 +93,64 @@ class SourceTests(unittest.TestCase):
     def test_configure_store_disables_session_ttl(self):
         store_root = self.root / 'store'
         store_root.mkdir(mode=0o700)
-        with patch.dict(os.environ, {'SESSION_TTL_SECONDS': '604800'}, clear=False):
+        with patch.dict(os.environ, {'SESSION_TTL_SECONDS': '604800', 'KUZU_MAX_DB_SIZE': '1024'}, clear=False):
+            runner.scrub_environment()
+            self.assertNotIn('KUZU_MAX_DB_SIZE', os.environ)
             runner._configure_store({}, store_root)
             self.assertEqual(os.environ['CACHE_BACKEND'], 'sqlite')
             self.assertEqual(os.environ['CACHING'], 'true')
             self.assertEqual(os.environ['SESSION_TTL_SECONDS'], '0')
+            self.assertEqual(os.environ['IMPROVE_AUTO_ENABLED'], 'false')
+            self.assertGreaterEqual(int(os.environ['KUZU_MAX_DB_SIZE']), 1 << 40)
             from cognee.infrastructure.databases.cache.config import CacheConfig
+            from cognee.modules.improve.config import ImproveConfig
 
             self.assertEqual(CacheConfig().session_ttl_seconds, 0)
+            self.assertFalse(ImproveConfig().auto_enabled)
+
+    def test_recover_corrupted_ladybug_wals_quarantines_broken_checkpoint_and_shadow(self):
+        import ladybug
+
+        store_root = self.root / 'store'
+        db_dir = store_root / 'system' / 'databases' / 'tenant-a'
+        db_dir.mkdir(parents=True, mode=0o700)
+        (store_root / 'logs').mkdir(parents=True, mode=0o700)
+        db_path = db_dir / 'project.lbug'
+        db = ladybug.Database(str(db_path), buffer_pool_size=32 * 1024**2, max_db_size=1 << 30)
+        conn = ladybug.Connection(db)
+        conn.execute('CREATE NODE TABLE Node(id STRING, PRIMARY KEY(id));')
+        conn.execute("CREATE (:Node {id: 'keep-me'});")
+        conn.execute('CHECKPOINT;')
+        conn.close()
+        db.close()
+
+        # Simulate aborted checkpoint leaving truncated .wal.checkpoint + 0-byte .shadow.
+        checkpoint_wal = Path(f'{db_path}.wal.checkpoint')
+        shadow_file = Path(f'{db_path}.shadow')
+        checkpoint_wal.write_bytes(b'\xff' * 4096)
+        shadow_file.write_bytes(b'')
+        with self.assertRaisesRegex(RuntimeError, r'(?i)wal.*corrupt|corrupt.*wal'):
+            ladybug.Database(str(db_path), buffer_pool_size=32 * 1024**2, max_db_size=1 << 30)
+
+        recovered = runner.recover_corrupted_ladybug_wals(store_root)
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0]['db'], 'project.lbug')
+        self.assertTrue(recovered[0]['verified'])
+        self.assertFalse(checkpoint_wal.exists())
+        self.assertFalse(shadow_file.exists())
+        quarantine_dir = Path(recovered[0]['quarantine_dir'])
+        self.assertTrue((quarantine_dir / 'project.lbug.wal.checkpoint').is_file())
+        self.assertTrue((quarantine_dir / 'project.lbug.shadow').is_file())
+
+        db2 = ladybug.Database(str(db_path), buffer_pool_size=32 * 1024**2, max_db_size=1 << 30)
+        conn2 = ladybug.Connection(db2)
+        self.assertEqual(conn2.execute('MATCH (n:Node) RETURN n.id;').get_all(), [['keep-me']])
+        conn2.close()
+        db2.close()
+
+        # Clean DB with no checkpoint/shadow sidecars must be skipped with zero probes.
+        with patch.object(runner.subprocess, 'run', side_effect=AssertionError('unexpected probe')):
+            self.assertEqual(runner.recover_corrupted_ladybug_wals(store_root), [])
 
 
 class SetupTests(unittest.IsolatedAsyncioTestCase):

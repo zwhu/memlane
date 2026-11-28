@@ -12,8 +12,9 @@ import (
 	"modernc.org/sqlite"
 )
 
-const SchemaVersion = 6
+const SchemaVersion = 7
 const utcNSLayout = "2006-01-02T15:04:05.000000000Z"
+const utcMicroLayout = "2006-01-02T15:04:05.000000+00:00"
 
 var (
 	ErrNotFound              = errors.New("not found")
@@ -65,6 +66,9 @@ func OpenStore(path string) (*Store, error) {
 			if err := migrateStoreSchema(ctx, tx, version); err != nil {
 				return err
 			}
+		}
+		if err := execSQL(ctx, tx, sessionFlushV7IndexesDDL); err != nil {
+			return err
 		}
 		now := NowUTCNS()
 		if err := execSQL(ctx, tx, `INSERT INTO generation_state(singleton,updated_at) VALUES(1,?)
@@ -118,9 +122,18 @@ func (s *Store) transact(ctx context.Context, options *sql.TxOptions, fn func(tx
 	return tx.Commit()
 }
 
-func NowUTCNS() string               { return FormatUTCNS(time.Now()) }
-func NowUTCMicro() string            { return time.Now().UTC().Format("2006-01-02T15:04:05.000000+00:00") }
-func FormatUTCNS(t time.Time) string { return t.UTC().Format(utcNSLayout) }
+func NowUTCNS() string                 { return FormatUTCNS(time.Now()) }
+func NowUTCMicro() string              { return FormatUTCMicro(time.Now()) }
+func FormatUTCMicro(t time.Time) string { return t.UTC().Format(utcMicroLayout) }
+func FormatUTCNS(t time.Time) string   { return t.UTC().Format(utcNSLayout) }
+
+func ParseUTCMicro(s string) (time.Time, bool) {
+	t, err := time.Parse(utcMicroLayout, strings.TrimSpace(s))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
 
 func IsValidUTCNS(s string) bool {
 	t, err := time.Parse(utcNSLayout, s)

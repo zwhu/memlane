@@ -12,8 +12,11 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import ENGINE_NAME, ENGINE_VERSION, PolicyError, read_secret
 from .language_egress import scoped_output_language
@@ -960,6 +963,52 @@ def _capture_content(payload, content_hash):
     return content
 
 
+_INTERNAL_ERROR_RULES = (
+    ('graph_wal_corrupted', ('corrupted wal', 'wal file is corrupted', 'invalid wal record',
+                             '.wal.checkpoint', '.lbug.shadow', 'replay shadow pages')),
+    ('graph_db_size_limit', ('maximum database size', 'max_db_size', 'buffer manager exception')),
+    ('fd_limit_exceeded', ('too many open files', 'os error 24', 'errno 24', 'emfile')),
+    ('disk_full', ('no space left on device', 'os error 28', 'errno 28', 'enospc')),
+    ('database_locked', ('database is locked', 'database table is locked', 'could not set lock on file')),
+    ('vector_store_error', ('lanceerror', 'lance error', 'lancedb')),
+    ('graph_store_error', ('ladybug', 'kuzu', '.lbug')),
+    ('storage_io_error', ('disk i/o error', 'sqlite', 'operationalerror')),
+    ('broken_pipe', ('broken pipe', 'brokenpipeerror')),
+    ('out_of_memory', ('memoryerror', 'out of memory', 'cannot allocate memory')),
+)
+
+
+def _classify_internal_error(exc: BaseException) -> str:
+    parts, seen, cur = [], set(), exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        parts.append(f'{type(cur).__name__}: {cur}')
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    lower = '\n'.join(parts).lower()
+    for category, markers in _INTERNAL_ERROR_RULES:
+        if any(marker in lower for marker in markers):
+            return category
+    return ''
+
+
+class _InternalRoute(APIRoute):
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request):
+            try:
+                return await original(request)
+            except (PolicyError, HTTPException, StarletteHTTPException, RequestValidationError):
+                raise
+            except Exception as exc:
+                logger.exception('internal engine route failed: %s', request.url.path)
+                category = _classify_internal_error(exc)
+                payload = {'detail': 'engine_internal_error', 'category': category} if category else {'detail': 'engine_internal_error'}
+                return JSONResponse(payload, status_code=500)
+
+        return handler
+
+
 def install_engine_api(app, *, handoff, store_path, token=None, token_file=None, backend: EngineBackend | None = None):
     if token is None and token_file is not None:
         token = read_secret(token_file)
@@ -981,7 +1030,7 @@ def install_engine_api(app, *, handoff, store_path, token=None, token_file=None,
     async def policy_error(_request, error):
         return JSONResponse({'detail': error.code}, status_code=error.status)
 
-    router = APIRouter(prefix='/internal/v1', dependencies=[Depends(authorize)])
+    router = APIRouter(prefix='/internal/v1', dependencies=[Depends(authorize)], route_class=_InternalRoute)
 
     @router.get('/health')
     async def health():

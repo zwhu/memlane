@@ -37,11 +37,15 @@ type Config struct {
 	SearchTimeout        time.Duration
 	InboxWorkers         int
 	InboxPollInterval    time.Duration
-	InboxMaxPendingItems int
-	InboxMaxPendingBytes int64
-	InboxPruneInterval   int
-	InboxPruneRetention  time.Duration
-	DiscoveryOptions     agents.DiscoveryOptions
+	InboxMaxPendingItems      int
+	InboxMaxPendingBytes      int64
+	InboxPruneInterval        int
+	InboxPruneRetention       time.Duration
+	SessionExtractQuietWindow time.Duration
+	SessionExtractMaxWait     time.Duration
+	SessionExtractBatchSize   int
+	DatasetExtractCooldown    time.Duration
+	DiscoveryOptions          agents.DiscoveryOptions
 	ConflictPolicy    *agents.ConflictPolicy
 	DaemonStatus      func(context.Context) map[string]any
 	CursorSecret      []byte
@@ -101,7 +105,8 @@ func NewServer(cfg Config) (*Server, error) {
 		return nil, errors.New("store, engine and management token of at least 24 bytes required")
 	}
 	if cfg.MaxBodyBytes < 0 || cfg.SearchTimeout < 0 || cfg.InboxWorkers < 0 || cfg.InboxPollInterval < 0 ||
-		cfg.InboxMaxPendingItems < 0 || cfg.InboxMaxPendingBytes < 0 || cfg.InboxPruneInterval < 0 || cfg.InboxPruneRetention < 0 {
+		cfg.InboxMaxPendingItems < 0 || cfg.InboxMaxPendingBytes < 0 || cfg.InboxPruneInterval < 0 || cfg.InboxPruneRetention < 0 ||
+		cfg.SessionExtractQuietWindow < 0 || cfg.SessionExtractMaxWait < 0 || cfg.SessionExtractBatchSize < 0 || cfg.DatasetExtractCooldown < 0 {
 		return nil, errors.New("gateway limits must be positive")
 	}
 	if cfg.MaxBodyBytes == 0 {

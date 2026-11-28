@@ -55,7 +55,7 @@ class Backend(CogneeBackend):
         ds, doc = payload.scope.dataset_id, str(uuid4())
         snippet = json.dumps(content) if isinstance(content, dict) else content
         self.items.setdefault(ds, {})[doc] = {
-            'id': doc, 'dataset_id': ds, 'title': payload.kind,
+            'id': doc, 'dataset_id': ds, 'session_id': payload.source_meta.session_id, 'title': payload.kind,
             'snippet': snippet, 'content': snippet, 'ready': payload.kind == 'document',
         }
         return {'entry_id': doc, 'document_id': doc}
@@ -63,11 +63,18 @@ class Backend(CogneeBackend):
     async def extract(self, payload):
         await self._dataset(payload.scope, 'write', allow_provision=True)
         assert payload.expected_model_digest == handoff.active_digest
-        if payload.doc_ids == ['fresh-session']:
-            return {'touched_doc_ids': []}
+        ds_items = self.items.get(payload.scope.dataset_id, {})
+        touched = []
         for doc in payload.doc_ids:
-            self.items[payload.scope.dataset_id][doc]['ready'] = True
-        return {'touched_doc_ids': payload.doc_ids}
+            if doc in ds_items:
+                ds_items[doc]['ready'] = True
+                touched.append(doc)
+            else:
+                for item_id, item in ds_items.items():
+                    if item.get('session_id') == doc:
+                        item['ready'] = True
+                        touched.append(item_id)
+        return {'touched_doc_ids': touched}
 
     async def search(self, payload, limit):
         for scope in payload.scopes:
@@ -290,6 +297,31 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 		}
 	}
 	waitForCapture(accepted, dataset)
+	flushSession := func(ws, datasetID, sessionID string) {
+		t.Helper()
+		job, err := db.GetSessionFlushJob(ctx, datasetID, sessionID)
+		require(t, err)
+		if job.Status != "pending" || job.ReadyAt == "" {
+			t.Fatalf("expected debounced pending session flush before /session-end, got %+v", job)
+		}
+		agent("/session-end", map[string]any{"workspace": ws, "session_id": sessionID}, 202)
+		for {
+			job, err = db.GetSessionFlushJob(ctx, datasetID, sessionID)
+			require(t, err)
+			if job.Status == "succeeded" {
+				break
+			}
+			if job.Status == "failed" {
+				t.Fatalf("session flush failed: %s", job.LastError)
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("session flush did not complete: %+v", job)
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+	}
+	flushSession(workspace, dataset, "session")
 
 	overview := manage("GET", "/api/overview/bootstrap", nil, 200)
 	projects, ok := overview["projects"].([]any)
@@ -394,6 +426,7 @@ func TestLiveGoPythonGatewayE2E(t *testing.T) {
 			"message_id": capture.kind, "content": capture.content}, 202)
 		waitForCapture(accepted, freshDataset)
 	}
+	flushSession(freshWorkspace, freshDataset, "fresh-session")
 	internal("GET", "/items?dataset_id="+freshDataset, nil, 200)
 	freshRecall := tool("recall", map[string]any{"project_path": freshWorkspace, "query": "Fresh question"})
 	freshHits, ok := freshRecall["hits"].([]any)

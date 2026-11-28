@@ -43,21 +43,32 @@ const (
 	FlushInvalid      FlushScheduleStatus = "invalid"
 )
 
+const maxDirectSessionQABatch = 32
+
 type InboxWorker struct {
-	cfg                 Config
-	server              *Server
-	wake                chan struct{}
-	mu                  sync.Mutex
-	claimMu             sync.Mutex
-	preferFlush         map[string]bool
-	run                 *inboxRun
-	activeDatasets      map[string]bool
-	startedAt           string
-	needsRecovery       atomic.Bool
-	completedSincePrune atomic.Int64
-	extractBackoffMu    sync.Mutex
-	extractBackoffNext  time.Time
-	extractBackoffDur   time.Duration
+	cfg                    Config
+	server                 *Server
+	now                    func() time.Time
+	wake                   chan struct{}
+	mu                     sync.Mutex
+	claimMu                sync.Mutex
+	preferFlush            map[string]bool
+	run                    *inboxRun
+	activeDatasets         map[string]bool
+	datasetExtractCooldown map[string]time.Time
+	startedAt              string
+	needsRecovery          atomic.Bool
+	completedSincePrune    atomic.Int64
+	extractBackoffMu       sync.Mutex
+	extractBackoffNext     time.Time
+	extractBackoffDur      time.Duration
+}
+
+func (w *InboxWorker) clock() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
 }
 
 type inboxRun struct {
@@ -249,8 +260,77 @@ func (w *InboxWorker) ScheduleSessionFlush(datasetID, sessionID string) bool {
 }
 
 func (w *InboxWorker) hasQueuedSessionFlushes() bool {
-	has, err := w.cfg.Store.HasPendingSessionFlushJobs(context.Background())
+	has, err := w.cfg.Store.HasReadySessionFlushJobs(context.Background(), w.clock())
 	return err == nil && has
+}
+
+func (w *InboxWorker) recordDatasetExtract(datasetID string) {
+	if w.cfg.DatasetExtractCooldown <= 0 || datasetID == "" {
+		return
+	}
+	w.mu.Lock()
+	if w.datasetExtractCooldown == nil {
+		w.datasetExtractCooldown = make(map[string]time.Time)
+	}
+	w.datasetExtractCooldown[datasetID] = w.clock().Add(w.cfg.DatasetExtractCooldown)
+	w.mu.Unlock()
+}
+
+func (w *InboxWorker) clearDatasetExtractCooldown(datasetID string) {
+	w.mu.Lock()
+	if datasetID == "" {
+		clear(w.datasetExtractCooldown)
+	} else {
+		delete(w.datasetExtractCooldown, datasetID)
+	}
+	w.mu.Unlock()
+}
+
+func (w *InboxWorker) coolingDatasetsSnapshot() []string {
+	if w.cfg.DatasetExtractCooldown <= 0 {
+		return nil
+	}
+	now := w.clock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.datasetExtractCooldown) == 0 {
+		return nil
+	}
+	var out []string
+	for ds, until := range w.datasetExtractCooldown {
+		if now.Before(until) {
+			out = append(out, ds)
+		} else {
+			delete(w.datasetExtractCooldown, ds)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func mergeDatasetSets(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	if len(a) == 0 {
+		return b
+	}
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, s := range a {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (w *InboxWorker) activeDatasetsSnapshot() []string {
@@ -336,6 +416,7 @@ func (w *InboxWorker) flushSession(ctx context.Context, job domain.SessionFlushJ
 		return errors.New("engine did not complete session-end extraction")
 	}
 	w.resetExtractBackoff()
+	w.recordDatasetExtract(job.DatasetID)
 	if err := w.syncDatasetCatalog(ctx, job.DatasetID); err != nil {
 		return &catalogPublishError{datasetID: job.DatasetID, projectID: job.ProjectID, err: err}
 	}
@@ -407,10 +488,12 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		}
 	}
 
+	now := w.clock()
+	flushExcluded := mergeDatasetSets(excluded, w.coolingDatasetsSnapshot())
 	var flushPreferred []string
 	if len(w.preferFlush) > 0 {
-		excludedSet := make(map[string]bool, len(excluded))
-		for _, ds := range excluded {
+		excludedSet := make(map[string]bool, len(flushExcluded))
+		for _, ds := range flushExcluded {
 			excludedSet[ds] = true
 		}
 		for ds := range w.preferFlush {
@@ -421,7 +504,7 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		slices.Sort(flushPreferred)
 	}
 	if len(flushPreferred) > 0 {
-		job, flushErr := w.cfg.Store.ClaimNextSessionFlushInDatasets(ctx, flushPreferred)
+		job, flushErr := w.cfg.Store.ClaimNextSessionFlushInDatasetsAt(ctx, flushPreferred, now)
 		if flushErr == nil {
 			delete(w.preferFlush, job.DatasetID)
 			w.markDatasetActive(job.DatasetID)
@@ -455,7 +538,7 @@ func (w *InboxWorker) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	job, flushErr := w.cfg.Store.ClaimNextSessionFlushExcludingDatasets(ctx, excluded)
+	job, flushErr := w.cfg.Store.ClaimNextSessionFlushExcludingDatasetsAt(ctx, flushExcluded, now)
 	if flushErr == nil {
 		delete(w.preferFlush, job.DatasetID)
 		w.markDatasetActive(job.DatasetID)
@@ -501,6 +584,31 @@ func (w *InboxWorker) pruneRetention() time.Duration {
 }
 
 func (w *InboxWorker) finishInboxItem(ctx context.Context, item domain.CaptureInboxItem) (bool, error) {
+	if w.cfg.SessionExtractQuietWindow <= 0 &&
+		item.Kind == string(engine.IngestKindCaptureQA) && item.SessionID != "" {
+		var primary inboxPayload
+		if json.Unmarshal([]byte(item.PayloadJSON), &primary) == nil &&
+			(primary.ExtractMode == "" || primary.ExtractMode == engine.ExtractModeDefault) {
+			if siblings, claimErr := w.cfg.Store.ClaimPendingSessionQAItems(ctx, item.DatasetID, item.SessionID, maxDirectSessionQABatch-1); claimErr == nil && len(siblings) > 0 {
+				var matching []domain.CaptureInboxItem
+				for _, sib := range siblings {
+					var p inboxPayload
+					if json.Unmarshal([]byte(sib.PayloadJSON), &p) == nil &&
+						(p.ExtractMode == "" || p.ExtractMode == engine.ExtractModeDefault) &&
+						p.EngineUserID == primary.EngineUserID {
+						matching = append(matching, sib)
+					} else {
+						requeueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+						_ = w.cfg.Store.RequeueInboxItem(requeueCtx, sib.ID)
+						cancel()
+					}
+				}
+				if len(matching) > 0 {
+					return w.finishCoalescedSessionQABatch(ctx, append([]domain.CaptureInboxItem{item}, matching...), primary)
+				}
+			}
+		}
+	}
 	err := w.process(ctx, item)
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -544,6 +652,129 @@ func (w *InboxWorker) finishInboxItem(ctx context.Context, item domain.CaptureIn
 	if n := w.completedSincePrune.Add(1); n%int64(w.pruneInterval()) == 0 {
 		if _, pruneErr := w.PruneSucceededPayloads(finish, w.pruneRetention()); pruneErr != nil {
 			log.Printf("gateway inbox auto prune succeeded payloads: %s", sanitizeError(pruneErr))
+		}
+	}
+	if w.hasQueuedSessionFlushes() {
+		w.Notify()
+	}
+	return true, nil
+}
+
+func (w *InboxWorker) finishCoalescedSessionQABatch(ctx context.Context, batch []domain.CaptureInboxItem, primary inboxPayload) (bool, error) {
+	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	requeueAll := func(items []domain.CaptureInboxItem) (bool, error) {
+		var combined error
+		for _, it := range items {
+			combined = errors.Join(combined, w.cfg.Store.RequeueInboxItem(finish, it.ID))
+		}
+		return combined != nil, combined
+	}
+
+	ingested := make([]domain.CaptureInboxItem, 0, len(batch))
+	for i, it := range batch {
+		var payload inboxPayload
+		if err := json.Unmarshal([]byte(it.PayloadJSON), &payload); err != nil {
+			_ = w.cfg.Store.MarkInboxFailed(finish, it.ID, sanitizeError(fmt.Errorf("decode inbox: %w", err)))
+			continue
+		}
+		if len(payload.Content) == 0 || string(payload.Content) == "null" {
+			_ = w.cfg.Store.MarkInboxFailed(finish, it.ID, sanitizeError(errors.New("inbox content missing")))
+			continue
+		}
+		if _, _, _, err := w.ingestInboxItem(ctx, it, payload, engine.ExtractModeDefault); err != nil {
+			if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
+				return requeueAll(append(ingested, batch[i:]...))
+			}
+			_ = w.cfg.Store.MarkInboxFailed(finish, it.ID, sanitizeError(err))
+			continue
+		}
+		ingested = append(ingested, it)
+	}
+	if len(ingested) == 0 {
+		if w.hasQueuedSessionFlushes() {
+			w.Notify()
+		}
+		return true, nil
+	}
+	model, err := w.expectedDigest(ctx)
+	if err != nil {
+		if errors.Is(err, errExtractionPausedModelUnverified) || (errors.Is(err, context.Canceled) && w.isStopping()) {
+			return requeueAll(ingested)
+		}
+		var combined error
+		for _, it := range ingested {
+			combined = errors.Join(combined, w.cfg.Store.MarkInboxFailed(finish, it.ID, sanitizeError(err)))
+		}
+		return true, combined
+	}
+	head := ingested[0]
+	extracted, err := w.cfg.Engine.Extract(ctx, engine.ExtractRequest{
+		Scope:               engine.Scope{DatasetID: head.DatasetID, UserID: primary.EngineUserID},
+		DocIDs:              []string{head.SessionID},
+		ExpectedModelDigest: model,
+		OutputLanguage:      w.cfg.OutputLanguage,
+		Mode:                engine.ExtractModeDefault,
+	})
+	if err != nil {
+		if isRetryableEnginePause(err) {
+			w.advanceExtractBackoff()
+			return requeueAll(ingested)
+		}
+		if errors.Is(err, context.Canceled) && w.isStopping() {
+			return requeueAll(ingested)
+		}
+		errText := sanitizeError(fmt.Errorf("extract inbox: %w", err))
+		var combined error
+		for _, it := range ingested {
+			combined = errors.Join(combined, w.cfg.Store.MarkInboxFailed(finish, it.ID, errText))
+		}
+		if w.hasQueuedSessionFlushes() {
+			w.Notify()
+		}
+		return true, combined
+	}
+	if !extracted.OK {
+		errText := sanitizeError(errors.New("engine did not complete extraction"))
+		var combined error
+		for _, it := range ingested {
+			combined = errors.Join(combined, w.cfg.Store.MarkInboxFailed(finish, it.ID, errText))
+		}
+		return true, combined
+	}
+	w.resetExtractBackoff()
+	w.recordDatasetExtract(head.DatasetID)
+	if pubErr := w.syncDatasetCatalog(ctx, head.DatasetID); pubErr != nil {
+		status := "failed"
+		errText := sanitizeError(pubErr)
+		if errors.Is(pubErr, context.Canceled) && w.isStopping() {
+			status = "pending"
+			errText = ""
+		}
+		if persistErr := w.cfg.Store.CompleteInboxWithCatalogPublishState(finish, head.ID, head.DatasetID, head.ProjectID, status, errText); persistErr != nil {
+			return true, errors.Join(pubErr, persistErr)
+		}
+		for _, it := range ingested[1:] {
+			if markErr := w.cfg.Store.MarkInboxSucceeded(finish, it.ID); markErr != nil {
+				return true, markErr
+			}
+		}
+		if status == "pending" {
+			return false, nil
+		}
+		if w.hasQueuedSessionFlushes() {
+			w.Notify()
+		}
+		return true, nil
+	}
+	for _, it := range ingested {
+		if err := w.cfg.Store.MarkInboxSucceeded(finish, it.ID); err != nil {
+			return true, err
+		}
+		if n := w.completedSincePrune.Add(1); n%int64(w.pruneInterval()) == 0 {
+			if _, pruneErr := w.PruneSucceededPayloads(finish, w.pruneRetention()); pruneErr != nil {
+				log.Printf("gateway inbox auto prune succeeded payloads: %s", sanitizeError(pruneErr))
+			}
 		}
 	}
 	if w.hasQueuedSessionFlushes() {
@@ -602,14 +833,7 @@ func (w *InboxWorker) finishSessionFlushJob(ctx context.Context, job domain.Sess
 	return true, nil
 }
 
-func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem) error {
-	var payload inboxPayload
-	if err := json.Unmarshal([]byte(item.PayloadJSON), &payload); err != nil {
-		return fmt.Errorf("decode inbox: %w", err)
-	}
-	if len(payload.Content) == 0 || string(payload.Content) == "null" {
-		return errors.New("inbox content missing")
-	}
+func (w *InboxWorker) ingestInboxItem(ctx context.Context, item domain.CaptureInboxItem, payload inboxPayload, mode engine.ExtractMode) (docID, ingestDocID string, alreadySaved bool, err error) {
 	// Gateway already enforced project ACL before enqueueing; Hook auto-capture and legacy v4 rows
 	// leave EngineUserID empty (owner scope), while trusted MCP fallback sets EngineUserID explicitly.
 	scope := engine.Scope{DatasetID: item.DatasetID, UserID: payload.EngineUserID}
@@ -620,16 +844,9 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 	if key == "" {
 		key = item.ID
 	}
-	mode := payload.ExtractMode
-	if mode == "" {
-		mode = engine.ExtractModeDefault
-	}
-	var docID string
-	var ingestDocID string
-	alreadySaved := false
 	if item.CaptureKey != "" {
-		receipt, err := w.cfg.Store.GetCaptureReceipt(ctx, item.CaptureKey)
-		if err == nil && receipt.Status == "saved" && receipt.EntryID != "" {
+		receipt, rErr := w.cfg.Store.GetCaptureReceipt(ctx, item.CaptureKey)
+		if rErr == nil && receipt.Status == "saved" && receipt.EntryID != "" {
 			alreadySaved = true
 			if mode == engine.ExtractModeDefault && item.SessionID != "" &&
 				(item.Kind == string(engine.IngestKindCaptureQA) || item.Kind == string(engine.IngestKindCaptureTrace)) {
@@ -637,40 +854,80 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 			} else {
 				docID = receipt.EntryID
 			}
-		} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
-			return fmt.Errorf("lookup capture receipt: %w", err)
+			return docID, "", true, nil
+		} else if rErr != nil && !errors.Is(rErr, domain.ErrNotFound) {
+			return "", "", false, fmt.Errorf("lookup capture receipt: %w", rErr)
 		}
 	}
-	if !alreadySaved {
-		result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
-			IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
-		if err != nil {
-			if isRetryableEnginePause(err) {
-				w.advanceExtractBackoff()
-				return fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
-			}
-			return fmt.Errorf("ingest inbox: %w", err)
+	result, err := w.cfg.Engine.Ingest(ctx, engine.IngestRequest{Scope: scope, Kind: engine.IngestKind(item.Kind),
+		IdempotencyKey: key, Content: payload.Content, SourceMeta: payload.SourceMeta})
+	if err != nil {
+		if isRetryableEnginePause(err) {
+			w.advanceExtractBackoff()
+			return "", "", false, fmt.Errorf("%w: %v", errExtractionPausedModelUnverified, err)
 		}
-		if !result.OK || result.DocumentID == "" && result.EntryID == "" {
-			return errors.New("engine did not accept inbox item")
+		return "", "", false, fmt.Errorf("ingest inbox: %w", err)
+	}
+	if !result.OK || result.DocumentID == "" && result.EntryID == "" {
+		return "", "", false, errors.New("engine did not accept inbox item")
+	}
+	w.resetExtractBackoff()
+	ingestDocID = result.DocumentID
+	docID = result.DocumentID
+	if docID == "" {
+		docID = result.EntryID
+	}
+	if item.CaptureKey != "" {
+		entry := result.EntryID
+		if entry == "" {
+			entry = docID
 		}
-		w.resetExtractBackoff()
-		ingestDocID = result.DocumentID
-		docID = result.DocumentID
-		if docID == "" {
-			docID = result.EntryID
+		if err := w.cfg.Store.MarkCaptureReceiptSaved(ctx, item.CaptureKey, entry); err != nil {
+			return "", "", false, err
 		}
-		if item.CaptureKey != "" {
-			entry := result.EntryID
-			if entry == "" {
-				entry = docID
-			}
-			if err := w.cfg.Store.MarkCaptureReceiptSaved(ctx, item.CaptureKey, entry); err != nil {
-				return err
-			}
-		}
+	}
+	return docID, ingestDocID, false, nil
+}
+
+func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem) error {
+	var payload inboxPayload
+	if err := json.Unmarshal([]byte(item.PayloadJSON), &payload); err != nil {
+		return fmt.Errorf("decode inbox: %w", err)
+	}
+	if len(payload.Content) == 0 || string(payload.Content) == "null" {
+		return errors.New("inbox content missing")
+	}
+	mode := payload.ExtractMode
+	if mode == "" {
+		mode = engine.ExtractModeDefault
+	}
+	scope := engine.Scope{DatasetID: item.DatasetID, UserID: payload.EngineUserID}
+	docID, ingestDocID, alreadySaved, err := w.ingestInboxItem(ctx, item, payload, mode)
+	if err != nil {
+		return err
 	}
 	isTraceOnly := item.Kind == string(engine.IngestKindCaptureTrace) && mode == engine.ExtractModeDefault
+	// Owner-scoped auto-captured Q&As defer heavy graph extraction into the per-session
+	// debounced flush job so active sessions and backlogs coalesce into one improve() call.
+	deferSessionQA := w.cfg.SessionExtractQuietWindow > 0 &&
+		item.Kind == string(engine.IngestKindCaptureQA) &&
+		mode == engine.ExtractModeDefault &&
+		item.SessionID != "" &&
+		payload.EngineUserID == ""
+	if deferSessionQA {
+		if _, readyNow, flushErr := w.cfg.Store.ScheduleDebouncedSessionFlush(
+			ctx, item.ProjectID, item.DatasetID, item.SessionID, w.clock(),
+			w.cfg.SessionExtractQuietWindow, w.cfg.SessionExtractMaxWait, w.cfg.SessionExtractBatchSize,
+		); flushErr != nil {
+			return fmt.Errorf("schedule debounced session flush: %w", flushErr)
+		} else if readyNow {
+			w.Notify()
+		}
+		if err := w.syncDatasetSessions(ctx, item.DatasetID); err != nil {
+			return &catalogPublishError{datasetID: item.DatasetID, projectID: item.ProjectID, err: err}
+		}
+		return nil
+	}
 	if !isTraceOnly {
 		model, err := w.expectedDigest(ctx)
 		if err != nil {
@@ -693,6 +950,7 @@ func (w *InboxWorker) process(ctx context.Context, item domain.CaptureInboxItem)
 			return errors.New("engine did not complete extraction")
 		}
 		w.resetExtractBackoff()
+		w.recordDatasetExtract(item.DatasetID)
 	}
 	if isTraceOnly {
 		if err := w.syncDatasetSessions(ctx, item.DatasetID); err != nil {
@@ -846,6 +1104,11 @@ func (w *InboxWorker) RetryFailed(ctx context.Context, projectID string) ([]stri
 	})
 	if err != nil {
 		return retried, err
+	}
+	if projectID == "" {
+		w.clearDatasetExtractCooldown("")
+	} else if proj, pErr := w.cfg.Store.GetProject(ctx, projectID); pErr == nil {
+		w.clearDatasetExtractCooldown(proj.DatasetID)
 	}
 	defer w.Notify()
 	for _, id := range ids {

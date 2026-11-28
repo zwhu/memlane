@@ -972,3 +972,25 @@ class EngineAPITests(unittest.IsolatedAsyncioTestCase):
         idx_resp = await self.client.post('code-index', json={'dataset_id': 'ds-ensured', 'repo_path': '/tmp/demo'})
         self.assertEqual(idx_resp.status_code, 200)
         self.assertEqual(idx_resp.json(), {'ok': True, 'status': 'completed', 'dataset_id': 'ds-ensured', 'pipeline_run_id': 'run-1', 'items_processed': 3})
+
+    async def test_internal_route_classifies_unhandled_500_without_leaking_secrets(self):
+        applied = await self.apply()
+        cases = [
+            (RuntimeError('Runtime exception: Corrupted wal file. Read out invalid WAL record type. /Users/alice/sk-secret-123'), 'graph_wal_corrupted'),
+            (RuntimeError('Buffer manager exception: Maximum database size of 34359738368 bytes has been reached. Reopen with larger max_db_size /Users/alice'), 'graph_db_size_limit'),
+            (OSError(24, 'Too many open files: /Users/alice/secret.key'), 'fd_limit_exceeded'),
+            (RuntimeError('unexpected boom sk-secret-123 /Users/alice/private'), None),
+        ]
+        for exc, expected_category in cases:
+            with self.subTest(expected_category=expected_category):
+                with patch.object(self.backend, 'extract', new_callable=AsyncMock, side_effect=exc):
+                    response = await self.client.post('extract', json={
+                        'scope': self.scope, 'doc_ids': ['one'], 'expected_model_digest': applied['model_digest'],
+                    })
+                self.assertEqual(response.status_code, 500)
+                body = response.json()
+                self.assertEqual(body['detail'], 'engine_internal_error')
+                self.assertEqual(body.get('category'), expected_category)
+                raw = response.text
+                for secret in ('/Users/alice', 'sk-secret-123', 'unexpected boom'):
+                    self.assertNotIn(secret, raw)

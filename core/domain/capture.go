@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const captureInboxV5IndexesDDL = `
@@ -16,12 +17,17 @@ CREATE INDEX IF NOT EXISTS idx_capture_inbox_dataset_session_status ON capture_i
 CREATE INDEX IF NOT EXISTS idx_capture_inbox_dataset_session_agent ON capture_inbox(dataset_id,session_id,updated_at DESC,agent_id);
 `
 
+const sessionFlushV7IndexesDDL = `
+CREATE INDEX IF NOT EXISTS idx_session_flush_jobs_ready ON session_flush_jobs(status,ready_at,updated_at);
+`
+
 const sessionFlushDDL = `
 CREATE TABLE IF NOT EXISTS session_flush_jobs (
  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, dataset_id TEXT NOT NULL, session_id TEXT NOT NULL,
  status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','failed','cancelled_project_removed')),
  last_error TEXT NOT NULL DEFAULT '', last_error_at TEXT NOT NULL DEFAULT '',
  attempts INTEGER NOT NULL DEFAULT 0, rerun_requested INTEGER NOT NULL DEFAULT 0,
+ ready_at TEXT NOT NULL DEFAULT '', first_queued_at TEXT NOT NULL DEFAULT '', pending_qa_count INTEGER NOT NULL DEFAULT 0,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  UNIQUE(dataset_id,session_id)
 );
@@ -66,6 +72,8 @@ type SessionFlushJob struct {
 	Status, LastError, LastErrorAt      string
 	Attempts                            int
 	RerunRequested                      bool
+	ReadyAt, FirstQueuedAt              string
+	PendingQACount                      int
 	CreatedAt, UpdatedAt                string
 }
 
@@ -91,7 +99,7 @@ type EnqueueCaptureResult struct {
 
 const receiptColumns = "capture_key,user_id,dataset_id,session_id,message_id,payload_sha256,entry_type,entry_id,baseline_count,status,updated_at"
 const inboxColumns = "id,project_id,dataset_id,agent_id,session_id,message_id,capture_key,kind,payload_json,status,last_error,last_error_at,attempts,created_at,updated_at"
-const sessionFlushColumns = "id,project_id,dataset_id,session_id,status,last_error,last_error_at,attempts,rerun_requested,created_at,updated_at"
+const sessionFlushColumns = "id,project_id,dataset_id,session_id,status,last_error,last_error_at,attempts,rerun_requested,ready_at,first_queued_at,pending_qa_count,created_at,updated_at"
 
 func getCaptureReceipt(ctx context.Context, db sqlReader, key string) (CaptureReceipt, error) {
 	var r CaptureReceipt
@@ -419,6 +427,50 @@ func (s *Store) ClaimNextInboxItemExcludingDatasets(ctx context.Context, exclude
 	return item, nil
 }
 
+func (s *Store) ClaimPendingSessionQAItems(ctx context.Context, datasetID, sessionID string, limit int) ([]CaptureInboxItem, error) {
+	datasetID = strings.TrimSpace(datasetID)
+	sessionID = strings.TrimSpace(sessionID)
+	if datasetID == "" || sessionID == "" || limit <= 0 {
+		return nil, nil
+	}
+	var items []CaptureInboxItem
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		ids, err := queryList(ctx, tx, func(row scanner) (string, error) {
+			var id string
+			err := row.Scan(&id)
+			return id, err
+		}, `SELECT ci.id FROM capture_inbox ci
+			WHERE ci.status='pending' AND ci.dataset_id=? AND ci.session_id=? AND ci.kind='capture_qa'
+			  AND EXISTS (
+			      SELECT 1 FROM projects p
+			      WHERE p.id=ci.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(ci.dataset_id,'-',''))
+			  )
+			ORDER BY ci.created_at,ci.rowid LIMIT ?`, datasetID, sessionID, limit)
+		if err != nil || len(ids) == 0 {
+			return err
+		}
+		now := NowUTCMicro()
+		items = make([]CaptureInboxItem, 0, len(ids))
+		for _, id := range ids {
+			item, err := scanInboxItem(tx.QueryRowContext(ctx,
+				`UPDATE capture_inbox SET status='processing',attempts=attempts+1,updated_at=?
+				 WHERE id=? AND status='pending' RETURNING `+inboxColumns, now, id))
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			items = append(items, item)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (s *Store) transitionInboxItem(ctx context.Context, id, from, to, lastError string) (CaptureInboxItem, error) {
 	var item CaptureInboxItem
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
@@ -543,7 +595,8 @@ func scanSessionFlushJob(row scanner) (SessionFlushJob, error) {
 	var job SessionFlushJob
 	var rerun int
 	err := row.Scan(&job.ID, &job.ProjectID, &job.DatasetID, &job.SessionID, &job.Status,
-		&job.LastError, &job.LastErrorAt, &job.Attempts, &rerun, &job.CreatedAt, &job.UpdatedAt)
+		&job.LastError, &job.LastErrorAt, &job.Attempts, &rerun,
+		&job.ReadyAt, &job.FirstQueuedAt, &job.PendingQACount, &job.CreatedAt, &job.UpdatedAt)
 	job.RerunRequested = intToBool(rerun)
 	return job, rowError(err)
 }
@@ -561,6 +614,132 @@ func (s *Store) GetSessionFlushJob(ctx context.Context, datasetID, sessionID str
 	return getSessionFlushJobByKey(ctx, s.db, datasetID, sessionID)
 }
 
+func resolveSessionFlushProjectTx(ctx context.Context, tx *sql.Tx, projectID, datasetID string) (string, error) {
+	if projectID == "" {
+		var resolved string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE LOWER(REPLACE(dataset_id,'-',''))=LOWER(REPLACE(?,'-','')) LIMIT 1`, datasetID).Scan(&resolved); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", fmt.Errorf("project for dataset %s not found: %w", datasetID, ErrNotFound)
+			}
+			return "", err
+		}
+		return resolved, nil
+	}
+	projectExists, err := projectMatchesDatasetTx(ctx, tx, projectID, datasetID)
+	if err != nil {
+		return "", err
+	}
+	if !projectExists {
+		return "", fmt.Errorf("project %s removed or dataset mismatched: %w", projectID, ErrNotFound)
+	}
+	return projectID, nil
+}
+
+func computeDebouncedFlushWindow(now time.Time, firstQueuedAt string, prevCount int, quietWindow, maxWait time.Duration, batchThreshold int) (readyAt, firstQueued string, nextCount int) {
+	now = now.UTC()
+	nextCount = prevCount + 1
+	firstTime := now
+	if parsed, ok := ParseUTCMicro(firstQueuedAt); ok && !parsed.IsZero() {
+		firstTime = parsed
+	}
+	firstQueued = FormatUTCMicro(firstTime)
+	if quietWindow <= 0 || (batchThreshold > 0 && nextCount >= batchThreshold) {
+		return "", firstQueued, nextCount
+	}
+	target := now.Add(quietWindow)
+	if maxWait > 0 {
+		capAt := firstTime.Add(maxWait)
+		if target.After(capAt) {
+			target = capAt
+		}
+	}
+	if !target.After(now) {
+		return "", firstQueued, nextCount
+	}
+	return FormatUTCMicro(target), firstQueued, nextCount
+}
+
+func (s *Store) ScheduleDebouncedSessionFlush(ctx context.Context, projectID, datasetID, sessionID string, now time.Time, quietWindow, maxWait time.Duration, batchThreshold int) (SessionFlushJob, bool, error) {
+	projectID = strings.TrimSpace(projectID)
+	datasetID = strings.TrimSpace(datasetID)
+	sessionID = strings.TrimSpace(sessionID)
+	if err := requireIDs(datasetID, sessionID); err != nil {
+		return SessionFlushJob{}, false, err
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	nowStr := FormatUTCMicro(now)
+	var out SessionFlushJob
+	var readyNow bool
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		resolvedProject, err := resolveSessionFlushProjectTx(ctx, tx, projectID, datasetID)
+		if err != nil {
+			return err
+		}
+		existing, err := getSessionFlushJobByKey(ctx, tx, datasetID, sessionID)
+		if err == nil {
+			effectiveProject := resolvedProject
+			if effectiveProject == "" {
+				effectiveProject = existing.ProjectID
+			}
+			if existing.Status == "pending" {
+				if existing.ReadyAt == "" {
+					// Already eligible for immediate flush (e.g. /session-end or batch threshold met); never delay it.
+					out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+						`UPDATE session_flush_jobs SET project_id=?,pending_qa_count=pending_qa_count+1,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+						effectiveProject, nowStr, existing.ID))
+					readyNow = false
+					return err
+				}
+				nextReady, firstQueued, nextCount := computeDebouncedFlushWindow(now, existing.FirstQueuedAt, existing.PendingQACount, quietWindow, maxWait, batchThreshold)
+				out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+					`UPDATE session_flush_jobs SET project_id=?,ready_at=?,first_queued_at=?,pending_qa_count=?,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+					effectiveProject, nextReady, firstQueued, nextCount, nowStr, existing.ID))
+				readyNow = nextReady == ""
+				return err
+			}
+			if existing.Status == "processing" {
+				if existing.RerunRequested && existing.ReadyAt == "" {
+					out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+						`UPDATE session_flush_jobs SET project_id=?,pending_qa_count=pending_qa_count+1,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+						effectiveProject, nowStr, existing.ID))
+					readyNow = false
+					return err
+				}
+				nextReady, firstQueued, nextCount := computeDebouncedFlushWindow(now, existing.FirstQueuedAt, existing.PendingQACount, quietWindow, maxWait, batchThreshold)
+				out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+					`UPDATE session_flush_jobs SET project_id=?,rerun_requested=1,ready_at=?,first_queued_at=?,pending_qa_count=?,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+					effectiveProject, nextReady, firstQueued, nextCount, nowStr, existing.ID))
+				readyNow = false
+				return err
+			}
+			nextReady, firstQueued, nextCount := computeDebouncedFlushWindow(now, "", 0, quietWindow, maxWait, batchThreshold)
+			out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+				`UPDATE session_flush_jobs SET project_id=?,status='pending',rerun_requested=0,last_error='',last_error_at='',
+				 ready_at=?,first_queued_at=?,pending_qa_count=?,updated_at=?
+				 WHERE id=? RETURNING `+sessionFlushColumns,
+				effectiveProject, nextReady, firstQueued, nextCount, nowStr, existing.ID))
+			readyNow = nextReady == ""
+			return err
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		id := "flush:" + rand.Text()
+		nextReady, firstQueued, nextCount := computeDebouncedFlushWindow(now, "", 0, quietWindow, maxWait, batchThreshold)
+		out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+			`INSERT INTO session_flush_jobs (`+sessionFlushColumns+`) VALUES(?,?,?,?,'pending','','',0,0,?,?,?,?,?) RETURNING `+sessionFlushColumns,
+			id, resolvedProject, datasetID, sessionID, nextReady, firstQueued, nextCount, nowStr, nowStr))
+		readyNow = nextReady == ""
+		return err
+	})
+	if err != nil {
+		return SessionFlushJob{}, false, err
+	}
+	return out, readyNow, nil
+}
+
 func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID, sessionID string) (SessionFlushJob, bool, error) {
 	projectID = strings.TrimSpace(projectID)
 	datasetID = strings.TrimSpace(datasetID)
@@ -571,24 +750,11 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 	var out SessionFlushJob
 	var queued bool
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
-		if projectID == "" {
-			var resolved string
-			if err := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE LOWER(REPLACE(dataset_id,'-',''))=LOWER(REPLACE(?,'-','')) LIMIT 1`, datasetID).Scan(&resolved); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("project for dataset %s not found: %w", datasetID, ErrNotFound)
-				}
-				return err
-			}
-			projectID = resolved
-		} else {
-			projectExists, err := projectMatchesDatasetTx(ctx, tx, projectID, datasetID)
-			if err != nil {
-				return err
-			}
-			if !projectExists {
-				return fmt.Errorf("project %s removed or dataset mismatched: %w", projectID, ErrNotFound)
-			}
+		resolvedProject, err := resolveSessionFlushProjectTx(ctx, tx, projectID, datasetID)
+		if err != nil {
+			return err
 		}
+		projectID = resolvedProject
 		now := NowUTCMicro()
 		existing, err := getSessionFlushJobByKey(ctx, tx, datasetID, sessionID)
 		if err == nil {
@@ -597,6 +763,17 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 				effectiveProject = existing.ProjectID
 			}
 			if existing.Status == "pending" {
+				if existing.ReadyAt != "" {
+					// Promote a debounced pending job to immediate flush (e.g. /session-end).
+					out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
+						`UPDATE session_flush_jobs SET project_id=?,ready_at='',updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+						effectiveProject, now, existing.ID))
+					if err != nil {
+						return err
+					}
+					queued = true
+					return nil
+				}
 				if effectiveProject != existing.ProjectID {
 					out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
 						`UPDATE session_flush_jobs SET project_id=?,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
@@ -612,7 +789,7 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 			}
 			if existing.Status == "processing" {
 				out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
-					`UPDATE session_flush_jobs SET project_id=?,rerun_requested=1,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
+					`UPDATE session_flush_jobs SET project_id=?,rerun_requested=1,ready_at='',first_queued_at='',pending_qa_count=0,updated_at=? WHERE id=? RETURNING `+sessionFlushColumns,
 					effectiveProject, now, existing.ID))
 				if err != nil {
 					return err
@@ -621,7 +798,8 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 				return nil
 			}
 			out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
-				`UPDATE session_flush_jobs SET project_id=?,status='pending',rerun_requested=0,last_error='',last_error_at='',updated_at=?
+				`UPDATE session_flush_jobs SET project_id=?,status='pending',rerun_requested=0,last_error='',last_error_at='',
+				 ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 				 WHERE id=? RETURNING `+sessionFlushColumns, effectiveProject, now, existing.ID))
 			if err != nil {
 				return err
@@ -634,7 +812,7 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 		}
 		id := "flush:" + rand.Text()
 		out, err = scanSessionFlushJob(tx.QueryRowContext(ctx,
-			`INSERT INTO session_flush_jobs (`+sessionFlushColumns+`) VALUES(?,?,?,?,'pending','','',0,0,?,?) RETURNING `+sessionFlushColumns,
+			`INSERT INTO session_flush_jobs (`+sessionFlushColumns+`) VALUES(?,?,?,?,'pending','','',0,0,'','',0,?,?) RETURNING `+sessionFlushColumns,
 			id, projectID, datasetID, sessionID, now, now))
 		if err != nil {
 			return err
@@ -648,18 +826,23 @@ func (s *Store) EnqueueSessionFlushJob(ctx context.Context, projectID, datasetID
 	return out, queued, nil
 }
 
-func (s *Store) claimSessionFlushWhere(ctx context.Context, extraWhere string, extraArgs []any) (SessionFlushJob, error) {
+func (s *Store) claimSessionFlushWhere(ctx context.Context, now string, extraWhere string, extraArgs []any) (SessionFlushJob, error) {
+	if strings.TrimSpace(now) == "" {
+		now = NowUTCMicro()
+	}
 	var job SessionFlushJob
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
-		now := NowUTCMicro()
-		args := make([]any, 0, len(extraArgs)+1)
+		args := make([]any, 0, len(extraArgs)+2)
 		args = append(args, now)
 		args = append(args, extraArgs...)
+		args = append(args, now)
 		var err error
-		job, err = scanSessionFlushJob(tx.QueryRowContext(ctx, `UPDATE session_flush_jobs SET status='processing',attempts=attempts+1,updated_at=?
+		job, err = scanSessionFlushJob(tx.QueryRowContext(ctx, `UPDATE session_flush_jobs
+			SET status='processing',attempts=attempts+1,ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 			WHERE id=(
 				SELECT sf.id FROM session_flush_jobs sf
 				WHERE sf.status='pending'`+extraWhere+`
+				  AND (sf.ready_at='' OR sf.ready_at<=?)
 				  AND EXISTS (
 				      SELECT 1 FROM projects p
 				      WHERE p.id=sf.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(sf.dataset_id,'-',''))
@@ -682,8 +865,13 @@ func (s *Store) claimSessionFlushWhere(ctx context.Context, extraWhere string, e
 }
 
 func (s *Store) ClaimNextSessionFlushExcludingDatasets(ctx context.Context, excludedDatasets []string) (SessionFlushJob, error) {
+	return s.ClaimNextSessionFlushExcludingDatasetsAt(ctx, excludedDatasets, time.Now())
+}
+
+func (s *Store) ClaimNextSessionFlushExcludingDatasetsAt(ctx context.Context, excludedDatasets []string, now time.Time) (SessionFlushJob, error) {
+	nowStr := FormatUTCMicro(now)
 	if len(excludedDatasets) == 0 {
-		return s.claimSessionFlushWhere(ctx, "", nil)
+		return s.claimSessionFlushWhere(ctx, nowStr, "", nil)
 	}
 	placeholders := make([]string, len(excludedDatasets))
 	args := make([]any, len(excludedDatasets))
@@ -691,10 +879,14 @@ func (s *Store) ClaimNextSessionFlushExcludingDatasets(ctx context.Context, excl
 		placeholders[i] = "?"
 		args[i] = ds
 	}
-	return s.claimSessionFlushWhere(ctx, " AND sf.dataset_id NOT IN ("+strings.Join(placeholders, ",")+")", args)
+	return s.claimSessionFlushWhere(ctx, nowStr, " AND sf.dataset_id NOT IN ("+strings.Join(placeholders, ",")+")", args)
 }
 
 func (s *Store) ClaimNextSessionFlushInDatasets(ctx context.Context, datasets []string) (SessionFlushJob, error) {
+	return s.ClaimNextSessionFlushInDatasetsAt(ctx, datasets, time.Now())
+}
+
+func (s *Store) ClaimNextSessionFlushInDatasetsAt(ctx context.Context, datasets []string, now time.Time) (SessionFlushJob, error) {
 	if len(datasets) == 0 {
 		return SessionFlushJob{}, ErrNotFound
 	}
@@ -704,7 +896,7 @@ func (s *Store) ClaimNextSessionFlushInDatasets(ctx context.Context, datasets []
 		placeholders[i] = "?"
 		args[i] = ds
 	}
-	return s.claimSessionFlushWhere(ctx, " AND sf.dataset_id IN ("+strings.Join(placeholders, ",")+")", args)
+	return s.claimSessionFlushWhere(ctx, FormatUTCMicro(now), " AND sf.dataset_id IN ("+strings.Join(placeholders, ",")+")", args)
 }
 
 func (s *Store) transitionSessionFlushJob(ctx context.Context, id, from, to, lastError string) (SessionFlushJob, error) {
@@ -717,7 +909,8 @@ func (s *Store) transitionSessionFlushJob(ctx context.Context, id, from, to, las
 			lastError = ""
 		}
 		var err error
-		job, err = scanSessionFlushJob(tx.QueryRowContext(ctx, `UPDATE session_flush_jobs SET status=?,last_error=?,last_error_at=?,updated_at=?
+		job, err = scanSessionFlushJob(tx.QueryRowContext(ctx, `UPDATE session_flush_jobs
+			SET status=?,last_error=?,last_error_at=?,ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 			WHERE id=? AND status=? RETURNING `+sessionFlushColumns, to, lastError, lastErrorAt, now, id, from))
 		if !errors.Is(err, ErrNotFound) {
 			return err
@@ -750,17 +943,19 @@ func (s *Store) MarkSessionFlushSucceeded(ctx context.Context, id string) (bool,
 		now := NowUTCMicro()
 		if !active {
 			return execSQL(ctx, tx,
-				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,last_error='',last_error_at='',updated_at=?
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,
+				 last_error='',last_error_at='',ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 				 WHERE id=? AND status='processing'`, now, id)
 		}
 		if existing.RerunRequested {
-			requeued = true
+			requeued = existing.ReadyAt == ""
 			return execSQL(ctx, tx,
 				`UPDATE session_flush_jobs SET status='pending',rerun_requested=0,last_error='',last_error_at='',updated_at=?
 				 WHERE id=? AND status='processing'`, now, id)
 		}
 		return execSQL(ctx, tx,
-			`UPDATE session_flush_jobs SET status='succeeded',last_error='',last_error_at='',updated_at=?
+			`UPDATE session_flush_jobs SET status='succeeded',last_error='',last_error_at='',
+			 ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 			 WHERE id=? AND status='processing'`, now, id)
 	})
 	return requeued, err
@@ -783,17 +978,19 @@ func (s *Store) MarkSessionFlushFailed(ctx context.Context, id, lastError string
 		now := NowUTCMicro()
 		if !active {
 			return execSQL(ctx, tx,
-				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,last_error=?,last_error_at=?,updated_at=?
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,
+				 last_error=?,last_error_at=?,ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 				 WHERE id=? AND status='processing'`, lastError, now, now, id)
 		}
 		if existing.RerunRequested {
-			requeued = true
+			requeued = existing.ReadyAt == ""
 			return execSQL(ctx, tx,
 				`UPDATE session_flush_jobs SET status='pending',rerun_requested=0,last_error=?,last_error_at=?,updated_at=?
 				 WHERE id=? AND status='processing'`, lastError, now, now, id)
 		}
 		return execSQL(ctx, tx,
-			`UPDATE session_flush_jobs SET status='failed',last_error=?,last_error_at=?,updated_at=?
+			`UPDATE session_flush_jobs SET status='failed',last_error=?,last_error_at=?,
+			 ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 			 WHERE id=? AND status='processing'`, lastError, now, now, id)
 	})
 	return requeued, err
@@ -814,7 +1011,8 @@ func (s *Store) RequeueSessionFlush(ctx context.Context, id string) error {
 		}
 		if !active {
 			return execSQL(ctx, tx,
-				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,updated_at=? WHERE id=? AND status='processing'`,
+				`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,
+				 ready_at='',first_queued_at='',pending_qa_count=0,updated_at=? WHERE id=? AND status='processing'`,
 				NowUTCMicro(), id)
 		}
 		return execSQL(ctx, tx,
@@ -848,6 +1046,17 @@ func (s *Store) HasPendingSessionFlushJobs(ctx context.Context) (bool, error) {
 	return exists, err
 }
 
+func (s *Store) HasReadySessionFlushJobs(ctx context.Context, now time.Time) (bool, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM session_flush_jobs WHERE status='pending' AND (ready_at='' OR ready_at<=?))`,
+		FormatUTCMicro(now)).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) RecoverStaleProcessing(ctx context.Context) (int, int, error) {
 	return s.RecoverStaleProcessingBefore(ctx, "")
 }
@@ -872,7 +1081,8 @@ func (s *Store) RecoverStaleProcessingBefore(ctx context.Context, cutoff string)
 			return err
 		}
 		if err := execSQL(ctx, tx,
-			`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,updated_at=?
+			`UPDATE session_flush_jobs SET status='cancelled_project_removed',rerun_requested=0,
+			 ready_at='',first_queued_at='',pending_qa_count=0,updated_at=?
 			 WHERE status='processing'`+cutoffClause+`
 			   AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id=session_flush_jobs.project_id AND LOWER(REPLACE(p.dataset_id,'-',''))=LOWER(REPLACE(session_flush_jobs.dataset_id,'-','')))`,
 			args...); err != nil {
@@ -885,7 +1095,7 @@ func (s *Store) RecoverStaleProcessingBefore(ctx context.Context, cutoff string)
 		if n, err := resInbox.RowsAffected(); err == nil {
 			recoveredInbox = int(n)
 		}
-		resFlush, err := tx.ExecContext(ctx, `UPDATE session_flush_jobs SET status='pending',updated_at=? WHERE status='processing'`+cutoffClause, args...)
+		resFlush, err := tx.ExecContext(ctx, `UPDATE session_flush_jobs SET status='pending',ready_at='',updated_at=? WHERE status='processing'`+cutoffClause, args...)
 		if err != nil {
 			return err
 		}

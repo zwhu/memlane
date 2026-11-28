@@ -708,6 +708,16 @@ func TestDescribeInboxFailureEngineInternalError(t *testing.T) {
 			wantSummary: "记忆提炼内部出错（文件句柄不足）",
 		},
 		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (graph_wal_corrupted)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（图谱存储日志损坏）",
+		},
+		{
+			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (graph_db_size_limit)",
+			wantCode:    "engine_internal_error",
+			wantSummary: "记忆提炼内部出错（图谱缓存空间达到上限）",
+		},
+		{
 			raw:         "extract inbox: HTTP 500: engine_internal_error: engine runner internal error (vector_store_error)",
 			wantCode:    "engine_internal_error",
 			wantSummary: "记忆提炼内部出错（本地存储异常）",

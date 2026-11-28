@@ -240,6 +240,19 @@ func runnerStatusError(resp *http.Response) error {
 	}
 }
 
+var knownInternalErrorCategories = map[string]bool{
+	"graph_wal_corrupted": true,
+	"graph_db_size_limit": true,
+	"fd_limit_exceeded":   true,
+	"disk_full":           true,
+	"database_locked":     true,
+	"vector_store_error":  true,
+	"graph_store_error":   true,
+	"storage_io_error":    true,
+	"broken_pipe":         true,
+	"out_of_memory":       true,
+}
+
 // classifyInternalError maps bounded HTTP 500 runner bodies to a fixed,
 // secret-free diagnostic category token without ever echoing raw body text.
 func classifyInternalError(body io.Reader) string {
@@ -247,8 +260,27 @@ func classifyInternalError(body io.Reader) string {
 	if err != nil || len(data) == 0 {
 		return ""
 	}
+	var payload struct {
+		Category string `json:"category"`
+	}
+	if json.Unmarshal(data, &payload) == nil && knownInternalErrorCategories[payload.Category] {
+		return payload.Category
+	}
 	lower := strings.ToLower(string(data))
 	switch {
+	case strings.Contains(lower, "graph_wal_corrupted"),
+		strings.Contains(lower, "corrupted wal"),
+		strings.Contains(lower, "wal file is corrupted"),
+		strings.Contains(lower, "invalid wal record"),
+		strings.Contains(lower, "wal.checkpoint"),
+		strings.Contains(lower, ".lbug.shadow"),
+		strings.Contains(lower, "replay shadow pages"):
+		return "graph_wal_corrupted"
+	case strings.Contains(lower, "graph_db_size_limit"),
+		strings.Contains(lower, "maximum database size"),
+		strings.Contains(lower, "max_db_size"),
+		strings.Contains(lower, "buffer manager exception"):
+		return "graph_db_size_limit"
 	case strings.Contains(lower, "too many open files"),
 		strings.Contains(lower, "os error 24"),
 		strings.Contains(lower, "errno 24"),
@@ -260,7 +292,8 @@ func classifyInternalError(body io.Reader) string {
 		strings.Contains(lower, "enospc"):
 		return "disk_full"
 	case strings.Contains(lower, "database is locked"),
-		strings.Contains(lower, "database table is locked"):
+		strings.Contains(lower, "database table is locked"),
+		strings.Contains(lower, "could not set lock on file"):
 		return "database_locked"
 	case strings.Contains(lower, "lanceerror"),
 		strings.Contains(lower, "lance error"),

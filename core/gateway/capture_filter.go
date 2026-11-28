@@ -82,6 +82,12 @@ func describeInboxFailure(rawErr string) (code, summary, nextAction string) {
 	case strings.Contains(errText, "fd_limit_exceeded"), strings.Contains(errText, "too many open files"),
 		strings.Contains(errText, "os error 24"), strings.Contains(errText, "emfile"):
 		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（文件句柄不足）", "请重启本地服务以刷新文件句柄上限，然后点击「一键重试」。"
+	case strings.Contains(errText, "graph_wal_corrupted"), strings.Contains(errText, "corrupted wal"),
+		strings.Contains(errText, "wal file is corrupted"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（图谱存储日志损坏）", "请重启本地服务以自动修复损坏的图谱日志，然后点击「一键重试」。"
+	case strings.Contains(errText, "graph_db_size_limit"), strings.Contains(errText, "maximum database size"),
+		strings.Contains(errText, "max_db_size"):
+		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（图谱缓存空间达到上限）", "请重启本地服务以重置图谱缓存并应用更高上限，然后点击「一键重试」。"
 	case strings.Contains(errText, "disk_full"), strings.Contains(errText, "no space left on device"), strings.Contains(errText, "enospc"):
 		code, summary, nextAction = "engine_internal_error", "记忆提炼内部出错（磁盘空间不足）", "请清理本机可用磁盘空间后再点击「一键重试」。"
 	case strings.Contains(errText, "database_locked"), strings.Contains(errText, "database is locked"):

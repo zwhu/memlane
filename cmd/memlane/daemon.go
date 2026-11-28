@@ -43,8 +43,12 @@ type StackConfig struct {
 	ProbeRuntime                    map[string]any
 	AgentTokens                     map[string]string
 	DaemonStatus                    func(context.Context) map[string]any
-	DiscoveryOptions                agents.DiscoveryOptions
-	OutputLanguage                  string
+	DiscoveryOptions          agents.DiscoveryOptions
+	OutputLanguage            string
+	SessionExtractQuietWindow time.Duration
+	SessionExtractMaxWait     time.Duration
+	SessionExtractBatchSize   int
+	DatasetExtractCooldown    time.Duration
 }
 
 type GatewayStack struct {
@@ -139,6 +143,10 @@ func MountGatewayStack(cfg StackConfig) (*GatewayStack, error) {
 		CompletionHandler: completions.Handler(), MCPHandler: mcpServer.Handler(), ProfilesHandler: profileService.Handler(),
 		OutputLanguage: cfg.OutputLanguage, BridgeEndpoint: cfg.BridgeEndpoint, BridgeTokenFile: cfg.BridgeTokenFile,
 		ProbeRuntime: cfg.ProbeRuntime,
+		SessionExtractQuietWindow: cfg.SessionExtractQuietWindow,
+		SessionExtractMaxWait:     cfg.SessionExtractMaxWait,
+		SessionExtractBatchSize:   cfg.SessionExtractBatchSize,
+		DatasetExtractCooldown:    cfg.DatasetExtractCooldown,
 	})
 	if err != nil {
 		return nil, errors.Join(err, profileService.Close(context.Background()))
@@ -306,6 +314,12 @@ func serveDaemon(ctx context.Context, cfg runtimeConfig, attach bool, stdout io.
 		s := supervisor.Snapshot()
 		return map[string]any{"owner_pid": s.OwnerPID, "phase": s.Phase, "state": s.State, "services": s.Services}
 	}
+	// Coalesce active-session Q&As into debounced session flushes and space out
+	// per-dataset extracts to prevent high-frequency Ladybug CHECKPOINT bursts.
+	stackCfg.SessionExtractQuietWindow = 60 * time.Second
+	stackCfg.SessionExtractMaxWait = 5 * time.Minute
+	stackCfg.SessionExtractBatchSize = 8
+	stackCfg.DatasetExtractCooldown = 15 * time.Second
 	dbPath := filepath.Join(cfg.StoreRoot, "memlane.sqlite3")
 	if err := importLegacyStore(cfg, dbPath); err != nil {
 		return err

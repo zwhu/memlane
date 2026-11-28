@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import ctypes
+from datetime import datetime, timezone
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -11,6 +12,7 @@ import re
 import resource
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 from urllib.parse import urlparse
@@ -21,6 +23,20 @@ _VERIFY_CACHE_SCHEMA_VERSION = 2
 _BYTECODE_SUFFIXES = ('.pyc', '.pyo')
 _DEFAULT_NOFILE_TARGET = 65536
 _NOFILE_TIER_TARGETS = (16384, 10240, 4096)
+_DEFAULT_KUZU_MAX_DB_SIZE = 1 << 43 if sys.maxsize > 2**32 else 1 << 31
+_LADYBUG_PROBE_SCRIPT = (
+    'import ladybug, sys; '
+    'db = ladybug.Database(sys.argv[1], buffer_pool_size=64*1024*1024, max_db_size=int(sys.argv[2])); '
+    'db.close()'
+)
+_LADYBUG_WAL_ERROR_MARKERS = (
+    'corrupted wal',
+    'wal file is corrupted',
+    'invalid wal record',
+    'replay shadow pages',
+    '.lbug.shadow',
+    'shadow file',
+)
 
 
 def _darwin_maxfilesperproc():
@@ -424,7 +440,7 @@ def scrub_environment():
     prefixes = ('LLM_', 'EMBEDDING_', 'COGNEE_', 'MEMLANE_', 'FALLBACK_', 'TRANSCRIPTION_',
                 'IMAGE_TRANSCRIBE_', 'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'GOOGLE_', 'OLLAMA_',
                 'FASTAPI_USERS_', 'LITELLM_', 'DB_', 'GRAPH_DATABASE_', 'VECTOR_DB_', 'VECTOR_DATABASE_',
-                'AWS_', 'AZURE_', 'HF_', 'TRANSFORMERS_', 'DEFAULT_USER_', 'RELATIONAL_DB_', 'DYNAMIC_')
+                'KUZU_', 'AWS_', 'AZURE_', 'HF_', 'TRANSFORMERS_', 'DEFAULT_USER_', 'RELATIONAL_DB_', 'DYNAMIC_')
     for key in list(os.environ):
         if key.upper().startswith(prefixes) or key.upper() in {
             'CHUNKS_PER_BATCH', 'STRUCTURED_OUTPUT_FRAMEWORK', 'IMPROVE_STAGES_DISABLED',
@@ -443,6 +459,78 @@ def verify_ladybug_abi():
         (Path(location) / ('_lbug' + suffix)).is_file() for location in locations
     ):
         raise ValueError('existing Ladybug native dependency unavailable for this Python')
+
+
+def _is_corrupted_ladybug_wal_error(output):
+    lower = (output or '').lower()
+    if any(marker in lower for marker in _LADYBUG_WAL_ERROR_MARKERS):
+        return True
+    return 'wal' in lower and any(token in lower for token in ('corrupt', 'invalid', 'checksum'))
+
+
+def _probe_ladybug_db(db_path, max_db_size):
+    return subprocess.run(
+        [sys.executable, '-s', '-B', '-c', _LADYBUG_PROBE_SCRIPT, str(db_path), str(max_db_size)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+
+
+def recover_corrupted_ladybug_wals(root, *, max_db_size=_DEFAULT_KUZU_MAX_DB_SIZE):
+    """Quarantine broken Ladybug checkpoint/shadow WAL sidecars that upstream kuzu_worker misses."""
+    databases_dir = Path(root) / 'system' / 'databases'
+    if not databases_dir.is_dir() or databases_dir.is_symlink():
+        return []
+    candidates = set()
+    stack = [databases_dir]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    for suffix in ('.wal.checkpoint', '.shadow'):
+                        if entry.name.endswith(suffix):
+                            base = Path(entry.path[:-len(suffix)])
+                            if not base.is_symlink() and base.is_file():
+                                candidates.add(base)
+                            break
+        except OSError:
+            continue
+    recovered = []
+    for db_path in sorted(candidates):
+        probe = _probe_ladybug_db(db_path, max_db_size)
+        if probe.returncode == 0:
+            continue
+        if not _is_corrupted_ladybug_wal_error(probe.stderr + '\n' + probe.stdout):
+            continue
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        quarantine_dir = Path(root) / 'logs' / 'ladybug-wal-quarantine' / f'{stamp}-{db_path.name}'
+        quarantine_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        moved = []
+        for suffix in ('.wal.checkpoint', '.shadow', '.wal'):
+            sidecar = Path(f'{db_path}{suffix}')
+            if sidecar.exists() and not sidecar.is_symlink() and sidecar.is_file():
+                os.replace(sidecar, quarantine_dir / sidecar.name)
+                moved.append(sidecar.name)
+        verify = _probe_ladybug_db(db_path, max_db_size)
+        verified = verify.returncode == 0
+        sys.stderr.write(
+            f'memlane engine startup recovered corrupted Ladybug WAL for {db_path.name}: '
+            f'quarantined={moved} verified={verified}\n'
+        )
+        recovered.append({
+            'db': db_path.name,
+            'quarantined': moved,
+            'quarantine_dir': str(quarantine_dir),
+            'verified': verified,
+        })
+    return recovered
 
 
 def load_internal_token(config):
@@ -470,10 +558,11 @@ def _configure_store(config, root):
     os.environ.update(HOME=str(root / 'home'), SYSTEM_ROOT_DIRECTORY=str(root / 'system'),
                       DATA_ROOT_DIRECTORY=str(root / 'data'), CACHE_ROOT_DIRECTORY=str(root / 'cache'),
                       DB_PATH=str(root / 'system/databases'), CACHE_BACKEND='sqlite', CACHING='true', SESSION_TTL_SECONDS='0',
+                      KUZU_MAX_DB_SIZE=str(_DEFAULT_KUZU_MAX_DB_SIZE),
                       LOGS_ROOT_DIRECTORY=str(root / 'logs'), COGNEE_LOGS_DIR=str(root / 'logs'),
                       TELEMETRY_DISABLED='true', COGNEE_TRACING_ENABLED='false', PYTHON_DOTENV_DISABLED='1',
                       ENABLE_BACKEND_ACCESS_CONTROL='true', REQUIRE_AUTHENTICATION='true',
-                      COGNEE_AGENT_MODE='false', DISTILLATION_MODE='coding',
+                      COGNEE_AGENT_MODE='false', DISTILLATION_MODE='coding', IMPROVE_AUTO_ENABLED='false',
                       IMPROVE_STAGES_DISABLED='persist_agent_traces', LITELLM_LOCAL_MODEL_COST_MAP='true')
 
 
@@ -528,6 +617,7 @@ def main():
         _install_source_only_import_hook(source)
         sys.path.insert(0, str(source))
         verify_ladybug_abi()
+        recover_corrupted_ladybug_wals(root)
         asyncio.run(_serve(config, root, token))
     finally:
         stopped.set()

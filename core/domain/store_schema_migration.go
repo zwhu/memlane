@@ -58,7 +58,46 @@ func migrateStoreSchema(ctx context.Context, tx *sql.Tx, version int) error {
 			return err
 		}
 	}
+	if version < 7 {
+		if err := migrateSessionFlushToV7(ctx, tx); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func migrateSessionFlushToV7(ctx context.Context, tx *sql.Tx) error {
+	existing, err := queryList(ctx, tx, func(row scanner) (string, error) {
+		var name string
+		var cid, required, primaryKey int
+		var fieldType string
+		var defaultValue sql.NullString
+		err := row.Scan(&cid, &name, &fieldType, &required, &defaultValue, &primaryKey)
+		return name, err
+	}, "PRAGMA table_info(session_flush_jobs)")
+	if err != nil {
+		return fmt.Errorf("inspect session_flush_jobs columns for v7: %w", err)
+	}
+	present := make(map[string]bool, len(existing))
+	for _, col := range existing {
+		present[col] = true
+	}
+	for _, col := range []struct {
+		name string
+		ddl  string
+	}{
+		{"ready_at", "TEXT NOT NULL DEFAULT ''"},
+		{"first_queued_at", "TEXT NOT NULL DEFAULT ''"},
+		{"pending_qa_count", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if present[col.name] {
+			continue
+		}
+		if err := execSQL(ctx, tx, "ALTER TABLE session_flush_jobs ADD COLUMN "+col.name+" "+col.ddl); err != nil {
+			return fmt.Errorf("migrate session_flush_jobs.%s: %w", col.name, err)
+		}
+	}
+	return execSQL(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_session_flush_jobs_ready ON session_flush_jobs(status,ready_at,updated_at)`)
 }
 
 func migrateCaptureTablesToV6(ctx context.Context, tx *sql.Tx) error {

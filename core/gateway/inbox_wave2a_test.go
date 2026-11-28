@@ -804,3 +804,114 @@ func TestInboxHTTP500AndOfficialExtractFailedMarkFailedInsteadOfInfiniteRetry(t 
 		t.Fatalf("transport-level unavailable must keep item pending, got %+v", itemDown)
 	}
 }
+
+func TestInboxDebouncedSessionQACoalescingAndDatasetCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 28, 4, 0, 0, 0, time.UTC)
+	s, store, fake := testServer(t, func(cfg *Config) {
+		cfg.InboxWorkers = 1
+		cfg.SessionExtractQuietWindow = 60 * time.Second
+		cfg.SessionExtractMaxWait = 3 * time.Minute
+		cfg.SessionExtractBatchSize = 4
+		cfg.DatasetExtractCooldown = 15 * time.Second
+	})
+	s.Inbox().now = func() time.Time { return now }
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	enqueueQA := func(sess, msg string) {
+		agentRequest(t, s, "/ingest", fmt.Sprintf(`{
+			"project_id":"p","session_id":%q,"message_id":%q,"kind":"capture_qa",
+			"content":{"question":"q-%s","answer":"a-%s"}
+		}`, sess, msg, msg, msg), http.StatusAccepted)
+	}
+
+	// 1. Three Q&A turns in one session ingest immediately with ZERO Extract calls (waiting on quiet window).
+	for i := 1; i <= 3; i++ {
+		enqueueQA("sess-deb", fmt.Sprintf("m%d", i))
+		worked, err := s.Inbox().ProcessOnce(ctx)
+		must(t, err)
+		if !worked {
+			t.Fatalf("turn %d did not ingest", i)
+		}
+	}
+	if len(fake.ingest) != 3 || len(fake.extract) != 0 {
+		t.Fatalf("after 3 debounced turns: ingests=%d extracts=%d, want 3/0", len(fake.ingest), len(fake.extract))
+	}
+	// Still inside 60s quiet window at +30s -> ProcessOnce does NOT trigger Extract.
+	now = now.Add(30 * time.Second)
+	if worked, err := s.Inbox().ProcessOnce(ctx); err != nil || worked {
+		t.Fatalf("ProcessOnce inside quiet window = (%v, %v), want (false, nil)", worked, err)
+	}
+
+	// 2. 4th Q&A hits BatchSize=4 -> promotes session flush to immediate -> 1 single Extract for all 4 turns!
+	enqueueQA("sess-deb", "m4")
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.ingest) != 4 || len(fake.extract) != 0 {
+		t.Fatalf("4th turn ingest unexpected: worked=%v ingests=%d extracts=%d", worked, len(fake.ingest), len(fake.extract))
+	}
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.extract) != 1 || len(fake.extract[0].DocIDs) != 1 || fake.extract[0].DocIDs[0] != "sess-deb" {
+		t.Fatalf("batch-threshold flush unexpected: worked=%v extracts=%+v", worked, fake.extract)
+	}
+
+	// 3. Another session in the SAME dataset arrives inside 15s cooldown with /session-end:
+	// fast Ingest must STILL run immediately, while heavy Extract waits until cooldown elapses.
+	now = now.Add(5 * time.Second)
+	enqueueQA("sess-next", "m1")
+	agentRequest(t, s, "/session-end", `{"project_id":"p","session_id":"sess-next"}`, http.StatusAccepted)
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.ingest) != 5 || len(fake.extract) != 1 {
+		t.Fatalf("fast ingest during dataset cooldown failed: worked=%v ingests=%d extracts=%d", worked, len(fake.ingest), len(fake.extract))
+	}
+	// Still inside 15s cooldown (+5s of 15s) -> flush must wait.
+	if worked, err := s.Inbox().ProcessOnce(ctx); err != nil || worked || len(fake.extract) != 1 {
+		t.Fatalf("flush bypassed dataset cooldown: worked=%v err=%v extracts=%d", worked, err, len(fake.extract))
+	}
+	// After cooldown elapses (+16s total) -> flush runs cleanly!
+	now = now.Add(11 * time.Second)
+	worked, err = s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked || len(fake.extract) != 2 || fake.extract[1].DocIDs[0] != "sess-next" {
+		t.Fatalf("flush after cooldown unexpected: worked=%v extracts=%+v", worked, fake.extract)
+	}
+	jobNext, err := store.GetSessionFlushJob(ctx, "ds", "sess-next")
+	must(t, err)
+	if jobNext.Status != "succeeded" {
+		t.Fatalf("sess-next flush status = %+v", jobNext)
+	}
+}
+
+func TestInboxDirectSessionQABatchCoalescing(t *testing.T) {
+	// Even with quiet window disabled (0), pending capture_qa rows in the same session
+	// coalesce into ONE Extract call instead of N separate improve() calls.
+	s, store, fake := testServer(t, func(cfg *Config) { cfg.InboxWorkers = 1 })
+	ctx := context.Background()
+	manage(t, s, "PUT", "/api/projects/p/acl/agent", `{"access":"maintain"}`, 200)
+
+	ids := make([]string, 0, 5)
+	for i := 1; i <= 5; i++ {
+		res := agentRequest(t, s, "/ingest", fmt.Sprintf(`{
+			"project_id":"p","session_id":"sess-coal","message_id":"mc-%d","kind":"capture_qa",
+			"content":{"question":"q-%d","answer":"a-%d"}
+		}`, i, i, i), http.StatusAccepted)
+		ids = append(ids, res["inbox_id"].(string))
+	}
+	worked, err := s.Inbox().ProcessOnce(ctx)
+	must(t, err)
+	if !worked {
+		t.Fatal("expected coalesced batch to process")
+	}
+	if len(fake.ingest) != 5 || len(fake.extract) != 1 {
+		t.Fatalf("coalesced 5 Q&As produced ingests=%d extracts=%d, want 5/1", len(fake.ingest), len(fake.extract))
+	}
+	for _, id := range ids {
+		it, err := store.GetInboxItem(ctx, id)
+		must(t, err)
+		if it.Status != "succeeded" {
+			t.Fatalf("item %s status = %q, want succeeded", id, it.Status)
+		}
+	}
+}
