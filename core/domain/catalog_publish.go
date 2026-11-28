@@ -1030,20 +1030,15 @@ func enrichSessionAgentsTx(ctx context.Context, tx *sql.Tx, datasetID string, se
 }
 
 func loadUniquePrincipalAgentsTx(ctx context.Context, db sqlReader) (map[string]string, error) {
-	type bucket struct {
-		active   []string
-		inactive []string
-	}
-	byPrincipal := make(map[string]*bucket)
-	rows, err := db.QueryContext(ctx, `SELECT id, principal_id, archived, retired_at FROM agents WHERE principal_id<>''`)
+	byPrincipal := make(map[string][]string)
+	rows, err := db.QueryContext(ctx, `SELECT id, principal_id FROM agents WHERE principal_id<>''`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, principalID, retiredAt string
-		var archived int
-		if err := rows.Scan(&id, &principalID, &archived, &retiredAt); err != nil {
+		var id, principalID string
+		if err := rows.Scan(&id, &principalID); err != nil {
 			return nil, err
 		}
 		id = strings.TrimSpace(id)
@@ -1051,26 +1046,18 @@ func loadUniquePrincipalAgentsTx(ctx context.Context, db sqlReader) (map[string]
 		if id == "" || key == "" {
 			continue
 		}
-		b := byPrincipal[key]
-		if b == nil {
-			b = &bucket{}
-			byPrincipal[key] = b
-		}
-		if archived == 0 && strings.TrimSpace(retiredAt) == "" {
-			b.active = append(b.active, id)
-		} else {
-			b.inactive = append(b.inactive, id)
-		}
+		byPrincipal[key] = append(byPrincipal[key], id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	out := make(map[string]string, len(byPrincipal))
-	for key, b := range byPrincipal {
-		if len(b.active) == 1 {
-			out[key] = b.active[0]
-		} else if len(b.active) == 0 && len(b.inactive) == 1 {
-			out[key] = b.inactive[0]
+	for key, ids := range byPrincipal {
+		// Only map when the principal belongs to strictly one registered agent
+		// across both active and retired/archived records, preventing historical
+		// sessions of a retired agent from being misattributed to a newer active one.
+		if len(ids) == 1 {
+			out[key] = ids[0]
 		}
 	}
 	return out, nil

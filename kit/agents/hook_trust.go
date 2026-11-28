@@ -24,6 +24,7 @@ const (
 	HookTrustManaged   = "managed"
 
 	defaultHookTrustProbeTimeout = 4 * time.Second
+	hookTrustGracefulExitTimeout = 400 * time.Millisecond
 	hookTrustScanMaxBytes        = 4 << 20
 )
 
@@ -98,11 +99,24 @@ func IsManagedHookCommand(command string) bool {
 	return false
 }
 
+// HasManagedHostHooks reports whether any hook configuration file for the
+// given host contains at least one Memlane-managed hook entry.
+func HasManagedHostHooks(hostKind, profileDir string, hookPaths []string) bool {
+	if hostKind != HostCodex && hostKind != HostTraeX {
+		return false
+	}
+	if len(hookPaths) == 0 {
+		hookPaths, _ = HookTrustConfigFiles(hostKind, profileDir)
+	}
+	_, managedEntries, _ := collectManagedHookIndex(hookPaths)
+	return len(managedEntries) > 0
+}
+
 // ProbeHostHookTrust performs a strictly read-only probe of host hook trust
 // status for Codex and TRAE CLI. It first queries `<executable> app-server`
 // via JSON-RPC (`initialize` -> `initialized` -> `hooks/list`), and falls back
-// conservatively to parsing `[hooks.state]` in config.toml / traecli.toml when
-// app-server is unavailable, times out, or returns no managed hook entries.
+// conservatively to parsing `[hooks.state]` in config.toml / traecli.toml for
+// known Memlane-managed hook entries when app-server is unavailable or times out.
 func ProbeHostHookTrust(ctx context.Context, hostKind, executable, profileDir string, hookPaths []string) HostHookTrustReport {
 	empty := HostHookTrustReport{HostKind: hostKind, Source: "none"}
 	if hostKind != HostCodex && hostKind != HostTraeX {
@@ -124,7 +138,7 @@ func ProbeHostHookTrust(ctx context.Context, hostKind, executable, profileDir st
 		}
 	}
 
-	if report, ok := probeHostHookTrustTOML(hostKind, tomlPaths, allowedPaths, managedEntries); ok {
+	if report, ok := probeHostHookTrustTOML(hostKind, tomlPaths, managedEntries); ok {
 		return report
 	}
 	return empty
@@ -323,7 +337,6 @@ func probeHostHookTrustAppServer(
 	cmd := exec.Command(executable, "app-server")
 	cmd.Dir = os.TempDir()
 	cmd.Env = buildHookTrustProbeEnv(hostKind, profileDir)
-	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
@@ -335,23 +348,71 @@ func probeHostHookTrustAppServer(
 		_ = stdin.Close()
 		return HostHookTrustReport{}, false
 	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return HostHookTrustReport{}, false
+	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		return HostHookTrustReport{}, false
 	}
 
-	done := make(chan struct{})
+	stderrDone := make(chan struct{})
 	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(io.Discard, stderr)
+	}()
+
+	stopWatch := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
 		select {
 		case <-probeCtx.Done():
 			killProcessGroup(cmd)
-		case <-done:
+		case <-stopWatch:
 		}
 	}()
 	defer func() {
-		close(done)
+		// Join the RPC-phase watchdog strictly before cmd.Wait() can reap the PID.
+		close(stopWatch)
+		<-watchDone
 		_ = stdin.Close()
-		killProcessGroup(cmd)
+
+		stdoutDone := make(chan struct{})
+		go func() {
+			defer close(stdoutDone)
+			_, _ = io.Copy(io.Discard, stdout)
+		}()
+		pipesDone := make(chan struct{})
+		go func() {
+			defer close(pipesDone)
+			<-stdoutDone
+			<-stderrDone
+		}()
+
+		if probeCtx.Err() != nil {
+			killProcessGroup(cmd)
+			<-pipesDone
+			_ = cmd.Wait()
+			return
+		}
+
+		// Give the child a short graceful window to exit cleanly on stdin EOF
+		// (so codex/traecli remove their tmp/arg0* directories and exit 0).
+		graceTimer := time.NewTimer(hookTrustGracefulExitTimeout)
+		defer graceTimer.Stop()
+		select {
+		case <-pipesDone:
+		case <-probeCtx.Done():
+			killProcessGroup(cmd)
+			<-pipesDone
+		case <-graceTimer.C:
+			killProcessGroup(cmd)
+			<-pipesDone
+		}
 		_ = cmd.Wait()
 	}()
 
@@ -462,9 +523,6 @@ func probeHostHookTrustAppServer(
 			Enabled:     enabled,
 		})
 	}
-	if report.TotalManaged == 0 {
-		return HostHookTrustReport{}, false
-	}
 	report.Evaluated = true
 	return report, true
 }
@@ -521,9 +579,11 @@ func appendUniqueEvent(dst *[]string, event string) {
 func probeHostHookTrustTOML(
 	hostKind string,
 	tomlPaths []string,
-	allowedPaths map[string]bool,
 	managedEntries []managedHookFileEntry,
 ) (HostHookTrustReport, bool) {
+	if len(managedEntries) == 0 {
+		return HostHookTrustReport{}, false
+	}
 	stateByKey := map[string]map[string]any{}
 	foundStateTable := false
 
@@ -566,62 +626,27 @@ func probeHostHookTrustTOML(
 		Evaluated: true,
 	}
 
-	if len(managedEntries) > 0 {
-		for _, entry := range managedEntries {
-			snakeEvent := snakeHookEventName(entry.event)
-			suffix := ":" + snakeEvent + ":" + strconv.Itoa(entry.groupIdx) + ":" + strconv.Itoa(entry.handlerIdx)
-			rawKey := filepath.Clean(entry.sourcePath) + suffix
-			canonKey := canonicalHookPath(entry.sourcePath) + suffix
-			stateObj, ok := stateByKey[canonKey]
-			if !ok {
-				stateObj, ok = stateByKey[rawKey]
-			}
-			displayEvent := displayHookEventName(entry.event)
-			if !ok {
-				recordHookTrustEntry(&report, HostHookTrustEntry{
-					Key:         canonKey,
-					EventName:   displayEvent,
-					Command:     entry.command,
-					SourcePath:  entry.sourcePath,
-					TrustStatus: HookTrustUntrusted,
-					Enabled:     true,
-				})
-				continue
-			}
-			trustedHash, _ := stateObj["trusted_hash"].(string)
-			enabledVal, hasEnabled := stateObj["enabled"].(bool)
-			enabled := !hasEnabled || enabledVal
-			trustStatus := HookTrustTrusted
-			if strings.TrimSpace(trustedHash) == "" {
-				trustStatus = HookTrustUntrusted
-			}
+	for _, entry := range managedEntries {
+		snakeEvent := snakeHookEventName(entry.event)
+		suffix := ":" + snakeEvent + ":" + strconv.Itoa(entry.groupIdx) + ":" + strconv.Itoa(entry.handlerIdx)
+		rawKey := filepath.Clean(entry.sourcePath) + suffix
+		canonKey := canonicalHookPath(entry.sourcePath) + suffix
+		stateObj, ok := stateByKey[canonKey]
+		if !ok {
+			stateObj, ok = stateByKey[rawKey]
+		}
+		displayEvent := displayHookEventName(entry.event)
+		if !ok {
 			recordHookTrustEntry(&report, HostHookTrustEntry{
 				Key:         canonKey,
 				EventName:   displayEvent,
 				Command:     entry.command,
 				SourcePath:  entry.sourcePath,
-				TrustStatus: trustStatus,
-				Enabled:     enabled,
+				TrustStatus: HookTrustUntrusted,
+				Enabled:     true,
 			})
-		}
-		return report, true
-	}
-
-	seen := map[string]bool{}
-	for _, rawKey := range sortedKeys(stateByKey) {
-		canonKey := canonicalizeHookStateKey(rawKey)
-		if seen[canonKey] {
 			continue
 		}
-		srcPath, eventName, ok := parseHookStateKey(canonKey)
-		if !ok {
-			continue
-		}
-		if len(allowedPaths) > 0 && !allowedPaths[srcPath] && !allowedPaths[canonicalHookPath(srcPath)] {
-			continue
-		}
-		seen[canonKey] = true
-		stateObj := stateByKey[rawKey]
 		trustedHash, _ := stateObj["trusted_hash"].(string)
 		enabledVal, hasEnabled := stateObj["enabled"].(bool)
 		enabled := !hasEnabled || enabledVal
@@ -631,33 +656,14 @@ func probeHostHookTrustTOML(
 		}
 		recordHookTrustEntry(&report, HostHookTrustEntry{
 			Key:         canonKey,
-			EventName:   displayHookEventName(eventName),
-			SourcePath:  srcPath,
+			EventName:   displayEvent,
+			Command:     entry.command,
+			SourcePath:  entry.sourcePath,
 			TrustStatus: trustStatus,
 			Enabled:     enabled,
 		})
 	}
-	if report.TotalManaged == 0 {
-		return HostHookTrustReport{}, false
-	}
 	return report, true
-}
-
-func parseHookStateKey(key string) (sourcePath, event string, ok bool) {
-	// Format: <sourcePath>:<snake_event>:<group_idx>:<handler_idx>
-	idx3 := strings.LastIndexByte(key, ':')
-	if idx3 <= 0 {
-		return "", "", false
-	}
-	idx2 := strings.LastIndexByte(key[:idx3], ':')
-	if idx2 <= 0 {
-		return "", "", false
-	}
-	idx1 := strings.LastIndexByte(key[:idx2], ':')
-	if idx1 <= 0 {
-		return "", "", false
-	}
-	return key[:idx1], key[idx1+1 : idx2], true
 }
 
 func canonicalizeHookStateKey(key string) string {

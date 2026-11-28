@@ -703,11 +703,17 @@ func TestCatalogPublishBackfillsSessionAgentIDsAndUsesCoveringIndexes(t *testing
 	// - principal-unique: single active agent -> resolves
 	// - principal-retired: single retired agent (no active) -> resolves
 	// - principal-shared: 2 active agents share principal -> must NOT guess
+	// - principal-retired-plus-active: 1 retired + 1 active share principal -> must NOT guess
+	// - principal-archived-plus-active: 1 archived + 1 active share principal -> must NOT guess
 	for _, a := range []Agent{
 		{ID: "traex-7859e85d2cf88d393366e77e", Kind: "traex", Name: "TRAE CLI", PrincipalID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
 		{ID: "codex-retired-1", Kind: "codex", Name: "Old Codex", PrincipalID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", RetiredAt: "2026-10-01T00:00:00Z"},
 		{ID: "codex-shared-1", Kind: "codex", Name: "Codex A", PrincipalID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
 		{ID: "pi-shared-2", Kind: "pi", Name: "Pi B", PrincipalID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+		{ID: "codex-old-retired", Kind: "codex", Name: "Retired Codex", PrincipalID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", RetiredAt: "2026-10-15T00:00:00Z"},
+		{ID: "traex-new-active", Kind: "traex", Name: "New TRAE", PrincipalID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
+		{ID: "codex-old-archived", Kind: "codex", Name: "Archived Codex", PrincipalID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Archived: true},
+		{ID: "traex-new-active-2", Kind: "traex", Name: "New TRAE 2", PrincipalID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
 	} {
 		if err := store.UpsertAgent(ctx, a); err != nil {
 			t.Fatal(err)
@@ -715,12 +721,14 @@ func TestCatalogPublishBackfillsSessionAgentIDsAndUsesCoveringIndexes(t *testing
 	}
 
 	const (
-		traeUUID        = "01a2201c-ff97-7430-8035-dd1c06201848"
-		hexDSUUID       = "01a2201c-ff97-7430-8035-dd1c06209999"
-		principalOnlyID = "01a2201c-ff97-7430-8035-dd1c0620aaaa"
-		retiredOnlyID   = "01a2201c-ff97-7430-8035-dd1c0620bbbb"
-		sharedOnlyID    = "01a2201c-ff97-7430-8035-dd1c0620cccc"
-		explicitID      = "01a2201c-ff97-7430-8035-dd1c0620dddd"
+		traeUUID             = "01a2201c-ff97-7430-8035-dd1c06201848"
+		hexDSUUID            = "01a2201c-ff97-7430-8035-dd1c06209999"
+		principalOnlyID      = "01a2201c-ff97-7430-8035-dd1c0620aaaa"
+		retiredOnlyID        = "01a2201c-ff97-7430-8035-dd1c0620bbbb"
+		sharedOnlyID         = "01a2201c-ff97-7430-8035-dd1c0620cccc"
+		retiredPlusActiveID  = "01a2201c-ff97-7430-8035-dd1c0620ddee"
+		archivedPlusActiveID = "01a2201c-ff97-7430-8035-dd1c0620eeff"
+		explicitID           = "01a2201c-ff97-7430-8035-dd1c0620dddd"
 	)
 
 	// Older inbox row vs newer inbox row for traeUUID -> must pick latest updated_at.
@@ -746,16 +754,20 @@ func TestCatalogPublishBackfillsSessionAgentIDsAndUsesCoveringIndexes(t *testing
 		{SessionID: principalOnlyID, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", AgentID: "", Status: "active", SortTSDescKey: -400},
 		{SessionID: retiredOnlyID, UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", AgentID: "", Status: "active", SortTSDescKey: -300},
 		{SessionID: sharedOnlyID, UserID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", AgentID: "", Status: "active", SortTSDescKey: -200},
+		{SessionID: retiredPlusActiveID, UserID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", AgentID: "", Status: "active", SortTSDescKey: -180},
+		{SessionID: archivedPlusActiveID, UserID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", AgentID: "", Status: "active", SortTSDescKey: -160},
 		{SessionID: explicitID, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", AgentID: "claude_code-explicit", Status: "active", SortTSDescKey: -100},
 	}
 
 	wantAgents := map[string]string{
-		traeUUID:        "traex-7859e85d2cf88d393366e77e",
-		hexDSUUID:       "codex-2564787a11223344",
-		principalOnlyID: "traex-7859e85d2cf88d393366e77e",
-		retiredOnlyID:   "codex-retired-1",
-		sharedOnlyID:    "",
-		explicitID:      "claude_code-explicit",
+		traeUUID:             "traex-7859e85d2cf88d393366e77e",
+		hexDSUUID:            "codex-2564787a11223344",
+		principalOnlyID:      "traex-7859e85d2cf88d393366e77e",
+		retiredOnlyID:        "codex-retired-1",
+		sharedOnlyID:         "",
+		retiredPlusActiveID:  "",
+		archivedPlusActiveID: "",
+		explicitID:           "claude_code-explicit",
 	}
 
 	assertSessions := func(t *testing.T, phase string) {

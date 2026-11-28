@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -367,4 +368,270 @@ trusted_hash = "sha256:ddd444"
 	if !trustedReport.Evaluated || trustedReport.Source != "toml_fallback" || trustedReport.NeedsTrust() || trustedReport.TrustedCount != 4 {
 		t.Fatalf("expected all-trusted fallback report, got %+v", trustedReport)
 	}
+}
+
+func TestProbeHostHookTrustIgnoresThirdPartyOnlyHooks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	profile := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(profile, "hooks.json")
+	thirdPartyHooks := `{
+  "hooks": {
+    "Stop": [{"hooks":[{"type":"command","command":"/opt/flux/flux-hook stop"}]}],
+    "SessionStart": [{"hooks":[{"type":"command","command":"/usr/local/bin/other-tool start"}]}]
+  }
+}`
+	if err := os.WriteFile(hooksPath, []byte(thirdPartyHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonHooks := canonicalHookPath(hooksPath)
+	tomlPath := filepath.Join(profile, "config.toml")
+	tomlWithUntrustedThirdParty := fmt.Sprintf(`
+[hooks.state.%q]
+enabled = false
+
+[hooks.state.%q]
+enabled = true
+`, canonHooks+":stop:0:0", canonHooks+":session_start:0:0")
+	if err := os.WriteFile(tomlPath, []byte(tomlWithUntrustedThirdParty), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if HasManagedHostHooks(HostCodex, profile, []string{hooksPath}) {
+		t.Fatalf("HasManagedHostHooks must be false for third-party-only hooks.json")
+	}
+
+	// 1. Working app-server returns only third-party untrusted/disabled hooks -> must return
+	// Evaluated:true, Source:"app_server", TotalManaged:0, NeedsTrust:false without falling into TOML.
+	respRaw, err := json.Marshal(map[string]any{
+		"id": 2,
+		"result": map[string]any{
+			"data": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{
+							"key":         hooksPath + ":stop:0:0",
+							"eventName":   "stop",
+							"command":     "/opt/flux/flux-hook stop",
+							"sourcePath":  hooksPath,
+							"enabled":     false,
+							"trustStatus": "untrusted",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	respFile := filepath.Join(root, "third_party_resp.json")
+	if err := os.WriteFile(respFile, respRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexBin := writeFakeAppServerScript(t, filepath.Join(root, "bin"), "codex", fmt.Sprintf(`
+if [ "$1" != "app-server" ]; then exit 2; fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"hooks/list"'*) IFS= read -r resp < %q; printf '%%s\n' "$resp" ;;
+  esac
+done
+`, respFile))
+
+	appReport := ProbeHostHookTrust(context.Background(), HostCodex, codexBin, profile, []string{hooksPath})
+	if !appReport.Evaluated || appReport.Source != "app_server" || appReport.TotalManaged != 0 || appReport.NeedsTrust() {
+		t.Fatalf("app-server with zero managed hooks fell back or misclassified third-party hook: %+v", appReport)
+	}
+
+	// 2. Unavailable/failing app-server must NOT blind-scan TOML [hooks.state] when zero Memlane hooks exist.
+	stubBin := writeFakeAppServerScript(t, filepath.Join(root, "bin"), "codex-stub", "exit 0")
+	tomlReport := ProbeHostHookTrust(context.Background(), HostCodex, stubBin, profile, []string{hooksPath})
+	if tomlReport.Evaluated || tomlReport.Source != "none" || tomlReport.TotalManaged != 0 || tomlReport.NeedsTrust() {
+		t.Fatalf("TOML fallback misclassified third-party hooks as Memlane: %+v", tomlReport)
+	}
+}
+
+func TestProbeHostHookTrustAppServerGracefulExitOnStdinEOF(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	profile := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(profile, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	respRaw, err := json.Marshal(map[string]any{
+		"id": 2,
+		"result": map[string]any{
+			"data": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{
+							"key":         hooksPath + ":stop:0:0",
+							"eventName":   "stop",
+							"command":     "/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k",
+							"sourcePath":  hooksPath,
+							"enabled":     true,
+							"trustStatus": "trusted",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	respFile := filepath.Join(root, "graceful_resp.json")
+	if err := os.WriteFile(respFile, respRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	arg0Dir := filepath.Join(profile, "tmp", "arg0-test")
+	cleanMarker := filepath.Join(root, "clean_exit.txt")
+	// Simulates codex/traecli creating tmp/arg0*/.lock and cleaning it on stdin EOF.
+	// A zero-wait SIGKILL would abort before sleep+cleanup could run.
+	gracefulBin := writeFakeAppServerScript(t, filepath.Join(root, "bin"), "codex", fmt.Sprintf(`
+if [ "$1" != "app-server" ]; then exit 2; fi
+mkdir -p %q
+touch %q
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"hooks/list"'*) IFS= read -r resp < %q; printf '%%s\n' "$resp" ;;
+  esac
+done
+sleep 0.05
+rm -rf %q
+printf 'clean_exit\n' > %q
+`, arg0Dir, filepath.Join(arg0Dir, ".lock"), respFile, arg0Dir, cleanMarker))
+
+	report := ProbeHostHookTrust(context.Background(), HostCodex, gracefulBin, profile, []string{hooksPath})
+	if !report.Evaluated || report.Source != "app_server" || report.NeedsTrust() || report.TrustedCount != 1 {
+		t.Fatalf("unexpected graceful report: %+v", report)
+	}
+	markerBytes, err := os.ReadFile(cleanMarker)
+	if err != nil || strings.TrimSpace(string(markerBytes)) != "clean_exit" {
+		t.Fatalf("child did not complete graceful stdin-EOF shutdown (received premature SIGKILL?): err=%v content=%q", err, string(markerBytes))
+	}
+	if _, err := os.Stat(arg0Dir); !os.IsNotExist(err) {
+		t.Fatalf("temporary arg0 directory was leaked: stat err=%v", err)
+	}
+}
+
+func TestProbeHostHookTrustAppServerKillsProcessIgnoringStdinEOF(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	profile := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(profile, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	respRaw, err := json.Marshal(map[string]any{
+		"id": 2,
+		"result": map[string]any{
+			"data": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{
+							"key":         hooksPath + ":stop:0:0",
+							"eventName":   "stop",
+							"command":     "/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k",
+							"sourcePath":  hooksPath,
+							"enabled":     true,
+							"trustStatus": "untrusted",
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	respFile := filepath.Join(root, "hang_after_reply_resp.json")
+	if err := os.WriteFile(respFile, respRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pidFile := filepath.Join(root, "stuck_child.pid")
+	stuckBin := writeFakeAppServerScript(t, filepath.Join(root, "bin"), "codex", fmt.Sprintf(`
+if [ "$1" != "app-server" ]; then exit 2; fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"hooks/list"'*)
+      IFS= read -r resp < %q
+      printf '%%s\n' "$resp"
+      sleep 30 &
+      echo $! > %q
+      wait
+      ;;
+  esac
+done
+`, respFile, pidFile))
+
+	start := time.Now()
+	report := ProbeHostHookTrust(context.Background(), HostCodex, stuckBin, profile, []string{hooksPath})
+	if elapsed := time.Since(start); elapsed >= defaultHookTrustProbeTimeout-500*time.Millisecond {
+		t.Fatalf("probe took %v waiting on stuck process after reply (expected graceful kill well before %v)", elapsed, defaultHookTrustProbeTimeout)
+	}
+	if !report.Evaluated || report.Source != "app_server" || !report.NeedsTrust() {
+		t.Fatalf("unexpected report from stuck-after-reply child: %+v", report)
+	}
+	rawPID, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("expected child pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid child pid %q: %v", string(rawPID), err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	t.Fatalf("stuck child process %d survived graceful-timeout SIGKILL escalation", pid)
+}
+
+func TestProbeHostHookTrustAppServerTimeoutWatchdogRace(t *testing.T) {
+	// Intentionally not t.Parallel so concurrent process-spawn stress does not
+	// starve other parallel tests' macOS execve latency under -race.
+	root := t.TempDir()
+	profile := filepath.Join(root, ".codex")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hooksPath := filepath.Join(profile, "hooks.json")
+	if err := os.WriteFile(hooksPath, []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"/bin/memlane hook codex Stop --gateway-url http://127.0.0.1:18174 --key-file /tmp/k"}]}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flakyBin := writeFakeAppServerScript(t, filepath.Join(root, "bin"), "codex", `
+sleep 0.03
+printf '%s\n' '{"id":1,"result":{}}'
+sleep 0.03
+`)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(iter int) {
+			defer wg.Done()
+			timeout := time.Duration(25+(iter%4)*25) * time.Millisecond
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			_ = ProbeHostHookTrust(ctx, HostCodex, flakyBin, profile, []string{hooksPath})
+		}(i)
+	}
+	wg.Wait()
 }

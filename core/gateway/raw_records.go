@@ -508,19 +508,14 @@ func rawSessionSearch(ctx context.Context, db sqlRead, scope string, args []any,
 }
 
 func lookupUniquePrincipalAgents(ctx context.Context, db sqlRead) (map[string]string, error) {
-	type bucket struct {
-		active   []string
-		inactive []string
-	}
-	byPrincipal := make(map[string]*bucket)
+	byPrincipal := make(map[string][]string)
 	type rowData struct {
-		id, principalID, retiredAt string
-		archived                   int
+		id, principalID string
 	}
-	rows, err := readRows(ctx, db, `SELECT id, principal_id, archived, retired_at FROM agents WHERE principal_id<>''`, nil,
+	rows, err := readRows(ctx, db, `SELECT id, principal_id FROM agents WHERE principal_id<>''`, nil,
 		func(row rowScanner) (rowData, error) {
 			var r rowData
-			err := row.Scan(&r.id, &r.principalID, &r.archived, &r.retiredAt)
+			err := row.Scan(&r.id, &r.principalID)
 			return r, err
 		})
 	if err != nil {
@@ -532,23 +527,15 @@ func lookupUniquePrincipalAgents(ctx context.Context, db sqlRead) (map[string]st
 		if id == "" || key == "" {
 			continue
 		}
-		b := byPrincipal[key]
-		if b == nil {
-			b = &bucket{}
-			byPrincipal[key] = b
-		}
-		if r.archived == 0 && strings.TrimSpace(r.retiredAt) == "" {
-			b.active = append(b.active, id)
-		} else {
-			b.inactive = append(b.inactive, id)
-		}
+		byPrincipal[key] = append(byPrincipal[key], id)
 	}
 	out := make(map[string]string, len(byPrincipal))
-	for key, b := range byPrincipal {
-		if len(b.active) == 1 {
-			out[key] = b.active[0]
-		} else if len(b.active) == 0 && len(b.inactive) == 1 {
-			out[key] = b.inactive[0]
+	for key, ids := range byPrincipal {
+		// Only map when the principal belongs to strictly one registered agent
+		// across both active and retired/archived records, preventing historical
+		// sessions of a retired agent from being misattributed to a newer active one.
+		if len(ids) == 1 {
+			out[key] = ids[0]
 		}
 	}
 	return out, nil

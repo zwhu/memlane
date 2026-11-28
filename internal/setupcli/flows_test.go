@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -2699,4 +2701,169 @@ func TestHookTrustDetectionInDoctorVerifyAndConnect(t *testing.T) {
 			lf.command(ExitOK, "verify", "--stage", "connection", "--agent", kind)
 		})
 	}
+}
+
+func TestDoctorHookTrustSkipsControlCoveredThirdPartyAndProbesConcurrently(t *testing.T) {
+	t.Parallel()
+	cleanConflicts := func(agents.DetectedHost, agents.ConflictPolicy) (agents.ConflictReport, error) {
+		return agents.ConflictReport{}, nil
+	}
+
+	// 1. Control-plane mode: when client.Connections already returned a healthy host,
+	// doctor must NOT launch a second local hook trust probe even if Memlane hooks exist on disk.
+	t.Run("control_plane_healthy_host_not_reprobed", func(t *testing.T) {
+		t.Parallel()
+		f := newFixture(t)
+		f.doc.First.Setup = false
+		f.writeConfig()
+		codexProfile := filepath.Join(f.base, ".codex")
+		writeFile(t, filepath.Join(codexProfile, "hooks.json"), []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook codex Stop --gateway-url 'http://127.0.0.1:18174' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`))
+		f.row = controlplane.AgentConnection{
+			ID:                  "agent-codex",
+			Kind:                agents.HostCodex,
+			Detected:            true,
+			AgentRegistered:     true,
+			Status:              "configured_pending_new_session",
+			NewSessions:         2,
+			EnvironmentVerified: true,
+			Capture:             &controlplane.AgentCaptureState{State: "healthy", Permission: "observed"},
+		}
+		f.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+			return []agents.DetectedHost{{Kind: agents.HostCodex, Detected: true, Executable: "/usr/local/bin/codex", ProfileDir: codexProfile}}
+		}
+		f.r.ScanConflictsFn = cleanConflicts
+		var probeCalls atomic.Int32
+		f.r.ProbeHookTrustFn = func(_ context.Context, kind, _, _ string, _ []string) agents.HostHookTrustReport {
+			probeCalls.Add(1)
+			t.Errorf("unexpected local hook trust re-probe for control-covered host %s", kind)
+			return agents.HostHookTrustReport{HostKind: kind, Source: "app_server", Evaluated: true}
+		}
+
+		doc := f.command(ExitOK, "doctor", "--agent", agents.HostCodex)
+		if slices.ContainsFunc(doc.Connections.Hosts, func(h hostSummary) bool { return h.NeedsHookRepair }) {
+			t.Fatalf("test fixture unexpectedly triggered hook repair: %+v", doc.Connections.Hosts)
+		}
+		if got := probeCalls.Load(); got != 0 {
+			t.Fatalf("local ProbeHookTrustFn calls = %d, want 0", got)
+		}
+	})
+
+	// 2. Third-party-only hooks.json (no Memlane hooks) with untrusted/disabled [hooks.state] in TOML:
+	// doctor must neither invoke ProbeHookTrustFn nor falsely report host_hooks_untrusted.
+	t.Run("third_party_only_hooks_skipped_with_zero_false_positive", func(t *testing.T) {
+		t.Parallel()
+		lf := newFixture(t)
+		lf.doc.Control.PluginDir = ""
+		lf.writeConfig()
+		codexProfile := filepath.Join(lf.base, ".codex")
+		hooksPath := filepath.Join(codexProfile, "hooks.json")
+		writeFile(t, hooksPath, []byte(`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/opt/flux/flux-hook stop"}]}]}}`))
+		writeFile(t, filepath.Join(codexProfile, "config.toml"), []byte(fmt.Sprintf("[hooks.state.%q]\nenabled = false\n", hooksPath+":stop:0:0")))
+		stubBin := filepath.Join(lf.base, "bin", "codex")
+		writeFile(t, stubBin, []byte("#!/bin/sh\nexit 0\n"))
+		if err := os.Chmod(stubBin, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		lf.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+			return []agents.DetectedHost{{Kind: agents.HostCodex, Detected: true, Executable: stubBin, ProfileDir: codexProfile}}
+		}
+		lf.r.ScanConflictsFn = cleanConflicts
+		lf.handler = func(req *http.Request, _ requestBody) (*http.Response, error) {
+			if req.URL.Path == "/api/generation" {
+				return response(200, map[string]any{"state": map[string]int{"active_revision": 1}})
+			}
+			return nil, nil
+		}
+
+		var probeCalls atomic.Int32
+		lf.r.ProbeHookTrustFn = func(ctx context.Context, kind, exe, profile string, paths []string) agents.HostHookTrustReport {
+			probeCalls.Add(1)
+			return agents.ProbeHostHookTrust(ctx, kind, exe, profile, paths)
+		}
+		doc := lf.command(ExitOK, "doctor")
+		if got := probeCalls.Load(); got != 0 {
+			t.Fatalf("doctor probed third-party-only host %d times, want 0", got)
+		}
+		if hasBlocker(doc, "host_hooks_untrusted") {
+			t.Fatalf("doctor falsely reported host_hooks_untrusted: %+v", doc.Blockers)
+		}
+
+		// Even with production ProbeHostHookTrust directly, zero false positives.
+		lf.r.ProbeHookTrustFn = nil
+		docReal := lf.command(ExitOK, "doctor")
+		if hasBlocker(docReal, "host_hooks_untrusted") {
+			t.Fatalf("real probe doctor falsely reported host_hooks_untrusted: %+v", docReal.Blockers)
+		}
+	})
+
+	// 3. Multi-host local Option C mode: Codex and TRAE CLI with Memlane hooks are probed concurrently
+	// with independent per-host timeout budgets (no shared 4s serial starvation).
+	t.Run("multi_host_local_concurrent_probes_with_independent_budgets", func(t *testing.T) {
+		t.Parallel()
+		lf := newFixture(t)
+		lf.doc.Control.PluginDir = ""
+		lf.writeConfig()
+
+		codexProfile := filepath.Join(lf.base, ".codex")
+		traexProfile := filepath.Join(lf.base, ".trae")
+		writeFile(t, filepath.Join(codexProfile, "hooks.json"), []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook codex Stop --gateway-url 'http://127.0.0.1:18174' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`))
+		writeFile(t, filepath.Join(traexProfile, "cli", "hooks.json"), []byte(`{"hooks":{"Stop":[{"_memlane_managed":"memlane-hook","hooks":[{"type":"command","command":"'/bin/memlane' hook traex Stop --gateway-url 'http://127.0.0.1:18174' --key-file '/tmp/k'","_memlane_managed":"memlane-hook"}]}]}}`))
+
+		lf.r.DetectAgentsFn = func(agents.DiscoveryOptions) []agents.DetectedHost {
+			return []agents.DetectedHost{
+				{Kind: agents.HostCodex, Detected: true, Executable: "/usr/local/bin/codex", ProfileDir: codexProfile},
+				{Kind: agents.HostTraeX, Detected: true, Executable: "/usr/local/bin/traecli", ProfileDir: traexProfile},
+			}
+		}
+		lf.r.ScanConflictsFn = cleanConflicts
+		lf.handler = func(req *http.Request, _ requestBody) (*http.Response, error) {
+			if req.URL.Path == "/api/generation" {
+				return response(200, map[string]any{"state": map[string]int{"active_revision": 1}})
+			}
+			return nil, nil
+		}
+
+		// Barrier proves both host probes run concurrently: serial execution would deadlock until timeout.
+		var entered atomic.Int32
+		bothEntered := make(chan struct{})
+		var closeOnce sync.Once
+		var concurrentOK atomic.Bool
+		lf.r.ProbeHookTrustFn = func(ctx context.Context, kind, _, _ string, _ []string) agents.HostHookTrustReport {
+			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 2*time.Second {
+				t.Errorf("host %s received insufficient probe budget: ok=%v remaining=%v", kind, ok, time.Until(deadline))
+			}
+			if entered.Add(1) == 2 {
+				concurrentOK.Store(true)
+				closeOnce.Do(func() { close(bothEntered) })
+			}
+			select {
+			case <-bothEntered:
+			case <-time.After(2 * time.Second):
+				t.Errorf("host %s probe waited for peer but ran serially instead of concurrently", kind)
+			}
+			return agents.HostHookTrustReport{
+				HostKind:        kind,
+				Source:          "app_server",
+				Evaluated:       true,
+				TotalManaged:    1,
+				UntrustedCount:  1,
+				UntrustedEvents: []string{"Stop"},
+			}
+		}
+
+		doc := lf.command(ExitHumanRequired, "doctor")
+		if entered.Load() != 2 || !concurrentOK.Load() {
+			t.Fatalf("expected 2 concurrent host probes, entered=%d concurrent=%v", entered.Load(), concurrentOK.Load())
+		}
+		if !hasBlocker(doc, "host_hooks_untrusted") {
+			t.Fatalf("expected host_hooks_untrusted blocker: %+v", doc.Blockers)
+		}
+		for _, kind := range []string{agents.HostCodex, agents.HostTraeX} {
+			if !slices.ContainsFunc(doc.Connections.Hosts, func(h hostSummary) bool {
+				return h.Kind == kind && h.NeedsHookTrust && h.UntrustedHookCount == 1
+			}) {
+				t.Fatalf("missing untrusted hook summary for %s: %+v", kind, doc.Connections.Hosts)
+			}
+		}
+	})
 }

@@ -234,3 +234,73 @@ func TestSyncCatalogAndSessionsPersistBackfilledAgentIDs(t *testing.T) {
 		t.Fatalf("/api/search?q=traex = %+v, want session %q with agent_id %q", searchRes.Items, traeSID, traeAgentID)
 	}
 }
+
+func TestPrincipalFallbackSkipsAmbiguousRetiredOrArchivedPlusActiveAgents(t *testing.T) {
+	ctx := context.Background()
+	s, store, _ := testServer(t, nil)
+
+	const (
+		principalRetiredPair  = "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		principalArchivedPair = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+		principalSoleRetired  = "33333333-cccc-4ccc-8ccc-cccccccccccc"
+		sidRetiredPair        = "01a2201c-ff97-7430-8035-dd1c06200001"
+		sidArchivedPair       = "01a2201c-ff97-7430-8035-dd1c06200002"
+		sidSoleRetired        = "01a2201c-ff97-7430-8035-dd1c06200003"
+	)
+
+	for _, a := range []domain.Agent{
+		{ID: "codex-old-retired", Kind: "codex", Name: "Old Codex", PrincipalID: principalRetiredPair, RetiredAt: "2026-10-01T00:00:00Z"},
+		{ID: "traex-new-active", Kind: "traex", Name: "New TRAE", PrincipalID: principalRetiredPair},
+		{ID: "codex-old-archived", Kind: "codex", Name: "Archived Codex", PrincipalID: principalArchivedPair, Archived: true},
+		{ID: "pi-new-active", Kind: "pi", Name: "New Pi", PrincipalID: principalArchivedPair},
+		{ID: "codex-sole-retired", Kind: "codex", Name: "Sole Retired Codex", PrincipalID: principalSoleRetired, RetiredAt: "2026-10-01T00:00:00Z"},
+	} {
+		must(t, store.UpsertAgent(ctx, a))
+	}
+
+	now := time.Now().UTC()
+	for _, sess := range []domain.CatalogSession{
+		{DatasetID: "ds", UserID: principalRetiredPair, SessionID: sidRetiredPair, AgentID: "", LastActivityAt: "2026-11-28T03:00:00Z", IsTopLevel: true, SortTSDescKey: -300},
+		{DatasetID: "ds", UserID: principalArchivedPair, SessionID: sidArchivedPair, AgentID: "", LastActivityAt: "2026-11-28T02:00:00Z", IsTopLevel: true, SortTSDescKey: -200},
+		{DatasetID: "ds", UserID: principalSoleRetired, SessionID: sidSoleRetired, AgentID: "", LastActivityAt: "2026-11-28T01:00:00Z", IsTopLevel: true, SortTSDescKey: -100},
+	} {
+		must(t, store.UpsertCatalogSession(ctx, sess))
+	}
+	for _, doc := range []domain.CatalogDoc{
+		{DatasetID: "ds", DocID: "doc-retired-pair", Kind: "knowledge", IsKnowledge: true, Category: "踩坑经验", SessionID: sidRetiredPair, DocLabel: "Retired Pair Lesson", EffectiveDate: now.Format(time.DateOnly), DayDescKey: -20261128, SortTSDescKey: -300, CreatedAtRaw: domain.FormatUTCNS(now), CreatedAtNS: domain.FormatUTCNS(now)},
+		{DatasetID: "ds", DocID: "doc-archived-pair", Kind: "knowledge", IsKnowledge: true, Category: "踩坑经验", SessionID: sidArchivedPair, DocLabel: "Archived Pair Lesson", EffectiveDate: now.Format(time.DateOnly), DayDescKey: -20261128, SortTSDescKey: -200, CreatedAtRaw: domain.FormatUTCNS(now), CreatedAtNS: domain.FormatUTCNS(now)},
+		{DatasetID: "ds", DocID: "doc-sole-retired", Kind: "knowledge", IsKnowledge: true, Category: "踩坑经验", SessionID: sidSoleRetired, DocLabel: "Sole Retired Lesson", EffectiveDate: now.Format(time.DateOnly), DayDescKey: -20261128, SortTSDescKey: -100, CreatedAtRaw: domain.FormatUTCNS(now), CreatedAtNS: domain.FormatUTCNS(now)},
+	} {
+		must(t, store.UpsertCatalogDoc(ctx, doc))
+	}
+
+	rawPage := decodeResponse[pageResult[rawItem]](t, manage(t, s, "GET", "/api/projects/p/raw-records?kind=session&limit=10", "", 200))
+	gotSess := map[string]string{}
+	for _, it := range rawPage.Items {
+		gotSess[it.SessionID] = it.AgentID
+	}
+	if gotSess[sidRetiredPair] != "" {
+		t.Fatalf("retired+active shared principal misattributed session to %q, want empty", gotSess[sidRetiredPair])
+	}
+	if gotSess[sidArchivedPair] != "" {
+		t.Fatalf("archived+active shared principal misattributed session to %q, want empty", gotSess[sidArchivedPair])
+	}
+	if gotSess[sidSoleRetired] != "codex-sole-retired" {
+		t.Fatalf("sole retired principal session agent_id = %q, want codex-sole-retired", gotSess[sidSoleRetired])
+	}
+
+	knowledgePage := decodeResponse[pageResult[catalogItem]](t, manage(t, s, "GET", "/api/projects/p/knowledge?limit=10", "", 200))
+	gotDoc := map[string]string{}
+	for _, it := range knowledgePage.Items {
+		gotDoc[it.DocID] = it.AgentID
+	}
+	if gotDoc["doc-retired-pair"] != "" {
+		t.Fatalf("retired+active shared principal misattributed doc to %q, want empty", gotDoc["doc-retired-pair"])
+	}
+	if gotDoc["doc-archived-pair"] != "" {
+		t.Fatalf("archived+active shared principal misattributed doc to %q, want empty", gotDoc["doc-archived-pair"])
+	}
+	if gotDoc["doc-sole-retired"] != "codex-sole-retired" {
+		t.Fatalf("sole retired principal doc agent_id = %q, want codex-sole-retired", gotDoc["doc-sole-retired"])
+	}
+}

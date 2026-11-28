@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zwhu/memlane/core/hooks"
@@ -16,8 +17,14 @@ import (
 	"github.com/zwhu/memlane/kit/agents"
 )
 
+const (
+	doctorCommandTimeout        = 10 * time.Second
+	doctorHookTrustProbeTimeout = 4 * time.Second
+)
+
 func (s *session) doctor() {
-	ctx, cancel := context.WithTimeout(s.ctx, 4*time.Second)
+	baseCtx := s.ctx
+	ctx, cancel := context.WithTimeout(baseCtx, doctorCommandTimeout)
 	defer cancel()
 	s.ctx = ctx
 	s.checkDisk()
@@ -74,6 +81,7 @@ func (s *session) doctor() {
 		}
 	}
 	genOK := false
+	controlCoveredHosts := map[string]bool{}
 	if client != nil && s.config.Control.PluginDir != "" {
 		dir, err := client.Connections(s.ctx, false)
 		if err != nil {
@@ -81,6 +89,9 @@ func (s *session) doctor() {
 		} else {
 			s.showConnections(dir)
 			for _, row := range dir.Connections {
+				if isAgent(row.Kind) {
+					controlCoveredHosts[row.Kind] = true
+				}
 				if !isAgent(row.Kind) || s.has("agent") && row.Kind != s.get("agent") {
 					continue
 				}
@@ -121,7 +132,7 @@ func (s *session) doctor() {
 	hosts := s.localHosts()
 	s.showLocalHosts(hosts, client == nil, client != nil && genOK)
 	s.inspectHostConflicts(hosts)
-	s.inspectHostHookTrust(hosts)
+	s.inspectHostHookTrust(baseCtx, hosts, controlCoveredHosts)
 	if (client == nil || genOK) && len(s.Generation.AvailableBridges) == 0 && s.Generation.Active == nil {
 		detected := s.Generation.DetectedUnconfiguredCLIs
 		recommendations := bootstrap.RecommendedProcessingCLIs()
@@ -233,10 +244,21 @@ func (s *session) inspectHostConflicts(hosts []agents.DetectedHost) {
 	}
 }
 
-func (s *session) inspectHostHookTrust(hosts []agents.DetectedHost) {
+func (s *session) inspectHostHookTrust(baseCtx context.Context, hosts []agents.DetectedHost, controlCovered map[string]bool) {
+	type probeTarget struct {
+		host      agents.DetectedHost
+		hookPaths []string
+	}
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	var targets []probeTarget
 	for _, host := range hosts {
 		if !host.Detected || (host.Kind != agents.HostCodex && host.Kind != agents.HostTraeX) || !filepath.IsAbs(host.ProfileDir) ||
 			s.has("agent") && s.get("agent") != host.Kind {
+			continue
+		}
+		if controlCovered[host.Kind] {
 			continue
 		}
 		alreadyFlagged := false
@@ -250,28 +272,41 @@ func (s *session) inspectHostHookTrust(hosts []agents.DetectedHost) {
 			continue
 		}
 		hookPaths, _ := agents.HookTrustConfigFiles(host.Kind, host.ProfileDir)
-		hasHookFile := false
-		for _, p := range hookPaths {
-			if _, err := os.Stat(p); err == nil {
-				hasHookFile = true
-				break
-			}
-		}
-		if !hasHookFile {
+		if !agents.HasManagedHostHooks(host.Kind, host.ProfileDir, hookPaths) {
 			continue
 		}
-		report := s.ProbeHookTrustFn(s.ctx, host.Kind, host.Executable, host.ProfileDir, hookPaths)
+		targets = append(targets, probeTarget{host: host, hookPaths: hookPaths})
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	reports := make([]agents.HostHookTrustReport, len(targets))
+	var wg sync.WaitGroup
+	for i, target := range targets {
+		wg.Add(1)
+		go func(idx int, t probeTarget) {
+			defer wg.Done()
+			probeCtx, cancel := context.WithTimeout(baseCtx, doctorHookTrustProbeTimeout)
+			defer cancel()
+			reports[idx] = s.ProbeHookTrustFn(probeCtx, t.host.Kind, t.host.Executable, t.host.ProfileDir, t.hookPaths)
+		}(i, target)
+	}
+	wg.Wait()
+
+	for i, target := range targets {
+		report := reports[i]
 		if !report.NeedsTrust() {
 			continue
 		}
-		for i := range s.Connections.Hosts {
-			if s.Connections.Hosts[i].Kind == host.Kind {
-				s.Connections.Hosts[i].NeedsHookTrust = true
-				s.Connections.Hosts[i].UntrustedHookCount = report.UntrustedCount
-				s.Connections.Hosts[i].ModifiedHookCount = report.ModifiedCount
-				s.Connections.Hosts[i].DisabledHookCount = report.DisabledCount
+		for j := range s.Connections.Hosts {
+			if s.Connections.Hosts[j].Kind == target.host.Kind {
+				s.Connections.Hosts[j].NeedsHookTrust = true
+				s.Connections.Hosts[j].UntrustedHookCount = report.UntrustedCount
+				s.Connections.Hosts[j].ModifiedHookCount = report.ModifiedCount
+				s.Connections.Hosts[j].DisabledHookCount = report.DisabledCount
 			}
 		}
-		s.hookTrustAdvice(host.Kind, report.UntrustedCount, report.ModifiedCount, report.DisabledCount)
+		s.hookTrustAdvice(target.host.Kind, report.UntrustedCount, report.ModifiedCount, report.DisabledCount)
 	}
 }

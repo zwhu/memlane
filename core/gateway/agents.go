@@ -289,10 +289,14 @@ func probeHostHookTrustCached(ctx context.Context, hostKind, executable, profile
 		}
 	}
 	report := agents.ProbeHostHookTrust(ctx, hostKind, executable, profileDir, hookPaths)
+	if (ctx != nil && ctx.Err() != nil) || !report.Evaluated || report.Source == "none" {
+		return report
+	}
+	cachedAt := time.Now()
 	hookTrustCacheMu.Lock()
 	if len(hookTrustCache) >= hookTrustCacheMaxItems {
 		for k, v := range hookTrustCache {
-			if now.Sub(v.cachedAt) >= hookTrustCacheTTL {
+			if cachedAt.Sub(v.cachedAt) >= hookTrustCacheTTL {
 				delete(hookTrustCache, k)
 			}
 		}
@@ -300,7 +304,7 @@ func probeHostHookTrustCached(ctx context.Context, hostKind, executable, profile
 			clear(hookTrustCache)
 		}
 	}
-	hookTrustCache[key] = hookTrustCacheEntry{report: report, cachedAt: now}
+	hookTrustCache[key] = hookTrustCacheEntry{report: report, cachedAt: cachedAt}
 	hookTrustCacheMu.Unlock()
 	return report
 }
