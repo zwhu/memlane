@@ -173,7 +173,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 
 			sortLabel := "按时间"
 			if s.Knowledge.SortByRecalls {
-				sortLabel = "按命中次数"
+				sortLabel = "按召回次数"
 			}
 			v4DropdownButton(c, "knowledge-sort-btn", "记忆排序", "", sortLabel, false).Tooltip("按时间或已记录的检索命中次数排序").PopoverMenuButton(func(m *ui.Menu) {
 				timeLabel := "按时间"
@@ -184,7 +184,7 @@ func (a *App) knowledgeFilterBar(c *ui.Context, s *pane) {
 					s.Knowledge.SortByRecalls = false
 					a.reorderKnowledge(s)
 				}
-				recallLabel := "按命中次数"
+				recallLabel := "按召回次数"
 				if s.Knowledge.SortByRecalls {
 					recallLabel = "✓ " + recallLabel
 				}

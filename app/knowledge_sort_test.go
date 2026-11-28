@@ -108,8 +108,8 @@ func TestKnowledgeSortAndRecallBadgeUI(t *testing.T) {
 	a.reorderKnowledge(s)
 	tt := ui.NewTester(func(c *ui.Context) { ui.Column(c).Fill().Children(func() { a.knowledgePage(c, s) }) }, 1200, 820)
 	clickProjectUI(t, tt, "记忆排序")
-	clickProjectUI(t, tt, "按命中次数")
-	if s.Items[0].ID != "44" || !tt.HasText("命中 9") {
+	clickProjectUI(t, tt, "按召回次数")
+	if s.Items[0].ID != "44" || !tt.HasText("召回 9") {
 		t.Fatal("sort selection did not reorder actual list")
 	}
 	clickProjectUI(t, tt, "记忆分类筛选")

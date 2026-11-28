@@ -47,7 +47,7 @@ func TestKnowledgeCardRecallsUseExistingReceiptsAndDistinguishUnknown(t *testing
 	s.Items = []Item{{ID: "hit", Dataset: "ds", Kind: "知识"}, {ID: "zero", Dataset: "ds", Kind: "知识"}, {ID: "failed", Dataset: "ds", Kind: "知识"}}
 	a.loadKnowledgeCardRecalls(s)
 	drainReading(t, updates, func() bool { return s.Knowledge.RecallPending == 0 })
-	for n, want := range []string{"命中 7", "命中 0", "命中 —"} {
+	for n, want := range []string{"召回 7", "召回 0", "召回 —"} {
 		label, tip := knowledgeCardRecall(s.Items[n])
 		if n == 2 {
 			if tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
@@ -222,8 +222,8 @@ func TestKnowledgeCardRecallShortLabelAndFullTooltip(t *testing.T) {
 		},
 	}
 	label, tip := knowledgeCardRecall(item)
-	if label != "命中 4" {
-		t.Fatalf("got label %q, want %q", label, "命中 4")
+	if label != "召回 4" {
+		t.Fatalf("got label %q, want %q", label, "召回 4")
 	}
 	for _, want := range []string{
 		"已记录的检索命中次数",
@@ -237,11 +237,11 @@ func TestKnowledgeCardRecallShortLabelAndFullTooltip(t *testing.T) {
 		}
 	}
 	item.RecallStats = &KnowledgeRecallStats{Count: 0, StartedAt: "2026-11-14T02:00:00Z"}
-	if label, tip := knowledgeCardRecall(item); label != "命中 0" || !strings.Contains(tip, "已记录的检索命中次数") {
+	if label, tip := knowledgeCardRecall(item); label != "召回 0" || !strings.Contains(tip, "已记录的检索命中次数") {
 		t.Fatalf("zero count got label=%q tip=%q", label, tip)
 	}
 	item.RecallStats = nil
-	if label, tip := knowledgeCardRecall(item); label != "命中 —" || tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
+	if label, tip := knowledgeCardRecall(item); label != "召回 —" || tip != "已记录的检索命中次数尚未读到，请稍后重试。" {
 		t.Fatalf("nil stats got label=%q tip=%q", label, tip)
 	}
 }
@@ -330,9 +330,9 @@ func TestKnowledgeCardMetadataRowFitsNarrowAndDefaultPane(t *testing.T) {
 			}
 			paneRight := paneRect.X + paneRect.W
 
-			recallRect, ok := tt.Find("命中 4")
+			recallRect, ok := tt.Find("召回 4")
 			if !ok {
-				t.Fatal("compact recall label '命中 4' missing")
+				t.Fatal("compact recall label '召回 4' missing")
 			}
 			dateHitRect, ok := tt.Find("2026-11-21")
 			if !ok {
@@ -346,9 +346,9 @@ func TestKnowledgeCardMetadataRowFitsNarrowAndDefaultPane(t *testing.T) {
 			if !ok {
 				t.Fatal("category chip '代码位置与关联' missing")
 			}
-			sortRect, ok := tt.Find("按命中次数")
+			sortRect, ok := tt.Find("按召回次数")
 			if !ok {
-				t.Fatal("short sort label '按命中次数' missing")
+				t.Fatal("short sort label '按召回次数' missing")
 			}
 
 			if dateHitRect.W < 55 {
