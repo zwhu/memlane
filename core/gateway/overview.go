@@ -189,7 +189,14 @@ func recentKnowledge(ctx context.Context, db sqlRead, refs []datasetRef, limit i
 	) SELECT ` + docFields + "," + unreadExpr + "," + projectField +
 		` FROM recent ref JOIN catalog_docs d USING(dataset_id,doc_id)` + readingJoins + recallCountJoin +
 		` ORDER BY ref.day_desc_key,ref.sort_ts_desc_key,ref.dataset_id,ref.doc_id`
-	return readRows(ctx, db, query, []any{string(raw), limit}, func(row rowScanner) (catalogItem, error) { return scanCatalog(row) })
+	items, err := readRows(ctx, db, query, []any{string(raw), limit}, func(row rowScanner) (catalogItem, error) { return scanCatalog(row) })
+	if err != nil {
+		return nil, err
+	}
+	if err := backfillCatalogItemAgents(ctx, db, items); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 type overviewRecallHit struct {

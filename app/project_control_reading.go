@@ -24,6 +24,7 @@ type documentLookupV2Response struct {
 	LessonType     string  `json:"lesson_type"`
 	StateKey       string  `json:"state_key"`
 	SessionID      string  `json:"session_id"`
+	AgentID        string  `json:"agent_id,omitempty"`
 	RecallCount    int64   `json:"recall_count"`
 }
 

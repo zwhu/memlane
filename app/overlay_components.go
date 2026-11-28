@@ -68,7 +68,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 	s.WidgetList.KeepOffset = true
 	s.WidgetList.Label = func(n int) string {
 		if s.Items[n].Session != nil {
-			return sessionIdentity(s.Items[n].ID)
+			return itemSessionIdentity(s.Items[n])
 		}
 		return s.Items[n].Title
 	}
@@ -87,7 +87,7 @@ func (a *App) itemList(c *ui.Context, s *pane, common bool) {
 			}
 			col.Children(func() {
 				if i.Session != nil {
-					idLabel := sessionIdentity(i.ID)
+					idLabel := itemSessionIdentity(i)
 					hasTopic := sessionHasTopic(i)
 					// Reserve fixed 2-line title slot (12 * 1.55 * 2 = 37.2px <= 38px) so
 					// async hydration or fallback placeholders never shift following rows.

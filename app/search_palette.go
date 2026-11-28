@@ -39,7 +39,7 @@ func searchItemPrimaryText(i Item, query string) (string, string) {
 	if i.Session != nil {
 		topic := strings.TrimSpace(i.Title)
 		if topic == "" || topic == i.ID || topic == "来源会话" || looksLikeBareUUID(topic) {
-			topic = sessionIdentity(i.ID)
+			topic = itemSessionIdentity(i)
 		}
 		_, preview := searchHitText(i, query)
 		if strings.TrimSpace(preview) == strings.TrimSpace(topic) {

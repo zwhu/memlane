@@ -188,6 +188,9 @@ func catalogSearch(ctx context.Context, db sqlRead, in searchInput, refs []datas
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := backfillCatalogItemAgents(ctx, db, items); err != nil {
+		return nil, nil, err
+	}
 	sessions := []rawItem{}
 	if in.Filter == "raw" || in.Filter == "all" {
 		scope := ` JOIN (SELECT json_extract(value,'$.project') AS project_id,json_extract(value,'$.id') AS dataset

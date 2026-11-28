@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -240,7 +241,7 @@ func (s *Server) rawRecords(w http.ResponseWriter, r *http.Request) {
 				out.Items[i].ChildrenHasMore = out.Items[i].ChildCount > len(preview)
 			}
 		}
-		return nil
+		return backfillRawSessionAgents(ctx, tx, out.Items)
 	})
 	if err != nil {
 		writeDomainError(w, err)
@@ -348,26 +349,24 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, sql.ErrNoRows) {
 		catalogFound = false
 		sess = rawItem{
+			Kind:      "session",
 			DatasetID: ds,
 			SessionID: sid,
 			UserID:    user,
-		}
-		var fallbackAgent string
-		agentErr := s.cfg.Store.DB().QueryRowContext(ctx,
-			`SELECT agent_id FROM capture_inbox WHERE dataset_id=? AND session_id=? AND agent_id<>'' ORDER BY updated_at DESC LIMIT 1`,
-			ds, sid).Scan(&fallbackAgent)
-		if agentErr != nil && !errors.Is(agentErr, sql.ErrNoRows) {
-			writeDomainError(w, agentErr)
-			return
-		}
-		if agentErr == nil {
-			sess.AgentID = fallbackAgent
 		}
 	} else if err != nil {
 		writeDomainError(w, err)
 		return
 	} else {
 		sess = row.item
+	}
+	if strings.TrimSpace(sess.AgentID) == "" {
+		single := []rawItem{sess}
+		if agentErr := backfillRawSessionAgents(ctx, s.cfg.Store.DB(), single); agentErr != nil {
+			writeDomainError(w, agentErr)
+			return
+		}
+		sess.AgentID = single[0].AgentID
 	}
 	history := engine.SessionHistoryResult{
 		QAs:    []engine.SessionQA{},
@@ -425,6 +424,10 @@ func (s *Server) rawSessionHistory(w http.ResponseWriter, r *http.Request) {
 			for _, child := range rows {
 				subagents = append(subagents, child.item)
 			}
+			if err := backfillRawSessionAgents(ctx, s.cfg.Store.DB(), subagents); err != nil {
+				writeDomainError(w, err)
+				return
+			}
 			s.hydrateRawSessions(ctx, subagents)
 		}
 	}
@@ -481,6 +484,10 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := []rawItem{item.item}
+	if err := backfillRawSessionAgents(ctx, s.cfg.Store.DB(), items); err != nil {
+		writeDomainError(w, err)
+		return
+	}
 	s.hydrateRawSessions(ctx, items)
 	writeJSON(w, 200, items[0])
 }
@@ -494,5 +501,251 @@ func rawSessionSearch(ctx context.Context, db sqlRead, scope string, args []any,
 	for _, row := range rows {
 		items = append(items, row.item)
 	}
+	if err := backfillRawSessionAgents(ctx, db, items); err != nil {
+		return nil, err
+	}
 	return items, nil
+}
+
+func lookupUniquePrincipalAgents(ctx context.Context, db sqlRead) (map[string]string, error) {
+	type bucket struct {
+		active   []string
+		inactive []string
+	}
+	byPrincipal := make(map[string]*bucket)
+	type rowData struct {
+		id, principalID, retiredAt string
+		archived                   int
+	}
+	rows, err := readRows(ctx, db, `SELECT id, principal_id, archived, retired_at FROM agents WHERE principal_id<>''`, nil,
+		func(row rowScanner) (rowData, error) {
+			var r rowData
+			err := row.Scan(&r.id, &r.principalID, &r.archived, &r.retiredAt)
+			return r, err
+		})
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		id := strings.TrimSpace(r.id)
+		key := canonicalDatasetID(r.principalID)
+		if id == "" || key == "" {
+			continue
+		}
+		b := byPrincipal[key]
+		if b == nil {
+			b = &bucket{}
+			byPrincipal[key] = b
+		}
+		if r.archived == 0 && strings.TrimSpace(r.retiredAt) == "" {
+			b.active = append(b.active, id)
+		} else {
+			b.inactive = append(b.inactive, id)
+		}
+	}
+	out := make(map[string]string, len(byPrincipal))
+	for key, b := range byPrincipal {
+		if len(b.active) == 1 {
+			out[key] = b.active[0]
+		} else if len(b.active) == 0 && len(b.inactive) == 1 {
+			out[key] = b.inactive[0]
+		}
+	}
+	return out, nil
+}
+
+// backfillRawSessionAgents fills empty AgentID fields on session items (including
+// nested children_preview rows) with a single covering-index batch lookup against
+// capture_inbox and an optional unambiguous agents.principal_id fallback.
+func backfillRawSessionAgents(ctx context.Context, db sqlRead, items []rawItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var targets []*rawItem
+	seen := make(map[[2]string]struct{})
+	var pairs [][3]string
+	collect := func(list []rawItem) {
+		for i := range list {
+			it := &list[i]
+			if it.Kind != "session" {
+				continue
+			}
+			it.AgentID = strings.TrimSpace(it.AgentID)
+			if it.AgentID != "" || it.DatasetID == "" || it.SessionID == "" {
+				continue
+			}
+			targets = append(targets, it)
+			k := [2]string{it.DatasetID, it.SessionID}
+			if _, ok := seen[k]; !ok {
+				seen[k] = struct{}{}
+				pairs = append(pairs, [3]string{it.DatasetID, it.SessionID, normalizedDatasetKey(it.DatasetID)})
+			}
+		}
+	}
+	collect(items)
+	for i := range items {
+		if len(items[i].ChildrenPreview) > 0 {
+			collect(items[i].ChildrenPreview)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	raw, err := json.Marshal(pairs)
+	if err != nil {
+		return err
+	}
+	type resolvedRow struct {
+		ds, sid, agentID string
+	}
+	resolved, err := readRows(ctx, db, `SELECT json_extract(ref.value,'$[0]'), json_extract(ref.value,'$[1]'),
+		COALESCE(
+			(SELECT i.agent_id FROM capture_inbox i
+			 WHERE i.dataset_id=json_extract(ref.value,'$[0]') AND i.session_id=json_extract(ref.value,'$[1]') AND i.agent_id<>''
+			 ORDER BY i.updated_at DESC LIMIT 1),
+			CASE WHEN json_extract(ref.value,'$[2]')<>'' AND json_extract(ref.value,'$[2]')<>json_extract(ref.value,'$[0]') THEN
+				(SELECT i.agent_id FROM capture_inbox i
+				 WHERE i.dataset_id=json_extract(ref.value,'$[2]') AND i.session_id=json_extract(ref.value,'$[1]') AND i.agent_id<>''
+				 ORDER BY i.updated_at DESC LIMIT 1)
+			END,
+			''
+		)
+		FROM json_each(?) ref`, []any{string(raw)}, func(row rowScanner) (resolvedRow, error) {
+		var r resolvedRow
+		err := row.Scan(&r.ds, &r.sid, &r.agentID)
+		return r, err
+	})
+	if err != nil {
+		return err
+	}
+	inboxAgents := make(map[[2]string]string, len(resolved))
+	for _, r := range resolved {
+		if aid := strings.TrimSpace(r.agentID); aid != "" {
+			inboxAgents[[2]string{r.ds, r.sid}] = aid
+		}
+	}
+
+	needPrincipal := false
+	for _, it := range targets {
+		if aid := inboxAgents[[2]string{it.DatasetID, it.SessionID}]; aid != "" {
+			it.AgentID = aid
+		} else if strings.TrimSpace(it.UserID) != "" {
+			needPrincipal = true
+		}
+	}
+	if !needPrincipal {
+		return nil
+	}
+	principalAgents, err := lookupUniquePrincipalAgents(ctx, db)
+	if err != nil {
+		return err
+	}
+	if len(principalAgents) == 0 {
+		return nil
+	}
+	for _, it := range targets {
+		if it.AgentID != "" {
+			continue
+		}
+		if uid := canonicalDatasetID(it.UserID); uid != "" {
+			if aid := principalAgents[uid]; aid != "" {
+				it.AgentID = aid
+			}
+		}
+	}
+	return nil
+}
+
+// backfillCatalogItemAgents resolves source session agent_id for catalog items
+// (knowledge lessons / documents with a source session_id) in one batched query.
+func backfillCatalogItemAgents(ctx context.Context, db sqlRead, items []catalogItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var targets []*catalogItem
+	seen := make(map[[2]string]struct{})
+	var pairs [][3]string
+	for i := range items {
+		it := &items[i]
+		it.AgentID = strings.TrimSpace(it.AgentID)
+		sid := strings.TrimSpace(it.SessionID)
+		if it.AgentID != "" || it.DatasetID == "" || sid == "" {
+			continue
+		}
+		targets = append(targets, it)
+		k := [2]string{it.DatasetID, sid}
+		if _, ok := seen[k]; !ok {
+			seen[k] = struct{}{}
+			pairs = append(pairs, [3]string{it.DatasetID, sid, normalizedDatasetKey(it.DatasetID)})
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(pairs)
+	if err != nil {
+		return err
+	}
+	type resolvedRow struct {
+		ds, sid, agentID, userID string
+	}
+	resolved, err := readRows(ctx, db, `SELECT json_extract(ref.value,'$[0]'), json_extract(ref.value,'$[1]'),
+		COALESCE(
+			(SELECT s.agent_id FROM catalog_sessions s
+			 WHERE s.dataset_id=json_extract(ref.value,'$[0]') AND s.session_id=json_extract(ref.value,'$[1]') AND s.agent_id<>''
+			 ORDER BY s.sort_ts_desc_key, s.user_id LIMIT 1),
+			(SELECT i.agent_id FROM capture_inbox i
+			 WHERE i.dataset_id=json_extract(ref.value,'$[0]') AND i.session_id=json_extract(ref.value,'$[1]') AND i.agent_id<>''
+			 ORDER BY i.updated_at DESC LIMIT 1),
+			CASE WHEN json_extract(ref.value,'$[2]')<>'' AND json_extract(ref.value,'$[2]')<>json_extract(ref.value,'$[0]') THEN
+				(SELECT i.agent_id FROM capture_inbox i
+				 WHERE i.dataset_id=json_extract(ref.value,'$[2]') AND i.session_id=json_extract(ref.value,'$[1]') AND i.agent_id<>''
+				 ORDER BY i.updated_at DESC LIMIT 1)
+			END,
+			''
+		),
+		COALESCE(
+			(SELECT s.user_id FROM catalog_sessions s
+			 WHERE s.dataset_id=json_extract(ref.value,'$[0]') AND s.session_id=json_extract(ref.value,'$[1]') AND s.user_id<>''
+			 ORDER BY s.sort_ts_desc_key, s.user_id LIMIT 1),
+			''
+		)
+		FROM json_each(?) ref`, []any{string(raw)}, func(row rowScanner) (resolvedRow, error) {
+		var r resolvedRow
+		err := row.Scan(&r.ds, &r.sid, &r.agentID, &r.userID)
+		return r, err
+	})
+	if err != nil {
+		return err
+	}
+	agentByPair := make(map[[2]string]string, len(resolved))
+	userByPair := make(map[[2]string]string)
+	needPrincipal := false
+	for _, r := range resolved {
+		k := [2]string{r.ds, r.sid}
+		if aid := strings.TrimSpace(r.agentID); aid != "" {
+			agentByPair[k] = aid
+		} else if uid := canonicalDatasetID(r.userID); uid != "" {
+			userByPair[k] = uid
+			needPrincipal = true
+		}
+	}
+	if needPrincipal {
+		principalAgents, err := lookupUniquePrincipalAgents(ctx, db)
+		if err != nil {
+			return err
+		}
+		for k, uid := range userByPair {
+			if aid := principalAgents[uid]; aid != "" {
+				agentByPair[k] = aid
+			}
+		}
+	}
+	for _, it := range targets {
+		if aid := agentByPair[[2]string{it.DatasetID, strings.TrimSpace(it.SessionID)}]; aid != "" {
+			it.AgentID = aid
+		}
+	}
+	return nil
 }

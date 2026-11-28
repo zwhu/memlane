@@ -116,6 +116,7 @@ func (c Client) documentInfoByID(ctx context.Context, dataset, id string) (Item,
 			CommonCategory: res.CommonCategory,
 			Document:       &d,
 			Source:         source,
+			SourceAgent:    strings.TrimSpace(res.AgentID),
 		}
 		if res.RecallCount > 0 {
 			item.RecallStats = &KnowledgeRecallStats{Count: res.RecallCount}

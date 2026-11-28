@@ -137,7 +137,7 @@ func (a *App) subagentContext(c *ui.Context, s *pane, i Item) {
 		parentTitle = sessionReadableParentTitle(*s.SubagentParent)
 	}
 	if parentTitle == "" && i.Session.ParentSessionID != "" {
-		parentTitle = sessionIdentity(i.Session.ParentSessionID)
+		parentTitle = sessionIdentityWithAgent(i.Session.ParentSessionID, itemSourceAgentID(i))
 	}
 	badge := subagentBadgeLabel(i.Session)
 	if i.Session.NestingDepth > 1 {
@@ -182,10 +182,11 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 	}
 	v4ButtonPress(card, 0.99)
 	card.Children(func() {
+		childIdentity := itemSessionIdentity(child)
 		ui.Column(c).FillWidth().Gap(8).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 				agentLogo(c, recentAgentIcon(child), 14)
-				v4SubagentChip(c, subagentBadgeLabel(child.Session), sessionIdentity(child.ID))
+				v4SubagentChip(c, subagentBadgeLabel(child.Session), childIdentity)
 				if child.Session != nil && child.Session.NestingDepth > 1 {
 					v4CategoryChip(c, fmt.Sprintf("L%d", child.Session.NestingDepth))
 				}
@@ -195,12 +196,12 @@ func (a *App) renderSubagentCard(c *ui.Context, s *pane, parent, child Item) {
 			if sessionHasTopic(child) {
 				v4InlineMarkdown(c, strings.TrimSpace(child.Title), fsBody, 500, 1.45, tok.Text1).MaxLines(2)
 			} else {
-				homeText(c, sessionIdentity(child.ID), homeBody).TextColor(tok.Text2).SingleLine()
+				homeText(c, childIdentity, homeBody).TextColor(tok.Text2).SingleLine()
 			}
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(sp2).Children(func() {
 				summary := child.SessionSummary
 				if summary == "" {
-					summary = sessionIdentity(child.ID)
+					summary = childIdentity
 				}
 				homeText(c, summary, homeReadableMeta).SingleLine().Grow(1).MinWidth(0)
 				ui.Text(c, "查看完整记录 ›").Font(fontUI).FontSize(fsCaption).FontWeight(500).TextColor(tok.Accent).SingleLine().Shrink(0)

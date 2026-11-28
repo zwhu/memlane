@@ -15,7 +15,8 @@ import (
 
 type ResultItem struct {
 	ID, ProjectID, DatasetID, Kind, Title, Date, Preview   string
-	SourceDocument, UserID, Category, Summary, SearchMatch string
+	SourceDocument, UserID, AgentID, SessionID             string
+	Category, Summary, SearchMatch                         string
 	Unread, IsSession, Unavailable                         bool
 }
 

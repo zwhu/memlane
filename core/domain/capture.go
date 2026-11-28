@@ -13,6 +13,7 @@ import (
 const captureInboxV5IndexesDDL = `
 CREATE INDEX IF NOT EXISTS idx_capture_inbox_capture_key ON capture_inbox(capture_key);
 CREATE INDEX IF NOT EXISTS idx_capture_inbox_dataset_session_status ON capture_inbox(dataset_id,session_id,status);
+CREATE INDEX IF NOT EXISTS idx_capture_inbox_dataset_session_agent ON capture_inbox(dataset_id,session_id,updated_at DESC,agent_id);
 `
 
 const sessionFlushDDL = `

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -687,4 +688,156 @@ func TestR1DomainFixes(t *testing.T) {
 			t.Fatalf("expected single canonical recall_doc_counts row, got %d, %v", variantCount, err)
 		}
 	})
+}
+
+func TestCatalogPublishBackfillsSessionAgentIDsAndUsesCoveringIndexes(t *testing.T) {
+	ctx := context.Background()
+	store := openCatalogPublishTestStore(t)
+
+	ds := "11111111-1111-4111-8111-111111111111"
+	dsHex := catalogUUIDHex(ds)
+	if err := store.UpsertProject(ctx, Project{ID: "p-agent", Name: "AgentProj", DatasetID: ds}); err != nil {
+		t.Fatal(err)
+	}
+	// Agents for principal_id fallback testing:
+	// - principal-unique: single active agent -> resolves
+	// - principal-retired: single retired agent (no active) -> resolves
+	// - principal-shared: 2 active agents share principal -> must NOT guess
+	for _, a := range []Agent{
+		{ID: "traex-7859e85d2cf88d393366e77e", Kind: "traex", Name: "TRAE CLI", PrincipalID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"},
+		{ID: "codex-retired-1", Kind: "codex", Name: "Old Codex", PrincipalID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", RetiredAt: "2026-10-01T00:00:00Z"},
+		{ID: "codex-shared-1", Kind: "codex", Name: "Codex A", PrincipalID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+		{ID: "pi-shared-2", Kind: "pi", Name: "Pi B", PrincipalID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+	} {
+		if err := store.UpsertAgent(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const (
+		traeUUID        = "01a2201c-ff97-7430-8035-dd1c06201848"
+		hexDSUUID       = "01a2201c-ff97-7430-8035-dd1c06209999"
+		principalOnlyID = "01a2201c-ff97-7430-8035-dd1c0620aaaa"
+		retiredOnlyID   = "01a2201c-ff97-7430-8035-dd1c0620bbbb"
+		sharedOnlyID    = "01a2201c-ff97-7430-8035-dd1c0620cccc"
+		explicitID      = "01a2201c-ff97-7430-8035-dd1c0620dddd"
+	)
+
+	// Older inbox row vs newer inbox row for traeUUID -> must pick latest updated_at.
+	for _, row := range []struct {
+		id, rowDS, agent, sid, updated string
+	}{
+		{"in-1", ds, "codex-older", traeUUID, "2026-11-27T01:00:00.000000+00:00"},
+		{"in-2", ds, "traex-7859e85d2cf88d393366e77e", traeUUID, "2026-11-27T02:00:00.000000+00:00"},
+		{"in-3", ds, "", traeUUID, "2026-11-27T03:00:00.000000+00:00"},
+		{"in-4", dsHex, "codex-2564787a11223344", hexDSUUID, "2026-11-27T02:00:00.000000+00:00"},
+	} {
+		if _, err := store.DB().ExecContext(ctx, `INSERT INTO capture_inbox
+			(id,project_id,dataset_id,agent_id,session_id,message_id,capture_key,kind,payload_json,status,last_error,last_error_at,attempts,created_at,updated_at)
+			VALUES(?,'p-agent',?,?,?,'m1','','capture_qa','{}','succeeded','','',0,?,?)`,
+			row.id, row.rowDS, row.agent, row.sid, row.updated, row.updated); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inputSessions := []CatalogSession{
+		{SessionID: traeUUID, UserID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", AgentID: "", Status: "active", SortTSDescKey: -600},
+		{SessionID: hexDSUUID, UserID: "u-other", AgentID: "", Status: "active", SortTSDescKey: -500},
+		{SessionID: principalOnlyID, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", AgentID: "", Status: "active", SortTSDescKey: -400},
+		{SessionID: retiredOnlyID, UserID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", AgentID: "", Status: "active", SortTSDescKey: -300},
+		{SessionID: sharedOnlyID, UserID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", AgentID: "", Status: "active", SortTSDescKey: -200},
+		{SessionID: explicitID, UserID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", AgentID: "claude_code-explicit", Status: "active", SortTSDescKey: -100},
+	}
+
+	wantAgents := map[string]string{
+		traeUUID:        "traex-7859e85d2cf88d393366e77e",
+		hexDSUUID:       "codex-2564787a11223344",
+		principalOnlyID: "traex-7859e85d2cf88d393366e77e",
+		retiredOnlyID:   "codex-retired-1",
+		sharedOnlyID:    "",
+		explicitID:      "claude_code-explicit",
+	}
+
+	assertSessions := func(t *testing.T, phase string) {
+		t.Helper()
+		got, err := store.ListCatalogSessions(ctx, ds, 20)
+		if err != nil {
+			t.Fatalf("%s: ListCatalogSessions: %v", phase, err)
+		}
+		if len(got) != len(wantAgents) {
+			t.Fatalf("%s: session count = %d, want %d", phase, len(got), len(wantAgents))
+		}
+		for _, s := range got {
+			if want := wantAgents[s.SessionID]; s.AgentID != want {
+				t.Errorf("%s: session %s agent_id = %q, want %q", phase, s.SessionID, s.AgentID, want)
+			}
+		}
+	}
+
+	// 1. PublishFullCatalog (startup sync path).
+	if _, err := store.PublishFullCatalog(ctx, []CatalogPublishInput{{
+		DatasetID: ds, Exists: true, Sessions: inputSessions,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	assertSessions(t, "PublishFullCatalog")
+
+	// 2. PublishDatasetCatalog (incremental dataset sync path).
+	if _, err := store.PublishDatasetCatalog(ctx, CatalogPublishInput{
+		DatasetID: ds, Exists: true, Sessions: inputSessions,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertSessions(t, "PublishDatasetCatalog")
+
+	// 3. PublishDatasetSessions (session-only sync path).
+	if _, err := store.PublishDatasetSessions(ctx, ds, inputSessions); err != nil {
+		t.Fatal(err)
+	}
+	assertSessions(t, "PublishDatasetSessions")
+
+	// 4. Verify EXPLAIN QUERY PLAN uses covering indexes with zero table scans or temp B-trees.
+	for _, tc := range []struct {
+		name      string
+		query     string
+		args      []any
+		wantIndex string
+	}{
+		{
+			name: "capture_inbox covering index",
+			query: `EXPLAIN QUERY PLAN SELECT i.agent_id FROM capture_inbox i
+				WHERE i.dataset_id=? AND i.session_id=? AND i.agent_id<>''
+				ORDER BY i.updated_at DESC LIMIT 1`,
+			args:      []any{ds, traeUUID},
+			wantIndex: "idx_capture_inbox_dataset_session_agent",
+		},
+		{
+			name: "catalog_sessions covering index",
+			query: `EXPLAIN QUERY PLAN SELECT s.agent_id FROM catalog_sessions s
+				WHERE s.dataset_id=? AND s.session_id=? AND s.agent_id<>''
+				ORDER BY s.sort_ts_desc_key, s.user_id LIMIT 1`,
+			args:      []any{ds, traeUUID},
+			wantIndex: "idx_catalog_sessions_dataset_session",
+		},
+	} {
+		rows, err := store.DB().QueryContext(ctx, tc.query, tc.args...)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var plans []string
+		for rows.Next() {
+			var id, parent, notused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+				_ = rows.Close()
+				t.Fatal(err)
+			}
+			plans = append(plans, detail)
+		}
+		_ = rows.Close()
+		joined := strings.Join(plans, " | ")
+		if !strings.Contains(joined, "COVERING INDEX "+tc.wantIndex) || strings.Contains(joined, "TEMP B-TREE") {
+			t.Fatalf("%s: unexpected query plan: %s", tc.name, joined)
+		}
+	}
 }

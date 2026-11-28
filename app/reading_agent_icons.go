@@ -30,10 +30,30 @@ func sourceAgentLabel(c *ui.Context, item Item) {
 	})
 }
 
+func itemSourceAgentID(item Item) string {
+	if item.Session != nil {
+		if agent := strings.TrimSpace(item.Session.Agent); agent != "" {
+			return agent
+		}
+	}
+	if agent := strings.TrimSpace(item.SourceAgent); agent != "" {
+		return agent
+	}
+	if item.Document != nil {
+		if agent, _ := item.Document.Metadata["agent_id"].(string); strings.TrimSpace(agent) != "" {
+			return strings.TrimSpace(agent)
+		}
+	}
+	return ""
+}
+
 func itemSourceSession(item Item) string {
 	session := ""
 	if item.Document != nil {
 		session = documentSession(*item.Document)
+	}
+	if session == "" {
+		session = strings.TrimSpace(item.Source)
 	}
 	if item.Session != nil {
 		session = item.Session.ID
@@ -41,8 +61,11 @@ func itemSourceSession(item Item) string {
 	return session
 }
 
-// Use the retained source session identity, never the project name or memory text.
+// Use the retained source agent/session identity, never the project name or memory text.
 func recentAgentIcon(item Item) *ui.SVG {
+	if kind, _, ok := agentBrandFromID(itemSourceAgentID(item)); ok {
+		return agentBrandIcon(kind)
+	}
 	session := itemSourceSession(item)
 	if session == "" {
 		return homeDocument
@@ -59,6 +82,7 @@ func recentAgentIcon(item Item) *ui.SVG {
 		"pi":          "pi",
 		"Claude Code": "claude_code",
 		"opencode":    "opencode",
+		"Cursor":      "cursor",
 		"cursor":      "cursor",
 		"Agy":         "antigravity",
 		"Gemini":      "gemini",
@@ -69,6 +93,9 @@ func recentAgentIcon(item Item) *ui.SVG {
 }
 
 func sourceAgentName(item Item) string {
+	if _, display, ok := agentBrandFromID(itemSourceAgentID(item)); ok {
+		return display
+	}
 	session := itemSourceSession(item)
 	if session == "" {
 		return "Agent 未记录"

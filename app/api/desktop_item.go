@@ -56,9 +56,9 @@ type Item struct {
 	RecallStats                                                           *KnowledgeRecallStats
 	SearchMatch                                                           string
 	SessionSummary                                                        string
-	CommonCategory                                                        string
-	ParentTitle                                                           string
-	ID, Dataset, Kind, Title, Date, Preview, Body, Source, SourceDocument string
+	CommonCategory                                                                     string
+	ParentTitle                                                                        string
+	ID, Dataset, Kind, Title, Date, Preview, Body, Source, SourceAgent, SourceDocument string
 	Document                                                              *Document
 	Session                                                               *Session
 	Detail                                                                *SessionDetail

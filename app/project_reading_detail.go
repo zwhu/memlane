@@ -309,7 +309,7 @@ func (a *App) projectDetailHeader(c *ui.Context, s *pane, i *Item, paged bool) {
 				t.MaxLines(3)
 			}
 			if i.Session != nil {
-				if idLabel := sessionIdentity(i.ID); idLabel != title {
+				if idLabel := itemSessionIdentity(*i); idLabel != title {
 					homeText(c, idLabel, homeMeta)
 				}
 			}
@@ -365,12 +365,20 @@ func (a *App) projectDetailTail(c *ui.Context, s *pane, i *Item) {
 	knowledgeBasis(c, *i)
 	if i.Source != "" || i.SourceDocument != "" {
 		ui.Row(c).FillWidth().Margin(sp4, 0, 0, 0).BorderWidth(1, 0, 0, 0).BorderColor(tok.Border).Padding(sp4, 0, 0, 0).Gap(sp3).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
+			if i.Source != "" && i.SourceDocument == "" {
+				if icon := recentAgentIcon(*i); icon != homeDocument {
+					agentLogo(c, icon, 16).Shrink(0)
+				} else {
+					ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
+				}
+			} else {
+				ui.Icon(c, v4IconDoc).FontSize(16).TextColor(tok.Text3).Shrink(0)
+			}
 			ui.Column(c).Grow(1).MinWidth(0).Gap(4).Children(func() {
 				ui.Text(c, "出处 · "+readingSourceLabel(*i)).Font(fontUI).FontSize(fsFootnote).FontWeight(550).TextColor(tok.Text1).MaxLines(2)
 				sub := "官方关联材料"
 				if i.Source != "" {
-					sub = sessionIdentity(i.Source)
+					sub = sessionIdentityWithAgent(i.Source, itemSourceAgentID(*i))
 				}
 				homeText(c, sub, homeMeta).SingleLine()
 			})

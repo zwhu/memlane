@@ -299,3 +299,147 @@ func TestTraeCNIconAcceptsHistoricalNames(t *testing.T) {
 		t.Fatal("historical registered name did not use the current display name")
 	}
 }
+
+func TestBareUUIDSessionAgentIDResolution(t *testing.T) {
+	const bareUUID = "01a2201c-ff97-7430-8035-dd1c06201848"
+	const shortUUID = "01a2201c…06201848"
+
+	cases := []struct {
+		agentID  string
+		wantName string
+		wantIcon *ui.SVG
+		wantID   string
+	}{
+		{
+			agentID:  "traex-7859e85d2cf88d393366e77e",
+			wantName: "TRAE CLI",
+			wantIcon: agentBrandIcon("traex"),
+			wantID:   "TRAE CLI 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "codex-2564787a11223344",
+			wantName: "Codex",
+			wantIcon: agentBrandIcon("codex"),
+			wantID:   "Codex 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "trae_ide-99887766",
+			wantName: "TRAE CN",
+			wantIcon: agentBrandIcon("trae_ide"),
+			wantID:   "TRAE CN 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "antigravity-11223344",
+			wantName: "Agy",
+			wantIcon: agentBrandIcon("antigravity"),
+			wantID:   "Agy 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "agy-11223344",
+			wantName: "Agy",
+			wantIcon: agentBrandIcon("antigravity"),
+			wantID:   "Agy 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "pi-55667788",
+			wantName: "pi",
+			wantIcon: agentBrandIcon("pi"),
+			wantID:   "pi 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "claude_code-aabbccdd",
+			wantName: "Claude Code",
+			wantIcon: agentBrandIcon("claude_code"),
+			wantID:   "Claude Code 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "opencode-eeff0011",
+			wantName: "opencode",
+			wantIcon: agentBrandIcon("opencode"),
+			wantID:   "opencode 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "cursor-12345678",
+			wantName: "Cursor",
+			wantIcon: agentBrandIcon("cursor"),
+			wantID:   "Cursor 会话 · " + shortUUID,
+		},
+		{
+			agentID:  "gemini-abcdef12",
+			wantName: "Gemini",
+			wantIcon: agentBrandIcon("gemini"),
+			wantID:   "Gemini 会话 · " + shortUUID,
+		},
+	}
+
+	for _, tc := range cases {
+		if tc.wantIcon == nil || tc.wantIcon == homeDocument {
+			t.Fatalf("expected real brand icon for %q", tc.agentID)
+		}
+		sessItem := Item{
+			ID:      bareUUID,
+			Kind:    "会话",
+			Title:   bareUUID,
+			Session: &Session{ID: bareUUID, Agent: tc.agentID},
+		}
+		docItem := Item{
+			ID:          "doc-" + tc.agentID,
+			Kind:        "知识",
+			Source:      bareUUID,
+			SourceAgent: tc.agentID,
+			Document: &Document{
+				ID: "doc-" + tc.agentID,
+				Metadata: map[string]any{
+					"node_set":   []any{"session_learnings", "session_learnings:" + bareUUID},
+					"session_id": bareUUID,
+				},
+			},
+		}
+		for label, item := range map[string]Item{"session": sessItem, "knowledge": docItem} {
+			if got := recentAgentIcon(item); got != tc.wantIcon {
+				t.Errorf("%s (%q): recentAgentIcon returned generic/wrong icon", label, tc.agentID)
+			}
+			if got := sourceAgentName(item); got != tc.wantName {
+				t.Errorf("%s (%q): sourceAgentName = %q, want %q", label, tc.agentID, got, tc.wantName)
+			}
+			if got := sessionSourceAgentDisplay(item); got != tc.wantName {
+				t.Errorf("%s (%q): sessionSourceAgentDisplay = %q, want %q", label, tc.agentID, got, tc.wantName)
+			}
+		}
+		if got := itemSessionIdentity(sessItem); got != tc.wantID {
+			t.Errorf("%q: itemSessionIdentity = %q, want %q", tc.agentID, got, tc.wantID)
+		}
+		if got := sessionFallbackTitle(sessItem); got != tc.wantID {
+			t.Errorf("%q: sessionFallbackTitle = %q, want %q", tc.agentID, got, tc.wantID)
+		}
+		if got := sessionReadableParentTitle(sessItem); got != tc.wantID {
+			t.Errorf("%q: sessionReadableParentTitle = %q, want %q", tc.agentID, got, tc.wantID)
+		}
+		if got, _ := searchItemPrimaryText(sessItem, ""); got != tc.wantID {
+			t.Errorf("%q: searchItemPrimaryText = %q, want %q", tc.agentID, got, tc.wantID)
+		}
+		if got := sessionIdentityWithAgent(docItem.Source, itemSourceAgentID(docItem)); got != tc.wantID {
+			t.Errorf("%q: knowledge source identity = %q, want %q", tc.agentID, got, tc.wantID)
+		}
+	}
+
+	// Non-brand prefixes like "pixel-123" must NOT falsely match "pi".
+	unknown := Item{
+		ID:      bareUUID,
+		Kind:    "会话",
+		Title:   bareUUID,
+		Session: &Session{ID: bareUUID, Agent: "pixel-123"},
+	}
+	if got := recentAgentIcon(unknown); got != homeDocument {
+		t.Fatal("unrecognized agent_id pixel-123 must fall back to homeDocument")
+	}
+	if got := sourceAgentName(unknown); got != "Agent 未记录" {
+		t.Fatalf("sourceAgentName(pixel-123) = %q, want Agent 未记录", got)
+	}
+	if got := sessionSourceAgentDisplay(unknown); got != "pixel-123" {
+		t.Fatalf("sessionSourceAgentDisplay(pixel-123) = %q, want pixel-123", got)
+	}
+	if got := itemSessionIdentity(unknown); got != "Agent 会话 · "+shortUUID {
+		t.Fatalf("itemSessionIdentity(pixel-123) = %q", got)
+	}
+}

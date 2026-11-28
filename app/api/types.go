@@ -274,6 +274,7 @@ type CatalogItem struct {
 	LessonType     string `json:"lesson_type"`
 	StateKey       string `json:"state_key"`
 	SessionID      string `json:"session_id"`
+	AgentID        string `json:"agent_id,omitempty"`
 	ContentHash    string `json:"content_hash"`
 	PipelineStatus string `json:"pipeline_status"`
 }
@@ -421,7 +422,6 @@ type SearchHit struct {
 type SearchItem struct {
 	CatalogItem
 	UserID          string `json:"user_id,omitempty"`
-	AgentID         string `json:"agent_id,omitempty"`
 	Status          string `json:"status,omitempty"`
 	StartedAt       string `json:"started_at,omitempty"`
 	LastActivityAt  string `json:"last_activity_at,omitempty"`

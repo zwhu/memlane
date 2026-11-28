@@ -168,5 +168,6 @@ func mapCatalogItem(row api.CatalogItem) ResultItem {
 		title = readableCatalogTitle(row.DocName)
 	}
 	return ResultItem{ID: id, ProjectID: row.ProjectID, DatasetID: row.DatasetID, Kind: kind,
-		SourceDocument: row.DocumentID, Title: title, Date: row.EffectiveDate, Category: row.Category, Unread: row.IsUnread, IsSession: kind == "会话"}
+		SourceDocument: row.DocumentID, AgentID: row.AgentID, SessionID: row.SessionID,
+		Title: title, Date: row.EffectiveDate, Category: row.Category, Unread: row.IsUnread, IsSession: kind == "会话"}
 }

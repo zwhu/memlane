@@ -35,6 +35,7 @@ type catalogItem struct {
 	LessonType     string `json:"lesson_type"`
 	StateKey       string `json:"state_key"`
 	SessionID      string `json:"session_id"`
+	AgentID        string `json:"agent_id,omitempty"`
 	ContentHash    string `json:"content_hash"`
 	PipelineStatus string `json:"pipeline_status"`
 	location       string
@@ -209,6 +210,9 @@ func (s *Server) queryKnowledge(ctx context.Context, db sqlRead, r *http.Request
 	if err != nil {
 		return nil, err
 	}
+	if err := backfillCatalogItemAgents(ctx, db, result.Items); err != nil {
+		return nil, err
+	}
 	var unread int
 	var revision int64
 	var version string
@@ -242,6 +246,13 @@ func (s *Server) loadDocument(ctx context.Context, ds, doc string) (catalogItem,
 	missing := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !missing {
 		return item, "", "", err
+	}
+	if !missing && strings.TrimSpace(item.SessionID) != "" && strings.TrimSpace(item.AgentID) == "" {
+		single := []catalogItem{item}
+		if agentErr := backfillCatalogItemAgents(ctx, s.cfg.Store.DB(), single); agentErr != nil {
+			return item, "", "", agentErr
+		}
+		item = single[0]
 	}
 	mime := "text/plain"
 	var content string

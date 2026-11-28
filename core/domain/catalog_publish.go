@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -538,6 +539,9 @@ func (s *Store) PublishDatasetSessions(ctx context.Context, datasetID string, se
 			return err
 		}
 		applySessionRelations(cloned, relations)
+		if err := enrichSessionAgentsTx(ctx, tx, datasetID, cloned); err != nil {
+			return err
+		}
 
 		if err := execSQL(ctx, tx, `DELETE FROM catalog_sessions WHERE dataset_id=?`, datasetID); err != nil {
 			return err
@@ -693,6 +697,9 @@ func publishSingleDatasetTx(ctx context.Context, tx *sql.Tx, input CatalogPublis
 		return maxSeq, err
 	}
 	applySessionRelations(sessions, relations)
+	if err := enrichSessionAgentsTx(ctx, tx, datasetID, sessions); err != nil {
+		return maxSeq, err
+	}
 
 	// Gate 1-1: detect auto-replaced state/pitfall keyed docs (old disappeared, new appeared with same key).
 	newDocIDs := make(map[string]bool, len(docs))
@@ -903,6 +910,170 @@ func loadDatasetRecallCountsTx(ctx context.Context, tx *sql.Tx, datasetID string
 func listSessionRelationsTx(ctx context.Context, tx *sql.Tx, datasetID string) ([]SessionRelation, error) {
 	return queryList(ctx, tx, scanSessionRelation,
 		`SELECT `+sessionRelationColumns+` FROM session_relations WHERE dataset_id=? ORDER BY session_id`, datasetID)
+}
+
+// enrichSessionAgentsTx fills empty CatalogSession.AgentID values in bulk during
+// catalog sync using capture_inbox (latest non-empty agent_id per dataset+session)
+// and unambiguous agents.principal_id matches for session user_id.
+func enrichSessionAgentsTx(ctx context.Context, tx *sql.Tx, datasetID string, sessions []CatalogSession) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	missingSeen := make(map[string]struct{})
+	missingSessions := make([]string, 0)
+	for i := range sessions {
+		sessions[i].AgentID = strings.TrimSpace(sessions[i].AgentID)
+		if sessions[i].AgentID != "" {
+			continue
+		}
+		sid := strings.TrimSpace(sessions[i].SessionID)
+		if sid == "" {
+			continue
+		}
+		if _, exists := missingSeen[sid]; !exists {
+			missingSeen[sid] = struct{}{}
+			missingSessions = append(missingSessions, sid)
+		}
+	}
+	if len(missingSessions) == 0 {
+		return nil
+	}
+
+	raw, err := json.Marshal(missingSessions)
+	if err != nil {
+		return err
+	}
+	hexDS := catalogUUIDHex(datasetID)
+	var query string
+	var args []any
+	if hexDS != "" && hexDS != datasetID {
+		query = `SELECT ref.value, COALESCE(
+			(SELECT i.agent_id FROM capture_inbox i
+			 WHERE i.dataset_id=?1 AND i.session_id=ref.value AND i.agent_id<>''
+			 ORDER BY i.updated_at DESC LIMIT 1),
+			(SELECT i.agent_id FROM capture_inbox i
+			 WHERE i.dataset_id=?2 AND i.session_id=ref.value AND i.agent_id<>''
+			 ORDER BY i.updated_at DESC LIMIT 1),
+			''
+		) FROM json_each(?3) ref`
+		args = []any{datasetID, hexDS, string(raw)}
+	} else {
+		query = `SELECT ref.value, COALESCE(
+			(SELECT i.agent_id FROM capture_inbox i
+			 WHERE i.dataset_id=?1 AND i.session_id=ref.value AND i.agent_id<>''
+			 ORDER BY i.updated_at DESC LIMIT 1),
+			''
+		) FROM json_each(?2) ref`
+		args = []any{datasetID, string(raw)}
+	}
+
+	inboxAgents := make(map[string]string, len(missingSessions))
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var sid, agentID string
+		if err := rows.Scan(&sid, &agentID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if agentID = strings.TrimSpace(agentID); agentID != "" {
+			inboxAgents[sid] = agentID
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	needPrincipalLookup := false
+	for i := range sessions {
+		if sessions[i].AgentID != "" {
+			continue
+		}
+		if agentID := inboxAgents[strings.TrimSpace(sessions[i].SessionID)]; agentID != "" {
+			sessions[i].AgentID = agentID
+			continue
+		}
+		if strings.TrimSpace(sessions[i].UserID) != "" {
+			needPrincipalLookup = true
+		}
+	}
+	if !needPrincipalLookup {
+		return nil
+	}
+
+	principalAgents, err := loadUniquePrincipalAgentsTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(principalAgents) == 0 {
+		return nil
+	}
+	for i := range sessions {
+		if sessions[i].AgentID != "" {
+			continue
+		}
+		uid := catalogUUIDText(sessions[i].UserID)
+		if uid == "" {
+			continue
+		}
+		if agentID := principalAgents[uid]; agentID != "" {
+			sessions[i].AgentID = agentID
+		}
+	}
+	return nil
+}
+
+func loadUniquePrincipalAgentsTx(ctx context.Context, db sqlReader) (map[string]string, error) {
+	type bucket struct {
+		active   []string
+		inactive []string
+	}
+	byPrincipal := make(map[string]*bucket)
+	rows, err := db.QueryContext(ctx, `SELECT id, principal_id, archived, retired_at FROM agents WHERE principal_id<>''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, principalID, retiredAt string
+		var archived int
+		if err := rows.Scan(&id, &principalID, &archived, &retiredAt); err != nil {
+			return nil, err
+		}
+		id = strings.TrimSpace(id)
+		key := catalogUUIDText(principalID)
+		if id == "" || key == "" {
+			continue
+		}
+		b := byPrincipal[key]
+		if b == nil {
+			b = &bucket{}
+			byPrincipal[key] = b
+		}
+		if archived == 0 && strings.TrimSpace(retiredAt) == "" {
+			b.active = append(b.active, id)
+		} else {
+			b.inactive = append(b.inactive, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(byPrincipal))
+	for key, b := range byPrincipal {
+		if len(b.active) == 1 {
+			out[key] = b.active[0]
+		} else if len(b.active) == 0 && len(b.inactive) == 1 {
+			out[key] = b.inactive[0]
+		}
+	}
+	return out, nil
 }
 
 func insertCatalogSessionsTx(ctx context.Context, tx *sql.Tx, sessions []CatalogSession) error {

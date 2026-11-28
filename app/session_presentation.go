@@ -5,6 +5,53 @@ import (
 	"strings"
 )
 
+type agentBrandSpec struct {
+	kind    string
+	display string
+	aliases []string
+}
+
+var knownAgentBrands = []agentBrandSpec{
+	{kind: "trae_ide", display: "TRAE CN", aliases: []string{"trae_ide", "trae-ide", "trae_cn", "trae-cn", "traecn"}},
+	{kind: "traex", display: "TRAE CLI", aliases: []string{"traex", "trae_cli", "trae-cli", "traecli"}},
+	{kind: "claude_code", display: "Claude Code", aliases: []string{"claude_code", "claude-code", "claudecode", "claude"}},
+	{kind: "codex", display: "Codex", aliases: []string{"codex"}},
+	{kind: "antigravity", display: "Agy", aliases: []string{"antigravity", "agy"}},
+	{kind: "gemini", display: "Gemini", aliases: []string{"gemini"}},
+	{kind: "pi", display: "pi", aliases: []string{"pi"}},
+	{kind: "opencode", display: "opencode", aliases: []string{"opencode"}},
+	{kind: "cursor", display: "Cursor", aliases: []string{"cursor"}},
+}
+
+func agentBrandFromID(raw string) (kind, display string, ok bool) {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return "", "", false
+	}
+	for _, spec := range knownAgentBrands {
+		for _, alias := range spec.aliases {
+			if lower == alias {
+				return spec.kind, spec.display, true
+			}
+			if strings.HasPrefix(lower, alias) {
+				next := lower[len(alias)]
+				if next == '-' || next == '_' {
+					return spec.kind, spec.display, true
+				}
+			}
+		}
+	}
+	return "", "", false
+}
+
+func shortenSessionKey(key string) string {
+	r := []rune(key)
+	if len(r) > 18 {
+		return string(r[:8]) + "…" + string(r[len(r)-8:])
+	}
+	return key
+}
+
 // Stable host identity is separate from the first captured question. A paused
 // capture may first see a much later turn, and the official detail is a tail.
 func sessionIdentity(id string) string {
@@ -44,13 +91,29 @@ func sessionIdentity(id string) string {
 			host = "Agy"
 		case "gemini":
 			host = "Gemini"
+		case "cursor":
+			host = "Cursor"
 		}
 	}
-	r := []rune(key)
-	if len(r) > 18 {
-		key = string(r[:8]) + "…" + string(r[len(r)-8:])
+	return host + " 会话 · " + shortenSessionKey(key)
+}
+
+func sessionIdentityWithAgent(id, agentID string) string {
+	id = strings.TrimSpace(id)
+	if _, display, ok := agentBrandFromID(agentID); ok {
+		key := id
+		if prefix, rest, hasUnderscore := strings.Cut(id, "_"); hasUnderscore && rest != "" {
+			if _, prefixDisplay, prefixOK := agentBrandFromID(prefix); prefixOK && prefixDisplay == display {
+				key = rest
+			}
+		}
+		return display + " 会话 · " + shortenSessionKey(key)
 	}
-	return host + " 会话 · " + key
+	return sessionIdentity(id)
+}
+
+func itemSessionIdentity(i Item) string {
+	return sessionIdentityWithAgent(i.ID, itemSourceAgentID(i))
 }
 
 func sessionListMeta(i Item) string {
@@ -85,9 +148,9 @@ func sessionFallbackTitle(i Item) string {
 		if role := subagentRoleLabel(i.Session); role != "" {
 			return "子会话 · " + role
 		}
-		return "子会话 · " + sessionIdentity(i.ID)
+		return "子会话 · " + itemSessionIdentity(i)
 	}
-	return sessionIdentity(i.ID)
+	return itemSessionIdentity(i)
 }
 
 func sessionDisplaySummary(i Item) string {
@@ -106,7 +169,7 @@ func sessionReadableParentTitle(i Item) string {
 	if sessionHasTopic(i) {
 		return strings.TrimSpace(i.Title)
 	}
-	return sessionIdentity(i.ID)
+	return itemSessionIdentity(i)
 }
 
 func sessionHistoryMissing(i Item) bool {
@@ -118,10 +181,8 @@ func sessionSourceAgentDisplay(i Item) string {
 	if name != "Agent 未记录" {
 		return name
 	}
-	if i.Session != nil {
-		if agent := strings.TrimSpace(i.Session.Agent); agent != "" {
-			return agent
-		}
+	if agent := itemSourceAgentID(i); agent != "" {
+		return agent
 	}
 	return name
 }

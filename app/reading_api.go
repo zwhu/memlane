@@ -18,7 +18,7 @@ func catalogRowFromAPI(row api.CatalogItem) v2KnowledgeItem {
 		EffectiveDate: row.EffectiveDate, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 		ContentHash: row.ContentHash, Kind: row.Kind, Category: row.Category,
 		CommonCategory: row.CommonCategory, LessonType: row.LessonType, StateKey: row.StateKey,
-		SessionID: row.SessionID, RecallCount: int64(row.RecallCount), IsUnread: row.IsUnread,
+		SessionID: row.SessionID, AgentID: row.AgentID, RecallCount: int64(row.RecallCount), IsUnread: row.IsUnread,
 	}
 }
 

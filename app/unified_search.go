@@ -231,7 +231,8 @@ func (a *App) describeSearchItem(i Item) appsearch.ResultItem {
 		user = i.Session.User
 	}
 	return appsearch.ResultItem{ID: i.ID, DatasetID: i.Dataset, Kind: i.Kind, Title: i.Title, Date: date,
-		Preview: i.Preview, SourceDocument: i.SourceDocument, UserID: user, SearchMatch: i.SearchMatch,
+		Preview: i.Preview, SourceDocument: i.SourceDocument, UserID: user,
+		AgentID: itemSourceAgentID(i), SessionID: itemSourceSession(i), SearchMatch: i.SearchMatch,
 		Unread: knowledge && a.itemIsUnread(i), Unavailable: i.ReadingState == "unavailable", IsSession: i.Session != nil}
 }
 
@@ -239,10 +240,10 @@ func desktopSearchItems(rows []appsearch.ResultItem) []Item {
 	out := make([]Item, 0, len(rows))
 	for _, row := range rows {
 		item := Item{ID: row.ID, Dataset: row.DatasetID, Kind: row.Kind, Title: row.Title, Date: row.Date,
-			Preview: row.Preview, SourceDocument: row.SourceDocument, SearchMatch: row.SearchMatch,
+			Preview: row.Preview, Source: row.SessionID, SourceAgent: row.AgentID, SourceDocument: row.SourceDocument, SearchMatch: row.SearchMatch,
 			ServerUnread: row.Unread, ServerUnreadKnown: true}
 		if row.IsSession {
-			item.Session = &Session{ID: row.ID, Dataset: row.DatasetID, User: row.UserID}
+			item.Session = &Session{ID: row.ID, Dataset: row.DatasetID, User: row.UserID, Agent: row.AgentID}
 		}
 		out = append(out, item)
 	}

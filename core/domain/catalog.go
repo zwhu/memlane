@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS catalog_sessions (
  child_count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(dataset_id,user_id,session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_sessions_page ON catalog_sessions(dataset_id,sort_ts_desc_key,user_id,session_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_sessions_dataset_session ON catalog_sessions(dataset_id,session_id,sort_ts_desc_key,user_id,agent_id);
 CREATE TABLE IF NOT EXISTS catalog_sync_state (
  dataset_id TEXT PRIMARY KEY, dataset_hex TEXT NOT NULL DEFAULT '', doc_count INTEGER NOT NULL DEFAULT 0,
  max_rowid INTEGER NOT NULL DEFAULT 0, sum_rowid INTEGER NOT NULL DEFAULT 0, max_updated_at TEXT NOT NULL DEFAULT '',

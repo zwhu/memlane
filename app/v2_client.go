@@ -63,6 +63,7 @@ type v2KnowledgeItem struct {
 	LessonType       string `json:"lesson_type"`
 	StateKey         string `json:"state_key"`
 	SessionID        string `json:"session_id"`
+	AgentID          string `json:"agent_id,omitempty"`
 	RecallCount      int64  `json:"recall_count"`
 	IsUnread         bool   `json:"is_unread"`
 	PreviewText      string `json:"preview_text"`
@@ -173,6 +174,7 @@ func (row v2KnowledgeItem) toItem(recallStartedAt string) Item {
 		Body:              "",
 		BodyLoaded:        false,
 		Source:            row.SessionID,
+		SourceAgent:       strings.TrimSpace(row.AgentID),
 		CommonCategory:    row.CommonCategory,
 		Document:          &doc,
 		RecallStats:       stats,
